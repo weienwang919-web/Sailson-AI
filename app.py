@@ -10,13 +10,10 @@ import google.generativeai as genai
 # --- 1. 配置加载 ---
 load_dotenv()
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-
-# 云端适配: 获取端口
 port = int(os.environ.get("PORT", 5001))
 
+# 初始化放在这里，防止每次调用都重新配置
 if GOOGLE_API_KEY:
-    # 打印前5位，确认 Key 真的被读到了
-    print(f"✅ API Key 已加载: {GOOGLE_API_KEY[:5]}******")
     genai.configure(api_key=GOOGLE_API_KEY)
 else:
     print("❌ 警告: 环境变量中未找到 GOOGLE_API_KEY")
@@ -25,44 +22,32 @@ app = Flask(__name__)
 app.secret_key = 'sailson_secure_key'
 HISTORY_DB = []
 
-# --- 2. 核心工具 (修复了模型列表 + 错误打印) ---
+# --- 2. 核心工具 (极简稳定版) ---
 def call_gemini(prompt, image=None):
     if not GOOGLE_API_KEY: 
-        return "❌ 错误：后台未读取到 API Key，请检查 Render 环境变量配置。"
+        return "❌ 错误：API Key 未配置，请检查 Render 环境变量。"
+
+    # 🔒 锁定只使用这就一个模型，不换来换去了
+    # gemini-1.5-flash 是目前速度最快、最便宜、成功率最高的版本
+    model_name = 'gemini-1.5-flash'
     
-    # 🔥 修复：把真实存在的模型放在第一位
-    models_to_try = [
-        'gemini-1.5-flash',       # 目前最快最稳的模型
-        'gemini-pro',             # 备用
-        'models/gemini-1.5-pro'   # 高级备用
-    ]
-    
-    last_error = ""
-    
-    for model_name in models_to_try:
-        try:
-            print(f"🤖 正在尝试模型: {model_name} ...")
-            model = genai.GenerativeModel(model_name)
+    try:
+        print(f"🤖 正在调用模型: {model_name} ...")
+        model = genai.GenerativeModel(model_name)
+        
+        if image:
+            response = model.generate_content([prompt, image])
+        else:
+            response = model.generate_content(prompt)
             
-            # gemini-pro 不支持图片，跳过
-            if image and 'pro' in model_name and 'flash' not in model_name: 
-                continue
-            
-            if image:
-                response = model.generate_content([prompt, image])
-            else:
-                response = model.generate_content(prompt)
-                
-            print(f"✅ {model_name} 调用成功！")
-            return response.text
-            
-        except Exception as e:
-            # 🔥 关键：把错误打印出来，方便去 Render Logs 查看
-            print(f"❌ {model_name} 失败: {str(e)}")
-            last_error = str(e)
-            continue
-            
-    return f"⚠️ 所有模型均调用失败。最后一次报错信息: {last_error}"
+        print(f"✅ 调用成功！")
+        return response.text
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"❌ 调用失败: {error_msg}")
+        # 返回具体的错误信息给前端，不再只显示“失败”
+        return f"⚠️ API 调用失败。原因: {error_msg}"
 
 def process_uploaded_file(file):
     try:
@@ -79,8 +64,7 @@ def save_history(title, result, type_tag):
     HISTORY_DB.append({'id': len(HISTORY_DB)+1, 'title': f"{title} [{datetime.datetime.now().strftime('%H:%M')}]", 'result': result, 'type': type_tag})
 
 def call_veo_api(prompt):
-    print(f"🎥 [Veo] 生成视频中: {prompt}")
-    time.sleep(4) 
+    time.sleep(3) 
     return "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"
 
 # --- 3. 路由 ---
@@ -96,6 +80,29 @@ def logout(): session.pop('logged_in', None); return redirect(url_for('login'))
 @app.route('/')
 def home(): return render_template('index.html') if session.get('logged_in') else redirect(url_for('login'))
 
+# ✨ 新增：自检调试页面 (专门用来测试云端环境)
+@app.route('/debug')
+def debug_page():
+    if not session.get('logged_in'): return redirect(url_for('login'))
+    
+    status_report = {
+        "api_key_exists": bool(GOOGLE_API_KEY),
+        "api_key_first_5": GOOGLE_API_KEY[:5] + "***" if GOOGLE_API_KEY else "None",
+        "test_model_call": "Waiting..."
+    }
+    
+    # 尝试一次真实的 API 调用
+    if GOOGLE_API_KEY:
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            res = model.generate_content("Say 'Hello OK' if you can hear me.")
+            status_report["test_model_call"] = f"✅ Success! AI Response: {res.text}"
+        except Exception as e:
+            status_report["test_model_call"] = f"❌ Failed: {str(e)}"
+    
+    return jsonify(status_report)
+
+# === 业务功能 ===
 @app.route('/sentiment-tool')
 def sentiment_tool(): return render_template('analysis.html') if session.get('logged_in') else redirect(url_for('login'))
 
@@ -111,6 +118,7 @@ def analyze():
         if mode == "IMAGE": img = res; content = "分析图片"; source = "📷 图片"; source_link_text="用户上传"
         else: content = res; source = "📁 文件"; source_link_text="用户上传"
     elif url:
+        # 英文模拟数据
         content = """
         [1] So many hackers in this game! Wallhack and aimbot everywhere.
         [2] I topped up $99 yesterday but got no UC. Customer service is bots.
@@ -121,6 +129,7 @@ def analyze():
         source = f"🔗 {url[:20]}..."; source_link_text = url 
     else: return jsonify({'result': "❌ 无输入"})
     
+    # 极简 Prompt，确保稳定输出
     prompt = f"""
     You are a data engine. Output ONLY raw HTML <table>.
     Input: {content}
@@ -136,17 +145,14 @@ def analyze():
 
 @app.route('/competitor-tool')
 def competitor_tool(): return render_template('competitor.html') if session.get('logged_in') else redirect(url_for('login'))
+
 @app.route('/monitor_competitors', methods=['POST'])
 def monitor_competitors(): 
-    # 这里加个简单的处理，防止直接把 None 传进去
     input_data = request.json
-    if not input_data:
-        return jsonify({'result': "❌ 错误：未接收到输入数据"})
+    if not input_data: return jsonify({'result': "❌ 错误：请输入竞品名称"})
     
-    prompt = f"分析竞品数据: {input_data}。请给出SWOT分析（优势、劣势、机会、威胁）和下一步策略建议。使用HTML格式输出，使用 <h3>, <ul>, <li> 标签。"
+    prompt = f"分析竞品 '{input_data}'。使用HTML格式(<h3>,<ul>)列出它的优势、劣势和对策。不要Markdown。"
     res = call_gemini(prompt)
-    
-    # 清洗可能存在的 markdown
     clean_res = res.replace('```html','').replace('```','')
     save_history("竞品监控", clean_res, 'competitor')
     return jsonify({'result': clean_res})
