@@ -4,205 +4,130 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sailson AI Workbench</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" type="image/x-icon">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <style>
-        body {
-            background-color: #f8f9fa;
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        }
-        
-        /* 顶部 Hero 区域样式 */
-        .hero-section {
-            padding: 4rem 0;
-            text-align: center;
-            background: white;
-            border-bottom: 1px solid #eee;
-            margin-bottom: 2rem;
-        }
+        :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
+        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); }
+        .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; }
+        .logo-img { height: 50px; }
+        .user-profile { font-size: 13px; font-weight: 500; padding: 6px 12px; background: rgba(0,0,0,0.05); border-radius: 18px; display: flex; align-items: center; gap: 8px; }
+        .user-avatar { width: 20px; height: 20px; background: #666; border-radius: 50%; }
 
-        /* 进度条动画关键帧 */
-        @keyframes growBar {
-            from { width: 0; }
-        }
+        .hero-section { text-align: center; padding: 80px 20px 50px; max-width: 900px; margin: 0 auto; }
+        .hero-title { font-size: 4rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .hero-subtitle { font-size: 1.25rem; color: var(--text-secondary); max-width: 600px; margin: 0 auto; }
 
-        /* 给进度条加动画 */
-        .progress-bar {
-            /* 1.5秒内从0长到设定宽度 */
-            animation: growBar 1.5s ease-out forwards; 
-        }
+        .stats-container { max-width: 1100px; margin: 0 auto 60px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 0 20px; }
+        .stat-card { background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.04); height: 160px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.3s ease; }
+        .stat-card:hover { transform: translateY(-2px); }
+        .stat-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+        .stat-value { font-size: 28px; font-weight: 700; }
+        .stat-indicator { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; }
+        .chart-wrapper { height: 50px; width: 100%; margin-top: auto; }
 
-        /* 卡片微动效：鼠标放上去稍微浮起一点点，不夸张 */
-        .card {
-            border: 1px solid #e9ecef;
-            transition: transform 0.2s;
-            border-radius: 8px;
-        }
-        .card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        }
+        .features-grid { max-width: 1100px; margin: 0 auto; padding: 0 20px 100px; }
+        .feature-card { background: #fff; border: 1px solid rgba(0,0,0,0.04); border-radius: 24px; padding: 40px; height: 100%; transition: all 0.4s; text-decoration: none; color: inherit; display: block; position: relative; }
+        .feature-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.08); }
+        .card-icon { font-size: 2.5rem; margin-bottom: 24px; }
+        .card-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.5px; }
+        .card-desc { color: var(--text-secondary); font-size: 1rem; line-height: 1.5; margin-bottom: 30px; }
+        .card-arrow { position: absolute; bottom: 40px; right: 40px; font-size: 1.2rem; opacity: 0; transition: all 0.3s; transform: translateX(-10px); }
+        .feature-card:hover .card-arrow { opacity: 1; transform: translateX(0); }
 
-        /* 图标背景色 */
-        .icon-box {
-            width: 48px;
-            height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 10px;
-            margin-bottom: 15px;
+        /* 虚线工程卡片样式 (横向长条) */
+        .wip-section { margin-top: 40px; }
+        .wip-card {
+            border: 2px dashed #E0E0E0; background: #FAFAFA;
+            display: flex; align-items: center; flex-direction: row; padding: 30px 40px;
         }
+        .wip-card:hover { border-color: #2962FF; background: #F0F4FF; }
+        .wip-content { margin-left: 20px; flex-grow: 1; text-align: left; }
+        .wip-card .card-icon { margin-bottom: 0; }
+        .wip-card .card-arrow { position: static; opacity: 1; transform: none; font-size: 2rem; color: #ccc; }
+
+        .footer { text-align: center; padding: 40px; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
-
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="#">
-                <i class="fas fa-rocket me-2"></i>Sailson AI
-            </a>
-            <div class="d-flex text-white align-items-center">
-                <i class="fas fa-user-circle me-2"></i> Admin
-                <a href="/logout" class="btn btn-sm btn-outline-light ms-3">退出</a>
-            </div>
-        </div>
+    <nav class="navbar d-flex justify-content-between">
+        <a class="navbar-brand" href="#"><img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo-img"></a>
+        <div class="user-profile"><div class="user-avatar"></div> Admin Workspace</div>
     </nav>
 
     <div class="hero-section">
-        <div class="container">
-            <h1 class="display-4 fw-bold text-dark mb-3">Work Smarter, Not Harder.</h1>
-            <p class="lead text-muted">Intelligent Data Analysis & Content Generation Workbench</p>
+        <h1 class="hero-title">Work smarter,<br>not harder.</h1>
+        <p class="hero-subtitle">Sailson 企业级 AI 中台。集成 Gemini 2.5 与 Google Veo，为游戏业务提供全场景智能支持。</p>
+    </div>
+
+    <div class="stats-container">
+        <div class="stat-card">
+            <div><div class="stat-header"><span class="stat-label">Video Engine</span><span class="stat-indicator" style="background:#E8F5E9; color:#2E7D32;">Veo Active</span></div><div class="stat-value">Google Vertex</div></div>
+            <div class="chart-wrapper"><canvas id="chart1"></canvas></div>
+        </div>
+        <div class="stat-card">
+            <div><div class="stat-header"><span class="stat-label">API Latency</span><span class="stat-indicator" style="background:#DEEBFF; color:#0747A6;">128ms</span></div><div class="stat-value">Stable</div></div>
+            <div class="chart-wrapper"><canvas id="chart2"></canvas></div>
+        </div>
+        <div class="stat-card">
+            <div><div class="stat-header"><span class="stat-label">Tasks</span></div><div class="stat-value">1,204</div></div>
+            <div class="chart-wrapper"><canvas id="chart3"></canvas></div>
         </div>
     </div>
 
-    <div class="container pb-5">
-        
-        <h5 class="mb-4 text-muted border-start border-4 border-primary ps-3">平台数据概览</h5>
-        
-        <div class="row g-4 mb-5">
-            <div class="col-md-4">
-                <div class="card h-100 p-4 shadow-sm border-0">
-                    <div class="icon-box bg-primary bg-opacity-10 text-primary">
-                        <i class="fas fa-comments fa-lg"></i>
-                    </div>
-                    <h6 class="text-muted text-uppercase small fw-bold">累计分析评论</h6>
-                    <h2 class="display-5 fw-bold my-2 counter" data-target="12845">0</h2>
-                    
-                    <div class="d-flex align-items-center mb-2">
-                        <small class="text-success fw-bold me-2"><i class="fas fa-arrow-up"></i> 12.5%</small>
-                        <small class="text-muted">较昨日</small>
-                    </div>
-                    
-                    <div class="progress" style="height: 6px;">
-                        <div class="progress-bar bg-primary" role="progressbar" style="width: 75%"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-4">
-                <div class="card h-100 p-4 shadow-sm border-0">
-                    <div class="icon-box bg-danger bg-opacity-10 text-danger">
-                        <i class="fas fa-crosshairs fa-lg"></i>
-                    </div>
-                    <h6 class="text-muted text-uppercase small fw-bold">当前监控竞品</h6>
-                    <h2 class="display-5 fw-bold my-2 counter" data-target="42">0</h2>
-                    
-                    <div class="d-flex align-items-center mb-2">
-                        <small class="text-danger fw-bold me-2"><i class="fas fa-exclamation-triangle"></i> 3个</small>
-                        <small class="text-muted">高风险异动</small>
-                    </div>
-
-                    <div class="progress" style="height: 6px;">
-                        <div class="progress-bar bg-danger" role="progressbar" style="width: 45%"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-md-4">
-                <div class="card h-100 p-4 shadow-sm border-0">
-                    <div class="icon-box bg-warning bg-opacity-10 text-warning">
-                        <i class="fas fa-video fa-lg"></i>
-                    </div>
-                    <h6 class="text-muted text-uppercase small fw-bold">已生成素材</h6>
-                    <h2 class="display-5 fw-bold my-2 counter" data-target="89">0</h2>
-                    
-                    <div class="d-flex align-items-center mb-2">
-                        <small class="text-muted fw-bold me-2"><i class="fas fa-check-circle"></i> 运行中</small>
-                        <small class="text-muted">系统状态</small>
-                    </div>
-
-                    <div class="progress" style="height: 6px;">
-                        <div class="progress-bar bg-warning" role="progressbar" style="width: 88%"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <h5 class="mb-4 text-muted border-start border-4 border-success ps-3">业务工具箱</h5>
-        
+    <div class="features-grid container">
         <div class="row g-4">
             <div class="col-md-4">
-                <div class="card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title fw-bold"><i class="fas fa-chart-pie text-primary me-2"></i>舆情分析</h5>
-                        <p class="card-text text-muted small">上传 Excel/CSV 或粘贴 URL，自动分析玩家情感倾向。</p>
-                        <a href="/sentiment-tool" class="btn btn-primary w-100 mt-2">立即使用</a>
-                    </div>
-                </div>
+                <a href="/sentiment-tool" class="feature-card">
+                    <div class="card-icon">🎮</div>
+                    <h3 class="card-title">舆情洞察</h3>
+                    <p class="card-desc">全自动社媒评论分析与归类。</p>
+                    <div class="card-arrow">→</div>
+                </a>
             </div>
-
             <div class="col-md-4">
-                <div class="card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title fw-bold"><i class="fas fa-search-dollar text-danger me-2"></i>竞品雷达</h5>
-                        <p class="card-text text-muted small">监控竞品动向，生成 SWOT 分析报告。</p>
-                        <a href="/competitor-tool" class="btn btn-outline-danger w-100 mt-2">立即使用</a>
-                    </div>
-                </div>
+                <a href="/competitor-tool" class="feature-card">
+                    <div class="card-icon">📡</div>
+                    <h3 class="card-title">竞品雷达</h3>
+                    <p class="card-desc">自动抓取竞品数据生成报告。</p>
+                    <div class="card-arrow">→</div>
+                </a>
             </div>
-
             <div class="col-md-4">
-                <div class="card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title fw-bold"><i class="fas fa-film text-warning me-2"></i>视频生成</h5>
-                        <p class="card-text text-muted small">基于 Google Veo 模型，一键生成营销短视频。</p>
-                        <a href="/video-tool" class="btn btn-outline-warning text-dark w-100 mt-2">立即使用</a>
-                    </div>
-                </div>
+                <a href="/video-tool" class="feature-card">
+                    <div class="card-icon">🎥</div>
+                    <h3 class="card-title">Veo 视频生成</h3>
+                    <p class="card-desc">Google DeepMind 电影级视频生成。</p>
+                    <div class="card-arrow">→</div>
+                </a>
             </div>
         </div>
 
+        <div class="row wip-section">
+            <div class="col-12">
+                <a href="/feature-request" class="feature-card wip-card">
+                    <div class="card-icon">🛠️</div>
+                    <div class="wip-content">
+                        <h3 class="card-title" style="margin-bottom: 5px;">更多开发中...</h3>
+                        <p class="card-desc" style="margin-bottom: 0;">没有你想要的？<strong>点击这里提交需求</strong>，我们为您定制。</p>
+                    </div>
+                    <div class="card-arrow">+</div>
+                </a>
+            </div>
+        </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <div class="footer">© 2026 Sailson Interactive. Powered by Google Cloud Vertex AI.</div>
 
     <script>
-        document.addEventListener("DOMContentLoaded", () => {
-            const counters = document.querySelectorAll('.counter');
-            
-            counters.forEach(counter => {
-                counter.innerText = '0'; // 初始重置为0
-                
-                const updateCount = () => {
-                    const target = +counter.getAttribute('data-target'); // 获取目标值
-                    const count = +counter.innerText; // 获取当前值
-                    
-                    // 计算步长：数字越大跑得越快，除以200是调节速度的（数值越大越慢）
-                    const increment = target / 100;
-
-                    if (count < target) {
-                        counter.innerText = Math.ceil(count + increment);
-                        setTimeout(updateCount, 20); // 20ms刷新一次，产生动画
-                    } else {
-                        counter.innerText = target; // 确保最终停在准确数字
-                    }
-                };
-                
-                updateCount();
-            });
-        });
+        const commonOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } }, elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } } };
+        new Chart(document.getElementById('chart1'), { type: 'line', data: { labels: [1,2,3,4,5], datasets: [{ data: [10,15,12,18,24], borderColor: '#2962FF', fill: true, backgroundColor: 'rgba(41,98,255,0.05)' }] }, options: commonOptions });
+        new Chart(document.getElementById('chart2'), { type: 'line', data: { labels: [1,2,3,4,5], datasets: [{ data: [50,55,53,60,58], borderColor: '#00C853', borderWidth: 1.5 }] }, options: commonOptions });
+        new Chart(document.getElementById('chart3'), { type: 'bar', data: { labels: [1,2,3,4,5], datasets: [{ data: [40,60,45,80,55], backgroundColor: '#FF3B30', borderRadius: 2 }] }, options: commonOptions });
     </script>
 </body>
 </html>
