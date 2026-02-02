@@ -4,130 +4,292 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sailson AI Workbench</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" type="image/x-icon">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
     <style>
-        :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
-        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); }
-        .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; }
-        .logo-img { height: 50px; }
-        .user-profile { font-size: 13px; font-weight: 500; padding: 6px 12px; background: rgba(0,0,0,0.05); border-radius: 18px; display: flex; align-items: center; gap: 8px; }
-        .user-avatar { width: 20px; height: 20px; background: #666; border-radius: 50%; }
-
-        .hero-section { text-align: center; padding: 80px 20px 50px; max-width: 900px; margin: 0 auto; }
-        .hero-title { font-size: 4rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .hero-subtitle { font-size: 1.25rem; color: var(--text-secondary); max-width: 600px; margin: 0 auto; }
-
-        .stats-container { max-width: 1100px; margin: 0 auto 60px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 0 20px; }
-        .stat-card { background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.04); height: 160px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.3s ease; }
-        .stat-card:hover { transform: translateY(-2px); }
-        .stat-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-        .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
-        .stat-value { font-size: 28px; font-weight: 700; }
-        .stat-indicator { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; }
-        .chart-wrapper { height: 50px; width: 100%; margin-top: auto; }
-
-        .features-grid { max-width: 1100px; margin: 0 auto; padding: 0 20px 100px; }
-        .feature-card { background: #fff; border: 1px solid rgba(0,0,0,0.04); border-radius: 24px; padding: 40px; height: 100%; transition: all 0.4s; text-decoration: none; color: inherit; display: block; position: relative; }
-        .feature-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.08); }
-        .card-icon { font-size: 2.5rem; margin-bottom: 24px; }
-        .card-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.5px; }
-        .card-desc { color: var(--text-secondary); font-size: 1rem; line-height: 1.5; margin-bottom: 30px; }
-        .card-arrow { position: absolute; bottom: 40px; right: 40px; font-size: 1.2rem; opacity: 0; transition: all 0.3s; transform: translateX(-10px); }
-        .feature-card:hover .card-arrow { opacity: 1; transform: translateX(0); }
-
-        /* 虚线工程卡片样式 (横向长条) */
-        .wip-section { margin-top: 40px; }
-        .wip-card {
-            border: 2px dashed #E0E0E0; background: #FAFAFA;
-            display: flex; align-items: center; flex-direction: row; padding: 30px 40px;
+        :root {
+            --primary-color: #4e54c8;
+            --secondary-color: #8f94fb;
+            --bg-color: #f4f6f9;
         }
-        .wip-card:hover { border-color: #2962FF; background: #F0F4FF; }
-        .wip-content { margin-left: 20px; flex-grow: 1; text-align: left; }
-        .wip-card .card-icon { margin-bottom: 0; }
-        .wip-card .card-arrow { position: static; opacity: 1; transform: none; font-size: 2rem; color: #ccc; }
 
-        .footer { text-align: center; padding: 40px; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); }
+        body {
+            background-color: var(--bg-color);
+            font-family: 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            overflow-x: hidden;
+        }
+
+        /* 顶部导航 */
+        .navbar {
+            background: white;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.05);
+            padding: 1rem 2rem;
+        }
+        .navbar-brand {
+            font-weight: 700;
+            color: var(--primary-color) !important;
+            font-size: 1.5rem;
+        }
+
+        /* --- 🔥 核心：高端动效卡片 CSS --- */
+        .stat-card {
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            position: relative;
+            overflow: hidden;
+            border: none;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); /* 弹性过渡 */
+            cursor: pointer;
+            height: 100%;
+        }
+
+        /* 悬停效果：上浮 + 投影加深 + 边框发光 */
+        .stat-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 40px rgba(78, 84, 200, 0.15);
+        }
+        
+        /* 装饰性背景圆环 */
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: -50px;
+            right: -50px;
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            opacity: 0.1;
+            transition: transform 0.5s ease;
+        }
+        .stat-card:hover::before {
+            transform: scale(1.5); /* 鼠标悬停时圆环放大 */
+        }
+
+        .stat-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            margin-bottom: 15px;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: #2c3e50;
+            margin-bottom: 5px;
+            font-variant-numeric: tabular-nums; /* 防止数字变动时宽度跳动 */
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* 模拟波动的小图表线 */
+        .trend-line {
+            height: 4px;
+            width: 100%;
+            background: #f1f2f6;
+            margin-top: 15px;
+            border-radius: 2px;
+            overflow: hidden;
+            position: relative;
+        }
+        .trend-fill {
+            height: 100%;
+            border-radius: 2px;
+            animation: loadProgress 2s ease-out forwards;
+        }
+
+        @keyframes loadProgress {
+            from { width: 0; }
+        }
+
+        /* 功能卡片区域 */
+        .tool-card {
+            border: none;
+            border-radius: 12px;
+            transition: transform 0.3s ease;
+            background: white;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.03);
+        }
+        .tool-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+        }
+        .tool-icon-wrapper {
+            height: 140px;
+            background: #f8f9fa;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 3rem;
+            color: var(--primary-color);
+            border-radius: 12px 12px 0 0;
+        }
+
+        /* 欢迎标语动画 */
+        .hero-text {
+            animation: fadeInDown 0.8s ease-out;
+        }
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
-    <nav class="navbar d-flex justify-content-between">
-        <a class="navbar-brand" href="#"><img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo-img"></a>
-        <div class="user-profile"><div class="user-avatar"></div> Admin Workspace</div>
+
+    <nav class="navbar navbar-expand-lg navbar-light sticky-top">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-rocket me-2"></i>Sailson AI Workbench
+            </a>
+            <div class="d-flex align-items-center">
+                <span class="me-3 text-muted"><i class="fas fa-user-circle me-1"></i> Admin</span>
+                <a href="/logout" class="btn btn-outline-danger btn-sm">退出</a>
+            </div>
+        </div>
     </nav>
 
-    <div class="hero-section">
-        <h1 class="hero-title">Work smarter,<br>not harder.</h1>
-        <p class="hero-subtitle">Sailson 企业级 AI 中台。集成 Gemini 2.5 与 Google Veo，为游戏业务提供全场景智能支持。</p>
-    </div>
+    <div class="container py-5">
+        
+        <div class="row mb-5 hero-text">
+            <div class="col-12">
+                <h2 class="fw-bold text-dark">Welcome back, Sailson Team. 👋</h2>
+                <p class="text-muted">Here's what's happening with your games today.</p>
+            </div>
+        </div>
 
-    <div class="stats-container">
-        <div class="stat-card">
-            <div><div class="stat-header"><span class="stat-label">Video Engine</span><span class="stat-indicator" style="background:#E8F5E9; color:#2E7D32;">Veo Active</span></div><div class="stat-value">Google Vertex</div></div>
-            <div class="chart-wrapper"><canvas id="chart1"></canvas></div>
-        </div>
-        <div class="stat-card">
-            <div><div class="stat-header"><span class="stat-label">API Latency</span><span class="stat-indicator" style="background:#DEEBFF; color:#0747A6;">128ms</span></div><div class="stat-value">Stable</div></div>
-            <div class="chart-wrapper"><canvas id="chart2"></canvas></div>
-        </div>
-        <div class="stat-card">
-            <div><div class="stat-header"><span class="stat-label">Tasks</span></div><div class="stat-value">1,204</div></div>
-            <div class="chart-wrapper"><canvas id="chart3"></canvas></div>
-        </div>
-    </div>
+        <div class="row mb-5 g-4">
+            
+            <div class="col-md-4">
+                <div class="stat-card">
+                    <div class="stat-icon bg-primary bg-opacity-10 text-primary">
+                        <i class="fas fa-comments"></i>
+                    </div>
+                    <div class="stat-value counter" data-target="12845">0</div>
+                    <div class="stat-label">Total Reviews Analyzed</div>
+                    <div class="trend-line">
+                        <div class="trend-fill bg-primary" style="width: 85%"></div>
+                    </div>
+                    <small class="text-success mt-2 d-block"><i class="fas fa-arrow-up"></i> +12.5% vs yesterday</small>
+                </div>
+            </div>
 
-    <div class="features-grid container">
+            <div class="col-md-4">
+                <div class="stat-card">
+                    <div class="stat-icon bg-danger bg-opacity-10 text-danger">
+                        <i class="fas fa-crosshairs"></i>
+                    </div>
+                    <div class="stat-value counter" data-target="42">0</div>
+                    <div class="stat-label">Competitors Tracked</div>
+                    <div class="trend-line">
+                        <div class="trend-fill bg-danger" style="width: 60%"></div>
+                    </div>
+                    <small class="text-danger mt-2 d-block"><i class="fas fa-exclamation-circle"></i> 3 High Threats found</small>
+                </div>
+            </div>
+
+            <div class="col-md-4">
+                <div class="stat-card">
+                    <div class="stat-icon bg-warning bg-opacity-10 text-warning">
+                        <i class="fas fa-video"></i>
+                    </div>
+                    <div class="stat-value counter" data-target="89">0</div>
+                    <div class="stat-label">Videos Generated</div>
+                    <div class="trend-line">
+                        <div class="trend-fill bg-warning" style="width: 92%"></div>
+                    </div>
+                    <small class="text-muted mt-2 d-block"><i class="fas fa-check-circle"></i> Server Status: Idle</small>
+                </div>
+            </div>
+        </div>
+
+        <h4 class="mb-4 fw-bold">AI Tools Suite</h4>
+
         <div class="row g-4">
             <div class="col-md-4">
-                <a href="/sentiment-tool" class="feature-card">
-                    <div class="card-icon">🎮</div>
-                    <h3 class="card-title">舆情洞察</h3>
-                    <p class="card-desc">全自动社媒评论分析与归类。</p>
-                    <div class="card-arrow">→</div>
-                </a>
+                <div class="card tool-card h-100">
+                    <div class="tool-icon-wrapper bg-primary bg-opacity-10">
+                        <i class="fas fa-chart-pie"></i>
+                    </div>
+                    <div class="card-body p-4">
+                        <h5 class="card-title fw-bold">Sentiment Analysis</h5>
+                        <p class="card-text text-muted">Upload CSVs or URLs to analyze player feedback automatically.</p>
+                        <a href="/sentiment-tool" class="btn btn-primary w-100 rounded-pill mt-2">Launch Tool <i class="fas fa-arrow-right ms-2"></i></a>
+                    </div>
+                </div>
             </div>
+
             <div class="col-md-4">
-                <a href="/competitor-tool" class="feature-card">
-                    <div class="card-icon">📡</div>
-                    <h3 class="card-title">竞品雷达</h3>
-                    <p class="card-desc">自动抓取竞品数据生成报告。</p>
-                    <div class="card-arrow">→</div>
-                </a>
+                <div class="card tool-card h-100">
+                    <div class="tool-icon-wrapper bg-danger bg-opacity-10 text-danger">
+                        <i class="fas fa-search-dollar"></i>
+                    </div>
+                    <div class="card-body p-4">
+                        <h5 class="card-title fw-bold">Competitor Monitor</h5>
+                        <p class="card-text text-muted">Track competitor social data and generate SWOT reports.</p>
+                        <a href="/competitor-tool" class="btn btn-outline-danger w-100 rounded-pill mt-2">Launch Tool <i class="fas fa-arrow-right ms-2"></i></a>
+                    </div>
+                </div>
             </div>
+
             <div class="col-md-4">
-                <a href="/video-tool" class="feature-card">
-                    <div class="card-icon">🎥</div>
-                    <h3 class="card-title">Veo 视频生成</h3>
-                    <p class="card-desc">Google DeepMind 电影级视频生成。</p>
-                    <div class="card-arrow">→</div>
-                </a>
+                <div class="card tool-card h-100">
+                    <div class="tool-icon-wrapper bg-warning bg-opacity-10 text-warning">
+                        <i class="fas fa-film"></i>
+                    </div>
+                    <div class="card-body p-4">
+                        <h5 class="card-title fw-bold">AI Video Gen</h5>
+                        <p class="card-text text-muted">Create marketing videos from text prompts using Google Veo.</p>
+                        <a href="/video-tool" class="btn btn-outline-warning text-dark w-100 rounded-pill mt-2">Launch Tool <i class="fas fa-arrow-right ms-2"></i></a>
+                    </div>
+                </div>
             </div>
         </div>
-
-        <div class="row wip-section">
-            <div class="col-12">
-                <a href="/feature-request" class="feature-card wip-card">
-                    <div class="card-icon">🛠️</div>
-                    <div class="wip-content">
-                        <h3 class="card-title" style="margin-bottom: 5px;">更多开发中...</h3>
-                        <p class="card-desc" style="margin-bottom: 0;">没有你想要的？<strong>点击这里提交需求</strong>，我们为您定制。</p>
-                    </div>
-                    <div class="card-arrow">+</div>
-                </a>
-            </div>
+        
+        <div class="mt-5 text-center text-muted small">
+            &copy; 2024 Sailson AI Workbench. Powered by Google Gemini 2.5.
         </div>
     </div>
 
-    <div class="footer">© 2026 Sailson Interactive. Powered by Google Cloud Vertex AI.</div>
-
     <script>
-        const commonOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } }, elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } } };
-        new Chart(document.getElementById('chart1'), { type: 'line', data: { labels: [1,2,3,4,5], datasets: [{ data: [10,15,12,18,24], borderColor: '#2962FF', fill: true, backgroundColor: 'rgba(41,98,255,0.05)' }] }, options: commonOptions });
-        new Chart(document.getElementById('chart2'), { type: 'line', data: { labels: [1,2,3,4,5], datasets: [{ data: [50,55,53,60,58], borderColor: '#00C853', borderWidth: 1.5 }] }, options: commonOptions });
-        new Chart(document.getElementById('chart3'), { type: 'bar', data: { labels: [1,2,3,4,5], datasets: [{ data: [40,60,45,80,55], backgroundColor: '#FF3B30', borderRadius: 2 }] }, options: commonOptions });
+        document.addEventListener("DOMContentLoaded", () => {
+            const counters = document.querySelectorAll('.counter');
+            
+            counters.forEach(counter => {
+                const updateCount = () => {
+                    const target = +counter.getAttribute('data-target');
+                    const count = +counter.innerText;
+                    
+                    // 动态计算速度：数值越大跑得越快
+                    const speed = 200; 
+                    const increment = target / speed;
+
+                    if (count < target) {
+                        counter.innerText = Math.ceil(count + increment);
+                        setTimeout(updateCount, 15); // 每15毫秒更新一次，肉眼看起来非常丝滑
+                    } else {
+                        counter.innerText = target; // 确保最后定格在目标值
+                    }
+                };
+                updateCount();
+            });
+        });
     </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
