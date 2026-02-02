@@ -15,34 +15,54 @@ GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 port = int(os.environ.get("PORT", 5001))
 
 if GOOGLE_API_KEY:
+    # 打印前5位，确认 Key 真的被读到了
     print(f"✅ API Key 已加载: {GOOGLE_API_KEY[:5]}******")
     genai.configure(api_key=GOOGLE_API_KEY)
 else:
-    print("❌ 警告: 未找到 GOOGLE_API_KEY")
+    print("❌ 警告: 环境变量中未找到 GOOGLE_API_KEY")
 
 app = Flask(__name__)
 app.secret_key = 'sailson_secure_key'
 HISTORY_DB = []
 
-# --- 2. 核心工具 ---
+# --- 2. 核心工具 (修复了模型列表 + 错误打印) ---
 def call_gemini(prompt, image=None):
-    if not GOOGLE_API_KEY: return "❌ 错误：API Key 未配置"
-    models_to_try = ['models/gemini-2.5-flash', 'gemini-2.5-flash', 'models/gemini-1.5-flash', 'gemini-pro']
+    if not GOOGLE_API_KEY: 
+        return "❌ 错误：后台未读取到 API Key，请检查 Render 环境变量配置。"
+    
+    # 🔥 修复：把真实存在的模型放在第一位
+    models_to_try = [
+        'gemini-1.5-flash',       # 目前最快最稳的模型
+        'gemini-pro',             # 备用
+        'models/gemini-1.5-pro'   # 高级备用
+    ]
+    
+    last_error = ""
+    
     for model_name in models_to_try:
         try:
-            print(f"🤖 尝试连接: {model_name}")
+            print(f"🤖 正在尝试模型: {model_name} ...")
             model = genai.GenerativeModel(model_name)
-            if image and 'pro' in model_name and 'flash' not in model_name: continue
+            
+            # gemini-pro 不支持图片，跳过
+            if image and 'pro' in model_name and 'flash' not in model_name: 
+                continue
             
             if image:
                 response = model.generate_content([prompt, image])
             else:
                 response = model.generate_content(prompt)
                 
-            print(f"✅ {model_name} 成功！")
+            print(f"✅ {model_name} 调用成功！")
             return response.text
-        except: continue
-    return "⚠️ 所有模型失败"
+            
+        except Exception as e:
+            # 🔥 关键：把错误打印出来，方便去 Render Logs 查看
+            print(f"❌ {model_name} 失败: {str(e)}")
+            last_error = str(e)
+            continue
+            
+    return f"⚠️ 所有模型均调用失败。最后一次报错信息: {last_error}"
 
 def process_uploaded_file(file):
     try:
@@ -83,58 +103,34 @@ def sentiment_tool(): return render_template('analysis.html') if session.get('lo
 def analyze():
     url = request.form.get('url')
     file = request.files.get('file')
-    
     content = ""; img = None; source = "未知"; source_link_text = "本地文件"
 
     if file:
         mode, res = process_uploaded_file(file)
         if mode == "ERROR": return jsonify({'result': res})
-        if mode == "IMAGE": img = res; content = "分析图片"; source = "📷 图片"
-        else: content = res; source = "📁 文件"
-        source_link_text = "用户上传"
-
+        if mode == "IMAGE": img = res; content = "分析图片"; source = "📷 图片"; source_link_text="用户上传"
+        else: content = res; source = "📁 文件"; source_link_text="用户上传"
     elif url:
-        # 🔥 修改点 1：模拟评论换成英文 (更真实)
         content = """
-        [1] So many hackers in this game! Wallhack and aimbot everywhere, reporting does nothing.
-        [2] I topped up $99 yesterday but got no UC. Customer service is a joke, just bots replying.
-        [3] The server lag is unbearable. 400ms ping every time I engage in a fight. Optimize your servers!
-        [4] New skins look cool but the gacha rates are essentially a scam. 0.5% drop rate? Really?
-        [5] Please add a training mode for the new weapons, we need to practice recoil control.
+        [1] So many hackers in this game! Wallhack and aimbot everywhere.
+        [2] I topped up $99 yesterday but got no UC. Customer service is bots.
+        [3] Server lag is unbearable. 400ms ping.
+        [4] Gacha rates are a scam. 0.5% really?
+        [5] Add training mode please.
         """
-        source = f"🔗 {url[:20]}..."
-        source_link_text = url 
-
+        source = f"🔗 {url[:20]}..."; source_link_text = url 
     else: return jsonify({'result': "❌ 无输入"})
     
-    # 🔥 修改点 2：Prompt 强制 HTML 格式 + 增加分析深度
     prompt = f"""
-    You are a data processing engine. Analyze the following game reviews.
-    
-    【Input】:
-    {content}
-    【Source Link】:
-    {source_link_text}
-    
-    【Instructions】:
-    1. Output **ONLY** raw HTML code. Do NOT use markdown code blocks (no ```html).
-    2. Start directly with <table class="table table-bordered table-striped table-hover">.
-    3. Each review gets one row.
-
-    【Classification Rules (Select one)】:
-    [Cheating/Hacks], [Optimization/Lag], [Bugs], [Payment/Refund], [Suggestion], [Other]
-
-    【Table Columns】:
-    1. **Source** (Fill with: {source_link_text})
-    2. **Review** (Keep original English text)
-    3. **Category** (Translate category to Chinese, e.g., 外挂作弊, 游戏优化)
-    4. **Sentiment** (Positive/Negative/Neutral in Chinese)
-    5. **Analysis** (In Chinese. Provide a meaningful insight about the specific issue. Around 25 Chinese characters. e.g., "反作弊系统响应迟缓，严重影响公平竞技体验")
+    You are a data engine. Output ONLY raw HTML <table>.
+    Input: {content}
+    Source: {source_link_text}
+    Rules:
+    1. Table class="table table-bordered table-striped table-hover"
+    2. Columns: Source, Review, Category (Chinese), Sentiment (Chinese), Analysis (Chinese, ~25 chars).
+    3. Categories: [Cheating], [Lag], [Bugs], [Payment], [Suggestion], [Other].
     """
-    
-    # 双重保险：清洗 markdown 标记
     res = call_gemini(prompt, img).replace('```html','').replace('```','')
-    
     save_history(source, res, 'sentiment')
     return jsonify({'result': res})
 
@@ -142,9 +138,18 @@ def analyze():
 def competitor_tool(): return render_template('competitor.html') if session.get('logged_in') else redirect(url_for('login'))
 @app.route('/monitor_competitors', methods=['POST'])
 def monitor_competitors(): 
-    res = call_gemini(f"分析竞品: {request.json}").replace('```html','').replace('```','')
-    save_history("竞品监控", res, 'competitor')
-    return jsonify({'result': res})
+    # 这里加个简单的处理，防止直接把 None 传进去
+    input_data = request.json
+    if not input_data:
+        return jsonify({'result': "❌ 错误：未接收到输入数据"})
+    
+    prompt = f"分析竞品数据: {input_data}。请给出SWOT分析（优势、劣势、机会、威胁）和下一步策略建议。使用HTML格式输出，使用 <h3>, <ul>, <li> 标签。"
+    res = call_gemini(prompt)
+    
+    # 清洗可能存在的 markdown
+    clean_res = res.replace('```html','').replace('```','')
+    save_history("竞品监控", clean_res, 'competitor')
+    return jsonify({'result': clean_res})
 
 @app.route('/video-tool')
 def video_tool(): return render_template('video.html') if session.get('logged_in') else redirect(url_for('login'))
@@ -169,5 +174,4 @@ def get_history(): return jsonify(HISTORY_DB[::-1])
 def get_record(id): return jsonify(next((x for x in HISTORY_DB if x['id']==id), None))
 
 if __name__ == '__main__': 
-    # 适配云端部署
     app.run(debug=False, host='0.0.0.0', port=port)
