@@ -11,52 +11,72 @@
 
     <style>
         :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
-        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); }
-        .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; }
-        .logo-img { height: 50px; }
-        .user-profile { font-size: 13px; font-weight: 500; padding: 6px 12px; background: rgba(0,0,0,0.05); border-radius: 18px; display: flex; align-items: center; gap: 8px; }
-        .user-avatar { width: 20px; height: 20px; background: #666; border-radius: 50%; }
+        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); -webkit-font-smoothing: antialiased; }
 
-        .hero-section { text-align: center; padding: 80px 20px 50px; max-width: 900px; margin: 0 auto; }
-        .hero-title { font-size: 4rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .hero-subtitle { font-size: 1.25rem; color: var(--text-secondary); max-width: 600px; margin: 0 auto; }
+        /* 顶部导航 */
+        .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .logo-img { height: 40px; width: auto; } /* 微调 Logo 高度，防止过大 */
+        .user-profile { font-size: 13px; font-weight: 500; padding: 6px 12px; background: rgba(0,0,0,0.05); border-radius: 18px; display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+        .user-avatar { width: 24px; height: 24px; background: #e5e5e5; border-radius: 50%; }
 
-        .stats-container { max-width: 1100px; margin: 0 auto 60px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 0 20px; }
-        .stat-card { background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.04); height: 160px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.3s ease; }
-        .stat-card:hover { transform: translateY(-2px); }
-        .stat-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-        .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
-        .stat-value { font-size: 28px; font-weight: 700; }
-        .stat-indicator { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; }
-        .chart-wrapper { height: 50px; width: 100%; margin-top: auto; }
+        /* Hero 区域 */
+        .hero-section { text-align: center; padding: 100px 20px 60px; max-width: 900px; margin: 0 auto; }
+        .hero-title { font-size: 4.5rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .hero-subtitle { font-size: 1.35rem; color: var(--text-secondary); max-width: 650px; margin: 0 auto; font-weight: 400; line-height: 1.5; }
 
+        /* 数据看板 (Stat Cards) */
+        .stats-container { max-width: 1100px; margin: 0 auto 60px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding: 0 20px; }
+        .stat-card { background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.04); height: 180px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.3s ease, box-shadow 0.3s ease; }
+        .stat-card:hover { transform: translateY(-4px); box-shadow: 0 12px 30px rgba(0,0,0,0.06); }
+        .stat-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 32px; font-weight: 700; color: var(--text-primary); letter-spacing: -1px; }
+        .stat-indicator { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; display: inline-block; }
+        .chart-wrapper { height: 60px; width: 100%; margin-top: auto; }
+
+        /* 功能卡片 Grid */
         .features-grid { max-width: 1100px; margin: 0 auto; padding: 0 20px 100px; }
-        .feature-card { background: #fff; border: 1px solid rgba(0,0,0,0.04); border-radius: 24px; padding: 40px; height: 100%; transition: all 0.4s; text-decoration: none; color: inherit; display: block; position: relative; }
-        .feature-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.08); }
-        .card-icon { font-size: 2.5rem; margin-bottom: 24px; }
-        .card-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.5px; }
-        .card-desc { color: var(--text-secondary); font-size: 1rem; line-height: 1.5; margin-bottom: 30px; }
-        .card-arrow { position: absolute; bottom: 40px; right: 40px; font-size: 1.2rem; opacity: 0; transition: all 0.3s; transform: translateX(-10px); }
+        .feature-card { background: #fff; border: 1px solid rgba(0,0,0,0.04); border-radius: 24px; padding: 40px; height: 100%; transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1); text-decoration: none; color: inherit; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+        .feature-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.08); border-color: rgba(0,0,0,0.08); }
+        .card-icon { font-size: 3rem; margin-bottom: 24px; }
+        .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
+        .card-desc { color: var(--text-secondary); font-size: 1.05rem; line-height: 1.5; margin-bottom: 30px; flex-grow: 1; }
+        .card-arrow { position: absolute; bottom: 30px; right: 30px; font-size: 1.5rem; opacity: 0; transition: all 0.3s ease; transform: translateX(-10px); color: #2962FF; }
         .feature-card:hover .card-arrow { opacity: 1; transform: translateX(0); }
 
-        /* 虚线工程卡片样式 (横向长条) */
+        /* 开发中卡片 (横条) */
         .wip-section { margin-top: 40px; }
         .wip-card {
             border: 2px dashed #E0E0E0; background: #FAFAFA;
             display: flex; align-items: center; flex-direction: row; padding: 30px 40px;
         }
-        .wip-card:hover { border-color: #2962FF; background: #F0F4FF; }
-        .wip-content { margin-left: 20px; flex-grow: 1; text-align: left; }
-        .wip-card .card-icon { margin-bottom: 0; }
-        .wip-card .card-arrow { position: static; opacity: 1; transform: none; font-size: 2rem; color: #ccc; }
+        .wip-card:hover { border-color: #2962FF; background: #F5F8FF; transform: none; box-shadow: none; }
+        .wip-content { margin-left: 24px; flex-grow: 1; text-align: left; }
+        .wip-card .card-icon { margin-bottom: 0; font-size: 2.5rem; }
+        .wip-card .card-arrow { position: static; opacity: 1; transform: none; font-size: 2rem; color: #ccc; transition: color 0.3s; }
+        .wip-card:hover .card-arrow { color: #2962FF; }
 
-        .footer { text-align: center; padding: 40px; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); }
+        .footer { text-align: center; padding: 60px 0; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 40px; }
+        
+        /* 移动端适配微调 */
+        @media (max-width: 768px) {
+            .hero-title { font-size: 3rem; }
+            .stats-container { grid-template-columns: 1fr; }
+            .wip-card { flex-direction: column; text-align: center; }
+            .wip-content { margin: 20px 0; text-align: center; }
+        }
     </style>
 </head>
 <body>
-    <nav class="navbar d-flex justify-content-between">
-        <a class="navbar-brand" href="#"><img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo-img"></a>
-        <div class="user-profile"><div class="user-avatar"></div> Admin Workspace</div>
+    <nav class="navbar d-flex justify-content-between align-items-center">
+        <a class="navbar-brand" href="#">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo-img">
+        </a>
+        <div class="user-profile">
+            <div class="user-avatar"></div> 
+            <span>Admin Workspace</span>
+            <a href="/logout" class="text-secondary ms-2" style="text-decoration: none;"><small>退出</small></a>
+        </div>
     </nav>
 
     <div class="hero-section">
@@ -66,15 +86,35 @@
 
     <div class="stats-container">
         <div class="stat-card">
-            <div><div class="stat-header"><span class="stat-label">Video Engine</span><span class="stat-indicator" style="background:#E8F5E9; color:#2E7D32;">Veo Active</span></div><div class="stat-value">Google Vertex</div></div>
+            <div>
+                <div class="stat-header">
+                    <span class="stat-label">Total Reviews</span>
+                    <span class="stat-indicator" style="background:#E8F5E9; color:#2E7D32;">+12.5%</span>
+                </div>
+                <div class="stat-value counter" data-target="12845">0</div>
+            </div>
             <div class="chart-wrapper"><canvas id="chart1"></canvas></div>
         </div>
+
         <div class="stat-card">
-            <div><div class="stat-header"><span class="stat-label">API Latency</span><span class="stat-indicator" style="background:#DEEBFF; color:#0747A6;">128ms</span></div><div class="stat-value">Stable</div></div>
+            <div>
+                <div class="stat-header">
+                    <span class="stat-label">Active Competitors</span>
+                    <span class="stat-indicator" style="background:#FFF3E0; color:#E65100;">High Risk</span>
+                </div>
+                <div class="stat-value counter" data-target="42">0</div>
+            </div>
             <div class="chart-wrapper"><canvas id="chart2"></canvas></div>
         </div>
+
         <div class="stat-card">
-            <div><div class="stat-header"><span class="stat-label">Tasks</span></div><div class="stat-value">1,204</div></div>
+            <div>
+                <div class="stat-header">
+                    <span class="stat-label">Videos Generated</span>
+                    <span class="stat-indicator" style="background:#DEEBFF; color:#0747A6;">Stable</span>
+                </div>
+                <div class="stat-value counter" data-target="89">0</div>
+            </div>
             <div class="chart-wrapper"><canvas id="chart3"></canvas></div>
         </div>
     </div>
@@ -85,15 +125,15 @@
                 <a href="/sentiment-tool" class="feature-card">
                     <div class="card-icon">🎮</div>
                     <h3 class="card-title">舆情洞察</h3>
-                    <p class="card-desc">全自动社媒评论分析与归类。</p>
-                    <div class="card-arrow">→</div>
+                    <p class="card-desc">全自动社媒评论分析与归类。支持多语言情感判别。</p>
+                    <div class="card-arrow"><i class="fas fa-arrow-right">→</i></div>
                 </a>
             </div>
             <div class="col-md-4">
                 <a href="/competitor-tool" class="feature-card">
                     <div class="card-icon">📡</div>
                     <h3 class="card-title">竞品雷达</h3>
-                    <p class="card-desc">自动抓取竞品数据生成报告。</p>
+                    <p class="card-desc">自动抓取竞品社媒数据，生成多维 SWOT 竞争报告。</p>
                     <div class="card-arrow">→</div>
                 </a>
             </div>
@@ -101,7 +141,7 @@
                 <a href="/video-tool" class="feature-card">
                     <div class="card-icon">🎥</div>
                     <h3 class="card-title">Veo 视频生成</h3>
-                    <p class="card-desc">Google DeepMind 电影级视频生成。</p>
+                    <p class="card-desc">Google DeepMind 电影级视频生成模型，营销素材一键出片。</p>
                     <div class="card-arrow">→</div>
                 </a>
             </div>
@@ -124,10 +164,62 @@
     <div class="footer">© 2026 Sailson Interactive. Powered by Google Cloud Vertex AI.</div>
 
     <script>
-        const commonOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } }, elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } } };
-        new Chart(document.getElementById('chart1'), { type: 'line', data: { labels: [1,2,3,4,5], datasets: [{ data: [10,15,12,18,24], borderColor: '#2962FF', fill: true, backgroundColor: 'rgba(41,98,255,0.05)' }] }, options: commonOptions });
-        new Chart(document.getElementById('chart2'), { type: 'line', data: { labels: [1,2,3,4,5], datasets: [{ data: [50,55,53,60,58], borderColor: '#00C853', borderWidth: 1.5 }] }, options: commonOptions });
-        new Chart(document.getElementById('chart3'), { type: 'bar', data: { labels: [1,2,3,4,5], datasets: [{ data: [40,60,45,80,55], backgroundColor: '#FF3B30', borderRadius: 2 }] }, options: commonOptions });
+        // 1. Chart.js 配置 (完全按照你的要求，无坐标轴，极简风)
+        const commonOptions = { 
+            responsive: true, 
+            maintainAspectRatio: false, 
+            plugins: { legend: { display: false }, tooltip: { enabled: false } }, // 禁用 tooltip 让它纯展示
+            scales: { x: { display: false }, y: { display: false } }, 
+            elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } },
+            animation: { duration: 2000, easing: 'easeOutQuart' } // 让图表画得慢一点，更优雅
+        };
+
+        // 蓝色曲线 (平滑)
+        const ctx1 = document.getElementById('chart1').getContext('2d');
+        const gradient1 = ctx1.createLinearGradient(0, 0, 0, 60);
+        gradient1.addColorStop(0, 'rgba(41, 98, 255, 0.1)');
+        gradient1.addColorStop(1, 'rgba(41, 98, 255, 0)');
+        
+        new Chart(ctx1, { 
+            type: 'line', 
+            data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [12, 19, 15, 25, 22, 30, 28], borderColor: '#2962FF', borderWidth: 2, fill: true, backgroundColor: gradient1 }] }, 
+            options: commonOptions 
+        });
+
+        // 绿色曲线 (波动)
+        new Chart(document.getElementById('chart2'), { 
+            type: 'line', 
+            data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [50, 52, 48, 55, 53, 58, 60], borderColor: '#00C853', borderWidth: 2, tension: 0.3 }] }, 
+            options: commonOptions 
+        });
+
+        // 红色柱状图
+        new Chart(document.getElementById('chart3'), { 
+            type: 'bar', 
+            data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [40, 60, 45, 70, 55, 80, 65], backgroundColor: '#FF3B30', borderRadius: 2, barThickness: 6 }] }, 
+            options: commonOptions 
+        });
+
+        // 2. 数字滚动脚本 (Count Up)
+        document.addEventListener("DOMContentLoaded", () => {
+            const counters = document.querySelectorAll('.counter');
+            counters.forEach(counter => {
+                counter.innerText = '0'; // 归零
+                const updateCount = () => {
+                    const target = +counter.getAttribute('data-target');
+                    const c = +counter.innerText.replace(/,/g, ''); // 去掉逗号再计算
+                    const increment = target / 80; // 速度控制
+
+                    if (c < target) {
+                        counter.innerText = Math.ceil(c + increment).toLocaleString(); // 加逗号格式化
+                        setTimeout(updateCount, 20);
+                    } else {
+                        counter.innerText = target.toLocaleString();
+                    }
+                };
+                updateCount();
+            });
+        });
     </script>
 </body>
 </html>
