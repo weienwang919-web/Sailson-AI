@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | Sailson AI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <style>
+        body {
+            background-color: #F5F5F7;
+            font-family: 'Inter', sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+        }
+        
+        /* 登录卡片 */
+        .login-card {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(20px);
+            padding: 50px 40px;
+            border-radius: 24px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.05);
+            border: 1px solid rgba(255,255,255,0.5);
+            text-align: center;
+        }
+
+        .logo { height: 40px; margin-bottom: 30px; }
+        
+        .welcome-text { font-size: 1.5rem; font-weight: 600; color: #1d1d1f; margin-bottom: 10px; }
+        .sub-text { color: #86868b; font-size: 0.9rem; margin-bottom: 30px; }
+
+        .form-control {
+            background: #F5F5F7;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 15px;
+            font-size: 0.95rem;
+            transition: 0.3s;
+        }
+        .form-control:focus {
+            background: #fff;
+            border-color: #0071e3;
+            box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.1);
+        }
+
+        .btn-login {
+            background: #1d1d1f; /* 苹果黑 */
+            color: #fff;
+            border: none;
+            padding: 14px;
+            border-radius: 12px;
+            width: 100%;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .btn-login:hover {
+            background: #000;
+            transform: scale(1.02);
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="login-card">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo">
+        <div class="welcome-text">Welcome Back</div>
+        <div class="sub-text">Please sign in to Sailson AI Middleware</div>
+
+        <form action="/login" method="post">
+            <input type="text" name="username" class="form-control" placeholder="Username" required>
+            <input type="password" name="password" class="form-control" placeholder="Password" required>
+            
+            {% if error %}
+            <div class="text-danger small mb-3">{{ error }}</div>
+            {% endif %}
+
+            <button type="submit" class="btn-login">Sign In</button>
+        </form>
+
+        <div class="footer">Internal Access Only</div>
+    </div>
+
+</body>
+</html>

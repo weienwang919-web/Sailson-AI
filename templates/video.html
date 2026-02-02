@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Veo Video Studio | Sailson AI</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <style>
+        body { background-color: #F8F9FA; font-family: 'Inter', sans-serif; height: 100vh; display: flex; overflow: hidden; margin: 0; }
+        
+        /* 侧边栏 (Vertex AI 蓝) */
+        :root { --veo-blue: #1A73E8; }
+        .sidebar { width: 260px; background: #fff; border-right: 1px solid #eee; display: flex; flex-direction: column; padding: 20px; flex-shrink: 0; }
+        .logo-area { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; cursor: pointer; }
+        .logo-img { height: 32px; }
+        .history-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; margin-top: 10px; }
+        .history-item { padding: 10px; font-size: 0.9rem; color: #555; cursor: pointer; border-radius: 6px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+        .history-item:hover { background: #E8F0FE; color: var(--veo-blue); }
+        .history-item.active { background: #E8F0FE; color: var(--veo-blue); font-weight: 600; }
+        
+        /* 主内容 */
+        .main-content { flex: 1; padding: 40px; overflow-y: auto; background: #fff; }
+        .content-container { max-width: 1200px; margin: 0 auto; }
+        
+        .header-section { margin-bottom: 40px; }
+        .veo-badge { background: linear-gradient(90deg, #4285F4, #34A853, #FBBC05, #EA4335); -webkit-background-clip: text; color: transparent; font-weight: 800; font-size: 1.5rem; letter-spacing: -0.5px; }
+        
+        .config-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 30px; height: 100%; }
+        .form-label { font-weight: 600; font-size: 0.85rem; color: #5F6368; margin-top: 15px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .form-control, .form-select { padding: 12px; border-radius: 8px; border: 1px solid #dadce0; font-size: 0.95rem; }
+        .form-control:focus { border-color: var(--veo-blue); box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2); }
+        
+        .btn-generate { 
+            background: #1A73E8; color: white; border: none; padding: 14px; border-radius: 8px; 
+            width: 100%; font-weight: 600; margin-top: 30px; transition: 0.2s; 
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .btn-generate:hover { background: #1557B0; box-shadow: 0 4px 12px rgba(26, 115, 232, 0.3); }
+
+        /* 视频预览区 */
+        .preview-area { background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; position: relative; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .placeholder { text-align: center; color: #9AA0A6; }
+        
+        /* 进度条 */
+        .loading-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+        .spinner-border { width: 3rem; height: 3rem; color: var(--veo-blue); }
+        .loading-text { color: #fff; margin-top: 20px; font-weight: 500; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area" onclick="location.reload()">
+            <img src="{{ url_for('static', filename='logo.png') }}" class="logo-img">
+            <span style="font-weight: 600; color: #5F6368;">Workbench</span>
+        </div>
+        <button onclick="location.reload()" class="btn w-100 mb-3" style="background:#F1F3F4; color:#3C4043; font-weight:600; border:none;">+ New Project</button>
+        <div class="text-muted small fw-bold mb-2">GENERATIONS</div>
+        <ul class="history-list" id="historyList"></ul>
+        <div style="margin-top: auto; padding-top: 20px; border-top: 1px solid #eee;">
+            <a href="/" style="text-decoration: none; color: #666; font-size: 0.9rem;">← Back to Home</a>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="content-container">
+            <div class="header-section">
+                <h2 class="fw-bold">Google <span class="veo-badge">Veo</span> Studio</h2>
+                <p class="text-muted">Generative Video Model • 1080P • Vertex AI</p>
+            </div>
+            
+            <div class="row g-5">
+                <div class="col-md-4">
+                    <div class="config-card">
+                        <label class="form-label">Prompt</label>
+                        <textarea class="form-control" id="prompt" rows="5" placeholder="Detailed cinematic shot, 35mm lens..."></textarea>
+                        
+                        <label class="form-label">Negative Prompt</label>
+                        <input type="text" class="form-control" id="negative_prompt" value="distortion, low quality, watermark">
+                        
+                        <div class="row mt-2">
+                            <div class="col-6">
+                                <label class="form-label">Aspect Ratio</label>
+                                <select class="form-select" id="ratio">
+                                    <option value="16:9">16:9 (Landscape)</option>
+                                    <option value="9:16">9:16 (Mobile)</option>
+                                    <option value="1:1">1:1 (Square)</option>
+                                </select>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label">Style</label>
+                                <select class="form-select" id="style">
+                                    <option value="cinematic">Cinematic</option>
+                                    <option value="anime">Anime</option>
+                                    <option value="3d">3D Render</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <button onclick="generateVideo()" id="genBtn" class="btn-generate">
+                            ✨ Generate with Veo
+                        </button>
+                    </div>
+                </div>
+
+                <div class="col-md-8">
+                    <div class="preview-area" id="videoContainer">
+                        <div class="loading-overlay" id="loadingOverlay">
+                            <div class="spinner-border" role="status"></div>
+                            <div class="loading-text" id="statusText">Initializing Veo Model...</div>
+                        </div>
+
+                        <div id="placeholder" class="placeholder">
+                            <div style="font-size: 48px; opacity: 0.5; margin-bottom: 20px;">▶️</div>
+                            <div>Ready to Generate</div>
+                        </div>
+
+                        <video id="resultVideo" controls style="display: none;" loop playsinline>
+                            <source src="" type="video/mp4">
+                        </video>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.onload = loadHistory;
+
+        async function generateVideo() {
+            const prompt = document.getElementById('prompt').value;
+            if(!prompt) return alert("Please enter a prompt");
+
+            // UI 状态切换
+            document.getElementById('genBtn').disabled = true;
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            document.getElementById('resultVideo').style.display = 'none';
+            document.getElementById('placeholder').style.display = 'none';
+
+            // 模拟 Veo 的生成步骤
+            const steps = [
+                "Connecting to Google Vertex AI...",
+                "Veo: Understanding Prompt Semantics...",
+                "Veo: Generating Keyframes...",
+                "Veo: Temporal Smoothing...",
+                "Rendering Final Output (1080P)..."
+            ];
+            let stepIndex = 0;
+            const statusEl = document.getElementById('statusText');
+            
+            const timer = setInterval(() => {
+                if(stepIndex < steps.length) {
+                    statusEl.innerText = steps[stepIndex];
+                    stepIndex++;
+                }
+            }, 800);
+
+            try {
+                const response = await fetch('/generate_video', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ prompt })
+                });
+                const data = await response.json();
+
+                clearInterval(timer);
+                document.getElementById('loadingOverlay').style.display = 'none';
+                
+                const video = document.getElementById('resultVideo');
+                video.src = data.video_url;
+                video.style.display = 'block';
+                video.play();
+
+                loadHistory();
+
+            } catch (e) {
+                document.getElementById('loadingOverlay').style.display = 'none';
+                alert("Generation Failed: " + e);
+            } finally {
+                document.getElementById('genBtn').disabled = false;
+            }
+        }
+
+        async function loadHistory() {
+            const res = await fetch('/get_history');
+            const list = await res.json();
+            const ul = document.getElementById('historyList');
+            ul.innerHTML = '';
+            list.forEach(item => {
+                if(item.type === 'video') {
+                    const li = document.createElement('li');
+                    li.className = 'history-item';
+                    li.innerHTML = `<span>🎥</span> ${item.title}`;
+                    li.onclick = () => {
+                        const video = document.getElementById('resultVideo');
+                        video.src = "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"; 
+                        video.style.display = 'block';
+                        video.play();
+                        document.getElementById('placeholder').style.display = 'none';
+                    };
+                    ul.appendChild(li);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

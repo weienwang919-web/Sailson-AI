@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>功能许愿池 | Sailson AI</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <style>
+        body { background-color: #F8F9FA; font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        
+        .request-card {
+            background: #fff;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.05);
+            width: 100%;
+            max-width: 600px;
+            padding: 40px;
+            border: 1px solid #eee;
+        }
+
+        .header-area { text-align: center; margin-bottom: 30px; }
+        .icon-badge { 
+            width: 60px; height: 60px; background: #E3F2FD; color: #2962FF; 
+            border-radius: 50%; display: flex; align-items: center; justify-content: center; 
+            font-size: 30px; margin: 0 auto 20px; 
+        }
+
+        .form-label { font-weight: 600; font-size: 0.9rem; color: #333; margin-top: 15px; }
+        .form-control, .form-select { padding: 12px; border-radius: 10px; border: 1px solid #ddd; font-size: 0.95rem; }
+        .form-control:focus { border-color: #2962FF; box-shadow: 0 0 0 3px rgba(41, 98, 255, 0.1); }
+
+        .btn-submit { 
+            background: #111; color: white; border: none; padding: 14px; border-radius: 10px; 
+            width: 100%; font-weight: 600; margin-top: 30px; transition: 0.2s; 
+        }
+        .btn-submit:hover { background: #333; transform: translateY(-1px); }
+
+        .success-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.95); z-index: 100;
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .success-icon { font-size: 60px; margin-bottom: 20px; animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        @keyframes popIn { from { transform: scale(0); } to { transform: scale(1); } }
+    </style>
+</head>
+<body>
+
+    <div class="request-card">
+        <div class="header-area">
+            <div class="icon-badge">🛠️</div>
+            <h2 class="fw-bold">功能许愿池</h2>
+            <p class="text-muted">告诉我们需要什么样的 AI 工具，我们将为您评估并排期。</p>
+        </div>
+
+        <div>
+            <label class="form-label">1. 您希望增加什么类型的 AI 工具？</label>
+            <select class="form-select" id="toolType">
+                <option value="" selected disabled>请选择类型...</option>
+                <option value="图片生成/处理">🎨 图片生成/处理 (Stable Diffusion/Midjourney)</option>
+                <option value="文本/文案辅助">📝 文本/文案辅助 (GPT/Claude)</option>
+                <option value="数据分析/自动化">📊 数据分析/自动化</option>
+                <option value="音频/视频制作">🎬 音频/视频制作</option>
+                <option value="其他">🧩 其他</option>
+            </select>
+
+            <label class="form-label">2. 适用项目 (Project)</label>
+            <input type="text" class="form-control" id="project" placeholder="例如：PUBG Mobile, 绝地求生...">
+
+            <label class="form-label">3. 业务流程/痛点描述</label>
+            <textarea class="form-control" id="workflow" rows="4" placeholder="请描述您目前的业务痛点，或希望 AI 如何介入工作流..."></textarea>
+
+            <button onclick="submitForm()" class="btn-submit">提交需求</button>
+            <div class="text-center mt-3">
+                <a href="/" style="color: #999; text-decoration: none; font-size: 0.9rem;">取消并返回首页</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="success-overlay" id="successLayer">
+        <div class="success-icon">✅</div>
+        <h3 class="fw-bold">提交成功！</h3>
+        <p class="text-muted">产品经理已收到您的需求，感谢反馈。</p>
+        <button onclick="location.href='/'" class="btn btn-primary mt-3 px-4" style="border-radius: 20px;">返回首页</button>
+    </div>
+
+    <script>
+        async function submitForm() {
+            const toolType = document.getElementById('toolType').value;
+            const project = document.getElementById('project').value;
+            const workflow = document.getElementById('workflow').value;
+
+            if(!toolType || !project || !workflow) return alert("请填写完整信息");
+
+            const btn = document.querySelector('.btn-submit');
+            btn.disabled = true;
+            btn.innerText = "提交中...";
+
+            // 发送给后端记录
+            await fetch('/submit_feature_request', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ toolType, project, workflow })
+            });
+
+            // 显示成功动画
+            document.getElementById('successLayer').style.display = 'flex';
+        }
+    </script>
+</body>
+</html>
