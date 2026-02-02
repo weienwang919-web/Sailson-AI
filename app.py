@@ -24,23 +24,25 @@ def call_gemini(prompt, image=None):
     if not GOOGLE_API_KEY: 
         return "❌ 错误：API Key 未配置。"
 
-    # 🔥 修改：回退到最稳的 'gemini-pro'
-    # 如果 gemini-1.5-flash 用不了，gemini-pro 是成功率最高的备选
-    model_name = 'gemini-pro'
+    # 🔥 核心修改：使用你诊断列表里确认存在的模型
+    # models/gemini-2.5-flash 是目前列表里最适合生产环境的
+    model_name = 'models/gemini-2.5-flash'
     
     try:
         print(f"🤖 正在调用模型: {model_name} ...")
         model = genai.GenerativeModel(model_name)
         
-        # gemini-pro 不支持图片输入，这里做一个保护
         if image:
-            return "⚠️ 注意：当前使用的 gemini-pro 模型暂不支持图片分析，请使用纯文字。"
-        
-        response = model.generate_content(prompt)
+            # Gemini 2.5 Flash 完美支持图片，直接传！
+            response = model.generate_content([prompt, image])
+        else:
+            response = model.generate_content(prompt)
+            
         return response.text
         
     except Exception as e:
-        return f"⚠️ API 调用失败。原因: {str(e)}"
+        # 如果 2.5 偶尔失败，打印具体原因
+        return f"⚠️ 模型调用失败 ({model_name})。原因: {str(e)}"
 
 def process_uploaded_file(file):
     try:
@@ -73,35 +75,15 @@ def logout(): session.pop('logged_in', None); return redirect(url_for('login'))
 @app.route('/')
 def home(): return render_template('index.html') if session.get('logged_in') else redirect(url_for('login'))
 
-# ✨ 升级版诊断页面：列出你能用的所有模型
+# 诊断页面 (保留着，以后查问题方便)
 @app.route('/debug')
 def debug_page():
     if not session.get('logged_in'): return redirect(url_for('login'))
-    
-    status_report = {
-        "api_key_exists": bool(GOOGLE_API_KEY),
-        "available_models": [],  # 这里将显示你账号下真实可用的模型列表
-        "test_gemini_pro": "Waiting..."
-    }
-    
-    if GOOGLE_API_KEY:
-        # 1. 列出所有可用模型
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    status_report["available_models"].append(m.name)
-        except Exception as e:
-            status_report["available_models"] = f"List failed: {str(e)}"
-
-        # 2. 测试 gemini-pro
-        try:
-            model = genai.GenerativeModel('gemini-pro')
-            res = model.generate_content("Hello")
-            status_report["test_gemini_pro"] = f"✅ Success! Response: {res.text}"
-        except Exception as e:
-            status_report["test_gemini_pro"] = f"❌ Failed: {str(e)}"
-    
-    return jsonify(status_report)
+    return jsonify({
+        "status": "Online",
+        "current_model": "models/gemini-2.5-flash",
+        "key_configured": bool(GOOGLE_API_KEY)
+    })
 
 # === 业务功能 ===
 @app.route('/sentiment-tool')
