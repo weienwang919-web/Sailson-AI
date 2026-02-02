@@ -24,8 +24,7 @@ def call_gemini(prompt, image=None):
     if not GOOGLE_API_KEY: 
         return "❌ 错误：API Key 未配置。"
 
-    # 🔥 核心修改：使用你诊断列表里确认存在的模型
-    # models/gemini-2.5-flash 是目前列表里最适合生产环境的
+    # ⚡️ 使用你账号支持的最强模型
     model_name = 'models/gemini-2.5-flash'
     
     try:
@@ -33,7 +32,6 @@ def call_gemini(prompt, image=None):
         model = genai.GenerativeModel(model_name)
         
         if image:
-            # Gemini 2.5 Flash 完美支持图片，直接传！
             response = model.generate_content([prompt, image])
         else:
             response = model.generate_content(prompt)
@@ -41,8 +39,7 @@ def call_gemini(prompt, image=None):
         return response.text
         
     except Exception as e:
-        # 如果 2.5 偶尔失败，打印具体原因
-        return f"⚠️ 模型调用失败 ({model_name})。原因: {str(e)}"
+        return f"⚠️ 模型调用失败。原因: {str(e)}"
 
 def process_uploaded_file(file):
     try:
@@ -75,7 +72,7 @@ def logout(): session.pop('logged_in', None); return redirect(url_for('login'))
 @app.route('/')
 def home(): return render_template('index.html') if session.get('logged_in') else redirect(url_for('login'))
 
-# 诊断页面 (保留着，以后查问题方便)
+# 诊断页面
 @app.route('/debug')
 def debug_page():
     if not session.get('logged_in'): return redirect(url_for('login'))
@@ -86,6 +83,8 @@ def debug_page():
     })
 
 # === 业务功能 ===
+
+# 1. 舆情分析 (Sentiment Tool)
 @app.route('/sentiment-tool')
 def sentiment_tool(): return render_template('analysis.html') if session.get('logged_in') else redirect(url_for('login'))
 
@@ -93,35 +92,104 @@ def sentiment_tool(): return render_template('analysis.html') if session.get('lo
 def analyze():
     url = request.form.get('url'); file = request.files.get('file')
     content = ""; img = None; source = "未知"; source_link_text = "本地文件"
+    
     if file:
         mode, res = process_uploaded_file(file)
         if mode == "ERROR": return jsonify({'result': res})
-        if mode == "IMAGE": img = res; content = "分析图片"; source = "📷 图片"; source_link_text="用户上传"
+        if mode == "IMAGE": img = res; content = "分析图片中的游戏反馈"; source = "📷 图片"; source_link_text="用户上传"
         else: content = res; source = "📁 文件"; source_link_text="用户上传"
     elif url:
-        content = "[1] So many hackers! [2] Lag is bad. [3] Refund please."; source = f"🔗 {url[:20]}..."; source_link_text = url 
+        # 模拟数据保留英文，符合真实爬虫场景
+        content = """
+        [1] So many hackers! Aimbot everywhere.
+        [2] Ping is 400ms, fix your servers!
+        [3] I got stuck in a wall, glitch in the new map.
+        [4] Refund my $99, I didn't get the skin.
+        [5] Can you add a practice mode?
+        [6] This game is trash.
+        """
+        source = f"🔗 {url[:20]}..."; source_link_text = url 
     else: return jsonify({'result': "❌ 无输入"})
     
+    # 🔥 核心修改：强制六大分类
     prompt = f"""
-    Output ONLY raw HTML <table>. Input: {content}. Source: {source_link_text}.
-    Columns: Source, Review, Category (Chinese), Sentiment (Chinese), Analysis (Chinese).
-    Categories: [Cheating], [Lag], [Bugs], [Payment], [Other].
+    You are a professional game operation analyst. 
+    Analyze the following user feedback and output ONLY a raw HTML <table>.
+    
+    【Input Data】:
+    {content}
+    【Source】:
+    {source_link_text}
+
+    【Strict Classification Rules】:
+    You must categorize each review into EXACTLY ONE of the following 6 categories (Do not create new ones):
+    1. 外挂作弊 (Cheating/Hacks)
+    2. 游戏优化 (Optimization/Lag)
+    3. 游戏Bug (Bugs/Glitches)
+    4. 充值退款 (Payment/Refund)
+    5. 玩家建议 (Suggestion)
+    6. 其他 (Other)
+
+    【Output Format】:
+    - Start with <table class="table table-bordered table-striped table-hover">
+    - Columns: 
+      1. 来源 (Source)
+      2. 原声评论 (Original Review - keep English)
+      3. 归类 (Category - MUST use the Chinese terms above)
+      4. 情感倾向 (Sentiment - 正面/负面/中性)
+      5. 简要分析 (Analysis - Chinese, approx 25 chars, precise insight)
     """
+    
     res = call_gemini(prompt, img).replace('```html','').replace('```','')
     save_history(source, res, 'sentiment')
     return jsonify({'result': res})
 
+
+# 2. 竞品监控 (Competitor Tool)
 @app.route('/competitor-tool')
 def competitor_tool(): return render_template('competitor.html') if session.get('logged_in') else redirect(url_for('login'))
+
 @app.route('/monitor_competitors', methods=['POST'])
 def monitor_competitors(): 
     input_data = request.json
     if not input_data: return jsonify({'result': "❌ 错误：请输入竞品名称"})
-    prompt = f"分析竞品 '{input_data}'。使用HTML格式(<h3>,<ul>)列出优势、劣势和对策。"
+    
+    # 🔥 核心修改：完全按照你的新需求定制
+    prompt = f"""
+    You are a social media data analyst. 
+    Target Competitor: "{input_data}"
+    Timeframe: Last 7 days.
+    
+    Please simulate a realistic data report and output raw HTML (No Markdown).
+    
+    【Section 1: Data Summary】
+    Create a detailed HTML Table with these exact headers:
+    - 统计周期 (Timeframe)
+    - 播放量 (Total Views)
+    - 点赞量 (Total Likes)
+    - 评论量 (Total Comments)
+    - 转发量 (Total Shares)
+    - 收藏量 (Total Saves)
+    (Fill with realistic high numbers for a popular game)
+
+    【Section 2: Breakout Content】
+    Identify ONE specific post/video that performed best in this period.
+    Format as a card or highlighted section:
+    - Title: [Insert catchy title]
+    - Format: [Video/Post]
+    - Key Stats: [Views/Likes]
+
+    【Section 3: Viral Analysis】
+    Analyze WHY this specific content went viral. (In Chinese).
+    Focus on: Content strategy, user psychology, or trending topics.
+    
+    """
     res = call_gemini(prompt).replace('```html','').replace('```','')
     save_history("竞品监控", res, 'competitor')
     return jsonify({'result': res})
 
+
+# 3. 视频生成 & 需求 (保持不变)
 @app.route('/video-tool')
 def video_tool(): return render_template('video.html') if session.get('logged_in') else redirect(url_for('login'))
 @app.route('/generate_video', methods=['POST'])
