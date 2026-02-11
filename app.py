@@ -1,4 +1,7 @@
 import os
+# 强制让脚本使用本地代理 (端口号 7890 请改为你自己的)
+os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7897'
+os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7897'
 import datetime
 import time
 import pandas as pd
@@ -6,26 +9,33 @@ from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from dotenv import load_dotenv
 import google.generativeai as genai
+from apify_client import ApifyClient # 导入 Apify 客户端
 
 # --- 1. 配置加载 ---
 load_dotenv()
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+APIFY_TOKEN = os.getenv('APIFY_TOKEN')
 port = int(os.environ.get("PORT", 5001))
 
+# 初始化 AI 引擎
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
+
+# 初始化爬虫引擎
+apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 
 app = Flask(__name__)
 app.secret_key = 'sailson_secure_key'
 HISTORY_DB = []
 
-# --- 2. 核心工具 ---
+# --- 2. 核心工具函数 ---
+
 def call_gemini(prompt, image=None):
     if not GOOGLE_API_KEY: 
         return "❌ 错误：API Key 未配置。"
 
-    # ⚡️ 使用你账号支持的最强模型
-    model_name = 'models/gemini-2.5-flash'
+    # 优先尝试 gemini-1.5-flash-latest，若环境不支持可改为 1.5-flash
+    model_name = 'gemini-2.5-flash' 
     
     try:
         print(f"🤖 正在调用模型: {model_name} ...")
@@ -53,13 +63,19 @@ def process_uploaded_file(file):
     except Exception as e: return "ERROR", str(e)
 
 def save_history(title, result, type_tag):
-    HISTORY_DB.append({'id': len(HISTORY_DB)+1, 'title': f"{title} [{datetime.datetime.now().strftime('%H:%M')}]", 'result': result, 'type': type_tag})
+    HISTORY_DB.append({
+        'id': len(HISTORY_DB)+1, 
+        'title': f"{title} [{datetime.datetime.now().strftime('%H:%M')}]", 
+        'result': result, 
+        'type': type_tag
+    })
 
 def call_veo_api(prompt):
     time.sleep(3) 
     return "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"
 
-# --- 3. 路由 ---
+# --- 3. 基础路由 ---
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method=='POST' and request.form['username']=='admin' and request.form['password']=='123456':
@@ -69,146 +85,209 @@ def login():
 
 @app.route('/logout')
 def logout(): session.pop('logged_in', None); return redirect(url_for('login'))
+
 @app.route('/')
 def home(): return render_template('index.html') if session.get('logged_in') else redirect(url_for('login'))
 
-# 诊断页面
 @app.route('/debug')
 def debug_page():
     if not session.get('logged_in'): return redirect(url_for('login'))
     return jsonify({
         "status": "Online",
-        "current_model": "models/gemini-2.5-flash",
-        "key_configured": bool(GOOGLE_API_KEY)
+        "gemini_key": bool(GOOGLE_API_KEY),
+        "apify_key": bool(APIFY_TOKEN)
     })
 
-# === 业务功能 ===
+# === 4. 核心业务功能 ===
 
-# 1. 舆情分析 (Sentiment Tool)
+# --- 工具 1：舆情分析 (对接 Facebook 爬虫) ---
 @app.route('/sentiment-tool')
-def sentiment_tool(): return render_template('analysis.html') if session.get('logged_in') else redirect(url_for('login'))
+def sentiment_tool(): 
+    return render_template('analysis.html') if session.get('logged_in') else redirect(url_for('login'))
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    url = request.form.get('url'); file = request.files.get('file')
-    content = ""; img = None; source = "未知"; source_link_text = "本地文件"
+    url = request.form.get('url')
+    file = request.files.get('file')
+    content = ""; img = None; source_title = "未知"
     
+    # 路径 A：文件上传分析
     if file:
         mode, res = process_uploaded_file(file)
         if mode == "ERROR": return jsonify({'result': res})
-        if mode == "IMAGE": img = res; content = "分析图片中的游戏反馈"; source = "📷 图片"; source_link_text="用户上传"
-        else: content = res; source = "📁 文件"; source_link_text="用户上传"
-    elif url:
-        # 模拟数据保留英文，符合真实爬虫场景
-        content = """
-        [1] So many hackers! Aimbot everywhere.
-        [2] Ping is 400ms, fix your servers!
-        [3] I got stuck in a wall, glitch in the new map.
-        [4] Refund my $99, I didn't get the skin.
-        [5] Can you add a practice mode?
-        [6] This game is trash.
-        """
-        source = f"🔗 {url[:20]}..."; source_link_text = url 
-    else: return jsonify({'result': "❌ 无输入"})
+        if mode == "IMAGE": 
+            img = res
+            content = "分析图片中的反馈内容"
+        else: 
+            content = res
+        source_title = f"文件: {file.filename[:15]}"
     
-    # 🔥 核心修改：强制六大分类
+    # 路径 B：社交媒体链接抓取分析
+    elif url:
+        if not apify_client: return jsonify({'result': "❌ 错误：APIFY_TOKEN 未在 .env 中配置"})
+        
+        try:
+            print(f"🕵️ 启动云端抓取: {url}")
+            # 调用 Facebook Comments Scraper (支持无需 Cookie 的公开抓取测试)
+            run_input = { "startUrls": [{ "url": url }], "maxComments": 20 }
+            run = apify_client.actor("apify/facebook-comments-scraper").call(run_input=run_input)
+            
+            # 提取评论文本并合并
+            items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
+            content = "\n".join([f"用户{i}: {it.get('text','')}" for i, it in enumerate(items)])
+            source_title = f"FB: {url[:15]}..."
+            
+            if not content: return jsonify({'result': "⚠️ 抓取成功但未发现公开评论，请检查链接权限。"})
+            
+        except Exception as e:
+            return jsonify({'result': f"❌ 抓取任务失败: {str(e)}"})
+    else:
+        return jsonify({'result': "❌ 错误：请提供链接或文件"})
+
+    # --- 核心修改：定义级 Prompt 约束 ---
     prompt = f"""
-    You are a professional game operation analyst. 
-    Analyze the following user feedback and output ONLY a raw HTML <table>.
+    You are a Senior Game Operations Data Scientist. Analyze the player feedback provided and output ONLY a raw HTML <table>.
     
     【Input Data】:
     {content}
-    【Source】:
-    {source_link_text}
 
-    【Strict Classification Rules】:
-    You must categorize each review into EXACTLY ONE of the following 6 categories (Do not create new ones):
-    1. 外挂作弊 (Cheating/Hacks)
-    2. 游戏优化 (Optimization/Lag)
-    3. 游戏Bug (Bugs/Glitches)
-    4. 充值退款 (Payment/Refund)
-    5. 玩家建议 (Suggestion)
-    6. 其他 (Other)
+    【STRICT Categorization Rules (CRITICAL)】:
+    You MUST assign each review to EXACTLY ONE of the following 6 categories. Output ONLY the Chinese term.
+    
+    1. 外挂作弊: Any mention of hackers, aimbots, wallhacks, cheating, or scripts.
+    2. 游戏优化: Issues related to lag, high ping, server disconnects, FPS drops, or crashes.
+    3. 游戏Bug: Technical glitches in gameplay, stuck in textures, UI errors, or broken mechanics.
+    4. 充值退款: Missing rewards (including leaderboard/event rewards), payment issues, shop errors, or refund requests.
+    5. 玩家建议: Requests for new content, map changes, balance adjustments, or new game modes.
+    6. 其他: Generic praise, insults without specific context, greetings, or irrelevant spam.
 
     【Output Format】:
-    - Start with <table class="table table-bordered table-striped table-hover">
+    - Return ONLY the raw HTML <table> with class "table table-hover". No markdown code blocks.
     - Columns: 
-      1. 来源 (Source)
-      2. 原声评论 (Original Review - keep English)
-      3. 归类 (Category - MUST use the Chinese terms above)
-      4. 情感倾向 (Sentiment - 正面/负面/中性)
-      5. 简要分析 (Analysis - Chinese, approx 25 chars, precise insight)
+        1. 来源 (Source)
+        2. 原始评论 (Original Review)
+        3. 归类 (Category - MUST use the 6 Chinese terms above)
+        4. 情感倾向 (Sentiment - 正面/负面/中性)
+        5. 简要分析 (Analysis - Concise Chinese insight)
     """
     
     res = call_gemini(prompt, img).replace('```html','').replace('```','')
-    save_history(source, res, 'sentiment')
+    save_history(source_title, res, 'sentiment')
     return jsonify({'result': res})
 
 
-# 2. 竞品监控 (Competitor Tool)
+# --- 工具 2：竞品监控 (对接 TikTok 爬虫) ---
 @app.route('/competitor-tool')
-def competitor_tool(): return render_template('competitor.html') if session.get('logged_in') else redirect(url_for('login'))
+def competitor_tool(): 
+    return render_template('competitor.html') if session.get('logged_in') else redirect(url_for('login'))
 
+# --- 工具 2：竞品监控 (针对 Apify 真实字段优化版) ---
+# --- app.py 中的 monitor_competitors 路由升级版 ---
+
+# --- 工具 2：竞品监控 (去噪 + 锁定中文 + 宽屏版) ---
 @app.route('/monitor_competitors', methods=['POST'])
-def monitor_competitors(): 
-    input_data = request.json
-    if not input_data: return jsonify({'result': "❌ 错误：请输入竞品名称"})
+def monitor_competitors():
+    data = request.json
+    target_url = data.get('competitor_name')
+    start_dt_str = data.get('startDate') # 2026-02-01
+    end_dt_str = data.get('endDate')     # 2026-02-07
     
-    # 🔥 核心修改：完全按照你的新需求定制
-    prompt = f"""
-    You are a social media data analyst. 
-    Target Competitor: "{input_data}"
-    Timeframe: Last 7 days.
-    
-    Please simulate a realistic data report and output raw HTML (No Markdown).
-    
-    【Section 1: Data Summary】
-    Create a detailed HTML Table with these exact headers:
-    - 统计周期 (Timeframe)
-    - 播放量 (Total Views)
-    - 点赞量 (Total Likes)
-    - 评论量 (Total Comments)
-    - 转发量 (Total Shares)
-    - 收藏量 (Total Saves)
-    (Fill with realistic high numbers for a popular game)
+    try:
+        # 1. 物理日期转换：确保 2026 年时区比对 100% 准确
+        target_start = datetime.datetime.strptime(start_dt_str, '%Y-%m-%d').date()
+        target_end = datetime.datetime.strptime(end_dt_str, '%Y-%m-%d').date()
+        
+        print(f"📱 启动精准时段探测: {target_url} ({target_start} ~ {target_end})")
+        
+        # 2. 云端同步：通过 oldestPostDate 初步截断
+        run_input = { 
+            "profiles": [target_url], 
+            "resultsPerPage": 35,
+            "oldestPostDate": start_dt_str, 
+            "shouldDownloadVideos": False
+        }
+        run = apify_client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
+        items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        # 3. 严格本地滤网：使用 datetime 对象进行双向物理剔除
+        cleaned = []
+        for it in items:
+            raw_date = it.get("createTimeISO")
+            if not raw_date: continue
+            
+            # 转化为本地日期对象，彻底过滤掉 7 号之后的数据
+            post_dt = datetime.datetime.fromisoformat(raw_date.replace('Z', '+00:00')).date()
+            
+            if target_start <= post_dt <= target_end:
+                cleaned.append({
+                    "desc": it.get("desc", "无描述"),
+                    "likes": it.get("diggCount", 0),
+                    "views": it.get("playCount", 0),
+                    "comments": it.get("commentCount", 0),
+                    "shares": it.get("shareCount", 0),
+                    "collects": it.get("collectCount", 0),
+                    "url": it.get("webVideoUrl"),
+                    "date": str(post_dt)
+                })
 
-    【Section 2: Breakout Content】
-    Identify ONE specific post/video that performed best in this period.
-    Format as a card or highlighted section:
-    - Title: [Insert catchy title]
-    - Format: [Video/Post]
-    - Key Stats: [Views/Likes]
+        if not cleaned:
+            return jsonify({'result': f"<div class='alert alert-warning'>在此期间 ({start_dt_str} ~ {end_dt_str}) 未发现视频。</div>"})
 
-    【Section 3: Viral Analysis】
-    Analyze WHY this specific content went viral. (In Chinese).
-    Focus on: Content strategy, user psychology, or trending topics.
-    
-    """
-    res = call_gemini(prompt).replace('```html','').replace('```','')
-    save_history("竞品监控", res, 'competitor')
-    return jsonify({'result': res})
+        # 4. 🔥 视觉保险：通过“HTML 骨架”锁定 UI 呈现
+        prompt = f"""
+        You are a Data Entry Assistant. Please fill the following TikTok data into the PROVIDED HTML TEMPLATE.
+        
+        【Data Source】: {cleaned}
+        【Period】: {start_dt_str} to {end_dt_str}
 
+        【STRICT TEMPLATE (Use this EXACT structure)】:
+        <div style="width:100%; font-family:sans-serif;">
+            <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;">📊 数据概览表 ({start_dt_str} 至 {end_dt_str})</h3>
+            <table class="table" style="width:100%; margin-bottom:30px; text-align:center;">
+                <tr style="background:#f8f9fa;">
+                    <th>视频总数</th><th>总点赞</th><th>总播放</th><th>平均互动率</th>
+                </tr>
+                <tr>
+                    <td>[视频总数]</td><td>[总点赞]</td><td>[总播放]</td><td>[总互动率]%</td>
+                </tr>
+            </table>
 
-# 3. 视频生成 & 需求 (保持不变)
+            <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;">🔥 爆款视频精选</h3>
+            <div style="background:#FFF9F9; border-left:5px solid #D32F2F; padding:20px; margin-bottom:15px; border-radius:8px;">
+                <p><strong>视频描述：</strong> [描述内容]</p>
+                <p><strong>核心指标：</strong> 播放: [播放数] | 点赞: [点赞数] | 互动: [评论数]评论 / [分享数]分享</p>
+                <p><strong>查看详情：</strong> <a href="[webVideoUrl]" target="_blank" style="color:#2962FF;">点击进入 TikTok 观看原文链接</a></p>
+            </div>
+        </div>
+
+        【Requirements】:
+        - 必须使用中文填充模板。
+        - 严禁添加模板之外的任何文字（包括分析、建议、前言、结语）。
+        - 仅输出 Raw HTML 代码，禁止 Markdown 代码块。
+        """
+        
+        res = call_gemini(prompt).replace('```html','').replace('```','')
+        save_history(f"竞品数据:{target_url[20:30]}", res, 'competitor')
+        return jsonify({'result': res})
+        
+    except Exception as e:
+        return jsonify({'result': f"❌ 监控失败: {str(e)}"})
+
+# --- 5. 其他功能 (保持不变) ---
+
 @app.route('/video-tool')
 def video_tool(): return render_template('video.html') if session.get('logged_in') else redirect(url_for('login'))
+
 @app.route('/generate_video', methods=['POST'])
 def generate_video():
     prompt = request.json.get('prompt')
     video_url = call_veo_api(prompt)
-    save_history(f"Veo: {prompt[:10]}...", video_url, 'video')
+    save_history(f"视频: {prompt[:10]}", video_url, 'video')
     return jsonify({'video_url': video_url})
-
-@app.route('/feature-request')
-def feature_request(): return render_template('request.html') if session.get('logged_in') else redirect(url_for('login'))
-@app.route('/submit_feature_request', methods=['POST'])
-def submit_feature_request():
-    data = request.json
-    save_history(f"需求: {data.get('toolType')}", f"{data.get('project')}", 'request')
-    return jsonify({'status': 'success'})
 
 @app.route('/get_history')
 def get_history(): return jsonify(HISTORY_DB[::-1])
+
 @app.route('/get_record/<int:id>')
 def get_record(id): return jsonify(next((x for x in HISTORY_DB if x['id']==id), None))
 

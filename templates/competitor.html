@@ -3,74 +3,98 @@
 <head>
     <meta charset="UTF-8">
     <title>竞品雷达 | Sailson AI</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
     <style>
-        :root { --primary-color: #D32F2F; --bg-color: #FAFAFA; --sidebar-width: 280px; }
-        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; height: 100vh; display: flex; overflow: hidden;}
+        :root { --primary-color: #D32F2F; --bg-color: #FAFAFA; --sidebar-width: 260px; }
+        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; height: 100vh; display: flex; margin: 0; overflow: hidden; }
         
-        /* Sidebar */
-        .sidebar { width: var(--sidebar-width); background: #fff; border-right: 1px solid #E5E5E5; padding: 20px; display: flex; flex-direction: column; }
-        .sidebar-header { margin-bottom: 30px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
-        .sidebar-logo { height: 32px; width: auto; }
-        .sidebar-title { font-weight: 700; font-size: 1.1rem; }
-        .new-chat-btn { background: var(--primary-color); color: white; border: none; padding: 12px; border-radius: 10px; width: 100%; font-weight: 600; margin-bottom: 20px; transition: 0.2s; }
-        .new-chat-btn:hover { background: #B71C1C; transform: translateY(-1px); }
-        .history-list { flex-grow: 1; overflow-y: auto; list-style: none; padding: 0; }
-        .history-item { padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; color: #333; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* 侧边栏：保持简洁白 */
+        .sidebar { width: var(--sidebar-width); background: #fff; border-right: 1px solid #eee; padding: 20px; display: flex; flex-direction: column; flex-shrink: 0; }
+        .logo-area { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; cursor: pointer; }
+        .logo-img { height: 32px; }
+        .history-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; }
+        .history-item { padding: 10px; font-size: 0.85rem; color: #555; cursor: pointer; border-radius: 6px; margin-bottom: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
         .history-item:hover { background: #F5F5F7; }
         .history-item.active { background: #FFEBEE; color: var(--primary-color); font-weight: 600; }
-        .back-home { margin-top: auto; padding-top: 20px; border-top: 1px solid #eee; text-decoration: none; color: #666; font-size: 0.9rem; }
 
-        /* Main */
-        .main-content { flex-grow: 1; padding: 40px; overflow-y: auto; }
-        .container-box { max-width: 1000px; margin: 0 auto; }
-        .glass-card { background: #fff; border: 1px solid #E5E5E5; border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); }
-        .form-control, .form-select { padding: 12px; border-radius: 10px; border: 1px solid #E0E0E0; margin-bottom: 15px; }
-        .btn-submit { background: var(--primary-color); color: white; border: none; padding: 12px; border-radius: 10px; width: 100%; font-weight: 600; }
-        .btn-submit:hover { background: #B71C1C; }
+        /* 主区域布局：左小右大比例 */
+        .main-content { flex: 1; padding: 30px; overflow-y: auto; display: flex; justify-content: center; }
+        .container-box { width: 100%; max-width: 1200px; }
+        
+        .glass-card { background: #fff; border: 1px solid #E5E5E5; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); height: 100%; }
+
+        /* 输入控件样式 */
+        .form-control, .form-select { padding: 12px; border-radius: 10px; border: 1px solid #E0E0E0; margin-bottom: 15px; font-size: 0.9rem; }
+        .btn-submit { background: var(--primary-color); color: white; border: none; padding: 14px; border-radius: 10px; width: 100%; font-weight: 600; transition: 0.2s; }
+        .btn-submit:hover { background: #B71C1C; transform: translateY(-1px); }
+
+        /* === 核心优化：报表宽屏渲染样式 === */
+        #reportOutput { width: 100% !important; }
+        #reportOutput table { 
+            width: 100% !important; 
+            table-layout: fixed; 
+            border-collapse: collapse; 
+            margin: 20px 0; 
+            border: 1px solid #eee; 
+            border-radius: 10px; 
+            overflow: hidden; 
+        }
+        #reportOutput th { background: #F8F9FA; padding: 15px 10px; text-align: center; color: #666; font-weight: 600; border-bottom: 2px solid #EEE; }
+        #reportOutput td { padding: 15px 10px; vertical-align: middle; border-bottom: 1px solid #F1F3F5; text-align: center; font-size: 0.9rem; word-wrap: break-word; }
+        #reportOutput tr:hover { background-color: #FFF9F9; }
+
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
     <aside class="sidebar">
-        <div class="sidebar-header" onclick="location.reload()">
-            <img src="{{ url_for('static', filename='logo.png') }}" class="sidebar-logo">
-            <span class="sidebar-title">竞品监控</span>
+        <div class="logo-area" onclick="location.reload()">
+            <img src="{{ url_for('static', filename='logo.png') }}" class="logo-img">
+            <span style="font-weight: 700; font-size: 1.1rem;">竞品监控</span>
         </div>
-        <button onclick="location.reload()" class="new-chat-btn">+ 新监控任务</button>
-        <div class="text-muted small fw-bold mb-2">历史报告</div>
+        <button onclick="location.reload()" class="btn btn-outline-danger w-100 mb-4" style="border-radius: 10px;">+ 新监控任务</button>
+        <div class="text-muted small fw-bold mb-2">历史监控报告</div>
         <ul class="history-list" id="historyList"></ul>
-        <a href="/" class="back-home">← 返回首页</a>
+        <a href="/" style="margin-top:auto; text-decoration:none; color:#666; font-size:0.9rem;">← 返回首页</a>
     </aside>
 
     <main class="main-content">
         <div class="container-box">
-            <h2 class="fw-bold mb-4">竞品数据雷达</h2>
-            <div class="row g-4">
-                <div class="col-md-4">
+            <div class="row g-4 h-100">
+                <div class="col-lg-4">
                     <div class="glass-card">
-                        <label class="fw-bold mb-2">竞品主页 (URL)</label>
-                        <textarea class="form-control" id="urlsInput" rows="6" placeholder="https://tiktok.com/@..."></textarea>
-                        <label class="fw-bold mb-2">周期</label>
-                        <select class="form-select" id="timeRange">
-                            <option value="7">过去 7 天</option>
-                            <option value="30">过去 30 天</option>
-                        </select>
-                        <button onclick="startMonitor()" id="monitorBtn" class="btn-submit">🚀 启动监控</button>
+                        <h6 class="fw-bold mb-3">📡 监控配置</h6>
+                        <label class="small text-muted mb-1">竞品 TikTok URL</label>
+                        <input type="text" id="urlInput" class="form-control" placeholder="粘贴主页链接...">
+                        
+                        <label class="small text-muted mb-1">监控时间段</label>
+                        <div class="row g-2 mb-3">
+                            <div class="col-6"><input type="date" id="startDate" class="form-control mb-0"></div>
+                            <div class="col-6"><input type="date" id="endDate" class="form-control mb-0"></div>
+                        </div>
+                        
+                        <button onclick="startMonitor()" id="runBtn" class="btn-submit">🚀 启动云端探测</button>
+                        <div class="mt-4 p-3 rounded bg-light">
+                            <small class="text-muted">💡 提示：系统将自动同步云端视频数据，为您精准分析互动爆发点及内容特征。</small>
+                        </div>
                     </div>
                 </div>
-                <div class="col-md-8">
-                    <div class="glass-card" style="min-height: 500px;">
-                        <div id="reportOutput">
-                            <div class="text-center text-muted py-5 mt-5">
-                                <div style="font-size: 40px;">📡</div>
-                                <p>报告将生成在这里</p>
-                            </div>
+
+                <div class="col-lg-8">
+                    <div class="glass-card" style="min-height: 600px; overflow-y: auto;">
+                        <div id="loading" class="text-center py-5 mt-5" style="display:none;">
+                            <div class="spinner-border text-danger" style="width: 3rem; height: 3rem;"></div>
+                            <h5 class="mt-4 fw-bold">🕵️ 正在云端同步数据...</h5>
+                            <p class="text-muted">已连接 Apify 实时抓取该时间段内的视频指标</p>
                         </div>
-                        <div id="loading" class="text-center py-5" style="display: none;">
-                            <div class="spinner-border text-danger"></div>
-                            <p class="mt-2 text-muted">正在爬取数据并生成洞察...</p>
+                        <div id="reportOutput">
+                            <div class="text-center py-5 mt-5 opacity-25">
+                                <div style="font-size: 70px;">📊</div>
+                                <h5 class="mt-3">报告将在此处生成</h5>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -79,50 +103,67 @@
     </main>
 
     <script>
-        window.onload = loadHistory;
+        // 初始化日期：最近 7 天
+        window.onload = () => {
+            const end = new Date();
+            const start = new Date();
+            start.setDate(end.getDate() - 7);
+            document.getElementById('endDate').value = end.toISOString().split('T')[0];
+            document.getElementById('startDate').value = start.toISOString().split('T')[0];
+            loadHistory();
+        };
 
         async function startMonitor() {
-            const urls = document.getElementById('urlsInput').value;
-            const days = document.getElementById('timeRange').value;
-            const output = document.getElementById('reportOutput');
-            const loading = document.getElementById('loading');
-            
-            if(!urls) { alert("请输入链接"); return; }
-            
-            output.style.display = 'none';
-            loading.style.display = 'block';
+            const url = document.getElementById('urlInput').value;
+            const start = document.getElementById('startDate').value;
+            const end = document.getElementById('endDate').value;
+            const out = document.getElementById('reportOutput');
+            const ld = document.getElementById('loading');
+            const btn = document.getElementById('runBtn');
 
-            const response = await fetch('/monitor_competitors', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ urls, days })
-            });
-            const data = await response.json();
-            
-            loading.style.display = 'none';
-            output.style.display = 'block';
-            output.innerHTML = data.result;
-            loadHistory();
+            if(!url) return alert("请输入主页链接");
+
+            out.style.display = 'none';
+            ld.style.display = 'block';
+            btn.disabled = true;
+
+            try {
+                const r = await fetch('/monitor_competitors', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        competitor_name: url, 
+                        startDate: start, 
+                        endDate: end 
+                    })
+                });
+                const d = await r.json();
+                ld.style.display = 'none';
+                out.style.display = 'block';
+                out.innerHTML = `<div class="fade-in">${d.result}</div>`;
+                loadHistory();
+            } catch(e) { 
+                alert("抓取失败，请检查网络或 API 余额");
+                ld.style.display = 'none';
+            } finally { btn.disabled = false; }
         }
 
         async function loadHistory() {
-            const res = await fetch('/get_history');
-            const list = await res.json();
+            const r = await fetch('/get_history');
+            const list = await r.json();
             const ul = document.getElementById('historyList');
             ul.innerHTML = '';
-            list.forEach(item => {
-                if(item.type === 'competitor') {
-                    const li = document.createElement('li');
-                    li.className = 'history-item';
-                    li.innerText = item.title;
-                    li.onclick = async () => {
-                        const r = await fetch(`/get_record/${item.id}`);
-                        const d = await r.json();
-                        document.getElementById('reportOutput').innerHTML = d.result;
-                        document.getElementById('reportOutput').style.display = 'block';
-                    };
-                    ul.appendChild(li);
-                }
+            list.filter(i => i.type==='competitor').forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'history-item';
+                li.innerText = item.title;
+                li.onclick = async () => {
+                    const res = await fetch(`/get_record/${item.id}`);
+                    const d = await res.json();
+                    document.getElementById('reportOutput').innerHTML = `<div class="fade-in">${d.result}</div>`;
+                    document.getElementById('reportOutput').style.display = 'block';
+                };
+                ul.appendChild(li);
             });
         }
     </script>
