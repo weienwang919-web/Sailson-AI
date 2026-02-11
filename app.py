@@ -1,7 +1,16 @@
 import os
-# 强制让脚本使用本地代理 (端口号 7890 请改为你自己的)
-os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7897'
-os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7897'
+
+# --- 🚀 智能环境适配逻辑 ---
+# 解释：Render 在运行你的代码时，会自动添加一个环境变量 RENDER=true。
+# 我们利用这个特性来判断：如果在云端，就跳过代理；如果在本地，就开启代理。
+
+if not os.getenv('RENDER'): 
+    # 只有当 RENDER 变量不存在时（即本地环境），才注入代理
+    os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7897'
+    os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7897'
+    print("🏠 当前处于本地开发环境，代理已开启。")
+else:
+    print("☁️ 当前处于 Render 云端环境，已跳过本地代理。")
 import datetime
 import time
 import pandas as pd
