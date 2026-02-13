@@ -2,7 +2,7 @@ flask
 pandas
 openpyxl
 Pillow
-google-generativeai
+google-generativeai>=0.8.0
 python-dotenv
 apify-client
 gunicorn
