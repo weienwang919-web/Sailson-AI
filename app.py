@@ -460,12 +460,12 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
 【STRICT TEMPLATE (Use this EXACT structure)】:
 <div style="width:100%; font-family:sans-serif;">
     <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;">📊 数据概览表 ({start_dt_str} 至 {end_dt_str})</h3>
-    <table class="table" style="width:100%; margin-bottom:30px; text-align:center;">
+    <table class="table" style="width:100%; margin-bottom:30px; text-align:center; font-size:0.9rem;">
         <tr style="background:#f8f9fa;">
-            <th>视频总数</th><th>总点赞</th><th>总播放</th><th>平均互动率</th>
+            <th>总播放</th><th>总互动</th><th>总点赞</th><th>总评论</th><th>总收藏</th><th>总转发</th>
         </tr>
         <tr>
-            <td>[视频总数]</td><td>[总点赞]</td><td>[总播放]</td><td>[总互动率]%</td>
+            <td>[总播放数]</td><td>[总互动数]</td><td>[总点赞数]</td><td>[总评论数]</td><td>[总收藏数]</td><td>[总转发数]</td>
         </tr>
     </table>
 
@@ -479,6 +479,7 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
 
 【Requirements】:
 - 必须使用中文填充模板。
+- 总互动 = 点赞 + 评论 + 收藏 + 转发的总和。
 - 严禁添加模板之外的任何文字（包括分析、建议、前言、结语）。
 - 仅输出 Raw HTML 代码，禁止 Markdown 代码块。
 """
