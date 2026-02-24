@@ -6,8 +6,7 @@ import logging
 import pandas as pd
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 
@@ -51,14 +50,12 @@ logger.info("=" * 60)
 # 初始化 AI 引擎
 if GOOGLE_API_KEY:
     try:
-        client = genai.Client(api_key=GOOGLE_API_KEY)
+        genai.configure(api_key=GOOGLE_API_KEY)
         logger.info("✅ Google Gemini API 初始化成功")
     except Exception as e:
         logger.error(f"❌ Google Gemini API 初始化失败: {e}")
-        client = None
 else:
     logger.warning("⚠️ 警告: GOOGLE_API_KEY 未配置，AI 功能将不可用")
-    client = None
 
 # 初始化爬虫引擎
 if APIFY_TOKEN:
@@ -83,26 +80,19 @@ HISTORY_DB = []
 
 def call_gemini(prompt, image=None, timeout=60):
     """调用 Google Gemini API"""
-    if not client:
+    if not GOOGLE_API_KEY:
         error_msg = "❌ 错误：GOOGLE_API_KEY 未配置"
         logger.error(error_msg)
         return error_msg
 
-    model_name = 'models/gemini-2.0-flash'  # 使用完整路径
+    model_name = 'gemini-1.5-flash'
 
     try:
         logger.info(f"🤖 正在调用 Gemini 模型: {model_name}")
         logger.info(f"📏 Prompt 长度: {len(prompt)} 字符")
 
-        # 使用新的 API
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=8192
-            )
-        )
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
 
         result = response.text
         logger.info(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
