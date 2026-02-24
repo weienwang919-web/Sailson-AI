@@ -371,7 +371,8 @@ IMPORTANT:
 - Output ONLY valid JSON array
 - Skip "其他" category
 - Use Chinese for category, sentiment, language, and analysis
-- Language options: 英语, 中文, 日语, 韩语, 泰语, 越南语, 其他
+- Language options (MUST be one of these): 英语, 菲律宾语, 泰语, 越南语, 印尼语, 马来语
+- Identify the language accurately based on the text
 - Analysis requirements:
   * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)
   * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)
