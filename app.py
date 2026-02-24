@@ -2,11 +2,22 @@ import os
 import sys
 import datetime
 import time
+import logging
 import pandas as pd
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 import google.generativeai as genai
 from apify_client import ApifyClient
+
+# ============================================
+# 日志配置 - 确保输出到 stdout
+# ============================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 # ============================================
 # 环境配置 - 优化版
@@ -16,7 +27,7 @@ from apify_client import ApifyClient
 for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
     if proxy_var in os.environ:
         del os.environ[proxy_var]
-        print(f"🧹 已清除代理设置: {proxy_var}")
+        logger.info(f"🧹 已清除代理设置: {proxy_var}")
 
 # 加载环境变量
 GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY')
@@ -24,34 +35,34 @@ APIFY_TOKEN = os.environ.get('APIFY_TOKEN')
 PORT = int(os.environ.get('PORT', 5001))
 
 # 启动时输出配置状态
-print("=" * 60)
-print("🚀 Sailson AI 工作台启动中...")
-print(f"🔑 GOOGLE_API_KEY: {'✅ 已配置' if GOOGLE_API_KEY else '❌ 未配置'}")
-print(f"🔑 APIFY_TOKEN: {'✅ 已配置' if APIFY_TOKEN else '❌ 未配置'}")
-print(f"🌐 PORT: {PORT}")
-print(f"🐍 Python 版本: {sys.version}")
-print("=" * 60)
+logger.info("=" * 60)
+logger.info("🚀 Sailson AI 工作台启动中...")
+logger.info(f"🔑 GOOGLE_API_KEY: {'✅ 已配置' if GOOGLE_API_KEY else '❌ 未配置'}")
+logger.info(f"🔑 APIFY_TOKEN: {'✅ 已配置' if APIFY_TOKEN else '❌ 未配置'}")
+logger.info(f"🌐 PORT: {PORT}")
+logger.info(f"🐍 Python 版本: {sys.version}")
+logger.info("=" * 60)
 
 # 初始化 AI 引擎
 if GOOGLE_API_KEY:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        print("✅ Google Gemini API 初始化成功")
+        logger.info("✅ Google Gemini API 初始化成功")
     except Exception as e:
-        print(f"❌ Google Gemini API 初始化失败: {e}")
+        logger.error(f"❌ Google Gemini API 初始化失败: {e}")
 else:
-    print("⚠️ 警告: GOOGLE_API_KEY 未配置，AI 功能将不可用")
+    logger.warning("⚠️ 警告: GOOGLE_API_KEY 未配置，AI 功能将不可用")
 
 # 初始化爬虫引擎
 if APIFY_TOKEN:
     try:
         apify_client = ApifyClient(APIFY_TOKEN)
-        print("✅ Apify 客户端初始化成功")
+        logger.info("✅ Apify 客户端初始化成功")
     except Exception as e:
-        print(f"❌ Apify 客户端初始化失败: {e}")
+        logger.error(f"❌ Apify 客户端初始化失败: {e}")
         apify_client = None
 else:
-    print("⚠️ 警告: APIFY_TOKEN 未配置，爬虫功能将不可用")
+    logger.warning("⚠️ 警告: APIFY_TOKEN 未配置，爬虫功能将不可用")
     apify_client = None
 
 # Flask 应用初始化
@@ -67,31 +78,31 @@ def call_gemini(prompt, image=None):
     """调用 Google Gemini API"""
     if not GOOGLE_API_KEY:
         error_msg = "❌ 错误：GOOGLE_API_KEY 未配置"
-        print(error_msg)
+        logger.error(error_msg)
         return error_msg
 
     model_name = 'gemini-2.5-flash'
 
     try:
-        print(f"🤖 正在调用 Gemini 模型: {model_name}")
-        print(f"🔑 API Key 前缀: {GOOGLE_API_KEY[:15]}...")
+        logger.info(f"🤖 正在调用 Gemini 模型: {model_name}")
+        logger.info(f"🔑 API Key 前缀: {GOOGLE_API_KEY[:15]}...")
 
         model = genai.GenerativeModel(model_name)
 
         if image:
-            print("📸 包含图片输入")
+            logger.info("📸 包含图片输入")
             response = model.generate_content([prompt, image])
         else:
-            print("📝 纯文本输入")
+            logger.info("📝 纯文本输入")
             response = model.generate_content(prompt)
 
         result = response.text
-        print(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
+        logger.info(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
         return result
 
     except Exception as e:
         error_msg = f"⚠️ Gemini API 调用失败: {str(e)}"
-        print(error_msg)
+        logger.error(error_msg)
         import traceback
         traceback.print_exc()
         return error_msg
@@ -101,14 +112,14 @@ def process_uploaded_file(file):
     """处理上传的文件（图片或表格）"""
     try:
         fname = file.filename.lower()
-        print(f"📁 处理文件: {fname}")
+        logger.info(f"📁 处理文件: {fname}")
 
         if fname.endswith(('.png', '.jpg', '.jpeg', '.webp')):
-            print("🖼️ 识别为图片文件")
+            logger.info("🖼️ 识别为图片文件")
             return "IMAGE", Image.open(file)
 
         if fname.endswith(('.xlsx', '.csv')):
-            print("📊 识别为表格文件")
+            logger.info("📊 识别为表格文件")
             if fname.endswith('.csv'):
                 df = pd.read_csv(file)
             else:
@@ -119,7 +130,7 @@ def process_uploaded_file(file):
 
     except Exception as e:
         error_msg = f"文件处理失败: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.info(f"❌ {error_msg}")
         return "ERROR", error_msg
 
 
@@ -132,12 +143,12 @@ def save_history(title, result, type_tag):
         'type': type_tag
     }
     HISTORY_DB.append(record)
-    print(f"💾 已保存历史记录 #{record['id']}: {title}")
+    logger.info(f"💾 已保存历史记录 #{record['id']}: {title}")
 
 
 def call_veo_api(prompt):
     """调用 Google Veo API（模拟）"""
-    print(f"🎬 模拟 Veo API 调用: {prompt[:50]}...")
+    logger.info(f"🎬 模拟 Veo API 调用: {prompt[:50]}...")
     time.sleep(3)
     return "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"
 
@@ -154,10 +165,10 @@ def login():
 
         if username == 'admin' and password == '123456':
             session['logged_in'] = True
-            print(f"✅ 用户登录成功: {username}")
+            logger.info(f"✅ 用户登录成功: {username}")
             return redirect(url_for('home'))
         else:
-            print(f"❌ 登录失败: {username}")
+            logger.info(f"❌ 登录失败: {username}")
 
     return render_template('login.html')
 
@@ -166,7 +177,7 @@ def login():
 def logout():
     """登出"""
     session.pop('logged_in', None)
-    print("👋 用户已登出")
+    logger.info("👋 用户已登出")
     return redirect(url_for('login'))
 
 
@@ -191,7 +202,7 @@ def debug_page():
         "port": PORT,
         "history_count": len(HISTORY_DB)
     }
-    print(f"🔍 调试信息: {debug_info}")
+    logger.info(f"🔍 调试信息: {debug_info}")
     return jsonify(debug_info)
 
 # ============================================
@@ -209,10 +220,10 @@ def sentiment_tool():
 @app.route('/analyze', methods=['POST'])
 def analyze():
     """舆情分析 API"""
-    print("\n" + "=" * 60)
-    print("📥 收到舆情分析请求")
-    print(f"🔑 GOOGLE_API_KEY: {'✅' if GOOGLE_API_KEY else '❌'}")
-    print(f"🔑 APIFY_TOKEN: {'✅' if APIFY_TOKEN else '❌'}")
+    logger.info("\n" + "=" * 60)
+    logger.info("📥 收到舆情分析请求")
+    logger.info(f"🔑 GOOGLE_API_KEY: {'✅' if GOOGLE_API_KEY else '❌'}")
+    logger.info(f"🔑 APIFY_TOKEN: {'✅' if APIFY_TOKEN else '❌'}")
 
     url = request.form.get('url')
     file = request.files.get('file')
@@ -223,64 +234,64 @@ def analyze():
     try:
         # 路径 A: 文件上传分析
         if file:
-            print(f"📁 处理模式: 文件上传")
+            logger.info(f"📁 处理模式: 文件上传")
             mode, res = process_uploaded_file(file)
 
             if mode == "ERROR":
-                print(f"❌ 文件处理失败: {res}")
+                logger.info(f"❌ 文件处理失败: {res}")
                 return jsonify({'result': f"❌ {res}"})
 
             if mode == "IMAGE":
                 img = res
                 content = "分析图片中的反馈内容"
-                print("🖼️ 图片模式")
+                logger.info("🖼️ 图片模式")
             else:
                 content = res
-                print("📊 表格模式")
+                logger.info("📊 表格模式")
 
             source_title = f"文件: {file.filename[:15]}"
 
         # 路径 B: 社交媒体链接抓取分析
         elif url:
-            print(f"🔗 处理模式: 链接爬取")
-            print(f"🔗 目标 URL: {url}")
+            logger.info(f"🔗 处理模式: 链接爬取")
+            logger.info(f"🔗 目标 URL: {url}")
 
             if not apify_client:
                 error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
-                print(error_msg)
+                logger.error(error_msg)
                 return jsonify({'result': error_msg})
 
             try:
-                print(f"🕵️ 启动 Apify 爬虫...")
+                logger.info(f"🕵️ 启动 Apify 爬虫...")
                 run_input = {
                     "startUrls": [{"url": url}],
                     "maxComments": 20
                 }
 
                 run = apify_client.actor("apify/facebook-comments-scraper").call(run_input=run_input)
-                print(f"✅ 爬虫任务已启动，Dataset ID: {run['defaultDatasetId']}")
+                logger.info(f"✅ 爬虫任务已启动，Dataset ID: {run['defaultDatasetId']}")
 
                 items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
-                print(f"📦 获取到 {len(items)} 条数据")
+                logger.info(f"📦 获取到 {len(items)} 条数据")
 
                 content = "\n".join([f"用户{i}: {it.get('text', '')}" for i, it in enumerate(items)])
                 source_title = f"FB: {url[:15]}..."
 
                 if not content:
                     warning_msg = "⚠️ 抓取成功但未发现公开评论，请检查链接权限"
-                    print(warning_msg)
+                    logger.warning(warning_msg)
                     return jsonify({'result': warning_msg})
 
             except Exception as e:
                 error_msg = f"❌ 爬虫任务失败: {str(e)}"
-                print(error_msg)
+                logger.error(error_msg)
                 import traceback
                 traceback.print_exc()
                 return jsonify({'result': error_msg})
 
         else:
             error_msg = "❌ 错误：请提供链接或文件"
-            print(error_msg)
+            logger.error(error_msg)
             return jsonify({'result': error_msg})
 
         # 调用 Gemini 进行分析
@@ -310,7 +321,7 @@ You MUST assign each review to EXACTLY ONE of the following 6 categories. Output
     5. 简要分析 (Analysis - Concise Chinese insight)
 """
 
-        print("🤖 开始调用 Gemini API...")
+        logger.info("🤖 开始调用 Gemini API...")
         result = call_gemini(prompt, img)
 
         # 清理 Markdown 代码块标记
@@ -319,14 +330,14 @@ You MUST assign each review to EXACTLY ONE of the following 6 categories. Output
         # 保存历史记录
         save_history(source_title, result, 'sentiment')
 
-        print("✅ 舆情分析完成")
-        print("=" * 60 + "\n")
+        logger.info("✅ 舆情分析完成")
+        logger.info("=" * 60 + "\n")
 
         return jsonify({'result': result})
 
     except Exception as e:
         error_msg = f"❌ 系统错误: {str(e)}"
-        print(error_msg)
+        logger.error(error_msg)
         import traceback
         traceback.print_exc()
         return jsonify({'result': error_msg})
@@ -346,8 +357,8 @@ def competitor_tool():
 @app.route('/monitor_competitors', methods=['POST'])
 def monitor_competitors():
     """竞品监控 API"""
-    print("\n" + "=" * 60)
-    print("📥 收到竞品监控请求")
+    logger.info("\n" + "=" * 60)
+    logger.info("📥 收到竞品监控请求")
 
     try:
         data = request.json
@@ -355,8 +366,8 @@ def monitor_competitors():
         start_dt_str = data.get('startDate')
         end_dt_str = data.get('endDate')
 
-        print(f"🎯 目标 URL: {target_url}")
-        print(f"📅 时间段: {start_dt_str} ~ {end_dt_str}")
+        logger.info(f"🎯 目标 URL: {target_url}")
+        logger.info(f"📅 时间段: {start_dt_str} ~ {end_dt_str}")
 
         if not apify_client:
             error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
@@ -366,10 +377,10 @@ def monitor_competitors():
         # 1. 日期转换
         target_start = datetime.datetime.strptime(start_dt_str, '%Y-%m-%d').date()
         target_end = datetime.datetime.strptime(end_dt_str, '%Y-%m-%d').date()
-        print(f"📆 解析日期: {target_start} ~ {target_end}")
+        logger.info(f"📆 解析日期: {target_start} ~ {target_end}")
 
         # 2. 云端抓取
-        print("🕵️ 启动 TikTok 爬虫...")
+        logger.info("🕵️ 启动 TikTok 爬虫...")
         run_input = {
             "profiles": [target_url],
             "resultsPerPage": 35,
@@ -378,10 +389,10 @@ def monitor_competitors():
         }
 
         run = apify_client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
-        print(f"✅ 爬虫任务已启动，Dataset ID: {run['defaultDatasetId']}")
+        logger.info(f"✅ 爬虫任务已启动，Dataset ID: {run['defaultDatasetId']}")
 
         items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
-        print(f"📦 获取到 {len(items)} 条原始数据")
+        logger.info(f"📦 获取到 {len(items)} 条原始数据")
 
         # 3. 本地时间过滤
         cleaned = []
@@ -404,11 +415,11 @@ def monitor_competitors():
                     "date": str(post_dt)
                 })
 
-        print(f"✅ 时间过滤后剩余 {len(cleaned)} 条数据")
+        logger.info(f"✅ 时间过滤后剩余 {len(cleaned)} 条数据")
 
         if not cleaned:
             warning_msg = f"<div class='alert alert-warning'>在此期间 ({start_dt_str} ~ {end_dt_str}) 未发现视频。</div>"
-            print("⚠️ 未发现符合条件的视频")
+            logger.info("⚠️ 未发现符合条件的视频")
             return jsonify({'result': warning_msg})
 
         # 4. Gemini 生成报告
@@ -444,7 +455,7 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
 - 仅输出 Raw HTML 代码，禁止 Markdown 代码块。
 """
 
-        print("🤖 开始调用 Gemini API 生成报告...")
+        logger.info("🤖 开始调用 Gemini API 生成报告...")
         result = call_gemini(prompt)
 
         # 清理 Markdown 代码块标记
@@ -453,8 +464,8 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
         # 保存历史记录
         save_history(f"竞品数据:{target_url[20:30]}", result, 'competitor')
 
-        print("✅ 竞品监控完成")
-        print("=" * 60 + "\n")
+        logger.info("✅ 竞品监控完成")
+        logger.info("=" * 60 + "\n")
 
         return jsonify({'result': result})
 
@@ -480,18 +491,18 @@ def video_tool():
 @app.route('/generate_video', methods=['POST'])
 def generate_video():
     """视频生成 API"""
-    print("\n" + "=" * 60)
-    print("📥 收到视频生成请求")
+    logger.info("\n" + "=" * 60)
+    logger.info("📥 收到视频生成请求")
 
     try:
         prompt = request.json.get('prompt')
-        print(f"🎬 Prompt: {prompt[:50]}...")
+        logger.info(f"🎬 Prompt: {prompt[:50]}...")
 
         video_url = call_veo_api(prompt)
         save_history(f"视频: {prompt[:10]}", video_url, 'video')
 
-        print("✅ 视频生成完成")
-        print("=" * 60 + "\n")
+        logger.info("✅ 视频生成完成")
+        logger.info("=" * 60 + "\n")
 
         return jsonify({'video_url': video_url})
 
@@ -523,9 +534,9 @@ def get_record(id):
 # ============================================
 
 if __name__ == '__main__':
-    print("\n" + "=" * 60)
-    print("🎉 Sailson AI 工作台已启动")
-    print(f"🌐 访问地址: http://0.0.0.0:{PORT}")
-    print("=" * 60 + "\n")
+    logger.info("\n" + "=" * 60)
+    logger.info("🎉 Sailson AI 工作台已启动")
+    logger.info(f"🌐 访问地址: http://0.0.0.0:{PORT}")
+    logger.info("=" * 60 + "\n")
 
     app.run(debug=False, host='0.0.0.0', port=PORT)
