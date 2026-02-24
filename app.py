@@ -8,6 +8,10 @@ from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 import google.generativeai as genai
 from apify_client import ApifyClient
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv()
 
 # ============================================
 # 日志配置 - 确保输出到 stdout
