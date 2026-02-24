@@ -270,8 +270,8 @@ def analyze():
             try:
                 logger.info(f"🕵️ 启动 Apify 爬虫...")
                 run_input = {
-                    "startUrls": [{"url": url}]
-                    # 不设置 maxComments，抓取所有评论
+                    "startUrls": [{"url": url}],
+                    "maxComments": 1000  # 设置一个较大的数值
                 }
 
                 # 使用 start() 启动爬虫
