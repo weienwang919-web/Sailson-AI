@@ -275,7 +275,10 @@ def analyze():
                 logger.info(f"🕵️ 启动 Apify 爬虫...")
                 run_input = {
                     "startUrls": [{"url": url}],
-                    "maxComments": 1000  # 设置一个较大的数值
+                    "maxComments": 1000,  # 设置一个较大的数值
+                    "maxPostCount": 1,
+                    "maxCommentsPerPost": 1000,
+                    "maxRepliesPerComment": 0  # 不抓取回复，只抓取主评论
                 }
 
                 # 使用 start() 启动爬虫
@@ -292,8 +295,23 @@ def analyze():
                     logger.error(error_msg)
                     return jsonify({'result': error_msg})
 
-                items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
-                logger.info(f"📦 获取到 {len(items)} 条数据")
+                # 获取所有数据（可能需要分页）
+                dataset_client = apify_client.dataset(run["defaultDatasetId"])
+                items = []
+                offset = 0
+                limit = 1000
+
+                while True:
+                    batch = dataset_client.list_items(offset=offset, limit=limit).items
+                    if not batch:
+                        break
+                    items.extend(batch)
+                    logger.info(f"📦 已获取 {len(items)} 条数据...")
+                    if len(batch) < limit:
+                        break
+                    offset += limit
+
+                logger.info(f"✅ 总共获取到 {len(items)} 条数据")
 
                 content = "\n".join([f"用户{i}: {it.get('text', '')}" for i, it in enumerate(items)])
                 source_title = f"FB: {url[:15]}..."
