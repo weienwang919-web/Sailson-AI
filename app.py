@@ -4,11 +4,15 @@ import datetime
 import time
 import logging
 import pandas as pd
+from io import BytesIO
 from PIL import Image
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
 import google.generativeai as genai
 from apify_client import ApifyClient
 from dotenv import load_dotenv
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # 加载 .env 文件
 load_dotenv()
@@ -73,6 +77,7 @@ else:
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'sailson_secure_key')
 HISTORY_DB = []
+LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 
 # ============================================
 # 核心工具函数
@@ -163,6 +168,7 @@ def login():
 
         if username == 'admin' and password == '123456':
             session['logged_in'] = True
+            session['session_id'] = f"{username}_{int(time.time())}"
             logger.info(f"✅ 用户登录成功: {username}")
             return redirect(url_for('home'))
         else:
@@ -426,6 +432,9 @@ IMPORTANT:
                 </table>
                 """
 
+                # 保存结果用于导出
+                LATEST_ANALYSIS_RESULTS[session.get('session_id', 'default')] = all_results
+
                 source_title = f"FB: {url[:15]}..."
 
             except Exception as e:
@@ -653,6 +662,198 @@ def get_record(id):
     """获取单条记录"""
     record = next((x for x in HISTORY_DB if x['id'] == id), None)
     return jsonify(record)
+
+# ============================================
+# Excel 导出功能
+# ============================================
+
+def create_excel_by_language(results):
+    """按语言分类生成 Excel"""
+    wb = Workbook()
+    wb.remove(wb.active)  # 删除默认 sheet
+
+    # 按语言分组
+    language_groups = {}
+    for item in results:
+        lang = item.get('language', '其他')
+        if lang not in language_groups:
+            language_groups[lang] = []
+        language_groups[lang].append(item)
+
+    # 为每个语言创建 Sheet
+    for lang, items in sorted(language_groups.items()):
+        ws = wb.create_sheet(title=lang)
+
+        # 表头
+        headers = ['序号', '原始评论', '归类', '情感倾向', '语言', '简要分析']
+        ws.append(headers)
+
+        # 设置表头样式
+        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        # 添加数据
+        for idx, item in enumerate(items, 1):
+            ws.append([
+                idx,
+                item.get('text', ''),
+                item.get('category', ''),
+                item.get('sentiment', ''),
+                item.get('language', ''),
+                item.get('analysis', '')
+            ])
+
+        # 设置列宽
+        ws.column_dimensions['A'].width = 8
+        ws.column_dimensions['B'].width = 50
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 10
+        ws.column_dimensions['F'].width = 40
+
+        # 冻结首行
+        ws.freeze_panes = 'A2'
+
+    return wb
+
+
+def create_excel_by_category(results):
+    """按分类生成 Excel"""
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    # 按分类分组
+    category_groups = {}
+    for item in results:
+        cat = item.get('category', '其他')
+        if cat not in category_groups:
+            category_groups[cat] = []
+        category_groups[cat].append(item)
+
+    # 分类顺序
+    category_order = ['外挂作弊', '游戏优化', '游戏Bug', '充值退款', '新模式/地图/平衡性建议']
+
+    # 为每个分类创建 Sheet
+    for cat in category_order:
+        if cat not in category_groups:
+            continue
+
+        items = category_groups[cat]
+        ws = wb.create_sheet(title=cat)
+
+        # 表头
+        headers = ['序号', '原始评论', '归类', '情感倾向', '语言', '简要分析']
+        ws.append(headers)
+
+        # 设置表头样式
+        header_fill = PatternFill(start_color='D32F2F', end_color='D32F2F', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        # 添加数据
+        for idx, item in enumerate(items, 1):
+            ws.append([
+                idx,
+                item.get('text', ''),
+                item.get('category', ''),
+                item.get('sentiment', ''),
+                item.get('language', ''),
+                item.get('analysis', '')
+            ])
+
+        # 设置列宽
+        ws.column_dimensions['A'].width = 8
+        ws.column_dimensions['B'].width = 50
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 10
+        ws.column_dimensions['F'].width = 40
+
+        # 冻结首行
+        ws.freeze_panes = 'A2'
+
+    return wb
+
+
+@app.route('/export_by_language')
+def export_by_language():
+    """按语言导出 Excel"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    session_id = session.get('session_id', 'default')
+    results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
+
+    if not results:
+        return jsonify({'error': '没有可导出的数据'}), 400
+
+    try:
+        wb = create_excel_by_language(results)
+
+        # 生成文件
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        # 生成文件名
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f'语言分类报告_{timestamp}.xlsx'
+
+        logger.info(f"📥 导出语言分类报告: {len(results)} 条数据")
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"❌ 导出失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/export_by_category')
+def export_by_category():
+    """按分类导出 Excel"""
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+
+    session_id = session.get('session_id', 'default')
+    results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
+
+    if not results:
+        return jsonify({'error': '没有可导出的数据'}), 400
+
+    try:
+        wb = create_excel_by_category(results)
+
+        # 生成文件
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        # 生成文件名
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f'问题分类报告_{timestamp}.xlsx'
+
+        logger.info(f"📥 导出问题分类报告: {len(results)} 条数据")
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"❌ 导出失败: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # ============================================
 # 应用启动

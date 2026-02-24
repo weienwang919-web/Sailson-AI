@@ -101,7 +101,10 @@
                 <div id="resultContainer" class="mt-5" style="display: none;">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="fw-bold m-0">分析结果</h5>
-                        <button onclick="copyTable()" class="btn btn-success btn-sm" style="background: #E8F5E9; color: #2E7D32; border: none; font-weight: 600; padding: 8px 16px;">📋 复制到 Excel</button>
+                        <div class="d-flex gap-2">
+                            <button onclick="exportByLanguage()" class="btn btn-primary btn-sm" style="background: #2962FF; color: white; border: none; font-weight: 600; padding: 8px 16px;">📄 按语言导出 (Excel)</button>
+                            <button onclick="exportByCategory()" class="btn btn-primary btn-sm" style="background: #D32F2F; color: white; border: none; font-weight: 600; padding: 8px 16px;">📋 按分类导出 (Excel)</button>
+                        </div>
                     </div>
                     <div id="resultArea" class="table-responsive-custom fade-in"></div>
                 </div>
@@ -180,6 +183,14 @@
             document.execCommand("copy");
             window.getSelection().removeAllRanges();
             alert("✅ 表格已复制！");
+        }
+
+        function exportByLanguage() {
+            window.location.href = '/export_by_language';
+        }
+
+        function exportByCategory() {
+            window.location.href = '/export_by_category';
         }
 
         async function loadHistory() {
