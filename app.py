@@ -1,11 +1,11 @@
 import os
-# 【删除】之前所有的 os.environ['HTTP_PROXY'] 赋值代码
 
-# 只有在本地环境（没有 RENDER 变量时）才尝试加载代理
-if not os.getenv('RENDER'):
-    # 如果你本地需要代理，请确保这里只在本地生效
-    os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7897'
-    os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7897'
+# 清除任何可能存在的代理设置（Render 云端不需要代理）
+# 本地开发时，请通过系统环境变量或终端设置代理，不要在代码中硬编码
+if os.getenv('HTTP_PROXY'):
+    del os.environ['HTTP_PROXY']
+if os.getenv('HTTPS_PROXY'):
+    del os.environ['HTTPS_PROXY']
 import datetime
 import time
 import pandas as pd
@@ -35,25 +35,30 @@ HISTORY_DB = []
 # --- 2. 核心工具函数 ---
 
 def call_gemini(prompt, image=None):
-    if not GOOGLE_API_KEY: 
+    if not GOOGLE_API_KEY:
+        print("❌ 错误：GOOGLE_API_KEY 未配置")
         return "❌ 错误：API Key 未配置。"
 
     # 优先尝试 gemini-1.5-flash-latest，若环境不支持可改为 1.5-flash
-    model_name = 'gemini-2.5-flash' 
-    
+    model_name = 'gemini-2.5-flash'
+
     try:
         print(f"🤖 正在调用模型: {model_name} ...")
+        print(f"🔑 API Key 前缀: {GOOGLE_API_KEY[:10]}...")
         model = genai.GenerativeModel(model_name)
-        
+
         if image:
             response = model.generate_content([prompt, image])
         else:
             response = model.generate_content(prompt)
-            
+
+        print("✅ 模型调用成功")
         return response.text
-        
+
     except Exception as e:
-        return f"⚠️ 模型调用失败。原因: {str(e)}"
+        error_msg = f"⚠️ 模型调用失败。原因: {str(e)}"
+        print(f"❌ Gemini API 错误: {str(e)}")
+        return error_msg
 
 def process_uploaded_file(file):
     try:
