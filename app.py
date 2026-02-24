@@ -78,7 +78,7 @@ HISTORY_DB = []
 # 核心工具函数
 # ============================================
 
-def call_gemini(prompt, image=None):
+def call_gemini(prompt, image=None, timeout=120):
     """调用 Google Gemini API"""
     if not GOOGLE_API_KEY:
         error_msg = "❌ 错误：GOOGLE_API_KEY 未配置"
@@ -98,7 +98,14 @@ def call_gemini(prompt, image=None):
             response = model.generate_content([prompt, image])
         else:
             logger.info("📝 纯文本输入")
-            response = model.generate_content(prompt)
+            logger.info(f"📏 Prompt 长度: {len(prompt)} 字符")
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=8192,
+                )
+            )
 
         result = response.text
         logger.info(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
@@ -306,12 +313,15 @@ def analyze():
                     if not batch:
                         break
                     items.extend(batch)
-                    logger.info(f"📦 已获取 {len(items)} 条数据...")
+                    logger.info(f"📦 已获取 {len(items)} 条数据（本批次: {len(batch)}）...")
                     if len(batch) < limit:
                         break
                     offset += limit
 
                 logger.info(f"✅ 总共获取到 {len(items)} 条数据")
+
+                # 调试：查看 run 的详细信息
+                logger.info(f"🔍 Run 详情: status={run.get('status')}, stats={run.get('stats')}")
 
                 content = "\n".join([f"用户{i}: {it.get('text', '')}" for i, it in enumerate(items)])
                 source_title = f"FB: {url[:15]}..."
