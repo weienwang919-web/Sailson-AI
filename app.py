@@ -270,8 +270,8 @@ def analyze():
             try:
                 logger.info(f"🕵️ 启动 Apify 爬虫...")
                 run_input = {
-                    "startUrls": [{"url": url}],
-                    "maxComments": 20
+                    "startUrls": [{"url": url}]
+                    # 不设置 maxComments，抓取所有评论
                 }
 
                 # 使用 start() 启动爬虫
@@ -280,7 +280,7 @@ def analyze():
 
                 # 等待爬虫完成（正确的参数名）
                 logger.info("⏳ 等待爬虫完成...")
-                run = apify_client.run(run['id']).wait_for_finish(wait_secs=120)
+                run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)  # 增加到180秒
                 logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
 
                 if run['status'] != 'SUCCEEDED':
@@ -319,21 +319,26 @@ You are a Senior Game Operations Data Scientist. Analyze the player feedback pro
 {content}
 
 【STRICT Categorization Rules (CRITICAL)】:
-You MUST assign each review to EXACTLY ONE of the following 6 categories. Output ONLY the Chinese term.
+You MUST assign each review to EXACTLY ONE of the following categories. Output ONLY the Chinese term.
 
 1. 外挂作弊: Any mention of hackers, aimbots, wallhacks, cheating, or scripts.
 2. 游戏优化: Issues related to lag, high ping, server disconnects, FPS drops, or crashes.
 3. 游戏Bug: Technical glitches in gameplay, stuck in textures, UI errors, or broken mechanics.
 4. 充值退款: Missing rewards (including leaderboard/event rewards), payment issues, shop errors, or refund requests.
-5. 玩家建议: Requests for new content, map changes, balance adjustments, or new game modes.
+5. 新模式/地图/平衡性建议: Requests for new content, map changes, balance adjustments, or new game modes.
 6. 其他: Generic praise, insults without specific context, greetings, or irrelevant spam.
+
+【CRITICAL FILTERING】:
+- **EXCLUDE all reviews categorized as "其他"** - DO NOT include them in the output table.
+- Only output reviews from categories 1-5.
 
 【Output Format】:
 - Return ONLY the raw HTML <table> with class "table table-hover". No markdown code blocks.
+- **SORT the rows by category**: Group all "外挂作弊" together, then "游戏优化", then "游戏Bug", then "充值退款", then "新模式/地图/平衡性建议".
 - Columns:
     1. 来源 (Source)
     2. 原始评论 (Original Review)
-    3. 归类 (Category - MUST use the 6 Chinese terms above)
+    3. 归类 (Category - MUST use the 5 Chinese terms above, NO "其他")
     4. 情感倾向 (Sentiment - 正面/负面/中性)
     5. 简要分析 (Analysis - Concise Chinese insight)
 """
