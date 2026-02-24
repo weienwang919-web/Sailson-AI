@@ -100,8 +100,7 @@ def call_gemini(prompt, image=None, timeout=60):
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=8192,
-                timeout=timeout
+                max_output_tokens=8192
             )
         )
 
