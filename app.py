@@ -95,17 +95,31 @@ def call_gemini(prompt, image=None, timeout=120):
 
         if image:
             logger.info("📸 包含图片输入")
-            response = model.generate_content([prompt, image])
+            response = model.generate_content([prompt, image], request_options={"timeout": timeout})
         else:
             logger.info("📝 纯文本输入")
             logger.info(f"📏 Prompt 长度: {len(prompt)} 字符")
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.7,
-                    max_output_tokens=8192,
-                )
-            )
+
+            # 添加重试机制
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"🔄 尝试 {attempt + 1}/{max_retries}...")
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=genai.types.GenerationConfig(
+                            temperature=0.7,
+                            max_output_tokens=8192,
+                        ),
+                        request_options={"timeout": timeout}
+                    )
+                    break
+                except Exception as retry_error:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⚠️ 尝试 {attempt + 1} 失败: {str(retry_error)}, 重试中...")
+                        time.sleep(2)
+                    else:
+                        raise
 
         result = response.text
         logger.info(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
