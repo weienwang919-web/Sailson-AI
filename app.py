@@ -341,13 +341,104 @@ def analyze():
                 # 调试：查看 run 的详细信息
                 logger.info(f"🔍 Run 详情: status={run.get('status')}, stats={run.get('stats')}")
 
-                content = "\n".join([f"用户{i}: {it.get('text', '')}" for i, it in enumerate(items)])
-                source_title = f"FB: {url[:15]}..."
-
-                if not content:
+                if not items:
                     warning_msg = "⚠️ 抓取成功但未发现公开评论，请检查链接权限"
                     logger.warning(warning_msg)
                     return jsonify({'result': warning_msg})
+
+                # 分批处理评论（每批 50 条）
+                batch_size = 50
+                all_results = []
+
+                logger.info(f"📊 开始分批分析，每批 {batch_size} 条...")
+
+                for i in range(0, len(items), batch_size):
+                    batch = items[i:i+batch_size]
+                    batch_num = i // batch_size + 1
+                    total_batches = (len(items) + batch_size - 1) // batch_size
+
+                    logger.info(f"🔄 处理第 {batch_num}/{total_batches} 批（{len(batch)} 条评论）...")
+
+                    batch_content = "\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
+
+                    # 简化的 Prompt，只做分类
+                    batch_prompt = f"""
+Analyze these comments and categorize them. Output ONLY a JSON array.
+
+Comments:
+{batch_content}
+
+Categories (Chinese only):
+1. 外挂作弊 - hackers, cheating
+2. 游戏优化 - lag, crashes
+3. 游戏Bug - glitches, errors
+4. 充值退款 - payment issues
+5. 新模式/地图/平衡性建议 - new content requests
+6. 其他 - spam, praise
+
+Output format (JSON array only, no markdown):
+[
+  {{"text": "comment text", "category": "外挂作弊", "sentiment": "负面"}},
+  ...
+]
+
+IMPORTANT:
+- Output ONLY valid JSON array
+- Skip "其他" category
+- Use Chinese for category and sentiment
+"""
+
+                    result = call_gemini(batch_prompt, timeout=60)
+
+                    # 解析 JSON 结果
+                    try:
+                        import json
+                        import re
+                        # 清理可能的 markdown 标记
+                        clean_result = re.sub(r'```json\s*|\s*```', '', result).strip()
+                        batch_data = json.loads(clean_result)
+                        all_results.extend(batch_data)
+                        logger.info(f"✅ 第 {batch_num} 批完成，获得 {len(batch_data)} 条有效结果")
+                    except Exception as e:
+                        logger.error(f"❌ 第 {batch_num} 批解析失败: {e}")
+                        continue
+
+                # 生成 HTML 表格
+                logger.info(f"📝 生成最终报告，共 {len(all_results)} 条有效评论...")
+
+                # 按分类排序
+                category_order = ["外挂作弊", "游戏优化", "游戏Bug", "充值退款", "新模式/地图/平衡性建议"]
+                all_results.sort(key=lambda x: category_order.index(x.get('category', '其他')) if x.get('category') in category_order else 999)
+
+                # 生成 HTML
+                html_rows = []
+                for idx, item in enumerate(all_results, 1):
+                    html_rows.append(f"""
+                    <tr>
+                        <td>{idx}</td>
+                        <td>{item.get('text', '')[:100]}...</td>
+                        <td><strong>{item.get('category', '')}</strong></td>
+                        <td>{item.get('sentiment', '')}</td>
+                    </tr>
+                    """)
+
+                result = f"""
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th style="width:50px;">#</th>
+                            <th>原始评论</th>
+                            <th style="width:150px;">归类</th>
+                            <th style="width:100px;">情感倾向</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {''.join(html_rows)}
+                    </tbody>
+                </table>
+                """
+
+                source_title = f"FB: {url[:15]}..."
 
             except Exception as e:
                 error_msg = f"❌ 爬虫任务失败: {str(e)}"
@@ -360,44 +451,6 @@ def analyze():
             error_msg = "❌ 错误：请提供链接或文件"
             logger.error(error_msg)
             return jsonify({'result': error_msg})
-
-        # 调用 Gemini 进行分析
-        prompt = f"""
-You are a Senior Game Operations Data Scientist. Analyze the player feedback provided and output ONLY a raw HTML <table>.
-
-【Input Data】:
-{content}
-
-【STRICT Categorization Rules (CRITICAL)】:
-You MUST assign each review to EXACTLY ONE of the following categories. Output ONLY the Chinese term.
-
-1. 外挂作弊: Any mention of hackers, aimbots, wallhacks, cheating, or scripts.
-2. 游戏优化: Issues related to lag, high ping, server disconnects, FPS drops, or crashes.
-3. 游戏Bug: Technical glitches in gameplay, stuck in textures, UI errors, or broken mechanics.
-4. 充值退款: Missing rewards (including leaderboard/event rewards), payment issues, shop errors, or refund requests.
-5. 新模式/地图/平衡性建议: Requests for new content, map changes, balance adjustments, or new game modes.
-6. 其他: Generic praise, insults without specific context, greetings, or irrelevant spam.
-
-【CRITICAL FILTERING】:
-- **EXCLUDE all reviews categorized as "其他"** - DO NOT include them in the output table.
-- Only output reviews from categories 1-5.
-
-【Output Format】:
-- Return ONLY the raw HTML <table> with class "table table-hover". No markdown code blocks.
-- **SORT the rows by category**: Group all "外挂作弊" together, then "游戏优化", then "游戏Bug", then "充值退款", then "新模式/地图/平衡性建议".
-- Columns:
-    1. 来源 (Source)
-    2. 原始评论 (Original Review)
-    3. 归类 (Category - MUST use the 5 Chinese terms above, NO "其他")
-    4. 情感倾向 (Sentiment - 正面/负面/中性)
-    5. 简要分析 (Analysis - Concise Chinese insight)
-"""
-
-        logger.info("🤖 开始调用 Gemini API...")
-        result = call_gemini(prompt, img)
-
-        # 清理 Markdown 代码块标记
-        result = result.replace('```html', '').replace('```', '').strip()
 
         # 保存历史记录
         save_history(source_title, result, 'sentiment')
