@@ -88,7 +88,7 @@ def call_gemini(prompt, image=None, timeout=60):
         logger.error(error_msg)
         return error_msg
 
-    model_name = 'gemini-2.0-flash-exp'
+    model_name = 'gemini-1.5-flash'  # 使用稳定版本
 
     try:
         logger.info(f"🤖 正在调用 Gemini 模型: {model_name}")
