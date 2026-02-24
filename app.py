@@ -268,8 +268,19 @@ def analyze():
                     "maxComments": 20
                 }
 
-                run = apify_client.actor("apify/facebook-comments-scraper").call(run_input=run_input)
-                logger.info(f"✅ 爬虫任务已启动，Dataset ID: {run['defaultDatasetId']}")
+                # 使用 start() 而不是 call()，设置超时
+                run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
+                logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+
+                # 等待爬虫完成，最多等待 120 秒
+                logger.info("⏳ 等待爬虫完成...")
+                run = apify_client.run(run['id']).wait_for_finish(timeout_secs=120)
+                logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
+
+                if run['status'] != 'SUCCEEDED':
+                    error_msg = f"❌ 爬虫任务失败，状态: {run['status']}"
+                    logger.error(error_msg)
+                    return jsonify({'result': error_msg})
 
                 items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
                 logger.info(f"📦 获取到 {len(items)} 条数据")
@@ -388,8 +399,19 @@ def monitor_competitors():
             "shouldDownloadVideos": False
         }
 
-        run = apify_client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
-        logger.info(f"✅ 爬虫任务已启动，Dataset ID: {run['defaultDatasetId']}")
+        # 使用 start() 而不是 call()，设置超时
+        run = apify_client.actor("clockworks/tiktok-scraper").start(run_input=run_input)
+        logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+
+        # 等待爬虫完成，最多等待 180 秒
+        logger.info("⏳ 等待爬虫完成...")
+        run = apify_client.run(run['id']).wait_for_finish(timeout_secs=180)
+        logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
+
+        if run['status'] != 'SUCCEEDED':
+            error_msg = f"❌ 爬虫任务失败，状态: {run['status']}"
+            logger.error(error_msg)
+            return jsonify({'result': f"<div class='alert alert-danger'>{error_msg}</div>"})
 
         items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
         logger.info(f"📦 获取到 {len(items)} 条原始数据")
