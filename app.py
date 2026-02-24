@@ -274,13 +274,13 @@ def analyze():
                     "maxComments": 20
                 }
 
-                # 使用 start() 而不是 call()，设置超时
+                # 使用 start() 启动爬虫
                 run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
                 logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
 
-                # 等待爬虫完成，最多等待 120 秒
+                # 等待爬虫完成（正确的参数名）
                 logger.info("⏳ 等待爬虫完成...")
-                run = apify_client.run(run['id']).wait_for_finish(timeout_secs=120)
+                run = apify_client.run(run['id']).wait_for_finish(wait_secs=120)
                 logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
 
                 if run['status'] != 'SUCCEEDED':
@@ -405,13 +405,13 @@ def monitor_competitors():
             "shouldDownloadVideos": False
         }
 
-        # 使用 start() 而不是 call()，设置超时
+        # 使用 start() 启动爬虫
         run = apify_client.actor("clockworks/tiktok-scraper").start(run_input=run_input)
         logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
 
-        # 等待爬虫完成，最多等待 180 秒
+        # 等待爬虫完成（正确的参数名）
         logger.info("⏳ 等待爬虫完成...")
-        run = apify_client.run(run['id']).wait_for_finish(timeout_secs=180)
+        run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)
         logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
 
         if run['status'] != 'SUCCEEDED':
