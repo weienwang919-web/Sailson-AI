@@ -367,11 +367,9 @@ IMPORTANT:
 - Use Chinese for category, sentiment, language, and analysis
 - Language options: 英语, 中文, 日语, 韩语, 泰语, 越南语, 其他
 - Analysis requirements:
-  * For short comments (< 50 chars): 20-40 Chinese characters
-  * For medium comments (50-150 chars): 40-80 Chinese characters
-  * For long comments (> 150 chars): 80-150 Chinese characters
-  * Include: main issue, player emotion, specific details mentioned, impact level
-  * Be detailed and show sincerity - players wrote long comments, give them detailed analysis
+  * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)
+  * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)
+  * Include: main issue, player emotion, key details
 """
 
                     result = call_gemini(batch_prompt, timeout=60)
