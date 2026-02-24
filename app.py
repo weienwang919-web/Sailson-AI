@@ -296,11 +296,15 @@ def analyze():
                 logger.info(f"🕵️ 启动 Apify 爬虫...")
                 run_input = {
                     "startUrls": [{"url": url}],
-                    "maxComments": 1000,  # 设置一个较大的数值
+                    "resultsLimit": 1000,  # 这是正确的参数名
+                    "maxComments": 1000,
                     "maxPostCount": 1,
                     "maxCommentsPerPost": 1000,
-                    "maxRepliesPerComment": 0  # 不抓取回复，只抓取主评论
+                    "maxRepliesPerComment": 0,  # 不抓取回复，只抓取主评论
+                    "scrapeCommentReplies": False  # 不抓取回复
                 }
+
+                logger.info(f"📋 爬虫配置: {run_input}")
 
                 # 使用 start() 启动爬虫
                 run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
