@@ -351,14 +351,22 @@ Categories (Chinese only):
 
 Output format (JSON array only, no markdown):
 [
-  {{"text": "comment text", "category": "外挂作弊", "sentiment": "负面"}},
+  {{
+    "text": "comment text",
+    "category": "外挂作弊",
+    "sentiment": "负面",
+    "language": "英语",
+    "analysis": "简要分析内容"
+  }},
   ...
 ]
 
 IMPORTANT:
 - Output ONLY valid JSON array
 - Skip "其他" category
-- Use Chinese for category and sentiment
+- Use Chinese for category, sentiment, language, and analysis
+- Language options: 英语, 中文, 日语, 韩语, 泰语, 越南语, 其他
+- Analysis should be concise (10-20 Chinese characters)
 """
 
                     result = call_gemini(batch_prompt, timeout=60)
@@ -392,6 +400,8 @@ IMPORTANT:
                         <td>{item.get('text', '')[:100]}...</td>
                         <td><strong>{item.get('category', '')}</strong></td>
                         <td>{item.get('sentiment', '')}</td>
+                        <td>{item.get('language', '')}</td>
+                        <td>{item.get('analysis', '')}</td>
                     </tr>
                     """)
 
@@ -401,8 +411,10 @@ IMPORTANT:
                         <tr>
                             <th style="width:50px;">#</th>
                             <th>原始评论</th>
-                            <th style="width:150px;">归类</th>
-                            <th style="width:100px;">情感倾向</th>
+                            <th style="width:120px;">归类</th>
+                            <th style="width:80px;">情感倾向</th>
+                            <th style="width:80px;">语言</th>
+                            <th style="width:200px;">简要分析</th>
                         </tr>
                     </thead>
                     <tbody>
