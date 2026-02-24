@@ -205,6 +205,12 @@ def debug_page():
     logger.info(f"🔍 调试信息: {debug_info}")
     return jsonify(debug_info)
 
+
+@app.route('/health')
+def health_check():
+    """健康检查端点 - 用于 Render 监控"""
+    return jsonify({"status": "ok", "service": "Sailson AI"}), 200
+
 # ============================================
 # 功能 1: 舆情分析
 # ============================================
