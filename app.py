@@ -734,16 +734,22 @@ def create_excel_by_category(results):
             category_groups[cat] = []
         category_groups[cat].append(item)
 
-    # 分类顺序
-    category_order = ['外挂作弊', '游戏优化', '游戏Bug', '充值退款', '新模式/地图/平衡性建议']
+    # 分类顺序和 Sheet 名称映射（去掉特殊字符）
+    category_mapping = {
+        '外挂作弊': '外挂作弊',
+        '游戏优化': '游戏优化',
+        '游戏Bug': '游戏Bug',
+        '充值退款': '充值退款',
+        '新模式/地图/平衡性建议': '新模式地图平衡性建议'  # 去掉斜杠
+    }
 
     # 为每个分类创建 Sheet
-    for cat in category_order:
+    for cat, sheet_name in category_mapping.items():
         if cat not in category_groups:
             continue
 
         items = category_groups[cat]
-        ws = wb.create_sheet(title=cat)
+        ws = wb.create_sheet(title=sheet_name)
 
         # 表头
         headers = ['序号', '原始评论', '归类', '情感倾向', '语言', '简要分析']
