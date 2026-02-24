@@ -116,10 +116,15 @@ def sentiment_tool():
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
+    print("=" * 50)
+    print("📥 收到分析请求")
+    print(f"🔑 GOOGLE_API_KEY 状态: {'已配置' if GOOGLE_API_KEY else '未配置'}")
+    print(f"🔑 APIFY_TOKEN 状态: {'已配置' if APIFY_TOKEN else '未配置'}")
+
     url = request.form.get('url')
     file = request.files.get('file')
     content = ""; img = None; source_title = "未知"
-    
+
     # 路径 A：文件上传分析
     if file:
         mode, res = process_uploaded_file(file)
@@ -133,24 +138,34 @@ def analyze():
     
     # 路径 B：社交媒体链接抓取分析
     elif url:
-        if not apify_client: return jsonify({'result': "❌ 错误：APIFY_TOKEN 未在 .env 中配置"})
-        
+        print(f"🔗 处理链接: {url}")
+        if not apify_client:
+            print("❌ APIFY_TOKEN 未配置")
+            return jsonify({'result': "❌ 错误：APIFY_TOKEN 未在环境变量中配置"})
+
         try:
             print(f"🕵️ 启动云端抓取: {url}")
             # 调用 Facebook Comments Scraper (支持无需 Cookie 的公开抓取测试)
             run_input = { "startUrls": [{ "url": url }], "maxComments": 20 }
             run = apify_client.actor("apify/facebook-comments-scraper").call(run_input=run_input)
-            
+
             # 提取评论文本并合并
             items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
             content = "\n".join([f"用户{i}: {it.get('text','')}" for i, it in enumerate(items)])
             source_title = f"FB: {url[:15]}..."
-            
-            if not content: return jsonify({'result': "⚠️ 抓取成功但未发现公开评论，请检查链接权限。"})
-            
+            print(f"✅ 抓取成功，获得 {len(items)} 条评论")
+
+            if not content:
+                print("⚠️ 未发现公开评论")
+                return jsonify({'result': "⚠️ 抓取成功但未发现公开评论，请检查链接权限。"})
+
         except Exception as e:
+            print(f"❌ 抓取失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return jsonify({'result': f"❌ 抓取任务失败: {str(e)}"})
     else:
+        print("❌ 未提供链接或文件")
         return jsonify({'result': "❌ 错误：请提供链接或文件"})
 
     # --- 核心修改：定义级 Prompt 约束 ---
@@ -179,9 +194,15 @@ def analyze():
         4. 情感倾向 (Sentiment - 正面/负面/中性)
         5. 简要分析 (Analysis - Concise Chinese insight)
     """
-    
-    res = call_gemini(prompt, img).replace('```html','').replace('```','')
+
+    print("🤖 开始调用 Gemini API...")
+    res = call_gemini(prompt, img)
+    print(f"📤 Gemini 返回结果长度: {len(res)} 字符")
+
+    res = res.replace('```html','').replace('```','')
     save_history(source_title, res, 'sentiment')
+    print("✅ 分析完成")
+    print("=" * 50)
     return jsonify({'result': res})
 
 
