@@ -6,7 +6,8 @@ import logging
 import pandas as pd
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 
@@ -50,12 +51,14 @@ logger.info("=" * 60)
 # 初始化 AI 引擎
 if GOOGLE_API_KEY:
     try:
-        genai.configure(api_key=GOOGLE_API_KEY)
+        client = genai.Client(api_key=GOOGLE_API_KEY)
         logger.info("✅ Google Gemini API 初始化成功")
     except Exception as e:
         logger.error(f"❌ Google Gemini API 初始化失败: {e}")
+        client = None
 else:
     logger.warning("⚠️ 警告: GOOGLE_API_KEY 未配置，AI 功能将不可用")
+    client = None
 
 # 初始化爬虫引擎
 if APIFY_TOKEN:
@@ -78,48 +81,29 @@ HISTORY_DB = []
 # 核心工具函数
 # ============================================
 
-def call_gemini(prompt, image=None, timeout=120):
+def call_gemini(prompt, image=None, timeout=60):
     """调用 Google Gemini API"""
-    if not GOOGLE_API_KEY:
+    if not client:
         error_msg = "❌ 错误：GOOGLE_API_KEY 未配置"
         logger.error(error_msg)
         return error_msg
 
-    model_name = 'gemini-2.5-flash'
+    model_name = 'gemini-2.0-flash-exp'
 
     try:
         logger.info(f"🤖 正在调用 Gemini 模型: {model_name}")
-        logger.info(f"🔑 API Key 前缀: {GOOGLE_API_KEY[:15]}...")
+        logger.info(f"📏 Prompt 长度: {len(prompt)} 字符")
 
-        model = genai.GenerativeModel(model_name)
-
-        if image:
-            logger.info("📸 包含图片输入")
-            response = model.generate_content([prompt, image], request_options={"timeout": timeout})
-        else:
-            logger.info("📝 纯文本输入")
-            logger.info(f"📏 Prompt 长度: {len(prompt)} 字符")
-
-            # 添加重试机制
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"🔄 尝试 {attempt + 1}/{max_retries}...")
-                    response = model.generate_content(
-                        prompt,
-                        generation_config=genai.types.GenerationConfig(
-                            temperature=0.7,
-                            max_output_tokens=8192,
-                        ),
-                        request_options={"timeout": timeout}
-                    )
-                    break
-                except Exception as retry_error:
-                    if attempt < max_retries - 1:
-                        logger.warning(f"⚠️ 尝试 {attempt + 1} 失败: {str(retry_error)}, 重试中...")
-                        time.sleep(2)
-                    else:
-                        raise
+        # 使用新的 API
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=8192,
+                timeout=timeout
+            )
+        )
 
         result = response.text
         logger.info(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
