@@ -307,14 +307,17 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
         # 路径 B: 社交媒体链接抓取分析
         elif url:
+            logger.info(f"🌐 开始处理 URL: {url}")
             TASK_QUEUE[task_id]['progress'] = '正在抓取社媒数据...'
 
             if not apify_client:
+                logger.error("❌ Apify 客户端未初始化")
                 TASK_QUEUE[task_id]['status'] = 'failed'
                 TASK_QUEUE[task_id]['error'] = "APIFY_TOKEN 未配置"
                 return
 
             try:
+                logger.info("📋 准备 Apify 爬虫参数...")
                 run_input = {
                     "startUrls": [{"url": url}],
                     "resultsLimit": 1000,
@@ -325,18 +328,23 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                     "scrapeCommentReplies": False
                 }
 
+                logger.info("🚀 启动 Apify 爬虫...")
                 run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
                 logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
 
+                logger.info("⏳ 等待爬虫完成（最长 180 秒）...")
                 TASK_QUEUE[task_id]['progress'] = '等待爬虫完成（约30-60秒）...'
                 run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)
+                logger.info(f"✅ 爬虫完成，状态: {run['status']}")
 
                 if run['status'] != 'SUCCEEDED':
+                    logger.error(f"❌ 爬虫任务失败: {run['status']}")
                     TASK_QUEUE[task_id]['status'] = 'failed'
                     TASK_QUEUE[task_id]['error'] = f"爬虫任务失败: {run['status']}"
                     return
 
                 # 获取数据
+                logger.info("📦 开始获取爬虫数据...")
                 dataset_client = apify_client.dataset(run["defaultDatasetId"])
                 items = []
                 offset = 0
@@ -471,11 +479,14 @@ IMPORTANT:
                 source_title = f"FB: {url[:15]}..."
 
             except Exception as e:
-                TASK_QUEUE[task_id]['status'] = 'failed'
-                TASK_QUEUE[task_id]['error'] = f"爬虫任务失败: {str(e)}"
-                logger.error(f"❌ 爬虫任务失败: {e}")
+                error_msg = f"爬虫任务失败: {str(e)}"
+                logger.error(f"❌ {error_msg}")
+                logger.error(f"❌ 错误类型: {type(e).__name__}")
                 import traceback
-                traceback.print_exc()
+                logger.error(f"❌ 完整堆栈:\n{traceback.format_exc()}")
+
+                TASK_QUEUE[task_id]['status'] = 'failed'
+                TASK_QUEUE[task_id]['error'] = error_msg
                 return
 
         else:
