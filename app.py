@@ -1061,9 +1061,34 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
         }
 
         try:
-            # 使用 start() 启动爬虫
-            run = apify_client.actor("clockworks/tiktok-scraper").start(run_input=run_input)
+            # 使用 REST API 启动爬虫
+            logger.info("📞 正在调用 Apify REST API...")
+            logger.info(f"   Actor: clockworks/tiktok-scraper")
+            logger.info(f"   Input: {run_input}")
+
+            api_url = "https://api.apify.com/v2/acts/clockworks~tiktok-scraper/runs"
+            headers = {
+                "Authorization": f"Bearer {APIFY_TOKEN}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.post(
+                api_url,
+                json=run_input,
+                headers=headers,
+                timeout=30
+            )
+
+            if response.status_code != 201:
+                raise ValueError(f"Apify API 返回错误状态码: {response.status_code}, 响应: {response.text}")
+
+            run = response.json()['data']
             logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+        except requests.Timeout:
+            error_msg = "Apify API 调用超时（30秒）"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
         except Exception as start_error:
             error_msg = f"启动爬虫失败: {str(start_error)}"
             logger.error(f"❌ {error_msg}")
@@ -1075,8 +1100,53 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
         update_task(task_id, progress='等待爬虫完成（约30-60秒）...')
 
         try:
-            run = apify_client.run(run['id']).wait_for_finish(wait_secs=480)
-            logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
+            logger.info("📡 开始轮询 TikTok 爬虫状态...")
+            start_time = time.time()
+            max_wait_time = 480  # 最多等待 480 秒
+            poll_interval = 5  # 每 5 秒轮询一次
+
+            run_id = run['id']
+            api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
+            headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
+
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > max_wait_time:
+                    raise TimeoutError(f"等待爬虫完成超时（{max_wait_time}秒）")
+
+                # 轮询任务状态
+                logger.info(f"   轮询状态... (已等待 {elapsed:.0f}秒)")
+                response = requests.get(api_url, headers=headers, timeout=10)
+
+                if response.status_code != 200:
+                    raise ValueError(f"获取任务状态失败: {response.status_code}")
+
+                run_data = response.json()['data']
+                status = run_data['status']
+
+                logger.info(f"   当前状态: {status}")
+
+                if status in ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT']:
+                    # 任务完成
+                    run = run_data
+                    break
+
+                # 等待后继续轮询
+                time.sleep(poll_interval)
+
+            elapsed = time.time() - start_time
+            logger.info(f"✅ 爬虫任务完成，状态: {run['status']}，耗时: {elapsed:.1f}秒")
+
+        except requests.Timeout:
+            error_msg = "轮询任务状态超时"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
+        except TimeoutError as timeout_error:
+            error_msg = str(timeout_error)
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
         except Exception as wait_error:
             error_msg = f"等待爬虫完成失败: {str(wait_error)}"
             logger.error(f"❌ {error_msg}")
@@ -1089,9 +1159,28 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             update_task(task_id, status='failed', error=error_msg)
             return
 
-        items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
-        logger.info(f"📦 获取到 {len(items)} 条原始数据")
-        update_task(task_id, progress=f'已获取 {len(items)} 条数据，正在过滤...')
+        # 获取数据
+        dataset_id = run.get("defaultDatasetId")
+        if not dataset_id:
+            error_msg = "未找到 dataset ID"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
+
+        # 使用 REST API 获取数据
+        dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+        try:
+            response = requests.get(dataset_url, headers=headers, timeout=30)
+            if response.status_code != 200:
+                raise ValueError(f"获取数据失败: {response.status_code}")
+            items = response.json()
+            logger.info(f"📦 获取到 {len(items)} 条原始数据")
+            update_task(task_id, progress=f'已获取 {len(items)} 条数据，正在过滤...')
+        except Exception as e:
+            error_msg = f"获取数据失败: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
 
         # 3. 本地时间过滤
         cleaned = []
