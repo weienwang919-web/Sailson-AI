@@ -8,3 +8,4 @@ apify-client
 gunicorn
 psycopg2-binary
 flask-bcrypt
+requests

@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 import uuid
 import threading
+import requests
 from io import BytesIO
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
@@ -439,8 +440,6 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
                 try:
                     # 使用 requests 直接调用 Apify REST API（带超时）
-                    import requests
-
                     start_time = time.time()
                     api_url = "https://api.apify.com/v2/acts/apify~facebook-comments-scraper/runs"
                     headers = {
