@@ -442,8 +442,20 @@
 
         // 1. 加载真实数据
         async function loadDashboardStats() {
+            // 设置 5 秒超时
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+
             try {
-                const resp = await fetch('/dashboard_stats');
+                const resp = await fetch('/dashboard_stats', {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+
                 const data = await resp.json();
 
                 // 更新数据目标值
@@ -515,29 +527,54 @@
                 startCounters();
             } catch (e) {
                 console.error('加载数据失败:', e);
+                clearTimeout(timeoutId);
+
                 // 失败时移除加载状态并使用默认值
                 document.querySelectorAll('.stat-card').forEach(card => {
                     card.classList.remove('loading');
                 });
+
+                // 设置默认值
+                document.getElementById('stat-comments').setAttribute('data-target', '0');
+                document.getElementById('stat-analyses').setAttribute('data-target', '0');
+                document.getElementById('stat-tokens').setAttribute('data-target', '0');
+
                 startCounters();
             }
         }
 
         // 2. 数字滚动脚本 (Count Up)
+        let counterTimers = []; // 存储定时器 ID
+        let countersRunning = false; // 防止重复执行
+
         function startCounters() {
+            // 如果已经在运行，先清理
+            if (countersRunning) {
+                counterTimers.forEach(timer => clearTimeout(timer));
+                counterTimers = [];
+            }
+            countersRunning = true;
+
             const counters = document.querySelectorAll('.counter');
             counters.forEach(counter => {
-                counter.innerText = '0'; // 归零
-                const updateCount = () => {
-                    const target = +counter.getAttribute('data-target');
-                    const c = +counter.innerText.replace(/,/g, ''); // 去掉逗号再计算
-                    const increment = target / 80; // 速度控制
+                const target = +counter.getAttribute('data-target');
+                let current = 0;
+                const increment = target / 80; // 速度控制
+                const duration = 1600; // 总时长 1.6 秒
+                const stepTime = 20; // 每步 20ms
+                const steps = duration / stepTime;
 
-                    if (c < target) {
-                        counter.innerText = Math.ceil(c + increment).toLocaleString(); // 加逗号格式化
-                        setTimeout(updateCount, 20);
+                let step = 0;
+                const updateCount = () => {
+                    if (step < steps) {
+                        current += increment;
+                        counter.innerText = Math.ceil(current).toLocaleString();
+                        const timer = setTimeout(updateCount, stepTime);
+                        counterTimers.push(timer);
+                        step++;
                     } else {
                         counter.innerText = target.toLocaleString();
+                        countersRunning = false;
                     }
                 };
                 updateCount();
