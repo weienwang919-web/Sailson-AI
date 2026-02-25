@@ -95,9 +95,9 @@
             <div>
                 <div class="stat-header">
                     <span class="stat-label">Total Reviews</span>
-                    <span class="stat-indicator" style="background:#E8F5E9; color:#2E7D32;">+12.5%</span>
+                    <span class="stat-indicator" id="growth-indicator" style="background:#E8F5E9; color:#2E7D32;">+0%</span>
                 </div>
-                <div class="stat-value counter" data-target="12845">0</div>
+                <div class="stat-value counter" id="stat-comments" data-target="0">0</div>
             </div>
             <div class="chart-wrapper"><canvas id="chart1"></canvas></div>
         </div>
@@ -105,10 +105,10 @@
         <div class="stat-card">
             <div>
                 <div class="stat-header">
-                    <span class="stat-label">Active Competitors</span>
-                    <span class="stat-indicator" style="background:#FFF3E0; color:#E65100;">High Risk</span>
+                    <span class="stat-label">Total Analyses</span>
+                    <span class="stat-indicator" id="analyses-indicator" style="background:#FFF3E0; color:#E65100;">Active</span>
                 </div>
-                <div class="stat-value counter" data-target="42">0</div>
+                <div class="stat-value counter" id="stat-analyses" data-target="0">0</div>
             </div>
             <div class="chart-wrapper"><canvas id="chart2"></canvas></div>
         </div>
@@ -116,10 +116,10 @@
         <div class="stat-card">
             <div>
                 <div class="stat-header">
-                    <span class="stat-label">Videos Generated</span>
-                    <span class="stat-indicator" style="background:#DEEBFF; color:#0747A6;">Stable</span>
+                    <span class="stat-label">AI Tokens</span>
+                    <span class="stat-indicator" id="tokens-indicator" style="background:#DEEBFF; color:#0747A6;">Stable</span>
                 </div>
-                <div class="stat-value counter" data-target="89">0</div>
+                <div class="stat-value counter" id="stat-tokens" data-target="0">0</div>
             </div>
             <div class="chart-wrapper"><canvas id="chart3"></canvas></div>
         </div>
@@ -206,8 +206,76 @@
             options: commonOptions 
         });
 
+        // 1. 加载真实数据
+        async function loadDashboardStats() {
+            try {
+                const resp = await fetch('/dashboard_stats');
+                const data = await resp.json();
+
+                // 更新数据目标值
+                document.getElementById('stat-comments').setAttribute('data-target', data.comments);
+                document.getElementById('stat-analyses').setAttribute('data-target', data.analyses);
+                document.getElementById('stat-tokens').setAttribute('data-target', data.tokens);
+
+                // 卡片1：增长率指标
+                const growthIndicator = document.getElementById('growth-indicator');
+                if (data.growth > 0) {
+                    growthIndicator.textContent = `+${data.growth}%`;
+                    growthIndicator.style.background = '#E8F5E9';
+                    growthIndicator.style.color = '#2E7D32';
+                } else if (data.growth < 0) {
+                    growthIndicator.textContent = `${data.growth}%`;
+                    growthIndicator.style.background = '#FFEBEE';
+                    growthIndicator.style.color = '#C62828';
+                } else {
+                    growthIndicator.textContent = 'New';
+                    growthIndicator.style.background = '#F5F5F5';
+                    growthIndicator.style.color = '#757575';
+                }
+
+                // 卡片2：分析次数状态
+                const analysesIndicator = document.getElementById('analyses-indicator');
+                if (data.analyses > 50) {
+                    analysesIndicator.textContent = 'High Usage';
+                    analysesIndicator.style.background = '#FFF3E0';
+                    analysesIndicator.style.color = '#E65100';
+                } else if (data.analyses > 20) {
+                    analysesIndicator.textContent = 'Active';
+                    analysesIndicator.style.background = '#E8F5E9';
+                    analysesIndicator.style.color = '#2E7D32';
+                } else {
+                    analysesIndicator.textContent = 'Low Usage';
+                    analysesIndicator.style.background = '#F5F5F5';
+                    analysesIndicator.style.color = '#757575';
+                }
+
+                // 卡片3：Token 消耗状态
+                const tokensIndicator = document.getElementById('tokens-indicator');
+                if (data.tokens > 100000) {
+                    tokensIndicator.textContent = 'High Load';
+                    tokensIndicator.style.background = '#FFEBEE';
+                    tokensIndicator.style.color = '#C62828';
+                } else if (data.tokens > 50000) {
+                    tokensIndicator.textContent = 'Normal';
+                    tokensIndicator.style.background = '#DEEBFF';
+                    tokensIndicator.style.color = '#0747A6';
+                } else {
+                    tokensIndicator.textContent = 'Stable';
+                    tokensIndicator.style.background = '#E8F5E9';
+                    tokensIndicator.style.color = '#2E7D32';
+                }
+
+                // 启动数字滚动动画
+                startCounters();
+            } catch (e) {
+                console.error('加载数据失败:', e);
+                // 失败时使用默认值
+                startCounters();
+            }
+        }
+
         // 2. 数字滚动脚本 (Count Up)
-        document.addEventListener("DOMContentLoaded", () => {
+        function startCounters() {
             const counters = document.querySelectorAll('.counter');
             counters.forEach(counter => {
                 counter.innerText = '0'; // 归零
@@ -225,6 +293,11 @@
                 };
                 updateCount();
             });
+        }
+
+        // 页面加载时执行
+        document.addEventListener("DOMContentLoaded", () => {
+            loadDashboardStats();
         });
     </script>
 </body>

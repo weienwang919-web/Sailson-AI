@@ -555,6 +555,54 @@ def home():
     return render_template('index.html', user=session)
 
 
+@app.route('/dashboard_stats')
+@login_required
+def dashboard_stats():
+    """首页数据看板 API"""
+    try:
+        current_month = datetime.datetime.now().strftime('%Y-%m')
+
+        # 本月数据
+        current_data = db.query_one("""
+            SELECT
+                COALESCE(SUM(comments_count), 0) as total_comments,
+                COUNT(*) as total_analyses,
+                COALESCE(SUM(ai_tokens), 0) as total_tokens
+            FROM usage_logs
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        """, (current_month,))
+
+        # 上月数据（用于计算增长率）
+        last_month = (datetime.datetime.now().replace(day=1) - datetime.timedelta(days=1)).strftime('%Y-%m')
+        last_data = db.query_one("""
+            SELECT COALESCE(SUM(comments_count), 0) as total_comments
+            FROM usage_logs
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        """, (last_month,))
+
+        # 计算增长率
+        growth = 0
+        if last_data and last_data['total_comments'] > 0:
+            growth = ((current_data['total_comments'] - last_data['total_comments']) / last_data['total_comments']) * 100
+
+        return jsonify({
+            'comments': int(current_data['total_comments']),
+            'analyses': int(current_data['total_analyses']),
+            'tokens': int(current_data['total_tokens']),
+            'growth': round(growth, 1)
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 获取数据看板失败: {e}")
+        # 返回默认值
+        return jsonify({
+            'comments': 0,
+            'analyses': 0,
+            'tokens': 0,
+            'growth': 0
+        })
+
+
 @app.route('/debug')
 @login_required
 def debug_page():
