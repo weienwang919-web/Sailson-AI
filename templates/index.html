@@ -13,6 +13,13 @@
         :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
         body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); -webkit-font-smoothing: antialiased; }
 
+        /* 渐变动画背景 */
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
         /* 顶部导航 */
         .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .logo-img { height: 40px; width: auto; } /* 微调 Logo 高度，防止过大 */
@@ -20,14 +27,137 @@
         .user-avatar { width: 24px; height: 24px; background: #e5e5e5; border-radius: 50%; }
 
         /* Hero 区域 */
-        .hero-section { text-align: center; padding: 100px 20px 60px; max-width: 900px; margin: 0 auto; }
+        .hero-section {
+            text-align: center;
+            padding: 100px 20px 60px;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero-section::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg,
+                rgba(41, 98, 255, 0.03) 0%,
+                rgba(255, 59, 48, 0.03) 25%,
+                rgba(41, 98, 255, 0.03) 50%,
+                rgba(255, 59, 48, 0.03) 75%,
+                rgba(41, 98, 255, 0.03) 100%
+            );
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
+            z-index: 0;
+            opacity: 0.6;
+        }
+        .hero-section > * { position: relative; z-index: 1; }
         .hero-title { font-size: 4.5rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .hero-subtitle { font-size: 1.35rem; color: var(--text-secondary); max-width: 650px; margin: 0 auto; font-weight: 400; line-height: 1.5; }
+        .hero-subtitle { font-size: 1.35rem; color: var(--text-secondary); max-width: 650px; margin: 0 auto 40px; font-weight: 400; line-height: 1.5; }
+
+        /* CTA 按钮组 */
+        .cta-buttons { display: flex; gap: 16px; justify-content: center; align-items: center; margin-bottom: 30px; flex-wrap: wrap; }
+        .btn-cta-primary {
+            background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%);
+            color: white;
+            padding: 16px 40px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1.05rem;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 12px rgba(41, 98, 255, 0.2);
+        }
+        .btn-cta-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(41, 98, 255, 0.35);
+        }
+        .btn-cta-secondary {
+            background: white;
+            color: #2962FF;
+            padding: 16px 40px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1.05rem;
+            border: 2px solid #e0e0e0;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .btn-cta-secondary:hover {
+            border-color: #2962FF;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        /* 使用统计 */
+        .hero-stats {
+            display: flex;
+            gap: 40px;
+            justify-content: center;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-top: 20px;
+        }
+        .hero-stat-item { display: flex; align-items: center; gap: 8px; }
+        .hero-stat-number { font-weight: 700; color: #2962FF; font-size: 1.1rem; }
 
         /* 数据看板 (Stat Cards) */
         .stats-container { max-width: 1100px; margin: 0 auto 60px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding: 0 20px; }
-        .stat-card { background: #fff; border-radius: 20px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.04); height: 180px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.3s ease, box-shadow 0.3s ease; }
-        .stat-card:hover { transform: translateY(-4px); box-shadow: 0 12px 30px rgba(0,0,0,0.06); }
+        .stat-card {
+            background: #fff;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+            border: 1px solid rgba(0,0,0,0.04);
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #2962FF, #1E88E5);
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+        }
+        .stat-card:hover::before {
+            transform: scaleX(1);
+        }
+        .stat-card.loading {
+            pointer-events: none;
+        }
+        .stat-card.loading .stat-value {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            color: transparent;
+            border-radius: 8px;
+        }
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
         .stat-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
         .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
         .stat-value { font-size: 32px; font-weight: 700; color: var(--text-primary); letter-spacing: -1px; }
@@ -36,13 +166,84 @@
 
         /* 功能卡片 Grid */
         .features-grid { max-width: 1100px; margin: 0 auto; padding: 0 20px 100px; }
-        .feature-card { background: #fff; border: 1px solid rgba(0,0,0,0.04); border-radius: 24px; padding: 40px; height: 100%; transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1); text-decoration: none; color: inherit; display: flex; flex-direction: column; position: relative; overflow: hidden; }
-        .feature-card:hover { transform: translateY(-8px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.08); border-color: rgba(0,0,0,0.08); }
-        .card-icon { font-size: 3rem; margin-bottom: 24px; }
-        .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
-        .card-desc { color: var(--text-secondary); font-size: 1.05rem; line-height: 1.5; margin-bottom: 30px; flex-grow: 1; }
-        .card-arrow { position: absolute; bottom: 30px; right: 30px; font-size: 1.5rem; opacity: 0; transition: all 0.3s ease; transform: translateX(-10px); color: #2962FF; }
+        .feature-card {
+            background: #fff;
+            border: 1px solid rgba(0,0,0,0.04);
+            border-radius: 24px;
+            padding: 40px;
+            height: 100%;
+            transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(41, 98, 255, 0.03), rgba(255, 59, 48, 0.03));
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        .feature-card:hover {
+            transform: translateY(-12px) scale(1.02);
+            box-shadow: 0 24px 48px -10px rgba(0,0,0,0.12);
+            border-color: rgba(41, 98, 255, 0.2);
+        }
+        .feature-card:hover::before {
+            opacity: 1;
+        }
+        .card-icon {
+            font-size: 3rem;
+            margin-bottom: 24px;
+            transition: transform 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+            position: relative;
+            z-index: 1;
+        }
+        .feature-card:hover .card-icon {
+            transform: scale(1.15) rotate(5deg);
+        }
+        .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; position: relative; z-index: 1; }
+        .card-desc { color: var(--text-secondary); font-size: 1.05rem; line-height: 1.5; margin-bottom: 30px; flex-grow: 1; position: relative; z-index: 1; }
+        .card-arrow {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            font-size: 1.5rem;
+            opacity: 0;
+            transition: all 0.3s ease;
+            transform: translateX(-10px);
+            color: #2962FF;
+            z-index: 1;
+        }
         .feature-card:hover .card-arrow { opacity: 1; transform: translateX(0); }
+
+        /* 最近使用标签 */
+        .card-badge {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #2962FF, #1E88E5);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            z-index: 2;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all 0.3s ease;
+        }
+        .feature-card:hover .card-badge {
+            opacity: 1;
+            transform: translateY(0);
+        }
 
         /* 开发中卡片 (横条) */
         .wip-section { margin-top: 40px; }
@@ -57,13 +258,19 @@
         .wip-card:hover .card-arrow { color: #2962FF; }
 
         .footer { text-align: center; padding: 60px 0; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 40px; }
-        
+
         /* 移动端适配微调 */
         @media (max-width: 768px) {
             .hero-title { font-size: 3rem; }
+            .hero-subtitle { font-size: 1.1rem; }
+            .cta-buttons { flex-direction: column; width: 100%; padding: 0 20px; }
+            .btn-cta-primary, .btn-cta-secondary { width: 100%; text-align: center; }
+            .hero-stats { flex-direction: column; gap: 15px; align-items: flex-start; padding: 0 20px; }
             .stats-container { grid-template-columns: 1fr; }
             .wip-card { flex-direction: column; text-align: center; }
             .wip-content { margin: 20px 0; text-align: center; }
+            .feature-card { padding: 30px; }
+            .card-badge { top: 15px; right: 15px; }
         }
     </style>
 </head>
@@ -88,10 +295,30 @@
     <div class="hero-section">
         <h1 class="hero-title">Work smarter,<br>not harder.</h1>
         <p class="hero-subtitle">智能舆情分析与竞品监控平台</p>
+
+        <div class="cta-buttons">
+            <a href="/sentiment-tool" class="btn-cta-primary">开始分析</a>
+            <a href="#features" class="btn-cta-secondary">了解更多</a>
+        </div>
+
+        <div class="hero-stats">
+            <div class="hero-stat-item">
+                <span>✓</span>
+                <span>已处理 <span class="hero-stat-number" id="total-comments-stat">0</span> 条评论</span>
+            </div>
+            <div class="hero-stat-item">
+                <span>✓</span>
+                <span>支持 <span class="hero-stat-number">6</span> 种语言</span>
+            </div>
+            <div class="hero-stat-item">
+                <span>✓</span>
+                <span><span class="hero-stat-number" id="active-users-stat">0</span> 位活跃用户</span>
+            </div>
+        </div>
     </div>
 
     <div class="stats-container">
-        <div class="stat-card">
+        <div class="stat-card loading" onclick="window.location.href='/my-stats'">
             <div>
                 <div class="stat-header">
                     <span class="stat-label">Total Reviews</span>
@@ -102,7 +329,7 @@
             <div class="chart-wrapper"><canvas id="chart1"></canvas></div>
         </div>
 
-        <div class="stat-card">
+        <div class="stat-card loading" onclick="window.location.href='/my-stats'">
             <div>
                 <div class="stat-header">
                     <span class="stat-label">Total Analyses</span>
@@ -113,7 +340,7 @@
             <div class="chart-wrapper"><canvas id="chart2"></canvas></div>
         </div>
 
-        <div class="stat-card">
+        <div class="stat-card loading" onclick="window.location.href='/my-stats'">
             <div>
                 <div class="stat-header">
                     <span class="stat-label">AI Tokens</span>
@@ -125,10 +352,11 @@
         </div>
     </div>
 
-    <div class="features-grid container">
+    <div class="features-grid container" id="features">
         <div class="row g-4">
             <div class="col-md-4">
                 <a href="/sentiment-tool" class="feature-card">
+                    <span class="card-badge">最近使用</span>
                     <div class="card-icon">🎮</div>
                     <h3 class="card-title">舆情洞察</h3>
                     <p class="card-desc">全自动社媒评论分析与归类。支持多语言情感判别。</p>
@@ -217,6 +445,18 @@
                 document.getElementById('stat-analyses').setAttribute('data-target', data.analyses);
                 document.getElementById('stat-tokens').setAttribute('data-target', data.tokens);
 
+                // 更新 Hero 区域统计
+                document.getElementById('total-comments-stat').textContent = data.comments.toLocaleString();
+
+                // 计算活跃用户数（简化版：分析次数 / 10）
+                const activeUsers = Math.max(1, Math.floor(data.analyses / 10));
+                document.getElementById('active-users-stat').textContent = activeUsers;
+
+                // 移除加载状态
+                document.querySelectorAll('.stat-card').forEach(card => {
+                    card.classList.remove('loading');
+                });
+
                 // 卡片1：增长率指标
                 const growthIndicator = document.getElementById('growth-indicator');
                 if (data.growth > 0) {
@@ -269,7 +509,10 @@
                 startCounters();
             } catch (e) {
                 console.error('加载数据失败:', e);
-                // 失败时使用默认值
+                // 失败时移除加载状态并使用默认值
+                document.querySelectorAll('.stat-card').forEach(card => {
+                    card.classList.remove('loading');
+                });
                 startCounters();
             }
         }

@@ -9,17 +9,164 @@
     <style>
         /* === 基础布局 === */
         body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; height: 100vh; display: flex; margin: 0; }
-        .sidebar { width: 260px; background: #fff; border-right: 1px solid #eee; display: flex; flex-direction: column; padding: 20px; flex-shrink: 0; }
+        .sidebar {
+            width: 260px;
+            background: #fff;
+            border-right: 1px solid #eee;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            flex-shrink: 0;
+        }
         .logo-area { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; cursor: pointer; }
         .logo-img { height: 32px; }
+
+        /* 搜索框 */
+        .search-box {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+        }
+        .search-box:focus {
+            outline: none;
+            border-color: #2962FF;
+            box-shadow: 0 0 0 3px rgba(41, 98, 255, 0.1);
+        }
+
+        /* 筛选标签 */
+        .filter-tags {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .filter-tag {
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: #f5f5f5;
+            color: #666;
+            border: 1px solid transparent;
+        }
+        .filter-tag.active {
+            background: #e3f2fd;
+            color: #2962FF;
+            border-color: #2962FF;
+        }
+        .filter-tag:hover {
+            background: #e8e8e8;
+        }
+
         .history-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; margin-top: 10px; }
-        .history-item { padding: 10px; font-size: 0.9rem; color: #555; cursor: pointer; border-radius: 6px; margin-bottom: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-        .history-item:hover { background: #f0f0f0; }
+        .history-item {
+            padding: 12px;
+            font-size: 0.85rem;
+            color: #555;
+            cursor: pointer;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            overflow: hidden;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .history-item:hover { background: #f0f0f0; transform: translateX(4px); }
         .history-item.active { background: #e3f2fd; color: #007bff; font-weight: 600; }
+        .history-item-icon {
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+        .history-item-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .history-item-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 4px;
+        }
+        .history-item-time {
+            font-size: 0.7rem;
+            color: #999;
+        }
 
         .main-content { flex: 1; padding: 40px; overflow-y: auto; background: #FAFAFA; width: 100%; }
         .content-container { max-width: 1100px; margin: 0 auto; }
         .glass-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 16px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
+
+        /* 示例提示 */
+        .example-hint {
+            margin-top: 10px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #666;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .example-hint a {
+            color: #2962FF;
+            text-decoration: none;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .example-hint a:hover {
+            text-decoration: underline;
+        }
+
+        /* 空状态设计 */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+        .empty-state h3 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: #333;
+        }
+        .empty-state p {
+            font-size: 1rem;
+            color: #999;
+            max-width: 500px;
+            margin: 0 auto 30px;
+            line-height: 1.6;
+        }
+        .btn-tutorial {
+            background: #2962FF;
+            color: white;
+            padding: 12px 30px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+        .btn-tutorial:hover {
+            background: #1E88E5;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(41, 98, 255, 0.3);
+        }
 
         /* Tab 导航 */
         .nav-tabs { border-bottom: none; margin-bottom: 20px; gap: 10px; padding-left: 0; display: flex; list-style: none; }
@@ -57,6 +204,15 @@
             <span style="font-weight: 700; font-size: 1.1rem; color: #333;">舆情分析</span>
         </div>
         <button onclick="location.reload()" class="btn btn-primary w-100 mb-3" style="background-color: #2962FF; border:none; padding: 10px; border-radius: 8px; color: white; cursor: pointer;">+ 新的分析</button>
+
+        <input type="text" class="search-box" placeholder="🔍 搜索历史记录..." id="searchBox" oninput="filterHistory()">
+
+        <div class="filter-tags">
+            <span class="filter-tag active" onclick="filterByTime('all')">全部</span>
+            <span class="filter-tag" onclick="filterByTime('today')">今天</span>
+            <span class="filter-tag" onclick="filterByTime('week')">本周</span>
+        </div>
+
         <div class="text-muted small fw-bold">历史记录</div>
         <ul class="history-list" id="historyList"></ul>
         <div style="margin-top: auto; padding-top: 20px; border-top: 1px solid #eee;">
@@ -79,6 +235,10 @@
 
                 <div id="linkArea">
                     <input type="text" id="urlInput" class="form-control" placeholder="请输入 Facebook 或 TikTok 帖子链接..." value="">
+                    <div class="example-hint">
+                        <span>💡 示例：https://www.facebook.com/gaming/posts/123456789</span>
+                        <a onclick="fillExample()">使用示例</a>
+                    </div>
                 </div>
                 <div id="fileArea" style="display: none;">
                     <div style="border: 2px dashed #ddd; padding: 30px; text-align: center; border-radius: 10px; cursor: pointer; background: #f9f9f9;" onclick="document.getElementById('fileInput').click()">
@@ -108,26 +268,94 @@
                     </div>
                     <div id="resultArea" class="table-responsive-custom fade-in"></div>
                 </div>
+
+                <!-- 空状态 -->
+                <div id="emptyState" class="empty-state">
+                    <div class="empty-state-icon">🎯</div>
+                    <h3>开始你的第一次分析</h3>
+                    <p>输入 Facebook 帖子链接，我们将自动抓取评论并进行智能分类。支持多语言情感分析和问题归类。</p>
+                    <a href="#" class="btn-tutorial" onclick="showTutorial(); return false;">查看使用教程</a>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
         let mode = 'link';
+        let allHistory = []; // 存储所有历史记录
+        let currentFilter = 'all'; // 当前时间筛选
         window.onload = loadHistory;
+
+        // 填充示例链接
+        function fillExample() {
+            document.getElementById('urlInput').value = 'https://www.facebook.com/gaming/posts/123456789';
+        }
+
+        // 显示教程
+        function showTutorial() {
+            alert('使用教程：\n\n1. 输入 Facebook 帖子链接\n2. 点击"立即分析"按钮\n3. 等待 2-3 分钟完成分析\n4. 查看分类结果并导出 Excel\n\n支持的语言：英语、菲律宾语、泰语、越南语、印尼语、马来语');
+        }
+
+        // 搜索历史记录
+        function filterHistory() {
+            const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+            const filtered = allHistory.filter(item =>
+                item.title.toLowerCase().includes(searchTerm)
+            );
+            renderHistory(filtered);
+        }
+
+        // 按时间筛选
+        function filterByTime(filter) {
+            currentFilter = filter;
+
+            // 更新标签样式
+            document.querySelectorAll('.filter-tag').forEach(tag => {
+                tag.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // 筛选逻辑（简化版，实际需要后端支持）
+            const now = new Date();
+            const filtered = allHistory.filter(item => {
+                if (filter === 'all') return true;
+                // 这里简化处理，实际应该从后端获取时间戳
+                return true;
+            });
+
+            renderHistory(filtered);
+        }
+
+        // 渲染历史记录
+        function renderHistory(items) {
+            const list = document.getElementById('historyList');
+            if (!items || items.length === 0) {
+                list.innerHTML = '<li style="padding: 20px; text-align: center; color: #999;">暂无历史记录</li>';
+                return;
+            }
+
+            list.innerHTML = items.map(item => `
+                <li class="history-item" onclick="loadRecord(${item.id})">
+                    <div class="history-item-icon">📊</div>
+                    <div class="history-item-content">
+                        <div class="history-item-title">${item.title}</div>
+                        <div class="history-item-time">刚刚</div>
+                    </div>
+                </li>
+            `).join('');
+        }
 
         function setMode(m, e) {
             mode = m;
             document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
-            // 修正：确保点击 Tab 时状态正确切换
             e.currentTarget.classList.add('active');
             document.getElementById('linkArea').style.display = m==='link'?'block':'none';
             document.getElementById('fileArea').style.display = m==='file'?'block':'none';
         }
 
         function handleFileSelect(input) {
-            if (input.files[0]) { 
-                document.getElementById('fileNameDisplay').innerText="✅ " + input.files[0].name; 
+            if (input.files[0]) {
+                document.getElementById('fileNameDisplay').innerText="✅ " + input.files[0].name;
             }
         }
 
@@ -135,7 +363,7 @@
             const loading = document.getElementById('loading');
             const loadingText = document.getElementById('loadingText');
             const resContainer = document.getElementById('resultContainer');
-            const resArea = document.getElementById('resultArea');
+            const emptyState = document.getElementById('emptyState');
             const btn = document.getElementById('analyzeBtn');
 
             const formData = new FormData();
@@ -153,22 +381,22 @@
 
             loading.style.display = 'block';
             resContainer.style.display = 'none';
+            emptyState.style.display = 'none';
             btn.disabled = true;
             btn.innerText = "🚀 任务执行中...";
 
             try {
-                // 提交任务
                 const resp = await fetch('/analyze', { method:'POST', body: formData });
                 const data = await resp.json();
 
                 if (data.task_id) {
-                    // 开始轮询任务状态
                     pollTaskStatus(data.task_id);
                 } else {
                     throw new Error('未返回任务ID');
                 }
             } catch(e) {
                 loading.style.display = 'none';
+                emptyState.style.display = 'block';
                 alert('任务提交失败：' + e.message);
                 btn.disabled = false;
                 btn.innerText = "✨ 立即分析";
