@@ -75,9 +75,11 @@ else:
 if APIFY_TOKEN:
     try:
         apify_client = ApifyClient(APIFY_TOKEN)
-        logger.info("✅ Apify 客户端初始化成功")
+        # 验证 token 是否有效
+        apify_client.user().get()
+        logger.info("✅ Apify 客户端初始化成功，Token 有效")
     except Exception as e:
-        logger.error(f"❌ Apify 客户端初始化失败: {e}")
+        logger.error(f"❌ Apify 客户端初始化失败或 Token 无效: {e}")
         apify_client = None
 else:
     logger.warning("⚠️ 警告: APIFY_TOKEN 未配置，爬虫功能将不可用")
@@ -255,12 +257,10 @@ def process_uploaded_file(file_data):
 
         if fname.endswith(('.png', '.jpg', '.jpeg', '.webp')):
             logger.info("🖼️ 识别为图片文件")
-            from io import BytesIO
             return "IMAGE", Image.open(BytesIO(content))
 
         if fname.endswith(('.xlsx', '.csv')):
             logger.info("📊 识别为表格文件")
-            from io import BytesIO
             if fname.endswith('.csv'):
                 df = pd.read_csv(BytesIO(content))
             else:
@@ -429,10 +429,17 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                     update_task(task_id, status='failed', error=error_msg)
                     return
 
-                logger.info("⏳ 等待爬虫完成（最长 180 秒）...")
+                logger.info("⏳ 等待爬虫完成（最长 480 秒）...")
                 update_task(task_id, progress='等待爬虫完成（约30-60秒）...')
-                run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)
-                logger.info(f"✅ 爬虫完成，状态: {run['status']}")
+
+                try:
+                    run = apify_client.run(run['id']).wait_for_finish(wait_secs=480)
+                    logger.info(f"✅ 爬虫完成，状态: {run['status']}")
+                except Exception as wait_error:
+                    error_msg = f"等待爬虫完成失败: {str(wait_error)}"
+                    logger.error(f"❌ {error_msg}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
 
                 if run['status'] != 'SUCCEEDED':
                     logger.error(f"❌ 爬虫任务失败: {run['status']}")
@@ -825,7 +832,7 @@ def analyze():
         target=process_analysis_task,
         args=(task_id, url, file_data, session_id, user_id, username, department)
     )
-    thread.daemon = True
+    # 不设置 daemon=True，让线程自然完成，避免被 Flask 请求结束时杀死
     thread.start()
 
     logger.info(f"✅ 任务 {task_id} 已创建并启动")
@@ -866,7 +873,7 @@ def competitor_tool():
 
 @app.route('/monitor_competitors', methods=['POST'])
 def monitor_competitors():
-    """竞品监控 API"""
+    """竞品监控 API - 异步版本"""
     logger.info("\n" + "=" * 60)
     logger.info("📥 收到竞品监控请求")
 
@@ -881,8 +888,51 @@ def monitor_competitors():
 
         if not apify_client:
             error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
-            print(error_msg)
-            return jsonify({'result': f"<div class='alert alert-danger'>{error_msg}</div>"})
+            logger.error(error_msg)
+            return jsonify({'error': error_msg}), 400
+
+        # 获取用户信息
+        user_id = session.get('user_id')
+        username = session.get('username', 'unknown')
+        department = session.get('department', '未知')
+        session_id = session.get('session_id', str(uuid.uuid4()))
+
+        # 创建任务 ID
+        task_id = str(uuid.uuid4())
+
+        # 创建任务记录到数据库
+        create_task(task_id, user_id, session_id)
+
+        # 启动后台线程处理任务
+        thread = threading.Thread(
+            target=process_competitor_task,
+            args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id)
+        )
+        # 不设置 daemon=True，让线程自然完成
+        thread.start()
+
+        logger.info(f"✅ 竞品监控任务 {task_id} 已创建并启动")
+
+        # 立即返回任务 ID
+        return jsonify({
+            'task_id': task_id,
+            'status': 'pending',
+            'message': '竞品监控任务已启动，请稍后查看结果'
+        })
+
+    except Exception as e:
+        error_msg = f"❌ 创建任务失败: {str(e)}"
+        logger.error(error_msg)
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': error_msg}), 500
+
+
+def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id):
+    """后台处理竞品监控任务"""
+    try:
+        logger.info(f"🔄 开始处理竞品监控任务 {task_id}")
+        update_task(task_id, status='processing', progress='正在初始化...')
 
         # 1. 日期转换
         target_start = datetime.datetime.strptime(start_dt_str, '%Y-%m-%d').date()
@@ -891,6 +941,8 @@ def monitor_competitors():
 
         # 2. 云端抓取
         logger.info("🕵️ 启动 TikTok 爬虫...")
+        update_task(task_id, progress='正在启动 TikTok 爬虫...')
+
         run_input = {
             "profiles": [target_url],
             "resultsPerPage": 35,
@@ -898,22 +950,38 @@ def monitor_competitors():
             "shouldDownloadVideos": False
         }
 
-        # 使用 start() 启动爬虫
-        run = apify_client.actor("clockworks/tiktok-scraper").start(run_input=run_input)
-        logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+        try:
+            # 使用 start() 启动爬虫
+            run = apify_client.actor("clockworks/tiktok-scraper").start(run_input=run_input)
+            logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+        except Exception as start_error:
+            error_msg = f"启动爬虫失败: {str(start_error)}"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
 
-        # 等待爬虫完成（正确的参数名）
+        # 等待爬虫完成
         logger.info("⏳ 等待爬虫完成...")
-        run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)
-        logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
+        update_task(task_id, progress='等待爬虫完成（约30-60秒）...')
+
+        try:
+            run = apify_client.run(run['id']).wait_for_finish(wait_secs=480)
+            logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
+        except Exception as wait_error:
+            error_msg = f"等待爬虫完成失败: {str(wait_error)}"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
 
         if run['status'] != 'SUCCEEDED':
-            error_msg = f"❌ 爬虫任务失败，状态: {run['status']}"
-            logger.error(error_msg)
-            return jsonify({'result': f"<div class='alert alert-danger'>{error_msg}</div>"})
+            error_msg = f"爬虫任务失败，状态: {run['status']}"
+            logger.error(f"❌ {error_msg}")
+            update_task(task_id, status='failed', error=error_msg)
+            return
 
         items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
         logger.info(f"📦 获取到 {len(items)} 条原始数据")
+        update_task(task_id, progress=f'已获取 {len(items)} 条数据，正在过滤...')
 
         # 3. 本地时间过滤
         cleaned = []
@@ -939,11 +1007,13 @@ def monitor_competitors():
         logger.info(f"✅ 时间过滤后剩余 {len(cleaned)} 条数据")
 
         if not cleaned:
-            warning_msg = f"<div class='alert alert-warning'>在此期间 ({start_dt_str} ~ {end_dt_str}) 未发现视频。</div>"
+            warning_msg = f"在此期间 ({start_dt_str} ~ {end_dt_str}) 未发现视频。"
             logger.info("⚠️ 未发现符合条件的视频")
-            return jsonify({'result': warning_msg})
+            update_task(task_id, status='completed', result=f"<div class='alert alert-warning'>{warning_msg}</div>")
+            return
 
         # 4. Gemini 生成报告
+        update_task(task_id, progress='正在生成分析报告...')
         prompt = f"""
 You are a Data Entry Assistant. Please fill the following TikTok data into the PROVIDED HTML TEMPLATE.
 
@@ -987,26 +1057,28 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
         save_history(f"竞品数据:{target_url[20:30]}", result, 'competitor')
 
         # 记录使用成本
-        if session.get('user_id'):
+        if user_id:
             log_usage(
-                session.get('user_id'),
-                session.get('username', 'unknown'),
-                session.get('department', '未知'),
+                user_id,
+                username,
+                department,
                 'competitor',
                 len(cleaned),  # TikTok 视频数量
                 tokens
             )
 
+        # 更新任务状态为完成
+        update_task(task_id, status='completed', result=result, progress='分析完成')
+
         logger.info("✅ 竞品监控完成")
         logger.info("=" * 60 + "\n")
 
-        return jsonify({'result': result})
-
     except Exception as e:
-        error_msg = f"❌ 监控失败: {str(e)}"
-        print(error_msg)
+        error_msg = f"竞品监控失败: {str(e)}"
+        logger.error(f"❌ {error_msg}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
+        update_task(task_id, status='failed', error=error_msg)
         return jsonify({'result': f"<div class='alert alert-danger'>{error_msg}</div>"})
 
 # ============================================
@@ -1474,6 +1546,10 @@ def delete_user(user_id):
 # ============================================
 
 if __name__ == '__main__':
+    # 恢复被中断的任务
+    logger.info("🔄 检查并恢复被中断的任务...")
+    recover_interrupted_tasks()
+
     logger.info("\n" + "=" * 60)
     logger.info("🎉 Sailson AI 工作台已启动")
     logger.info(f"🌐 访问地址: http://0.0.0.0:{PORT}")
