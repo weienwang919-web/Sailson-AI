@@ -494,12 +494,51 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 try:
                     logger.info("📡 开始轮询 Apify 任务状态...")
                     start_time = time.time()
+                    max_wait_time = 480  # 最多等待 480 秒
+                    poll_interval = 5  # 每 5 秒轮询一次
 
-                    run = thread_apify_client.run(run['id']).wait_for_finish(wait_secs=480)
+                    run_id = run['id']
+                    api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
+                    headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
+
+                    while True:
+                        elapsed = time.time() - start_time
+                        if elapsed > max_wait_time:
+                            raise TimeoutError(f"等待爬虫完成超时（{max_wait_time}秒）")
+
+                        # 轮询任务状态
+                        logger.info(f"   轮询状态... (已等待 {elapsed:.0f}秒)")
+                        response = requests.get(api_url, headers=headers, timeout=10)
+
+                        if response.status_code != 200:
+                            raise ValueError(f"获取任务状态失败: {response.status_code}")
+
+                        run_data = response.json()['data']
+                        status = run_data['status']
+
+                        logger.info(f"   当前状态: {status}")
+
+                        if status in ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT']:
+                            # 任务完成
+                            run = run_data
+                            break
+
+                        # 等待后继续轮询
+                        time.sleep(poll_interval)
 
                     elapsed = time.time() - start_time
                     logger.info(f"✅ 爬虫完成，状态: {run['status']}，耗时: {elapsed:.1f}秒")
 
+                except requests.Timeout:
+                    error_msg = "轮询任务状态超时"
+                    logger.error(f"❌ {error_msg}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
+                except TimeoutError as timeout_error:
+                    error_msg = str(timeout_error)
+                    logger.error(f"❌ {error_msg}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
                 except Exception as wait_error:
                     elapsed = time.time() - start_time if 'start_time' in locals() else 0
                     error_msg = f"等待爬虫完成失败（耗时 {elapsed:.1f}秒）: {str(wait_error)}"
@@ -514,21 +553,26 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
                 # 获取数据
                 logger.info("📦 开始获取爬虫数据...")
-                dataset_client = thread_apify_client.dataset(run["defaultDatasetId"])
-                items = []
-                offset = 0
-                limit = 1000
+                dataset_id = run.get("defaultDatasetId")
+                if not dataset_id:
+                    error_msg = "未找到 dataset ID"
+                    logger.error(f"❌ {error_msg}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
 
-                while True:
-                    batch = dataset_client.list_items(offset=offset, limit=limit).items
-                    if not batch:
-                        break
-                    items.extend(batch)
-                    if len(batch) < limit:
-                        break
-                    offset += limit
-
-                logger.info(f"✅ 总共获取到 {len(items)} 条数据")
+                # 使用 REST API 获取数据
+                dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+                try:
+                    response = requests.get(dataset_url, headers=headers, timeout=30)
+                    if response.status_code != 200:
+                        raise ValueError(f"获取数据失败: {response.status_code}")
+                    items = response.json()
+                    logger.info(f"✅ 总共获取到 {len(items)} 条数据")
+                except Exception as e:
+                    error_msg = f"获取数据失败: {str(e)}"
+                    logger.error(f"❌ {error_msg}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
                 total_comments = len(items)  # 记录评论数
 
                 if not items:
