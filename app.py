@@ -7,9 +7,9 @@ import pandas as pd
 from io import BytesIO
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
-import google.generativeai as genai
 from apify_client import ApifyClient
 from dotenv import load_dotenv
+from openai import OpenAI
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -38,28 +38,33 @@ for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
         logger.info(f"🧹 已清除代理设置: {proxy_var}")
 
 # 加载环境变量
-GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY')
+DASHSCOPE_API_KEY = os.environ.get('DASHSCOPE_API_KEY')
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN')
 PORT = int(os.environ.get('PORT', 5001))
 
 # 启动时输出配置状态
 logger.info("=" * 60)
 logger.info("🚀 Sailson AI 工作台启动中...")
-logger.info(f"🔑 GOOGLE_API_KEY: {'✅ 已配置' if GOOGLE_API_KEY else '❌ 未配置'}")
+logger.info(f"🔑 DASHSCOPE_API_KEY: {'✅ 已配置' if DASHSCOPE_API_KEY else '❌ 未配置'}")
 logger.info(f"🔑 APIFY_TOKEN: {'✅ 已配置' if APIFY_TOKEN else '❌ 未配置'}")
 logger.info(f"🌐 PORT: {PORT}")
 logger.info(f"🐍 Python 版本: {sys.version}")
 logger.info("=" * 60)
 
 # 初始化 AI 引擎
-if GOOGLE_API_KEY:
+if DASHSCOPE_API_KEY:
     try:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        logger.info("✅ Google Gemini API 初始化成功")
+        qwen_client = OpenAI(
+            api_key=DASHSCOPE_API_KEY,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        logger.info("✅ 通义千问 API 初始化成功")
     except Exception as e:
-        logger.error(f"❌ Google Gemini API 初始化失败: {e}")
+        logger.error(f"❌ 通义千问 API 初始化失败: {e}")
+        qwen_client = None
 else:
-    logger.warning("⚠️ 警告: GOOGLE_API_KEY 未配置，AI 功能将不可用")
+    logger.warning("⚠️ 警告: DASHSCOPE_API_KEY 未配置，AI 功能将不可用")
+    qwen_client = None
 
 # 初始化爬虫引擎
 if APIFY_TOKEN:
@@ -84,27 +89,32 @@ LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 # ============================================
 
 def call_gemini(prompt, image=None, timeout=60):
-    """调用 Google Gemini API"""
-    if not GOOGLE_API_KEY:
-        error_msg = "❌ 错误：GOOGLE_API_KEY 未配置"
+    """调用通义千问 API"""
+    if not qwen_client:
+        error_msg = "❌ 错误：DASHSCOPE_API_KEY 未配置"
         logger.error(error_msg)
         return error_msg
 
-    model_name = 'gemini-2.5-flash'
+    model_name = 'qwen-turbo'
 
     try:
-        logger.info(f"🤖 正在调用 Gemini 模型: {model_name}")
+        logger.info(f"🤖 正在调用通义千问模型: {model_name}")
         logger.info(f"📏 Prompt 长度: {len(prompt)} 字符")
 
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
+        response = qwen_client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7
+        )
 
-        result = response.text
-        logger.info(f"✅ Gemini 调用成功，返回 {len(result)} 字符")
+        result = response.choices[0].message.content
+        logger.info(f"✅ 通义千问调用成功，返回 {len(result)} 字符")
         return result
 
     except Exception as e:
-        error_msg = f"⚠️ Gemini API 调用失败: {str(e)}"
+        error_msg = f"⚠️ 通义千问 API 调用失败: {str(e)}"
         logger.error(error_msg)
         import traceback
         traceback.print_exc()
@@ -201,7 +211,7 @@ def debug_page():
 
     debug_info = {
         "status": "Online",
-        "gemini_key": bool(GOOGLE_API_KEY),
+        "qwen_key": bool(DASHSCOPE_API_KEY),
         "apify_key": bool(APIFY_TOKEN),
         "port": PORT,
         "history_count": len(HISTORY_DB)
@@ -232,7 +242,7 @@ def analyze():
     """舆情分析 API"""
     logger.info("\n" + "=" * 60)
     logger.info("📥 收到舆情分析请求")
-    logger.info(f"🔑 GOOGLE_API_KEY: {'✅' if GOOGLE_API_KEY else '❌'}")
+    logger.info(f"🔑 DASHSCOPE_API_KEY: {'✅' if DASHSCOPE_API_KEY else '❌'}")
     logger.info(f"🔑 APIFY_TOKEN: {'✅' if APIFY_TOKEN else '❌'}")
 
     url = request.form.get('url')
