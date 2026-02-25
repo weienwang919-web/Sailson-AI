@@ -84,6 +84,23 @@ try:
     """)
     print("✅ 分析结果表创建成功")
 
+    # 创建任务队列表
+    print("\n📋 创建任务队列表...")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS task_queue (
+            task_id VARCHAR(100) PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            status VARCHAR(20) NOT NULL,
+            progress TEXT,
+            result TEXT,
+            error TEXT,
+            session_id VARCHAR(100),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    print("✅ 任务队列表创建成功")
+
     # 检查是否已存在管理员账号
     cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
     admin_exists = cursor.fetchone()[0] > 0
@@ -112,6 +129,12 @@ try:
     """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_analysis_results_user_id ON analysis_results(user_id);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_task_queue_user_id ON task_queue(user_id);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_task_queue_created_at ON task_queue(created_at);
     """)
     print("✅ 索引创建成功")
 

@@ -91,7 +91,7 @@ bcrypt = Bcrypt(app)
 # 内存存储（保留用于向后兼容）
 HISTORY_DB = []
 LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
-TASK_QUEUE = {}  # 存储异步任务状态 {task_id: {status, result, progress, error}}
+# TASK_QUEUE 已迁移到数据库，不再使用内存字典
 
 # 汇率配置
 USD_TO_CNY = 7.2
@@ -123,6 +123,59 @@ def admin_required(f):
 # ============================================
 # 核心工具函数
 # ============================================
+
+def create_task(task_id, user_id, session_id):
+    """创建任务记录"""
+    try:
+        db.execute("""
+            INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (task_id, user_id, session_id, 'pending', '任务已创建'))
+        logger.info(f"✅ 任务 {task_id} 已写入数据库")
+    except Exception as e:
+        logger.error(f"❌ 创建任务失败: {e}")
+
+def update_task(task_id, status=None, progress=None, result=None, error=None):
+    """更新任务状态"""
+    try:
+        updates = []
+        params = []
+
+        if status is not None:
+            updates.append("status = %s")
+            params.append(status)
+        if progress is not None:
+            updates.append("progress = %s")
+            params.append(progress)
+        if result is not None:
+            updates.append("result = %s")
+            params.append(result)
+        if error is not None:
+            updates.append("error = %s")
+            params.append(error)
+
+        if updates:
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(task_id)
+
+            sql = f"UPDATE task_queue SET {', '.join(updates)} WHERE task_id = %s"
+            db.execute(sql, tuple(params))
+    except Exception as e:
+        logger.error(f"❌ 更新任务状态失败: {e}")
+
+def get_task(task_id):
+    """获取任务状态"""
+    try:
+        task = db.query_one("""
+            SELECT task_id, status, progress, result, error
+            FROM task_queue
+            WHERE task_id = %s
+        """, (task_id,))
+        return task
+    except Exception as e:
+        logger.error(f"❌ 获取任务状态失败: {e}")
+        return None
+
 
 def call_gemini(prompt, image=None, timeout=60):
     """调用通义千问 API"""
@@ -279,8 +332,7 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
     try:
         logger.info(f"📝 更新任务状态为 processing...")
-        TASK_QUEUE[task_id]['status'] = 'processing'
-        TASK_QUEUE[task_id]['progress'] = '正在初始化...'
+        update_task(task_id, status='processing', progress='正在初始化...')
         logger.info(f"✅ 任务状态更新成功")
 
         content = ""
@@ -289,12 +341,11 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
         # 路径 A: 文件上传分析
         if file_data:
-            TASK_QUEUE[task_id]['progress'] = '正在处理文件...'
+            update_task(task_id, progress='正在处理文件...')
             mode, res = process_uploaded_file(file_data)
 
             if mode == "ERROR":
-                TASK_QUEUE[task_id]['status'] = 'failed'
-                TASK_QUEUE[task_id]['error'] = res
+                update_task(task_id, status='failed', error=res)
                 return
 
             if mode == "IMAGE":
@@ -308,12 +359,11 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
         # 路径 B: 社交媒体链接抓取分析
         elif url:
             logger.info(f"🌐 开始处理 URL: {url}")
-            TASK_QUEUE[task_id]['progress'] = '正在抓取社媒数据...'
+            update_task(task_id, progress='正在抓取社媒数据...')
 
             if not apify_client:
                 logger.error("❌ Apify 客户端未初始化")
-                TASK_QUEUE[task_id]['status'] = 'failed'
-                TASK_QUEUE[task_id]['error'] = "APIFY_TOKEN 未配置"
+                update_task(task_id, status='failed', error="APIFY_TOKEN 未配置")
                 return
 
             try:
@@ -333,14 +383,13 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
 
                 logger.info("⏳ 等待爬虫完成（最长 180 秒）...")
-                TASK_QUEUE[task_id]['progress'] = '等待爬虫完成（约30-60秒）...'
+                update_task(task_id, progress='等待爬虫完成（约30-60秒）...')
                 run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)
                 logger.info(f"✅ 爬虫完成，状态: {run['status']}")
 
                 if run['status'] != 'SUCCEEDED':
                     logger.error(f"❌ 爬虫任务失败: {run['status']}")
-                    TASK_QUEUE[task_id]['status'] = 'failed'
-                    TASK_QUEUE[task_id]['error'] = f"爬虫任务失败: {run['status']}"
+                    update_task(task_id, status='failed', error=f"爬虫任务失败: {run['status']}")
                     return
 
                 # 获取数据
@@ -363,8 +412,7 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 total_comments = len(items)  # 记录评论数
 
                 if not items:
-                    TASK_QUEUE[task_id]['status'] = 'failed'
-                    TASK_QUEUE[task_id]['error'] = "未发现公开评论"
+                    update_task(task_id, status='failed', error="未发现公开评论")
                     return
 
                 # 分批处理评论
@@ -376,7 +424,7 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                     batch = items[i:i+batch_size]
                     batch_num = i // batch_size + 1
 
-                    TASK_QUEUE[task_id]['progress'] = f'AI 分析中：第 {batch_num}/{total_batches} 批...'
+                    update_task(task_id, progress=f'AI 分析中：第 {batch_num}/{total_batches} 批...')
                     logger.info(f"🔄 处理第 {batch_num}/{total_batches} 批（{len(batch)} 条评论）...")
 
                     batch_content = "\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
@@ -435,7 +483,7 @@ IMPORTANT:
                         continue
 
                 # 生成 HTML 表格
-                TASK_QUEUE[task_id]['progress'] = '生成报告...'
+                update_task(task_id, progress='生成报告...')
                 logger.info(f"📝 生成最终报告，共 {len(all_results)} 条有效评论...")
 
                 # 按分类排序
@@ -485,13 +533,11 @@ IMPORTANT:
                 import traceback
                 logger.error(f"❌ 完整堆栈:\n{traceback.format_exc()}")
 
-                TASK_QUEUE[task_id]['status'] = 'failed'
-                TASK_QUEUE[task_id]['error'] = error_msg
+                update_task(task_id, status='failed', error=error_msg)
                 return
 
         else:
-            TASK_QUEUE[task_id]['status'] = 'failed'
-            TASK_QUEUE[task_id]['error'] = "请提供链接或文件"
+            update_task(task_id, status='failed', error="请提供链接或文件")
             return
 
         # 保存历史记录
@@ -502,9 +548,7 @@ IMPORTANT:
             log_usage(user_id, username, department, 'sentiment', total_comments, total_tokens)
 
         # 任务完成
-        TASK_QUEUE[task_id]['status'] = 'completed'
-        TASK_QUEUE[task_id]['result'] = result
-        TASK_QUEUE[task_id]['progress'] = '分析完成！'
+        update_task(task_id, status='completed', result=result, progress='分析完成！')
         logger.info(f"✅ 任务 {task_id} 完成")
 
     except Exception as e:
@@ -514,14 +558,12 @@ IMPORTANT:
         import traceback
         logger.error(f"❌ 完整堆栈:\n{traceback.format_exc()}")
 
-        TASK_QUEUE[task_id]['status'] = 'failed'
-        TASK_QUEUE[task_id]['error'] = error_msg
-        TASK_QUEUE[task_id]['progress'] = '任务失败'
+        update_task(task_id, status='failed', error=error_msg, progress='任务失败')
 
 # ============================================
 # 基础路由
 # ============================================
-
+)
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     """登录页面"""
@@ -714,13 +756,8 @@ def analyze():
     username = session.get('username', 'unknown')
     department = session.get('department', '未知')
 
-    # 初始化任务状态
-    TASK_QUEUE[task_id] = {
-        'status': 'pending',
-        'progress': '任务已创建',
-        'result': None,
-        'error': None
-    }
+    # 创建任务记录到数据库
+    create_task(task_id, user_id, session_id)
 
     # 启动后台线程处理任务
     thread = threading.Thread(
@@ -743,10 +780,11 @@ def analyze():
 @app.route('/task_status/<task_id>')
 def task_status(task_id):
     """查询任务状态"""
-    if task_id not in TASK_QUEUE:
+    task = get_task(task_id)
+
+    if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    task = TASK_QUEUE[task_id]
     return jsonify({
         'status': task['status'],
         'progress': task['progress'],
