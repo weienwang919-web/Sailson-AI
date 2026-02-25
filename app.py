@@ -97,7 +97,7 @@ LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 USD_TO_CNY = 7.2
 
 # ============================================
-# 任务恢复机制
+# 任务恢复机制（定义，稍后调用）
 # ============================================
 
 def recover_interrupted_tasks():
@@ -121,9 +121,6 @@ def recover_interrupted_tasks():
                 )
     except Exception as e:
         logger.error(f"❌ 恢复任务失败: {e}")
-
-# 在应用启动时恢复任务
-recover_interrupted_tasks()
 
 # ============================================
 # 装饰器：权限控制
@@ -204,6 +201,11 @@ def get_task(task_id):
     except Exception as e:
         logger.error(f"❌ 获取任务状态失败: {e}")
         return None
+
+# ============================================
+# 启动时恢复被中断的任务
+# ============================================
+recover_interrupted_tasks()
 
 
 def call_gemini(prompt, image=None, timeout=60):
