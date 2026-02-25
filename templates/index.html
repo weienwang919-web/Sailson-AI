@@ -398,40 +398,46 @@
     <div class="footer">© 2026 Sailson Interactive. Powered by Google Cloud Vertex AI.</div>
 
     <script>
-        // 1. Chart.js 配置 (完全按照你的要求，无坐标轴，极简风)
-        const commonOptions = { 
-            responsive: true, 
-            maintainAspectRatio: false, 
-            plugins: { legend: { display: false }, tooltip: { enabled: false } }, // 禁用 tooltip 让它纯展示
-            scales: { x: { display: false }, y: { display: false } }, 
-            elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } },
-            animation: { duration: 2000, easing: 'easeOutQuart' } // 让图表画得慢一点，更优雅
-        };
+        // 页面加载时执行
+        document.addEventListener("DOMContentLoaded", () => {
+            // 1. Chart.js 配置 (完全按照你的要求，无坐标轴，极简风)
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: { x: { display: false }, y: { display: false } },
+                elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } },
+                animation: { duration: 2000, easing: 'easeOutQuart' }
+            };
 
-        // 蓝色曲线 (平滑)
-        const ctx1 = document.getElementById('chart1').getContext('2d');
-        const gradient1 = ctx1.createLinearGradient(0, 0, 0, 60);
-        gradient1.addColorStop(0, 'rgba(41, 98, 255, 0.1)');
-        gradient1.addColorStop(1, 'rgba(41, 98, 255, 0)');
-        
-        new Chart(ctx1, { 
-            type: 'line', 
-            data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [12, 19, 15, 25, 22, 30, 28], borderColor: '#2962FF', borderWidth: 2, fill: true, backgroundColor: gradient1 }] }, 
-            options: commonOptions 
-        });
+            // 蓝色曲线 (平滑)
+            const ctx1 = document.getElementById('chart1').getContext('2d');
+            const gradient1 = ctx1.createLinearGradient(0, 0, 0, 60);
+            gradient1.addColorStop(0, 'rgba(41, 98, 255, 0.1)');
+            gradient1.addColorStop(1, 'rgba(41, 98, 255, 0)');
 
-        // 绿色曲线 (波动)
-        new Chart(document.getElementById('chart2'), { 
-            type: 'line', 
-            data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [50, 52, 48, 55, 53, 58, 60], borderColor: '#00C853', borderWidth: 2, tension: 0.3 }] }, 
-            options: commonOptions 
-        });
+            new Chart(ctx1, {
+                type: 'line',
+                data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [12, 19, 15, 25, 22, 30, 28], borderColor: '#2962FF', borderWidth: 2, fill: true, backgroundColor: gradient1 }] },
+                options: commonOptions
+            });
 
-        // 红色柱状图
-        new Chart(document.getElementById('chart3'), { 
-            type: 'bar', 
-            data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [40, 60, 45, 70, 55, 80, 65], backgroundColor: '#FF3B30', borderRadius: 2, barThickness: 6 }] }, 
-            options: commonOptions 
+            // 绿色曲线 (波动)
+            new Chart(document.getElementById('chart2'), {
+                type: 'line',
+                data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [50, 52, 48, 55, 53, 58, 60], borderColor: '#00C853', borderWidth: 2, tension: 0.3 }] },
+                options: commonOptions
+            });
+
+            // 红色柱状图
+            new Chart(document.getElementById('chart3'), {
+                type: 'bar',
+                data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [40, 60, 45, 70, 55, 80, 65], backgroundColor: '#FF3B30', borderRadius: 2, barThickness: 6 }] },
+                options: commonOptions
+            });
+
+            // 加载数据
+            loadDashboardStats();
         });
 
         // 1. 加载真实数据
@@ -537,11 +543,6 @@
                 updateCount();
             });
         }
-
-        // 页面加载时执行
-        document.addEventListener("DOMContentLoaded", () => {
-            loadDashboardStats();
-        });
     </script>
 </body>
 </html>
