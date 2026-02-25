@@ -9,21 +9,168 @@
     <style>
         :root { --primary-color: #D32F2F; --bg-color: #FAFAFA; --sidebar-width: 260px; }
         body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; height: 100vh; display: flex; margin: 0; overflow: hidden; }
-        
+
         /* 侧边栏：保持简洁白 */
-        .sidebar { width: var(--sidebar-width); background: #fff; border-right: 1px solid #eee; padding: 20px; display: flex; flex-direction: column; flex-shrink: 0; }
+        .sidebar {
+            width: var(--sidebar-width);
+            background: #fff;
+            border-right: 1px solid #eee;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
         .logo-area { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; cursor: pointer; }
         .logo-img { height: 32px; }
+
+        /* 搜索框 */
+        .search-box {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+        }
+        .search-box:focus {
+            outline: none;
+            border-color: #D32F2F;
+            box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.1);
+        }
+
+        /* 筛选标签 */
+        .filter-tags {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .filter-tag {
+            padding: 6px 12px;
+            border-radius: 16px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: #f5f5f5;
+            color: #666;
+            border: 1px solid transparent;
+        }
+        .filter-tag.active {
+            background: #FFEBEE;
+            color: #D32F2F;
+            border-color: #D32F2F;
+        }
+        .filter-tag:hover {
+            background: #e8e8e8;
+        }
+
         .history-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; }
-        .history-item { padding: 10px; font-size: 0.85rem; color: #555; cursor: pointer; border-radius: 6px; margin-bottom: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-        .history-item:hover { background: #F5F5F7; }
+        .history-item {
+            padding: 12px;
+            font-size: 0.85rem;
+            color: #555;
+            cursor: pointer;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            overflow: hidden;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .history-item:hover { background: #F5F5F7; transform: translateX(4px); }
         .history-item.active { background: #FFEBEE; color: var(--primary-color); font-weight: 600; }
+        .history-item-icon {
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+        .history-item-content {
+            flex: 1;
+            min-width: 0;
+        }
+        .history-item-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 4px;
+        }
+        .history-item-time {
+            font-size: 0.7rem;
+            color: #999;
+        }
 
         /* 主区域布局：左小右大比例 */
         .main-content { flex: 1; padding: 30px; overflow-y: auto; display: flex; justify-content: center; }
         .container-box { width: 100%; max-width: 1200px; }
-        
+
         .glass-card { background: #fff; border: 1px solid #E5E5E5; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); height: 100%; }
+
+        /* 示例提示 */
+        .example-hint {
+            margin-top: 10px;
+            padding: 12px;
+            background: #FFF9F9;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #666;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .example-hint a {
+            color: #D32F2F;
+            text-decoration: none;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .example-hint a:hover {
+            text-decoration: underline;
+        }
+
+        /* 空状态设计 */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+        .empty-state h3 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: #333;
+        }
+        .empty-state p {
+            font-size: 1rem;
+            color: #999;
+            max-width: 500px;
+            margin: 0 auto 30px;
+            line-height: 1.6;
+        }
+        .btn-tutorial {
+            background: #D32F2F;
+            color: white;
+            padding: 12px 30px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+        .btn-tutorial:hover {
+            background: #B71C1C;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(211, 47, 47, 0.3);
+        }
 
         /* 输入控件样式 */
         .form-control, .form-select { padding: 12px; border-radius: 10px; border: 1px solid #E0E0E0; margin-bottom: 15px; font-size: 0.9rem; }
@@ -56,6 +203,15 @@
             <span style="font-weight: 700; font-size: 1.1rem;">竞品监控</span>
         </div>
         <button onclick="location.reload()" class="btn btn-outline-danger w-100 mb-4" style="border-radius: 10px;">+ 新监控任务</button>
+
+        <input type="text" class="search-box" placeholder="🔍 搜索历史报告..." id="searchBox" oninput="filterHistory()">
+
+        <div class="filter-tags">
+            <span class="filter-tag active" onclick="filterByTime('all')">全部</span>
+            <span class="filter-tag" onclick="filterByTime('today')">今天</span>
+            <span class="filter-tag" onclick="filterByTime('week')">本周</span>
+        </div>
+
         <div class="text-muted small fw-bold mb-2">历史监控报告</div>
         <ul class="history-list" id="historyList"></ul>
         <a href="/" style="margin-top:auto; text-decoration:none; color:#666; font-size:0.9rem;">← 返回首页</a>
@@ -69,13 +225,17 @@
                         <h6 class="fw-bold mb-3">📡 监控配置</h6>
                         <label class="small text-muted mb-1">竞品 TikTok URL</label>
                         <input type="text" id="urlInput" class="form-control" placeholder="粘贴主页链接...">
-                        
+                        <div class="example-hint">
+                            <span>💡 示例：https://www.tiktok.com/@username</span>
+                            <a onclick="fillExample()">使用示例</a>
+                        </div>
+
                         <label class="small text-muted mb-1">监控时间段</label>
                         <div class="row g-2 mb-3">
                             <div class="col-6"><input type="date" id="startDate" class="form-control mb-0"></div>
                             <div class="col-6"><input type="date" id="endDate" class="form-control mb-0"></div>
                         </div>
-                        
+
                         <button onclick="startMonitor()" id="runBtn" class="btn-submit">🚀 启动云端探测</button>
                         <div class="mt-4 p-3 rounded bg-light">
                             <small class="text-muted">💡 提示：系统将自动同步云端视频数据，为您精准分析互动爆发点及内容特征。</small>
@@ -90,12 +250,16 @@
                             <h5 class="mt-4 fw-bold">🕵️ 正在云端同步数据...</h5>
                             <p class="text-muted">已连接 Apify 实时抓取该时间段内的视频指标</p>
                         </div>
-                        <div id="reportOutput">
-                            <div class="text-center py-5 mt-5 opacity-25">
-                                <div style="font-size: 70px;">📊</div>
-                                <h5 class="mt-3">报告将在此处生成</h5>
-                            </div>
+
+                        <!-- 空状态 -->
+                        <div id="emptyState" class="empty-state">
+                            <div class="empty-state-icon">📡</div>
+                            <h3>开始你的第一次竞品监控</h3>
+                            <p>输入竞品 TikTok 主页链接和时间范围，我们将自动抓取视频数据并生成详细的竞争分析报告。</p>
+                            <a href="#" class="btn-tutorial" onclick="showTutorial(); return false;">查看使用教程</a>
                         </div>
+
+                        <div id="reportOutput" style="display:none;"></div>
                     </div>
                 </div>
             </div>
@@ -103,6 +267,78 @@
     </main>
 
     <script>
+        let allHistory = []; // 存储所有历史记录
+        let currentFilter = 'all'; // 当前时间筛选
+
+        // 填充示例链接
+        function fillExample() {
+            document.getElementById('urlInput').value = 'https://www.tiktok.com/@username';
+        }
+
+        // 显示教程
+        function showTutorial() {
+            alert('使用教程：\n\n1. 输入竞品 TikTok 主页链接\n2. 选择监控时间范围（建议 7-30 天）\n3. 点击"启动云端探测"按钮\n4. 等待 1-2 分钟完成数据抓取\n5. 查看详细的竞品分析报告\n\n报告包含：播放量、点赞数、评论数、分享数等核心指标');
+        }
+
+        // 搜索历史记录
+        function filterHistory() {
+            const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+            const filtered = allHistory.filter(item =>
+                item.title.toLowerCase().includes(searchTerm)
+            );
+            renderHistory(filtered);
+        }
+
+        // 按时间筛选
+        function filterByTime(filter) {
+            currentFilter = filter;
+
+            // 更新标签样式
+            document.querySelectorAll('.filter-tag').forEach(tag => {
+                tag.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            renderHistory(allHistory);
+        }
+
+        // 渲染历史记录
+        function renderHistory(items) {
+            const list = document.getElementById('historyList');
+            if (!items || items.length === 0) {
+                list.innerHTML = '<li style="padding: 20px; text-align: center; color: #999;">暂无历史记录</li>';
+                return;
+            }
+
+            list.innerHTML = items.map(item => `
+                <li class="history-item" onclick="loadRecord(${item.id})">
+                    <div class="history-item-icon">📊</div>
+                    <div class="history-item-content">
+                        <div class="history-item-title">${item.title}</div>
+                        <div class="history-item-time">刚刚</div>
+                    </div>
+                </li>
+            `).join('');
+        }
+
+        async function loadRecord(id) {
+            try {
+                const r = await fetch(`/get_record/${id}`);
+                const d = await r.json();
+                document.getElementById('reportOutput').style.display = 'block';
+                document.getElementById('emptyState').style.display = 'none';
+                document.getElementById('reportOutput').innerHTML = d.result;
+
+                // 更新活跃状态
+                document.querySelectorAll('.history-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                event.target.closest('.history-item').classList.add('active');
+            } catch(e) {
+                alert('加载记录失败：' + e.message);
+            }
+        }
+
         // 初始化日期：最近 7 天
         window.onload = () => {
             const end = new Date();
