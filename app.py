@@ -364,6 +364,22 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
     logger.info(f"👤 用户信息: user_id={user_id}, username={username}, department={department}")
     logger.info(f"📋 任务参数: url={url}, has_file={file_data is not None}")
 
+    # 在线程中创建新的 Apify 客户端（避免线程安全问题）
+    thread_apify_client = None
+    if APIFY_TOKEN:
+        try:
+            logger.info("🔧 在后台线程中初始化 Apify 客户端...")
+            thread_apify_client = ApifyClient(
+                token=APIFY_TOKEN,
+                max_retries=3,
+                min_delay_between_retries_millis=500
+            )
+            logger.info("✅ 线程 Apify 客户端初始化成功")
+        except Exception as e:
+            logger.error(f"❌ 线程 Apify 客户端初始化失败: {e}")
+            update_task(task_id, status='failed', error=f"Apify 客户端初始化失败: {e}")
+            return
+
     # 追踪成本数据
     total_tokens = 0
     total_comments = 0
@@ -399,9 +415,9 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
             logger.info(f"🌐 开始处理 URL: {url}")
             update_task(task_id, progress='正在抓取社媒数据...')
 
-            if not apify_client:
+            if not thread_apify_client:
                 logger.error("❌ Apify 客户端未初始化")
-                update_task(task_id, status='failed', error="APIFY_TOKEN 未配置")
+                update_task(task_id, status='failed', error="APIFY_TOKEN 未配置或初始化失败")
                 return
 
             try:
@@ -417,15 +433,42 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 }
 
                 logger.info("🚀 启动 Apify 爬虫...")
+                logger.info("📞 正在调用 Apify API...")
+                logger.info(f"   Actor: apify/facebook-comments-scraper")
+                logger.info(f"   Input: {run_input}")
+
+                # 使用 signal 设置超时（30 秒）
+                import signal
+
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Apify .start() 调用超时（30秒）")
+
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(30)  # 30 秒超时
+
                 try:
-                    run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
+                    run = thread_apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
+                    signal.alarm(0)  # 取消超时
+                    logger.info(f"✅ Apify API 返回成功")
+                    logger.info(f"   返回类型: {type(run)}")
+                    logger.info(f"   Run ID: {run.get('id') if run else 'None'}")
+
+                    if not run or 'id' not in run:
+                        raise ValueError(f"Apify 返回无效: {run}")
+
                     logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+
+                except TimeoutError as timeout_error:
+                    signal.alarm(0)
+                    raise timeout_error
+
                 except Exception as start_error:
+                    signal.alarm(0)
                     error_msg = f"启动爬虫失败: {str(start_error)}"
                     logger.error(f"❌ {error_msg}")
-                    logger.error(f"❌ 错误类型: {type(start_error).__name__}")
+                    logger.error(f"   错误类型: {type(start_error).__name__}")
                     import traceback
-                    logger.error(f"❌ 堆栈:\n{traceback.format_exc()}")
+                    logger.error(f"   堆栈:\n{traceback.format_exc()}")
                     update_task(task_id, status='failed', error=error_msg)
                     return
 
@@ -433,10 +476,17 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 update_task(task_id, progress='等待爬虫完成（约30-60秒）...')
 
                 try:
-                    run = apify_client.run(run['id']).wait_for_finish(wait_secs=480)
-                    logger.info(f"✅ 爬虫完成，状态: {run['status']}")
+                    logger.info("📡 开始轮询 Apify 任务状态...")
+                    start_time = time.time()
+
+                    run = thread_apify_client.run(run['id']).wait_for_finish(wait_secs=480)
+
+                    elapsed = time.time() - start_time
+                    logger.info(f"✅ 爬虫完成，状态: {run['status']}，耗时: {elapsed:.1f}秒")
+
                 except Exception as wait_error:
-                    error_msg = f"等待爬虫完成失败: {str(wait_error)}"
+                    elapsed = time.time() - start_time if 'start_time' in locals() else 0
+                    error_msg = f"等待爬虫完成失败（耗时 {elapsed:.1f}秒）: {str(wait_error)}"
                     logger.error(f"❌ {error_msg}")
                     update_task(task_id, status='failed', error=error_msg)
                     return
@@ -448,7 +498,7 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
                 # 获取数据
                 logger.info("📦 开始获取爬虫数据...")
-                dataset_client = apify_client.dataset(run["defaultDatasetId"])
+                dataset_client = thread_apify_client.dataset(run["defaultDatasetId"])
                 items = []
                 offset = 0
                 limit = 1000
