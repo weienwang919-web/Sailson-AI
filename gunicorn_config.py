@@ -18,10 +18,16 @@ threads = 4
 # 超时时间（秒）- 增加到 600 秒，因为爬虫需要时间
 timeout = 600
 
+# 优雅关闭超时 - 给正在执行的任务足够时间完成
+graceful_timeout = 120
+
+# 保持连接时间
+keepalive = 5
+
 # 日志配置
 accesslog = "-"
 errorlog = "-"
 loglevel = "info"
 
-# 优雅重启
-graceful_timeout = 30
+# 预加载应用（提高启动速度）
+preload_app = True

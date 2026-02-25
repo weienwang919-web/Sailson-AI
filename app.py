@@ -97,6 +97,35 @@ LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 USD_TO_CNY = 7.2
 
 # ============================================
+# 任务恢复机制
+# ============================================
+
+def recover_interrupted_tasks():
+    """恢复被中断的任务"""
+    try:
+        # 查找所有 processing 状态的任务（说明被中断了）
+        interrupted_tasks = db.query_all("""
+            SELECT task_id FROM task_queue
+            WHERE status = 'processing'
+            AND created_at > NOW() - INTERVAL '1 hour'
+        """)
+
+        if interrupted_tasks:
+            logger.warning(f"⚠️ 发现 {len(interrupted_tasks)} 个被中断的任务，标记为失败")
+            for task in interrupted_tasks:
+                update_task(
+                    task['task_id'],
+                    status='failed',
+                    error='服务重启导致任务中断',
+                    progress='任务已中断'
+                )
+    except Exception as e:
+        logger.error(f"❌ 恢复任务失败: {e}")
+
+# 在应用启动时恢复任务
+recover_interrupted_tasks()
+
+# ============================================
 # 装饰器：权限控制
 # ============================================
 
