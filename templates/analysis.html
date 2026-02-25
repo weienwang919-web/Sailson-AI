@@ -143,12 +143,12 @@
                 const url = document.getElementById('urlInput').value;
                 if(!url) return alert('请输入链接');
                 formData.append('url', url);
-                loadingText.innerHTML = "🕵️ 正在云端抓取社媒数据，请稍候...<br><small>（连接社交平台约需 15-30 秒）</small>";
+                loadingText.innerHTML = "🕵️ 任务已提交，正在后台处理...<br><small>（预计需要 2-3 分钟，请耐心等待）</small>";
             } else {
                 const file = document.getElementById('fileInput').files[0];
                 if(!file) return alert('请选择文件');
                 formData.append('file', file);
-                loadingText.innerText = "🧠 AI 正在解析文件并进行洞察...";
+                loadingText.innerText = "🧠 任务已提交，正在后台处理...";
             }
 
             loading.style.display = 'block';
@@ -157,17 +157,61 @@
             btn.innerText = "🚀 任务执行中...";
 
             try {
+                // 提交任务
                 const resp = await fetch('/analyze', { method:'POST', body: formData });
                 const data = await resp.json();
-                
-                loading.style.display = 'none';
-                resContainer.style.display = 'block';
-                resArea.innerHTML = data.result;
-                loadHistory();
+
+                if (data.task_id) {
+                    // 开始轮询任务状态
+                    pollTaskStatus(data.task_id);
+                } else {
+                    throw new Error('未返回任务ID');
+                }
             } catch(e) {
                 loading.style.display = 'none';
-                alert('执行出错，请检查 API 余额或网络连接');
-            } finally {
+                alert('任务提交失败：' + e.message);
+                btn.disabled = false;
+                btn.innerText = "✨ 立即分析";
+            }
+        }
+
+        async function pollTaskStatus(taskId) {
+            const loading = document.getElementById('loading');
+            const loadingText = document.getElementById('loadingText');
+            const resContainer = document.getElementById('resultContainer');
+            const resArea = document.getElementById('resultArea');
+            const btn = document.getElementById('analyzeBtn');
+
+            try {
+                const resp = await fetch(`/task_status/${taskId}`);
+                const data = await resp.json();
+
+                // 更新进度提示
+                if (data.progress) {
+                    loadingText.innerHTML = `⏳ ${data.progress}<br><small>任务ID: ${taskId.substring(0, 8)}...</small>`;
+                }
+
+                if (data.status === 'completed') {
+                    // 任务完成
+                    loading.style.display = 'none';
+                    resContainer.style.display = 'block';
+                    resArea.innerHTML = data.result;
+                    loadHistory();
+                    btn.disabled = false;
+                    btn.innerText = "✨ 立即分析";
+                } else if (data.status === 'failed') {
+                    // 任务失败
+                    loading.style.display = 'none';
+                    alert('❌ 分析失败：' + (data.error || '未知错误'));
+                    btn.disabled = false;
+                    btn.innerText = "✨ 立即分析";
+                } else {
+                    // 继续轮询（每3秒查询一次）
+                    setTimeout(() => pollTaskStatus(taskId), 3000);
+                }
+            } catch(e) {
+                loading.style.display = 'none';
+                alert('查询任务状态失败：' + e.message);
                 btn.disabled = false;
                 btn.innerText = "✨ 立即分析";
             }

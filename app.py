@@ -4,6 +4,8 @@ import datetime
 import time
 import logging
 import pandas as pd
+import uuid
+import threading
 from io import BytesIO
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
@@ -83,6 +85,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'sailson_secure_key')
 HISTORY_DB = []
 LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
+TASK_QUEUE = {}  # 存储异步任务状态 {task_id: {status, result, progress, error}}
 
 # ============================================
 # 核心工具函数
@@ -165,6 +168,227 @@ def call_veo_api(prompt):
     time.sleep(3)
     return "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"
 
+
+def process_analysis_task(task_id, url, file_data, session_id):
+    """异步处理分析任务"""
+    try:
+        TASK_QUEUE[task_id]['status'] = 'processing'
+        TASK_QUEUE[task_id]['progress'] = '正在初始化...'
+
+        content = ""
+        img = None
+        source_title = "未知"
+
+        # 路径 A: 文件上传分析
+        if file_data:
+            TASK_QUEUE[task_id]['progress'] = '正在处理文件...'
+            mode, res = process_uploaded_file(file_data)
+
+            if mode == "ERROR":
+                TASK_QUEUE[task_id]['status'] = 'failed'
+                TASK_QUEUE[task_id]['error'] = res
+                return
+
+            if mode == "IMAGE":
+                img = res
+                content = "分析图片中的反馈内容"
+            else:
+                content = res
+
+            source_title = f"文件: {file_data.filename[:15]}"
+
+        # 路径 B: 社交媒体链接抓取分析
+        elif url:
+            TASK_QUEUE[task_id]['progress'] = '正在抓取社媒数据...'
+
+            if not apify_client:
+                TASK_QUEUE[task_id]['status'] = 'failed'
+                TASK_QUEUE[task_id]['error'] = "APIFY_TOKEN 未配置"
+                return
+
+            try:
+                run_input = {
+                    "startUrls": [{"url": url}],
+                    "resultsLimit": 1000,
+                    "maxComments": 1000,
+                    "maxPostCount": 1,
+                    "maxCommentsPerPost": 1000,
+                    "maxRepliesPerComment": 0,
+                    "scrapeCommentReplies": False
+                }
+
+                run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
+                logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+
+                TASK_QUEUE[task_id]['progress'] = '等待爬虫完成（约30-60秒）...'
+                run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)
+
+                if run['status'] != 'SUCCEEDED':
+                    TASK_QUEUE[task_id]['status'] = 'failed'
+                    TASK_QUEUE[task_id]['error'] = f"爬虫任务失败: {run['status']}"
+                    return
+
+                # 获取数据
+                dataset_client = apify_client.dataset(run["defaultDatasetId"])
+                items = []
+                offset = 0
+                limit = 1000
+
+                while True:
+                    batch = dataset_client.list_items(offset=offset, limit=limit).items
+                    if not batch:
+                        break
+                    items.extend(batch)
+                    if len(batch) < limit:
+                        break
+                    offset += limit
+
+                logger.info(f"✅ 总共获取到 {len(items)} 条数据")
+
+                if not items:
+                    TASK_QUEUE[task_id]['status'] = 'failed'
+                    TASK_QUEUE[task_id]['error'] = "未发现公开评论"
+                    return
+
+                # 分批处理评论
+                batch_size = 50
+                all_results = []
+                total_batches = (len(items) + batch_size - 1) // batch_size
+
+                for i in range(0, len(items), batch_size):
+                    batch = items[i:i+batch_size]
+                    batch_num = i // batch_size + 1
+
+                    TASK_QUEUE[task_id]['progress'] = f'AI 分析中：第 {batch_num}/{total_batches} 批...'
+                    logger.info(f"🔄 处理第 {batch_num}/{total_batches} 批（{len(batch)} 条评论）...")
+
+                    batch_content = "\\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
+
+                    batch_prompt = f"""
+Analyze these comments and categorize them. Output ONLY a JSON array.
+
+Comments:
+{batch_content}
+
+Categories (Chinese only):
+1. 外挂作弊 - hackers, cheating
+2. 游戏优化 - lag, crashes
+3. 游戏Bug - glitches, errors
+4. 充值退款 - payment issues
+5. 新模式/地图/平衡性建议 - new content requests
+6. 其他 - spam, praise
+
+Output format (JSON array only, no markdown):
+[
+  {{{{
+    "text": "comment text",
+    "category": "外挂作弊",
+    "sentiment": "负面",
+    "language": "英语",
+    "analysis": "详细分析内容"
+  }}}},
+  ...
+]
+
+IMPORTANT:
+- Output ONLY valid JSON array
+- Skip "其他" category
+- Use Chinese for category, sentiment, language, and analysis
+- Language options (MUST be one of these): 英语, 菲律宾语, 泰语, 越南语, 印尼语, 马来语
+- Identify the language accurately based on the text
+- Analysis requirements:
+  * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)
+  * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)
+  * Include: main issue, player emotion, key details
+"""
+
+                    result = call_gemini(batch_prompt, timeout=60)
+
+                    # 解析 JSON 结果
+                    try:
+                        import json
+                        import re
+                        clean_result = re.sub(r'```json\\s*|\\s*```', '', result).strip()
+                        batch_data = json.loads(clean_result)
+                        all_results.extend(batch_data)
+                        logger.info(f"✅ 第 {batch_num} 批完成，获得 {len(batch_data)} 条有效结果")
+                    except Exception as e:
+                        logger.error(f"❌ 第 {batch_num} 批解析失败: {e}")
+                        continue
+
+                # 生成 HTML 表格
+                TASK_QUEUE[task_id]['progress'] = '生成报告...'
+                logger.info(f"📝 生成最终报告，共 {len(all_results)} 条有效评论...")
+
+                # 按分类排序
+                category_order = ["外挂作弊", "游戏优化", "游戏Bug", "充值退款", "新模式/地图/平衡性建议"]
+                all_results.sort(key=lambda x: category_order.index(x.get('category', '其他')) if x.get('category') in category_order else 999)
+
+                # 生成 HTML
+                html_rows = []
+                for idx, item in enumerate(all_results, 1):
+                    html_rows.append(f"""
+                    <tr>
+                        <td>{idx}</td>
+                        <td style="white-space: pre-wrap; word-break: break-word;">{item.get('text', '')}</td>
+                        <td><strong>{item.get('category', '')}</strong></td>
+                        <td>{item.get('sentiment', '')}</td>
+                        <td>{item.get('language', '')}</td>
+                        <td style="white-space: pre-wrap; word-break: break-word;">{item.get('analysis', '')}</td>
+                    </tr>
+                    """)
+
+                result = f"""
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th style="width:40px;">#</th>
+                            <th style="width:25%;">原始评论</th>
+                            <th style="width:100px;">归类</th>
+                            <th style="width:70px;">情感</th>
+                            <th style="width:60px;">语言</th>
+                            <th>简要分析</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {''.join(html_rows)}
+                    </tbody>
+                </table>
+                """
+
+                # 保存结果用于导出
+                LATEST_ANALYSIS_RESULTS[session_id] = all_results
+                source_title = f"FB: {url[:15]}..."
+
+            except Exception as e:
+                TASK_QUEUE[task_id]['status'] = 'failed'
+                TASK_QUEUE[task_id]['error'] = f"爬虫任务失败: {str(e)}"
+                logger.error(f"❌ 爬虫任务失败: {e}")
+                import traceback
+                traceback.print_exc()
+                return
+
+        else:
+            TASK_QUEUE[task_id]['status'] = 'failed'
+            TASK_QUEUE[task_id]['error'] = "请提供链接或文件"
+            return
+
+        # 保存历史记录
+        save_history(source_title, result, 'sentiment')
+
+        # 任务完成
+        TASK_QUEUE[task_id]['status'] = 'completed'
+        TASK_QUEUE[task_id]['result'] = result
+        TASK_QUEUE[task_id]['progress'] = '分析完成！'
+        logger.info(f"✅ 任务 {task_id} 完成")
+
+    except Exception as e:
+        TASK_QUEUE[task_id]['status'] = 'failed'
+        TASK_QUEUE[task_id]['error'] = f"系统错误: {str(e)}"
+        logger.error(f"❌ 任务 {task_id} 失败: {e}")
+        import traceback
+        traceback.print_exc()
+
 # ============================================
 # 基础路由
 # ============================================
@@ -239,7 +463,7 @@ def sentiment_tool():
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    """舆情分析 API"""
+    """舆情分析 API - 异步版本"""
     logger.info("\n" + "=" * 60)
     logger.info("📥 收到舆情分析请求")
     logger.info(f"🔑 DASHSCOPE_API_KEY: {'✅' if DASHSCOPE_API_KEY else '❌'}")
@@ -247,233 +471,50 @@ def analyze():
 
     url = request.form.get('url')
     file = request.files.get('file')
-    content = ""
-    img = None
-    source_title = "未知"
 
-    try:
-        # 路径 A: 文件上传分析
-        if file:
-            logger.info(f"📁 处理模式: 文件上传")
-            mode, res = process_uploaded_file(file)
+    # 生成任务 ID
+    task_id = str(uuid.uuid4())
+    session_id = session.get('session_id', 'default')
 
-            if mode == "ERROR":
-                logger.info(f"❌ 文件处理失败: {res}")
-                return jsonify({'result': f"❌ {res}"})
+    # 初始化任务状态
+    TASK_QUEUE[task_id] = {
+        'status': 'pending',
+        'progress': '任务已创建',
+        'result': None,
+        'error': None
+    }
 
-            if mode == "IMAGE":
-                img = res
-                content = "分析图片中的反馈内容"
-                logger.info("🖼️ 图片模式")
-            else:
-                content = res
-                logger.info("📊 表格模式")
+    # 启动后台线程处理任务
+    thread = threading.Thread(
+        target=process_analysis_task,
+        args=(task_id, url, file, session_id)
+    )
+    thread.daemon = True
+    thread.start()
 
-            source_title = f"文件: {file.filename[:15]}"
+    logger.info(f"✅ 任务 {task_id} 已创建并启动")
 
-        # 路径 B: 社交媒体链接抓取分析
-        elif url:
-            logger.info(f"🔗 处理模式: 链接爬取")
-            logger.info(f"🔗 目标 URL: {url}")
+    # 立即返回任务 ID
+    return jsonify({
+        'task_id': task_id,
+        'status': 'pending',
+        'message': '任务已提交，正在后台处理...'
+    })
 
-            if not apify_client:
-                error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
-                logger.error(error_msg)
-                return jsonify({'result': error_msg})
 
-            try:
-                logger.info(f"🕵️ 启动 Apify 爬虫...")
-                run_input = {
-                    "startUrls": [{"url": url}],
-                    "resultsLimit": 1000,  # 这是正确的参数名
-                    "maxComments": 1000,
-                    "maxPostCount": 1,
-                    "maxCommentsPerPost": 1000,
-                    "maxRepliesPerComment": 0,  # 不抓取回复，只抓取主评论
-                    "scrapeCommentReplies": False  # 不抓取回复
-                }
+@app.route('/task_status/<task_id>')
+def task_status(task_id):
+    """查询任务状态"""
+    if task_id not in TASK_QUEUE:
+        return jsonify({'error': '任务不存在'}), 404
 
-                logger.info(f"📋 爬虫配置: {run_input}")
-
-                # 使用 start() 启动爬虫
-                run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
-                logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
-
-                # 等待爬虫完成（正确的参数名）
-                logger.info("⏳ 等待爬虫完成...")
-                run = apify_client.run(run['id']).wait_for_finish(wait_secs=180)  # 增加到180秒
-                logger.info(f"✅ 爬虫任务完成，状态: {run['status']}")
-
-                if run['status'] != 'SUCCEEDED':
-                    error_msg = f"❌ 爬虫任务失败，状态: {run['status']}"
-                    logger.error(error_msg)
-                    return jsonify({'result': error_msg})
-
-                # 获取所有数据（可能需要分页）
-                dataset_client = apify_client.dataset(run["defaultDatasetId"])
-                items = []
-                offset = 0
-                limit = 1000
-
-                while True:
-                    batch = dataset_client.list_items(offset=offset, limit=limit).items
-                    if not batch:
-                        break
-                    items.extend(batch)
-                    logger.info(f"📦 已获取 {len(items)} 条数据（本批次: {len(batch)}）...")
-                    if len(batch) < limit:
-                        break
-                    offset += limit
-
-                logger.info(f"✅ 总共获取到 {len(items)} 条数据")
-
-                # 调试：查看 run 的详细信息
-                logger.info(f"🔍 Run 详情: status={run.get('status')}, stats={run.get('stats')}")
-
-                if not items:
-                    warning_msg = "⚠️ 抓取成功但未发现公开评论，请检查链接权限"
-                    logger.warning(warning_msg)
-                    return jsonify({'result': warning_msg})
-
-                # 分批处理评论（每批 50 条）
-                batch_size = 50
-                all_results = []
-
-                logger.info(f"📊 开始分批分析，每批 {batch_size} 条...")
-
-                for i in range(0, len(items), batch_size):
-                    batch = items[i:i+batch_size]
-                    batch_num = i // batch_size + 1
-                    total_batches = (len(items) + batch_size - 1) // batch_size
-
-                    logger.info(f"🔄 处理第 {batch_num}/{total_batches} 批（{len(batch)} 条评论）...")
-
-                    batch_content = "\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
-
-                    # 简化的 Prompt，只做分类
-                    batch_prompt = f"""
-Analyze these comments and categorize them. Output ONLY a JSON array.
-
-Comments:
-{batch_content}
-
-Categories (Chinese only):
-1. 外挂作弊 - hackers, cheating
-2. 游戏优化 - lag, crashes
-3. 游戏Bug - glitches, errors
-4. 充值退款 - payment issues
-5. 新模式/地图/平衡性建议 - new content requests
-6. 其他 - spam, praise
-
-Output format (JSON array only, no markdown):
-[
-  {{
-    "text": "comment text",
-    "category": "外挂作弊",
-    "sentiment": "负面",
-    "language": "英语",
-    "analysis": "详细分析内容"
-  }},
-  ...
-]
-
-IMPORTANT:
-- Output ONLY valid JSON array
-- Skip "其他" category
-- Use Chinese for category, sentiment, language, and analysis
-- Language options (MUST be one of these): 英语, 菲律宾语, 泰语, 越南语, 印尼语, 马来语
-- Identify the language accurately based on the text
-- Analysis requirements:
-  * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)
-  * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)
-  * Include: main issue, player emotion, key details
-"""
-
-                    result = call_gemini(batch_prompt, timeout=60)
-
-                    # 解析 JSON 结果
-                    try:
-                        import json
-                        import re
-                        # 清理可能的 markdown 标记
-                        clean_result = re.sub(r'```json\s*|\s*```', '', result).strip()
-                        batch_data = json.loads(clean_result)
-                        all_results.extend(batch_data)
-                        logger.info(f"✅ 第 {batch_num} 批完成，获得 {len(batch_data)} 条有效结果")
-                    except Exception as e:
-                        logger.error(f"❌ 第 {batch_num} 批解析失败: {e}")
-                        continue
-
-                # 生成 HTML 表格
-                logger.info(f"📝 生成最终报告，共 {len(all_results)} 条有效评论...")
-
-                # 按分类排序
-                category_order = ["外挂作弊", "游戏优化", "游戏Bug", "充值退款", "新模式/地图/平衡性建议"]
-                all_results.sort(key=lambda x: category_order.index(x.get('category', '其他')) if x.get('category') in category_order else 999)
-
-                # 生成 HTML
-                html_rows = []
-                for idx, item in enumerate(all_results, 1):
-                    html_rows.append(f"""
-                    <tr>
-                        <td>{idx}</td>
-                        <td style="white-space: pre-wrap; word-break: break-word;">{item.get('text', '')}</td>
-                        <td><strong>{item.get('category', '')}</strong></td>
-                        <td>{item.get('sentiment', '')}</td>
-                        <td>{item.get('language', '')}</td>
-                        <td style="white-space: pre-wrap; word-break: break-word;">{item.get('analysis', '')}</td>
-                    </tr>
-                    """)
-
-                result = f"""
-                <table class="table table-hover">
-                    <thead>
-                        <tr>
-                            <th style="width:40px;">#</th>
-                            <th style="width:25%;">原始评论</th>
-                            <th style="width:100px;">归类</th>
-                            <th style="width:70px;">情感</th>
-                            <th style="width:60px;">语言</th>
-                            <th>简要分析</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {''.join(html_rows)}
-                    </tbody>
-                </table>
-                """
-
-                # 保存结果用于导出
-                LATEST_ANALYSIS_RESULTS[session.get('session_id', 'default')] = all_results
-
-                source_title = f"FB: {url[:15]}..."
-
-            except Exception as e:
-                error_msg = f"❌ 爬虫任务失败: {str(e)}"
-                logger.error(error_msg)
-                import traceback
-                traceback.print_exc()
-                return jsonify({'result': error_msg})
-
-        else:
-            error_msg = "❌ 错误：请提供链接或文件"
-            logger.error(error_msg)
-            return jsonify({'result': error_msg})
-
-        # 保存历史记录
-        save_history(source_title, result, 'sentiment')
-
-        logger.info("✅ 舆情分析完成")
-        logger.info("=" * 60 + "\n")
-
-        return jsonify({'result': result})
-
-    except Exception as e:
-        error_msg = f"❌ 系统错误: {str(e)}"
-        logger.error(error_msg)
-        import traceback
-        traceback.print_exc()
-        return jsonify({'result': error_msg})
+    task = TASK_QUEUE[task_id]
+    return jsonify({
+        'status': task['status'],
+        'progress': task['progress'],
+        'result': task['result'],
+        'error': task['error']
+    })
 
 # ============================================
 # 功能 2: 竞品监控
