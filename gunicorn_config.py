@@ -12,8 +12,8 @@ workers = 1
 # 使用标准的同步 worker（与 threading 兼容）
 worker_class = "sync"
 
-# 每个 worker 的线程数
-threads = 4
+# 每个 worker 的线程数 - 减少到 1 避免与后台线程冲突
+threads = 1
 
 # 超时时间（秒）- 增加到 600 秒，因为爬虫需要时间
 timeout = 600
@@ -29,5 +29,5 @@ accesslog = "-"
 errorlog = "-"
 loglevel = "info"
 
-# 预加载应用（提高启动速度）
-preload_app = True
+# 预加载应用已禁用 - 避免 Apify 客户端在 fork 后失效
+# preload_app = True

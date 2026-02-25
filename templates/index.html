@@ -342,31 +342,31 @@
 
         <div class="row wip-section">
             <div class="col-12">
-                <div class="feature-card wip-card">
+                <div class="feature-card wip-card" style="cursor: default;">
                     <div class="card-icon">💡</div>
                     <div class="wip-content">
                         <h3 class="card-title" style="margin-bottom: 15px;">需要新功能？</h3>
                         <p class="card-desc" style="margin-bottom: 20px; line-height: 1.8;">
-                            我们正在持续优化平台功能。如果您有任何建议或需求，欢迎通过邮件告诉我们：
+                            我们正在持续优化平台功能。如果您有任何建议或需求，请告诉我们：
                         </p>
-                        <form id="feedbackForm" style="display: flex; gap: 12px; align-items: flex-start;">
+                        <form id="feedbackForm" style="display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;">
                             <input
-                                type="email"
-                                id="userEmail"
-                                placeholder="您的邮箱地址"
+                                type="text"
+                                id="projectName"
+                                placeholder="您的项目名称"
                                 required
-                                style="flex: 1; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem;"
+                                style="flex: 1; min-width: 200px; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem;"
                             >
                             <textarea
                                 id="feedbackText"
                                 placeholder="描述您的需求或建议..."
                                 required
                                 rows="3"
-                                style="flex: 2; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem; resize: vertical;"
+                                style="flex: 2; min-width: 300px; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem; resize: vertical;"
                             ></textarea>
                             <button
                                 type="submit"
-                                style="padding: 12px 24px; background: #2962FF; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap;"
+                                style="padding: 12px 24px; background: #2962FF; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; align-self: flex-start;"
                             >
                                 发送建议
                             </button>
@@ -393,7 +393,7 @@
             document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
                 e.preventDefault();
 
-                const email = document.getElementById('userEmail').value;
+                const projectName = document.getElementById('projectName').value;
                 const feedback = document.getElementById('feedbackText').value;
                 const messageDiv = document.getElementById('feedbackMessage');
                 const submitBtn = e.target.querySelector('button[type="submit"]');
@@ -407,14 +407,14 @@
                     const resp = await fetch('/submit_feedback', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email, feedback })
+                        body: JSON.stringify({ project_name: projectName, feedback })
                     });
 
                     const data = await resp.json();
 
                     if (resp.ok) {
                         messageDiv.style.color = '#2E7D32';
-                        messageDiv.textContent = '✅ 感谢您的反馈！我们会尽快通过邮件回复您。';
+                        messageDiv.textContent = '✅ 感谢您的反馈！我们会尽快回复您。';
                         document.getElementById('feedbackForm').reset();
                     } else {
                         messageDiv.style.color = '#C62828';

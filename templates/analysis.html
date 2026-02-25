@@ -434,8 +434,8 @@
                     btn.disabled = false;
                     btn.innerText = "✨ 立即分析";
                 } else {
-                    // 继续轮询（每3秒查询一次）
-                    setTimeout(() => pollTaskStatus(taskId), 3000);
+                    // 继续轮询（每5秒查询一次，减少数据库压力）
+                    setTimeout(() => pollTaskStatus(taskId), 5000);
                 }
             } catch(e) {
                 loading.style.display = 'none';
