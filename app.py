@@ -242,22 +242,29 @@ def call_gemini(prompt, image=None, timeout=60):
         return error_msg, 0
 
 
-def process_uploaded_file(file):
-    """处理上传的文件（图片或表格）"""
+def process_uploaded_file(file_data):
+    """处理上传的文件（图片或表格）
+
+    Args:
+        file_data: 字典，包含 filename, content, content_type
+    """
     try:
-        fname = file.filename.lower()
+        fname = file_data['filename'].lower()
+        content = file_data['content']
         logger.info(f"📁 处理文件: {fname}")
 
         if fname.endswith(('.png', '.jpg', '.jpeg', '.webp')):
             logger.info("🖼️ 识别为图片文件")
-            return "IMAGE", Image.open(file)
+            from io import BytesIO
+            return "IMAGE", Image.open(BytesIO(content))
 
         if fname.endswith(('.xlsx', '.csv')):
             logger.info("📊 识别为表格文件")
+            from io import BytesIO
             if fname.endswith('.csv'):
-                df = pd.read_csv(file)
+                df = pd.read_csv(BytesIO(content))
             else:
-                df = pd.read_excel(file)
+                df = pd.read_excel(BytesIO(content))
             return "TEXT", df.to_string(index=False, max_rows=50)
 
         return "ERROR", "不支持的文件格式"
@@ -796,13 +803,27 @@ def analyze():
     username = session.get('username', 'unknown')
     department = session.get('department', '未知')
 
+    # 在主线程中读取文件内容（避免跨线程访问 Flask FileStorage 对象）
+    file_data = None
+    if file:
+        try:
+            file_data = {
+                'filename': file.filename,
+                'content': file.read(),  # 读取文件内容到内存
+                'content_type': file.content_type
+            }
+            logger.info(f"📁 已读取文件: {file.filename}, 大小: {len(file_data['content'])} 字节")
+        except Exception as e:
+            logger.error(f"❌ 读取文件失败: {e}")
+            return jsonify({'error': f'读取文件失败: {str(e)}'}), 400
+
     # 创建任务记录到数据库
     create_task(task_id, user_id, session_id)
 
     # 启动后台线程处理任务
     thread = threading.Thread(
         target=process_analysis_task,
-        args=(task_id, url, file, session_id, user_id, username, department)
+        args=(task_id, url, file_data, session_id, user_id, username, department)
     )
     thread.daemon = True
     thread.start()
