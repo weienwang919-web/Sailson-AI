@@ -265,12 +265,9 @@ def log_usage(user_id, username, department, function_type, comments_count, ai_t
         return 0
 
 
-def process_analysis_task(task_id, url, file_data, session_id):
+def process_analysis_task(task_id, url, file_data, session_id, user_id, username, department):
     """异步处理分析任务"""
-    # 获取当前用户信息
-    user_id = session.get('user_id')
-    username = session.get('username', 'unknown')
-    department = session.get('department', '未知')
+    # 用户信息已从主线程传入，不再从 session 获取
 
     # 追踪成本数据
     total_tokens = 0
@@ -368,7 +365,7 @@ def process_analysis_task(task_id, url, file_data, session_id):
                     TASK_QUEUE[task_id]['progress'] = f'AI 分析中：第 {batch_num}/{total_batches} 批...'
                     logger.info(f"🔄 处理第 {batch_num}/{total_batches} 批（{len(batch)} 条评论）...")
 
-                    batch_content = "\\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
+                    batch_content = "\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
 
                     batch_prompt = f"""
 Analyze these comments and categorize them. Output ONLY a JSON array.
@@ -629,15 +626,15 @@ def submit_feedback():
     """接收用户反馈并发送邮件"""
     try:
         data = request.json
-        user_email = data.get('email')
+        project_name = data.get('project_name')
         feedback = data.get('feedback')
 
-        if not user_email or not feedback:
+        if not project_name or not feedback:
             return jsonify({'error': '请填写完整信息'}), 400
 
         # 记录到日志
         logger.info(f"📧 收到用户反馈")
-        logger.info(f"   用户邮箱: {user_email}")
+        logger.info(f"   项目名称: {project_name}")
         logger.info(f"   反馈内容: {feedback}")
 
         # 保存到数据库（可选）
@@ -645,7 +642,7 @@ def submit_feedback():
             db.execute("""
                 INSERT INTO feedback (user_email, content, created_at)
                 VALUES (%s, %s, NOW())
-            """, (user_email, feedback))
+            """, (project_name, feedback))
         except Exception as db_error:
             # 如果表不存在，只记录日志
             logger.warning(f"⚠️ 保存反馈到数据库失败（表可能不存在）: {db_error}")
@@ -654,7 +651,7 @@ def submit_feedback():
         # 这里可以集成邮件服务（如 SendGrid, AWS SES）
         # send_email(
         #     to="admin@sailson.com",
-        #     subject=f"新用户反馈 - {user_email}",
+        #     subject=f"新用户反馈 - {project_name}",
         #     body=feedback
         # )
 
@@ -691,6 +688,11 @@ def analyze():
     task_id = str(uuid.uuid4())
     session_id = session.get('session_id', 'default')
 
+    # 在主线程中提取用户信息（避免线程安全问题）
+    user_id = session.get('user_id')
+    username = session.get('username', 'unknown')
+    department = session.get('department', '未知')
+
     # 初始化任务状态
     TASK_QUEUE[task_id] = {
         'status': 'pending',
@@ -702,7 +704,7 @@ def analyze():
     # 启动后台线程处理任务
     thread = threading.Thread(
         target=process_analysis_task,
-        args=(task_id, url, file, session_id)
+        args=(task_id, url, file, session_id, user_id, username, department)
     )
     thread.daemon = True
     thread.start()
