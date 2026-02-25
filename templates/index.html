@@ -13,6 +13,13 @@
         :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
         body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); -webkit-font-smoothing: antialiased; }
 
+        /* 渐变动画背景 */
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
         /* 顶部导航 */
         .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .logo-img { height: 40px; width: auto; } /* 微调 Logo 高度，防止过大 */
@@ -26,6 +33,26 @@
             max-width: 900px;
             margin: 0 auto;
             position: relative;
+            overflow: hidden;
+        }
+        .hero-section::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg,
+                rgba(41, 98, 255, 0.03) 0%,
+                rgba(255, 59, 48, 0.03) 25%,
+                rgba(41, 98, 255, 0.03) 50%,
+                rgba(255, 59, 48, 0.03) 75%,
+                rgba(41, 98, 255, 0.03) 100%
+            );
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
+            z-index: 0;
+            opacity: 0.6;
         }
         .hero-section > * { position: relative; z-index: 1; }
         .hero-title { font-size: 4.5rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
