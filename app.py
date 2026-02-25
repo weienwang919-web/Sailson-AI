@@ -72,19 +72,12 @@ else:
     logger.warning("⚠️ 警告: DASHSCOPE_API_KEY 未配置，AI 功能将不可用")
     qwen_client = None
 
-# 初始化爬虫引擎
+# 不再初始化全局 Apify 客户端，改用 REST API
+# 只检查 token 是否存在
 if APIFY_TOKEN:
-    try:
-        apify_client = ApifyClient(APIFY_TOKEN)
-        # 验证 token 是否有效
-        apify_client.user().get()
-        logger.info("✅ Apify 客户端初始化成功，Token 有效")
-    except Exception as e:
-        logger.error(f"❌ Apify 客户端初始化失败或 Token 无效: {e}")
-        apify_client = None
+    logger.info("✅ APIFY_TOKEN 已配置")
 else:
     logger.warning("⚠️ 警告: APIFY_TOKEN 未配置，爬虫功能将不可用")
-    apify_client = None
 
 # Flask 应用初始化
 app = Flask(__name__)
@@ -996,7 +989,7 @@ def monitor_competitors():
         logger.info(f"🎯 目标 URL: {target_url}")
         logger.info(f"📅 时间段: {start_dt_str} ~ {end_dt_str}")
 
-        if not apify_client:
+        if not APIFY_TOKEN:
             error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
             logger.error(error_msg)
             return jsonify({'error': error_msg}), 400
