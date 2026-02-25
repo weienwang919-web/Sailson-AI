@@ -13,13 +13,6 @@
         :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
         body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); -webkit-font-smoothing: antialiased; }
 
-        /* 渐变动画背景 */
-        @keyframes gradientShift {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-
         /* 顶部导航 */
         .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .logo-img { height: 40px; width: auto; } /* 微调 Logo 高度，防止过大 */
@@ -33,26 +26,6 @@
             max-width: 900px;
             margin: 0 auto;
             position: relative;
-            overflow: hidden;
-        }
-        .hero-section::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: linear-gradient(45deg,
-                rgba(41, 98, 255, 0.03) 0%,
-                rgba(255, 59, 48, 0.03) 25%,
-                rgba(41, 98, 255, 0.03) 50%,
-                rgba(255, 59, 48, 0.03) 75%,
-                rgba(41, 98, 255, 0.03) 100%
-            );
-            background-size: 400% 400%;
-            animation: gradientShift 15s ease infinite;
-            z-index: 0;
-            opacity: 0.6;
         }
         .hero-section > * { position: relative; z-index: 1; }
         .hero-title { font-size: 4.5rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -148,15 +121,9 @@
             pointer-events: none;
         }
         .stat-card.loading .stat-value {
-            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-            background-size: 200% 100%;
-            animation: shimmer 1.5s infinite;
+            background: #f0f0f0;
             color: transparent;
             border-radius: 8px;
-        }
-        @keyframes shimmer {
-            0% { background-position: -200% 0; }
-            100% { background-position: 200% 0; }
         }
         .stat-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
         .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -400,185 +367,50 @@
     <script>
         // 页面加载时执行
         document.addEventListener("DOMContentLoaded", () => {
-            // 1. Chart.js 配置 (完全按照你的要求，无坐标轴，极简风)
-            const commonOptions = {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                scales: { x: { display: false }, y: { display: false } },
-                elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.4 } },
-                animation: { duration: 2000, easing: 'easeOutQuart' }
-            };
+            // 禁用所有 Chart.js 图表（暂时）
+            console.log('页面加载完成');
 
-            // 蓝色曲线 (平滑)
-            const ctx1 = document.getElementById('chart1').getContext('2d');
-            const gradient1 = ctx1.createLinearGradient(0, 0, 0, 60);
-            gradient1.addColorStop(0, 'rgba(41, 98, 255, 0.1)');
-            gradient1.addColorStop(1, 'rgba(41, 98, 255, 0)');
-
-            new Chart(ctx1, {
-                type: 'line',
-                data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [12, 19, 15, 25, 22, 30, 28], borderColor: '#2962FF', borderWidth: 2, fill: true, backgroundColor: gradient1 }] },
-                options: commonOptions
-            });
-
-            // 绿色曲线 (波动)
-            new Chart(document.getElementById('chart2'), {
-                type: 'line',
-                data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [50, 52, 48, 55, 53, 58, 60], borderColor: '#00C853', borderWidth: 2, tension: 0.3 }] },
-                options: commonOptions
-            });
-
-            // 红色柱状图
-            new Chart(document.getElementById('chart3'), {
-                type: 'bar',
-                data: { labels: [1,2,3,4,5,6,7], datasets: [{ data: [40, 60, 45, 70, 55, 80, 65], backgroundColor: '#FF3B30', borderRadius: 2, barThickness: 6 }] },
-                options: commonOptions
-            });
-
-            // 加载数据
+            // 简单加载数据，不要任何动画
             loadDashboardStats();
         });
 
-        // 1. 加载真实数据
+        // 加载数据 - 极简版，无动画
         async function loadDashboardStats() {
-            // 设置 5 秒超时
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-
             try {
                 const resp = await fetch('/dashboard_stats', {
-                    signal: controller.signal
+                    signal: AbortSignal.timeout(5000)
                 });
-                clearTimeout(timeoutId);
-
-                if (!resp.ok) {
-                    throw new Error(`HTTP ${resp.status}`);
-                }
-
                 const data = await resp.json();
 
-                // 更新数据目标值
-                document.getElementById('stat-comments').setAttribute('data-target', data.comments);
-                document.getElementById('stat-analyses').setAttribute('data-target', data.analyses);
-                document.getElementById('stat-tokens').setAttribute('data-target', data.tokens);
+                // 直接设置数值，不要动画
+                document.getElementById('stat-comments').textContent = data.comments.toLocaleString();
+                document.getElementById('stat-analyses').textContent = data.analyses.toLocaleString();
+                document.getElementById('stat-tokens').textContent = data.tokens.toLocaleString();
 
-                // 更新 Hero 区域统计
+                // 更新 Hero 统计
                 document.getElementById('total-comments-stat').textContent = data.comments.toLocaleString();
-
-                // 计算活跃用户数（简化版：分析次数 / 10）
                 const activeUsers = Math.max(1, Math.floor(data.analyses / 10));
                 document.getElementById('active-users-stat').textContent = activeUsers;
 
-                // 移除加载状态
+                // 移除 loading 状态
                 document.querySelectorAll('.stat-card').forEach(card => {
                     card.classList.remove('loading');
                 });
 
-                // 卡片1：增长率指标
-                const growthIndicator = document.getElementById('growth-indicator');
-                if (data.growth > 0) {
-                    growthIndicator.textContent = `+${data.growth}%`;
-                    growthIndicator.style.background = '#E8F5E9';
-                    growthIndicator.style.color = '#2E7D32';
-                } else if (data.growth < 0) {
-                    growthIndicator.textContent = `${data.growth}%`;
-                    growthIndicator.style.background = '#FFEBEE';
-                    growthIndicator.style.color = '#C62828';
-                } else {
-                    growthIndicator.textContent = 'New';
-                    growthIndicator.style.background = '#F5F5F5';
-                    growthIndicator.style.color = '#757575';
-                }
-
-                // 卡片2：分析次数状态
-                const analysesIndicator = document.getElementById('analyses-indicator');
-                if (data.analyses > 50) {
-                    analysesIndicator.textContent = 'High Usage';
-                    analysesIndicator.style.background = '#FFF3E0';
-                    analysesIndicator.style.color = '#E65100';
-                } else if (data.analyses > 20) {
-                    analysesIndicator.textContent = 'Active';
-                    analysesIndicator.style.background = '#E8F5E9';
-                    analysesIndicator.style.color = '#2E7D32';
-                } else {
-                    analysesIndicator.textContent = 'Low Usage';
-                    analysesIndicator.style.background = '#F5F5F5';
-                    analysesIndicator.style.color = '#757575';
-                }
-
-                // 卡片3：Token 消耗状态
-                const tokensIndicator = document.getElementById('tokens-indicator');
-                if (data.tokens > 100000) {
-                    tokensIndicator.textContent = 'High Load';
-                    tokensIndicator.style.background = '#FFEBEE';
-                    tokensIndicator.style.color = '#C62828';
-                } else if (data.tokens > 50000) {
-                    tokensIndicator.textContent = 'Normal';
-                    tokensIndicator.style.background = '#DEEBFF';
-                    tokensIndicator.style.color = '#0747A6';
-                } else {
-                    tokensIndicator.textContent = 'Stable';
-                    tokensIndicator.style.background = '#E8F5E9';
-                    tokensIndicator.style.color = '#2E7D32';
-                }
-
-                // 启动数字滚动动画
-                startCounters();
+                console.log('数据加载成功', data);
             } catch (e) {
-                console.error('加载数据失败:', e);
-                clearTimeout(timeoutId);
+                console.error('加载失败:', e);
 
-                // 失败时移除加载状态并使用默认值
+                // 移除 loading 状态
                 document.querySelectorAll('.stat-card').forEach(card => {
                     card.classList.remove('loading');
                 });
 
                 // 设置默认值
-                document.getElementById('stat-comments').setAttribute('data-target', '0');
-                document.getElementById('stat-analyses').setAttribute('data-target', '0');
-                document.getElementById('stat-tokens').setAttribute('data-target', '0');
-
-                startCounters();
+                document.getElementById('stat-comments').textContent = '0';
+                document.getElementById('stat-analyses').textContent = '0';
+                document.getElementById('stat-tokens').textContent = '0';
             }
-        }
-
-        // 2. 数字滚动脚本 (Count Up)
-        let counterTimers = []; // 存储定时器 ID
-        let countersRunning = false; // 防止重复执行
-
-        function startCounters() {
-            // 如果已经在运行，先清理
-            if (countersRunning) {
-                counterTimers.forEach(timer => clearTimeout(timer));
-                counterTimers = [];
-            }
-            countersRunning = true;
-
-            const counters = document.querySelectorAll('.counter');
-            counters.forEach(counter => {
-                const target = +counter.getAttribute('data-target');
-                let current = 0;
-                const increment = target / 80; // 速度控制
-                const duration = 1600; // 总时长 1.6 秒
-                const stepTime = 20; // 每步 20ms
-                const steps = duration / stepTime;
-
-                let step = 0;
-                const updateCount = () => {
-                    if (step < steps) {
-                        current += increment;
-                        counter.innerText = Math.ceil(current).toLocaleString();
-                        const timer = setTimeout(updateCount, stepTime);
-                        counterTimers.push(timer);
-                        step++;
-                    } else {
-                        counter.innerText = target.toLocaleString();
-                        countersRunning = false;
-                    }
-                };
-                updateCount();
-            });
         }
     </script>
 </body>
