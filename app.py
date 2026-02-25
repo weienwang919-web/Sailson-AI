@@ -269,13 +269,19 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
     """异步处理分析任务"""
     # 用户信息已从主线程传入，不再从 session 获取
 
+    logger.info(f"🔄 后台线程已启动，任务ID: {task_id}")
+    logger.info(f"👤 用户信息: user_id={user_id}, username={username}, department={department}")
+    logger.info(f"📋 任务参数: url={url}, has_file={file_data is not None}")
+
     # 追踪成本数据
     total_tokens = 0
     total_comments = 0
 
     try:
+        logger.info(f"📝 更新任务状态为 processing...")
         TASK_QUEUE[task_id]['status'] = 'processing'
         TASK_QUEUE[task_id]['progress'] = '正在初始化...'
+        logger.info(f"✅ 任务状态更新成功")
 
         content = ""
         img = None
@@ -491,11 +497,15 @@ IMPORTANT:
         logger.info(f"✅ 任务 {task_id} 完成")
 
     except Exception as e:
-        TASK_QUEUE[task_id]['status'] = 'failed'
-        TASK_QUEUE[task_id]['error'] = f"系统错误: {str(e)}"
+        error_msg = f"系统错误: {str(e)}"
         logger.error(f"❌ 任务 {task_id} 失败: {e}")
+        logger.error(f"❌ 错误类型: {type(e).__name__}")
         import traceback
-        traceback.print_exc()
+        logger.error(f"❌ 完整堆栈:\n{traceback.format_exc()}")
+
+        TASK_QUEUE[task_id]['status'] = 'failed'
+        TASK_QUEUE[task_id]['error'] = error_msg
+        TASK_QUEUE[task_id]['progress'] = '任务失败'
 
 # ============================================
 # 基础路由
