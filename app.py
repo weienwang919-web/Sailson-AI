@@ -433,16 +433,40 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 }
 
                 logger.info("🚀 启动 Apify 爬虫...")
-                logger.info("📞 正在调用 Apify API...")
+                logger.info("📞 正在调用 Apify REST API...")
                 logger.info(f"   Actor: apify/facebook-comments-scraper")
                 logger.info(f"   Input: {run_input}")
 
                 try:
-                    start_time = time.time()
-                    run = thread_apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
-                    elapsed = time.time() - start_time
+                    # 使用 requests 直接调用 Apify REST API（带超时）
+                    import requests
 
-                    logger.info(f"✅ Apify API 返回成功（耗时: {elapsed:.2f}秒）")
+                    start_time = time.time()
+                    api_url = "https://api.apify.com/v2/acts/apify~facebook-comments-scraper/runs"
+                    headers = {
+                        "Authorization": f"Bearer {APIFY_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+
+                    logger.info(f"   API URL: {api_url}")
+                    logger.info(f"   使用 requests 库，超时: 30秒")
+
+                    response = requests.post(
+                        api_url,
+                        json=run_input,
+                        headers=headers,
+                        timeout=30  # 30 秒超时
+                    )
+
+                    elapsed = time.time() - start_time
+                    logger.info(f"✅ HTTP 请求完成（耗时: {elapsed:.2f}秒）")
+                    logger.info(f"   状态码: {response.status_code}")
+
+                    if response.status_code != 201:
+                        raise ValueError(f"Apify API 返回错误状态码: {response.status_code}, 响应: {response.text}")
+
+                    run = response.json()['data']
+                    logger.info(f"✅ Apify API 返回成功")
                     logger.info(f"   返回类型: {type(run)}")
                     logger.info(f"   Run ID: {run.get('id') if run else 'None'}")
 
@@ -451,6 +475,11 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
                     logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
 
+                except requests.Timeout:
+                    error_msg = "Apify API 调用超时（30秒）"
+                    logger.error(f"❌ {error_msg}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
                 except Exception as start_error:
                     error_msg = f"启动爬虫失败: {str(start_error)}"
                     logger.error(f"❌ {error_msg}")
