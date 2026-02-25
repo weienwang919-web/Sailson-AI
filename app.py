@@ -550,6 +550,118 @@ def health_check():
     """健康检查端点 - 用于 Render 监控"""
     return jsonify({"status": "ok", "service": "Sailson AI"}), 200
 
+
+@app.route('/init-db-secret-20260225')
+def init_database_route():
+    """临时数据库初始化路由（仅用一次）"""
+    try:
+        import psycopg2
+        from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+        DATABASE_URL = os.environ.get('DATABASE_URL')
+        if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cursor = conn.cursor()
+
+        output = []
+        output.append("=" * 60)
+        output.append("🗄️ 开始初始化数据库...")
+        output.append("=" * 60)
+
+        # 创建用户表
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                real_name VARCHAR(100) NOT NULL,
+                department VARCHAR(50) NOT NULL,
+                role VARCHAR(20) NOT NULL DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        output.append("✅ 用户表创建成功")
+
+        # 创建使用记录表
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS usage_logs (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                username VARCHAR(50) NOT NULL,
+                department VARCHAR(50) NOT NULL,
+                function_type VARCHAR(50) NOT NULL,
+                comments_count INTEGER DEFAULT 0,
+                ai_tokens INTEGER DEFAULT 0,
+                ai_cost DECIMAL(10, 4) DEFAULT 0,
+                apify_cost DECIMAL(10, 4) DEFAULT 0,
+                total_cost DECIMAL(10, 4) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        output.append("✅ 使用记录表创建成功")
+
+        # 创建分析结果表
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_results (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                title VARCHAR(255) NOT NULL,
+                result TEXT,
+                type VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        output.append("✅ 分析结果表创建成功")
+
+        # 检查是否已存在管理员
+        cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
+        admin_exists = cursor.fetchone()[0] > 0
+
+        if not admin_exists:
+            # 创建管理员账号
+            password_hash = bcrypt.generate_password_hash('Admin@123').decode('utf-8')
+            cursor.execute("""
+                INSERT INTO users (username, password_hash, real_name, department, role)
+                VALUES (%s, %s, %s, %s, %s)
+            """, ('admin', password_hash, '系统管理员', '管理层', 'admin'))
+            output.append("✅ 管理员账号创建成功")
+            output.append("   用户名: admin")
+            output.append("   密码: Admin@123")
+        else:
+            output.append("⚠️ 管理员账号已存在，跳过创建")
+
+        # 创建索引
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_user_id ON analysis_results(user_id)")
+        output.append("✅ 索引创建成功")
+
+        cursor.close()
+        conn.close()
+
+        output.append("=" * 60)
+        output.append("🎉 数据库初始化完成！")
+        output.append("=" * 60)
+        output.append("")
+        output.append("现在可以使用以下账号登录：")
+        output.append("用户名: admin")
+        output.append("密码: Admin@123")
+
+        return "<pre>" + "\n".join(output) + "</pre>"
+
+    except Exception as e:
+        import traceback
+        error_output = []
+        error_output.append("❌ 数据库初始化失败")
+        error_output.append(str(e))
+        error_output.append("")
+        error_output.append("详细错误：")
+        error_output.append(traceback.format_exc())
+        return "<pre>" + "\n".join(error_output) + "</pre>", 500
+
 # ============================================
 # 功能 1: 舆情分析
 # ============================================
