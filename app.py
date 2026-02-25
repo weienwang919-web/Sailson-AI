@@ -9,12 +9,15 @@ import threading
 from io import BytesIO
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
+from flask_bcrypt import Bcrypt
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 from openai import OpenAI
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
+from functools import wraps
+import database as db
 
 # 加载 .env 文件
 load_dotenv()
@@ -83,9 +86,39 @@ else:
 # Flask 应用初始化
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'sailson_secure_key')
+bcrypt = Bcrypt(app)
+
+# 内存存储（保留用于向后兼容）
 HISTORY_DB = []
 LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 TASK_QUEUE = {}  # 存储异步任务状态 {task_id: {status, result, progress, error}}
+
+# 汇率配置
+USD_TO_CNY = 7.2
+
+# ============================================
+# 装饰器：权限控制
+# ============================================
+
+def login_required(f):
+    """需要登录才能访问"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    """需要管理员权限才能访问"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        if session.get('role') != 'admin':
+            return jsonify({'error': '需要管理员权限'}), 403
+        return f(*args, **kwargs)
+    return decorated_function
 
 # ============================================
 # 核心工具函数
@@ -96,7 +129,7 @@ def call_gemini(prompt, image=None, timeout=60):
     if not qwen_client:
         error_msg = "❌ 错误：DASHSCOPE_API_KEY 未配置"
         logger.error(error_msg)
-        return error_msg
+        return error_msg, 0
 
     model_name = 'qwen-turbo'
 
@@ -113,15 +146,16 @@ def call_gemini(prompt, image=None, timeout=60):
         )
 
         result = response.choices[0].message.content
-        logger.info(f"✅ 通义千问调用成功，返回 {len(result)} 字符")
-        return result
+        tokens = response.usage.total_tokens if hasattr(response, 'usage') else 0
+        logger.info(f"✅ 通义千问调用成功，返回 {len(result)} 字符，消耗 {tokens} tokens")
+        return result, tokens
 
     except Exception as e:
         error_msg = f"⚠️ 通义千问 API 调用失败: {str(e)}"
         logger.error(error_msg)
         import traceback
         traceback.print_exc()
-        return error_msg
+        return error_msg, 0
 
 
 def process_uploaded_file(file):
@@ -169,8 +203,54 @@ def call_veo_api(prompt):
     return "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"
 
 
+def log_usage(user_id, username, department, function_type, comments_count, ai_tokens):
+    """记录使用情况和成本"""
+    try:
+        # 计算成本
+        ai_cost = ai_tokens * 0.008 / 1000  # 通义千问定价
+
+        # 根据功能类型计算 Apify 成本
+        if function_type == 'sentiment':
+            # Facebook 评论：$2.50/1000条
+            apify_cost_usd = comments_count * 2.50 / 1000
+        elif function_type == 'competitor':
+            # TikTok 数据：$3.70/1000条
+            apify_cost_usd = comments_count * 3.70 / 1000
+        else:
+            apify_cost_usd = 0
+
+        apify_cost = apify_cost_usd * USD_TO_CNY  # 转换为人民币
+        total_cost = ai_cost + apify_cost
+
+        # 保存到数据库
+        db.execute("""
+            INSERT INTO usage_logs
+            (user_id, username, department, function_type, comments_count,
+             ai_tokens, ai_cost, apify_cost, total_cost)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (user_id, username, department, function_type, comments_count,
+              ai_tokens, ai_cost, apify_cost, total_cost))
+
+        logger.info(f"💰 成本记录: AI={ai_cost:.4f}元 + Apify={apify_cost:.4f}元 = 总计{total_cost:.4f}元")
+
+        return total_cost
+
+    except Exception as e:
+        logger.error(f"❌ 记录使用情况失败: {e}")
+        return 0
+
+
 def process_analysis_task(task_id, url, file_data, session_id):
     """异步处理分析任务"""
+    # 获取当前用户信息
+    user_id = session.get('user_id')
+    username = session.get('username', 'unknown')
+    department = session.get('department', '未知')
+
+    # 追踪成本数据
+    total_tokens = 0
+    total_comments = 0
+
     try:
         TASK_QUEUE[task_id]['status'] = 'processing'
         TASK_QUEUE[task_id]['progress'] = '正在初始化...'
@@ -244,6 +324,7 @@ def process_analysis_task(task_id, url, file_data, session_id):
                     offset += limit
 
                 logger.info(f"✅ 总共获取到 {len(items)} 条数据")
+                total_comments = len(items)  # 记录评论数
 
                 if not items:
                     TASK_QUEUE[task_id]['status'] = 'failed'
@@ -302,7 +383,8 @@ IMPORTANT:
   * Include: main issue, player emotion, key details
 """
 
-                    result = call_gemini(batch_prompt, timeout=60)
+                    result, tokens = call_gemini(batch_prompt, timeout=60)
+                    total_tokens += tokens
 
                     # 解析 JSON 结果
                     try:
@@ -376,6 +458,10 @@ IMPORTANT:
         # 保存历史记录
         save_history(source_title, result, 'sentiment')
 
+        # 记录使用成本
+        if user_id:
+            log_usage(user_id, username, department, 'sentiment', total_comments, total_tokens)
+
         # 任务完成
         TASK_QUEUE[task_id]['status'] = 'completed'
         TASK_QUEUE[task_id]['result'] = result
@@ -400,13 +486,30 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
 
-        if username == 'admin' and password == '123456':
-            session['logged_in'] = True
-            session['session_id'] = f"{username}_{int(time.time())}"
-            logger.info(f"✅ 用户登录成功: {username}")
-            return redirect(url_for('home'))
-        else:
-            logger.info(f"❌ 登录失败: {username}")
+        try:
+            # 从数据库查询用户
+            user = db.query_one(
+                "SELECT * FROM users WHERE username = %s",
+                (username,)
+            )
+
+            if user and bcrypt.check_password_hash(user['password_hash'], password):
+                session['logged_in'] = True
+                session['user_id'] = user['id']
+                session['username'] = user['username']
+                session['real_name'] = user['real_name']
+                session['department'] = user['department']
+                session['role'] = user['role']
+                session['session_id'] = f"{username}_{int(time.time())}"
+                logger.info(f"✅ 用户登录成功: {username} ({user['real_name']})")
+                return redirect(url_for('home'))
+            else:
+                logger.info(f"❌ 登录失败: {username}")
+                return render_template('login.html', error='用户名或密码错误')
+
+        except Exception as e:
+            logger.error(f"❌ 登录异常: {e}")
+            return render_template('login.html', error='系统错误，请稍后重试')
 
     return render_template('login.html')
 
@@ -414,25 +517,23 @@ def login():
 @app.route('/logout')
 def logout():
     """登出"""
-    session.pop('logged_in', None)
-    logger.info("👋 用户已登出")
+    username = session.get('username', '未知用户')
+    session.clear()
+    logger.info(f"👋 用户已登出: {username}")
     return redirect(url_for('login'))
 
 
 @app.route('/')
+@login_required
 def home():
     """首页"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
-    return render_template('index.html')
+    return render_template('index.html', user=session)
 
 
 @app.route('/debug')
+@login_required
 def debug_page():
     """调试页面"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
-
     debug_info = {
         "status": "Online",
         "qwen_key": bool(DASHSCOPE_API_KEY),
@@ -454,10 +555,9 @@ def health_check():
 # ============================================
 
 @app.route('/sentiment-tool')
+@login_required
 def sentiment_tool():
     """舆情分析工具页面"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
     return render_template('analysis.html')
 
 
@@ -521,10 +621,9 @@ def task_status(task_id):
 # ============================================
 
 @app.route('/competitor-tool')
+@login_required
 def competitor_tool():
     """竞品监控工具页面"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
     return render_template('competitor.html')
 
 
@@ -642,13 +741,24 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
 """
 
         logger.info("🤖 开始调用 Gemini API 生成报告...")
-        result = call_gemini(prompt)
+        result, tokens = call_gemini(prompt)
 
         # 清理 Markdown 代码块标记
         result = result.replace('```html', '').replace('```', '').strip()
 
         # 保存历史记录
         save_history(f"竞品数据:{target_url[20:30]}", result, 'competitor')
+
+        # 记录使用成本
+        if session.get('user_id'):
+            log_usage(
+                session.get('user_id'),
+                session.get('username', 'unknown'),
+                session.get('department', '未知'),
+                'competitor',
+                len(cleaned),  # TikTok 视频数量
+                tokens
+            )
 
         logger.info("✅ 竞品监控完成")
         logger.info("=" * 60 + "\n")
@@ -667,10 +777,9 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
 # ============================================
 
 @app.route('/video-tool')
+@login_required
 def video_tool():
     """视频生成工具页面"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
     return render_template('video.html')
 
 
@@ -841,11 +950,9 @@ def create_excel_by_category(results):
 
 
 @app.route('/export_by_language')
+@login_required
 def export_by_language():
     """按语言导出 Excel"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
-
     session_id = session.get('session_id', 'default')
     results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
 
@@ -878,11 +985,9 @@ def export_by_language():
 
 
 @app.route('/export_by_category')
+@login_required
 def export_by_category():
     """按分类导出 Excel"""
-    if not session.get('logged_in'):
-        return redirect(url_for('login'))
-
     session_id = session.get('session_id', 'default')
     results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
 
@@ -912,6 +1017,168 @@ def export_by_category():
     except Exception as e:
         logger.error(f"❌ 导出失败: {e}")
         return jsonify({'error': str(e)}), 500
+
+# ============================================
+# 统计功能
+# ============================================
+
+@app.route('/my-stats')
+@login_required
+def my_stats():
+    """个人统计页面"""
+    user_id = session.get('user_id')
+
+    # 获取本月统计数据
+    current_month = datetime.datetime.now().strftime('%Y-%m')
+
+    stats_data = db.query_one("""
+        SELECT
+            COUNT(*) as count,
+            COALESCE(SUM(comments_count), 0) as comments,
+            COALESCE(SUM(total_cost), 0) as cost
+        FROM usage_logs
+        WHERE user_id = %s
+          AND TO_CHAR(created_at, 'YYYY-MM') = %s
+    """, (user_id, current_month))
+
+    stats = {
+        'count': stats_data['count'] if stats_data else 0,
+        'comments': stats_data['comments'] if stats_data else 0,
+        'cost': float(stats_data['cost']) if stats_data else 0.0,
+        'avg_cost': float(stats_data['cost']) / stats_data['count'] if stats_data and stats_data['count'] > 0 else 0.0
+    }
+
+    # 获取最近20条使用记录
+    logs = db.query_all("""
+        SELECT *
+        FROM usage_logs
+        WHERE user_id = %s
+        ORDER BY created_at DESC
+        LIMIT 20
+    """, (user_id,))
+
+    return render_template('my_stats.html', stats=stats, logs=logs, user=session)
+
+
+@app.route('/admin')
+@admin_required
+def admin_panel():
+    """管理后台页面"""
+    current_month = datetime.datetime.now().strftime('%Y-%m')
+
+    # 全局统计
+    global_data = db.query_one("""
+        SELECT
+            COALESCE(SUM(total_cost), 0) as total_cost,
+            COUNT(DISTINCT user_id) as active_users,
+            COUNT(*) as total_count
+        FROM usage_logs
+        WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+    """, (current_month,))
+
+    global_stats = {
+        'total_cost': float(global_data['total_cost']) if global_data else 0.0,
+        'active_users': global_data['active_users'] if global_data else 0,
+        'total_count': global_data['total_count'] if global_data else 0,
+        'avg_cost': float(global_data['total_cost']) / global_data['total_count'] if global_data and global_data['total_count'] > 0 else 0.0
+    }
+
+    # 部门统计
+    dept_stats = db.query_all("""
+        SELECT
+            department,
+            COALESCE(SUM(total_cost), 0) as cost,
+            COUNT(*) as count
+        FROM usage_logs
+        WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        GROUP BY department
+        ORDER BY cost DESC
+    """, (current_month,))
+
+    # 用户统计（Top 10）
+    user_stats = db.query_all("""
+        SELECT
+            u.real_name,
+            u.department,
+            COALESCE(SUM(l.total_cost), 0) as cost,
+            COUNT(l.id) as count
+        FROM users u
+        LEFT JOIN usage_logs l ON u.id = l.user_id
+            AND TO_CHAR(l.created_at, 'YYYY-MM') = %s
+        GROUP BY u.id, u.real_name, u.department
+        ORDER BY cost DESC
+        LIMIT 10
+    """, (current_month,))
+
+    # 所有用户列表
+    all_users = db.query_all("""
+        SELECT * FROM users ORDER BY created_at DESC
+    """)
+
+    return render_template('admin.html',
+                         global_stats=global_stats,
+                         dept_stats=dept_stats,
+                         user_stats=user_stats,
+                         all_users=all_users,
+                         user=session)
+
+
+@app.route('/admin/add_user', methods=['POST'])
+@admin_required
+def add_user():
+    """添加新用户"""
+    try:
+        data = request.json
+        username = data.get('username')
+        password = data.get('password')
+        real_name = data.get('real_name')
+        department = data.get('department')
+        role = data.get('role', 'user')
+
+        # 检查用户名是否已存在
+        existing = db.query_one("SELECT id FROM users WHERE username = %s", (username,))
+        if existing:
+            return jsonify({'error': '用户名已存在'}), 400
+
+        # 加密密码
+        password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
+        # 插入用户
+        db.execute("""
+            INSERT INTO users (username, password_hash, real_name, department, role)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (username, password_hash, real_name, department, role))
+
+        logger.info(f"✅ 管理员添加新用户: {username} ({real_name})")
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        logger.error(f"❌ 添加用户失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/admin/delete_user/<int:user_id>', methods=['DELETE'])
+@admin_required
+def delete_user(user_id):
+    """删除用户"""
+    try:
+        # 不允许删除管理员账号
+        user = db.query_one("SELECT username FROM users WHERE id = %s", (user_id,))
+        if user and user['username'] == 'admin':
+            return jsonify({'error': '不能删除管理员账号'}), 403
+
+        # 删除用户
+        db.execute("DELETE FROM users WHERE id = %s", (user_id,))
+
+        logger.info(f"✅ 管理员删除用户: ID={user_id}")
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        logger.error(f"❌ 删除用户失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 # ============================================
 # 应用启动

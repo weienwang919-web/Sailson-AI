@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>我的统计 | Sailson AI</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <style>
+        body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; }
+        .navbar { background: #fff; border-bottom: 1px solid #eee; padding: 15px 30px; }
+        .navbar-brand { font-weight: 700; color: #333; }
+        .nav-link { color: #666; margin: 0 10px; }
+        .nav-link:hover { color: #2962FF; }
+        .container-main { max-width: 1200px; margin: 40px auto; padding: 0 20px; }
+        .stat-card { background: #fff; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 30px; }
+        .stat-number { font-size: 2.5rem; font-weight: 700; color: #2962FF; }
+        .stat-label { color: #999; font-size: 0.9rem; margin-top: 5px; }
+        .table-custom { background: #fff; border-radius: 12px; overflow: hidden; }
+        .table-custom th { background: #f8f9fa; font-weight: 600; padding: 15px; }
+        .table-custom td { padding: 12px 15px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container-fluid">
+            <span class="navbar-brand">Sailson AI - 我的统计</span>
+            <div>
+                <a href="/" class="nav-link d-inline">首页</a>
+                <a href="/sentiment-tool" class="nav-link d-inline">舆情分析</a>
+                <a href="/competitor-tool" class="nav-link d-inline">竞品监控</a>
+                <a href="/my-stats" class="nav-link d-inline">我的统计</a>
+                {% if user.role == 'admin' %}
+                <a href="/admin" class="nav-link d-inline">管理后台</a>
+                {% endif %}
+                <a href="/logout" class="nav-link d-inline">登出</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-main">
+        <h2 class="mb-4">📊 我的使用情况（本月）</h2>
+
+        <div class="row">
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ stats.count }}</div>
+                    <div class="stat-label">使用次数</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ stats.comments }}</div>
+                    <div class="stat-label">处理评论数</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">¥{{ "%.2f"|format(stats.cost) }}</div>
+                    <div class="stat-label">消费金额</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">¥{{ "%.2f"|format(stats.avg_cost) }}</div>
+                    <div class="stat-label">平均成本/次</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <h5 class="mb-3">📋 最近使用记录</h5>
+            <div class="table-responsive">
+                <table class="table table-hover table-custom">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>功能</th>
+                            <th>评论数</th>
+                            <th>AI Tokens</th>
+                            <th>成本</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in logs %}
+                        <tr>
+                            <td>{{ log.created_at.strftime('%m-%d %H:%M') }}</td>
+                            <td>
+                                {% if log.function_type == 'sentiment' %}
+                                舆情分析
+                                {% elif log.function_type == 'competitor' %}
+                                竞品监控
+                                {% else %}
+                                {{ log.function_type }}
+                                {% endif %}
+                            </td>
+                            <td>{{ log.comments_count }}</td>
+                            <td>{{ log.ai_tokens }}</td>
+                            <td>¥{{ "%.2f"|format(log.total_cost) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

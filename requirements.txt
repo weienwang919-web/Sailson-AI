@@ -6,3 +6,5 @@ openai>=1.0.0
 python-dotenv
 apify-client
 gunicorn
+psycopg2-binary
+flask-bcrypt

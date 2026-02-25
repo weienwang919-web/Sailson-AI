@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>管理后台 | Sailson AI</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <style>
+        body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; }
+        .navbar { background: #fff; border-bottom: 1px solid #eee; padding: 15px 30px; }
+        .navbar-brand { font-weight: 700; color: #333; }
+        .nav-link { color: #666; margin: 0 10px; }
+        .nav-link:hover { color: #2962FF; }
+        .container-main { max-width: 1400px; margin: 40px auto; padding: 0 20px; }
+        .stat-card { background: #fff; border-radius: 16px; padding: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 30px; }
+        .stat-number { font-size: 2rem; font-weight: 700; color: #2962FF; }
+        .stat-label { color: #999; font-size: 0.9rem; margin-top: 5px; }
+        .table-custom { background: #fff; border-radius: 12px; overflow: hidden; }
+        .table-custom th { background: #f8f9fa; font-weight: 600; padding: 15px; }
+        .table-custom td { padding: 12px 15px; }
+        .btn-custom { border-radius: 8px; padding: 8px 16px; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container-fluid">
+            <span class="navbar-brand">Sailson AI - 管理后台</span>
+            <div>
+                <a href="/" class="nav-link d-inline">首页</a>
+                <a href="/my-stats" class="nav-link d-inline">我的统计</a>
+                <a href="/admin" class="nav-link d-inline">管理后台</a>
+                <a href="/logout" class="nav-link d-inline">登出</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-main">
+        <h2 class="mb-4">📊 全局统计（本月）</h2>
+
+        <div class="row">
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">¥{{ "%.2f"|format(global_stats.total_cost) }}</div>
+                    <div class="stat-label">总消费</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ global_stats.active_users }}</div>
+                    <div class="stat-label">活跃用户</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ global_stats.total_count }}</div>
+                    <div class="stat-label">总分析次数</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">¥{{ "%.2f"|format(global_stats.avg_cost) }}</div>
+                    <div class="stat-label">平均成本/次</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="stat-card">
+                    <h5 class="mb-3">📈 部门消费排行</h5>
+                    <table class="table table-hover table-custom">
+                        <thead>
+                            <tr>
+                                <th>部门</th>
+                                <th>消费金额</th>
+                                <th>使用次数</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for dept in dept_stats %}
+                            <tr>
+                                <td>{{ dept.department }}</td>
+                                <td>¥{{ "%.2f"|format(dept.cost) }}</td>
+                                <td>{{ dept.count }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="stat-card">
+                    <h5 class="mb-3">👥 用户消费排行（Top 10）</h5>
+                    <table class="table table-hover table-custom">
+                        <thead>
+                            <tr>
+                                <th>用户</th>
+                                <th>部门</th>
+                                <th>消费金额</th>
+                                <th>使用次数</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in user_stats %}
+                            <tr>
+                                <td>{{ user.real_name }}</td>
+                                <td>{{ user.department }}</td>
+                                <td>¥{{ "%.2f"|format(user.cost) }}</td>
+                                <td>{{ user.count }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="m-0">👥 用户管理</h5>
+                <button class="btn btn-primary btn-custom" onclick="showAddUserModal()">➕ 添加新用户</button>
+            </div>
+            <table class="table table-hover table-custom">
+                <thead>
+                    <tr>
+                        <th>用户名</th>
+                        <th>姓名</th>
+                        <th>部门</th>
+                        <th>角色</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in all_users %}
+                    <tr>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.real_name }}</td>
+                        <td>{{ user.department }}</td>
+                        <td>
+                            {% if user.role == 'admin' %}
+                            <span class="badge bg-danger">管理员</span>
+                            {% else %}
+                            <span class="badge bg-primary">用户</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+                        <td>
+                            {% if user.username != 'admin' %}
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteUser({{ user.id }}, '{{ user.username }}')">删除</button>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 添加用户模态框 -->
+    <div class="modal fade" id="addUserModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加新用户</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addUserForm">
+                        <div class="mb-3">
+                            <label class="form-label">用户名</label>
+                            <input type="text" class="form-control" name="username" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">密码</label>
+                            <input type="password" class="form-control" name="password" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">真实姓名</label>
+                            <input type="text" class="form-control" name="real_name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">部门</label>
+                            <select class="form-control" name="department" required>
+                                <option value="项目一组">项目一组</option>
+                                <option value="项目二组">项目二组</option>
+                                <option value="项目三组">项目三组</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">角色</label>
+                            <select class="form-control" name="role" required>
+                                <option value="user">普通用户</option>
+                                <option value="admin">管理员</option>
+                            </select>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="submitAddUser()">添加</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let addUserModal;
+
+        window.onload = function() {
+            addUserModal = new bootstrap.Modal(document.getElementById('addUserModal'));
+        };
+
+        function showAddUserModal() {
+            addUserModal.show();
+        }
+
+        async function submitAddUser() {
+            const form = document.getElementById('addUserForm');
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData);
+
+            try {
+                const resp = await fetch('/admin/add_user', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+
+                const result = await resp.json();
+
+                if (resp.ok) {
+                    alert('✅ 用户添加成功！');
+                    location.reload();
+                } else {
+                    alert('❌ ' + (result.error || '添加失败'));
+                }
+            } catch(e) {
+                alert('❌ 请求失败：' + e.message);
+            }
+        }
+
+        async function deleteUser(userId, username) {
+            if (!confirm(`确定要删除用户 "${username}" 吗？`)) return;
+
+            try {
+                const resp = await fetch(`/admin/delete_user/${userId}`, {
+                    method: 'DELETE'
+                });
+
+                const result = await resp.json();
+
+                if (resp.ok) {
+                    alert('✅ 用户已删除');
+                    location.reload();
+                } else {
+                    alert('❌ ' + (result.error || '删除失败'));
+                }
+            } catch(e) {
+                alert('❌ 请求失败：' + e.message);
+            }
+        }
+    </script>
+</body>
+</html>
