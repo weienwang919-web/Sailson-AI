@@ -410,8 +410,17 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 }
 
                 logger.info("🚀 启动 Apify 爬虫...")
-                run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
-                logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+                try:
+                    run = apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
+                    logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
+                except Exception as start_error:
+                    error_msg = f"启动爬虫失败: {str(start_error)}"
+                    logger.error(f"❌ {error_msg}")
+                    logger.error(f"❌ 错误类型: {type(start_error).__name__}")
+                    import traceback
+                    logger.error(f"❌ 堆栈:\n{traceback.format_exc()}")
+                    update_task(task_id, status='failed', error=error_msg)
+                    return
 
                 logger.info("⏳ 等待爬虫完成（最长 180 秒）...")
                 update_task(task_id, progress='等待爬虫完成（约30-60秒）...')
