@@ -9,14 +9,14 @@ bind = f"0.0.0.0:{os.environ.get('PORT', 5001)}"
 # 只使用 1 个 worker（重要！避免 TASK_QUEUE 不共享）
 workers = 1
 
-# 使用 gevent 异步 worker 提升并发性能
-worker_class = "gevent"
+# 使用标准的同步 worker（与 threading 兼容）
+worker_class = "sync"
 
 # 每个 worker 的线程数
 threads = 4
 
-# 超时时间（秒）
-timeout = 300
+# 超时时间（秒）- 增加到 600 秒，因为爬虫需要时间
+timeout = 600
 
 # 日志配置
 accesslog = "-"
