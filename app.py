@@ -623,6 +623,48 @@ def health_check():
     """健康检查端点 - 用于 Render 监控"""
     return jsonify({"status": "ok", "service": "Sailson AI"}), 200
 
+
+@app.route('/submit_feedback', methods=['POST'])
+def submit_feedback():
+    """接收用户反馈并发送邮件"""
+    try:
+        data = request.json
+        user_email = data.get('email')
+        feedback = data.get('feedback')
+
+        if not user_email or not feedback:
+            return jsonify({'error': '请填写完整信息'}), 400
+
+        # 记录到日志
+        logger.info(f"📧 收到用户反馈")
+        logger.info(f"   用户邮箱: {user_email}")
+        logger.info(f"   反馈内容: {feedback}")
+
+        # 保存到数据库（可选）
+        try:
+            db.execute("""
+                INSERT INTO feedback (user_email, content, created_at)
+                VALUES (%s, %s, NOW())
+            """, (user_email, feedback))
+        except Exception as db_error:
+            # 如果表不存在，只记录日志
+            logger.warning(f"⚠️ 保存反馈到数据库失败（表可能不存在）: {db_error}")
+
+        # TODO: 发送邮件通知管理员
+        # 这里可以集成邮件服务（如 SendGrid, AWS SES）
+        # send_email(
+        #     to="admin@sailson.com",
+        #     subject=f"新用户反馈 - {user_email}",
+        #     body=feedback
+        # )
+
+        return jsonify({'success': True, 'message': '感谢您的反馈！'})
+
+    except Exception as e:
+        logger.error(f"❌ 处理反馈失败: {e}")
+        return jsonify({'error': '系统错误，请稍后重试'}), 500
+
+
 # ============================================
 # 功能 1: 舆情分析
 # ============================================

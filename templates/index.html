@@ -321,7 +321,7 @@
 
     <div class="features-grid container" id="features">
         <div class="row g-4">
-            <div class="col-md-4">
+            <div class="col-md-6">
                 <a href="/sentiment-tool" class="feature-card">
                     <span class="card-badge">最近使用</span>
                     <div class="card-icon">🎮</div>
@@ -330,7 +330,7 @@
                     <div class="card-arrow"><i class="fas fa-arrow-right">→</i></div>
                 </a>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-6">
                 <a href="/competitor-tool" class="feature-card">
                     <div class="card-icon">📡</div>
                     <h3 class="card-title">竞品雷达</h3>
@@ -338,26 +338,42 @@
                     <div class="card-arrow">→</div>
                 </a>
             </div>
-            <div class="col-md-4">
-                <a href="/video-tool" class="feature-card">
-                    <div class="card-icon">🎥</div>
-                    <h3 class="card-title">Veo 视频生成</h3>
-                    <p class="card-desc">Google DeepMind 电影级视频生成模型，营销素材一键出片。</p>
-                    <div class="card-arrow">→</div>
-                </a>
-            </div>
         </div>
 
         <div class="row wip-section">
             <div class="col-12">
-                <a href="/feature-request" class="feature-card wip-card">
-                    <div class="card-icon">🛠️</div>
+                <div class="feature-card wip-card">
+                    <div class="card-icon">💡</div>
                     <div class="wip-content">
-                        <h3 class="card-title" style="margin-bottom: 5px;">更多开发中...</h3>
-                        <p class="card-desc" style="margin-bottom: 0;">没有你想要的？<strong>点击这里提交需求</strong>，我们为您定制。</p>
+                        <h3 class="card-title" style="margin-bottom: 15px;">需要新功能？</h3>
+                        <p class="card-desc" style="margin-bottom: 20px; line-height: 1.8;">
+                            我们正在持续优化平台功能。如果您有任何建议或需求，欢迎通过邮件告诉我们：
+                        </p>
+                        <form id="feedbackForm" style="display: flex; gap: 12px; align-items: flex-start;">
+                            <input
+                                type="email"
+                                id="userEmail"
+                                placeholder="您的邮箱地址"
+                                required
+                                style="flex: 1; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem;"
+                            >
+                            <textarea
+                                id="feedbackText"
+                                placeholder="描述您的需求或建议..."
+                                required
+                                rows="3"
+                                style="flex: 2; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem; resize: vertical;"
+                            ></textarea>
+                            <button
+                                type="submit"
+                                style="padding: 12px 24px; background: #2962FF; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap;"
+                            >
+                                发送建议
+                            </button>
+                        </form>
+                        <div id="feedbackMessage" style="margin-top: 12px; font-size: 0.9rem;"></div>
                     </div>
-                    <div class="card-arrow">+</div>
-                </a>
+                </div>
             </div>
         </div>
     </div>
@@ -372,6 +388,46 @@
 
             // 简单加载数据，不要任何动画
             loadDashboardStats();
+
+            // 反��表单提交
+            document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                const email = document.getElementById('userEmail').value;
+                const feedback = document.getElementById('feedbackText').value;
+                const messageDiv = document.getElementById('feedbackMessage');
+                const submitBtn = e.target.querySelector('button[type="submit"]');
+
+                // 禁用按钮
+                submitBtn.disabled = true;
+                submitBtn.textContent = '发送中...';
+                messageDiv.textContent = '';
+
+                try {
+                    const resp = await fetch('/submit_feedback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email, feedback })
+                    });
+
+                    const data = await resp.json();
+
+                    if (resp.ok) {
+                        messageDiv.style.color = '#2E7D32';
+                        messageDiv.textContent = '✅ 感谢您的反馈！我们会尽快通过邮件回复您。';
+                        document.getElementById('feedbackForm').reset();
+                    } else {
+                        messageDiv.style.color = '#C62828';
+                        messageDiv.textContent = '❌ ' + (data.error || '发送失败，请稍后重试');
+                    }
+                } catch (e) {
+                    messageDiv.style.color = '#C62828';
+                    messageDiv.textContent = '❌ 网络错误，请稍后重试';
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '发送建议';
+                }
+            });
         });
 
         // 加载数据 - 极简版，无动画
