@@ -437,19 +437,12 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                 logger.info(f"   Actor: apify/facebook-comments-scraper")
                 logger.info(f"   Input: {run_input}")
 
-                # 使用 signal 设置超时（30 秒）
-                import signal
-
-                def timeout_handler(signum, frame):
-                    raise TimeoutError("Apify .start() 调用超时（30秒）")
-
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(30)  # 30 秒超时
-
                 try:
+                    start_time = time.time()
                     run = thread_apify_client.actor("apify/facebook-comments-scraper").start(run_input=run_input)
-                    signal.alarm(0)  # 取消超时
-                    logger.info(f"✅ Apify API 返回成功")
+                    elapsed = time.time() - start_time
+
+                    logger.info(f"✅ Apify API 返回成功（耗时: {elapsed:.2f}秒）")
                     logger.info(f"   返回类型: {type(run)}")
                     logger.info(f"   Run ID: {run.get('id') if run else 'None'}")
 
@@ -458,12 +451,7 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
                     logger.info(f"✅ 爬虫任务已启动，Run ID: {run['id']}")
 
-                except TimeoutError as timeout_error:
-                    signal.alarm(0)
-                    raise timeout_error
-
                 except Exception as start_error:
-                    signal.alarm(0)
                     error_msg = f"启动爬虫失败: {str(start_error)}"
                     logger.error(f"❌ {error_msg}")
                     logger.error(f"   错误类型: {type(start_error).__name__}")
