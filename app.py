@@ -185,15 +185,40 @@ def process_uploaded_file(file):
 
 
 def save_history(title, result, type_tag):
-    """保存到历史记录"""
-    record = {
-        'id': len(HISTORY_DB) + 1,
-        'title': f"{title} [{datetime.datetime.now().strftime('%H:%M')}]",
-        'result': result,
-        'type': type_tag
-    }
-    HISTORY_DB.append(record)
-    logger.info(f"💾 已保存历史记录 #{record['id']}: {title}")
+    """保存到历史记录（数据库）"""
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            logger.warning("⚠️ 未登录用户，跳过保存历史记录")
+            return
+
+        # 保存到数据库
+        db.execute("""
+            INSERT INTO analysis_results (user_id, title, result, type)
+            VALUES (%s, %s, %s, %s)
+        """, (user_id, title, result, type_tag))
+
+        logger.info(f"💾 已保存历史记录到数据库: {title}")
+
+        # 同时保存到内存（向后兼容）
+        record = {
+            'id': len(HISTORY_DB) + 1,
+            'title': f"{title} [{datetime.datetime.now().strftime('%H:%M')}]",
+            'result': result,
+            'type': type_tag
+        }
+        HISTORY_DB.append(record)
+
+    except Exception as e:
+        logger.error(f"❌ 保存历史记录失败: {e}")
+        # 失败时至少保存到内存
+        record = {
+            'id': len(HISTORY_DB) + 1,
+            'title': f"{title} [{datetime.datetime.now().strftime('%H:%M')}]",
+            'result': result,
+            'type': type_tag
+        }
+        HISTORY_DB.append(record)
 
 
 def call_veo_api(prompt):
@@ -550,118 +575,6 @@ def health_check():
     """健康检查端点 - 用于 Render 监控"""
     return jsonify({"status": "ok", "service": "Sailson AI"}), 200
 
-
-@app.route('/init-db-secret-20260225')
-def init_database_route():
-    """临时数据库初始化路由（仅用一次）"""
-    try:
-        import psycopg2
-        from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-
-        DATABASE_URL = os.environ.get('DATABASE_URL')
-        if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
-            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        cursor = conn.cursor()
-
-        output = []
-        output.append("=" * 60)
-        output.append("🗄️ 开始初始化数据库...")
-        output.append("=" * 60)
-
-        # 创建用户表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username VARCHAR(50) UNIQUE NOT NULL,
-                password_hash VARCHAR(255) NOT NULL,
-                real_name VARCHAR(100) NOT NULL,
-                department VARCHAR(50) NOT NULL,
-                role VARCHAR(20) NOT NULL DEFAULT 'user',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        output.append("✅ 用户表创建成功")
-
-        # 创建使用记录表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS usage_logs (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                username VARCHAR(50) NOT NULL,
-                department VARCHAR(50) NOT NULL,
-                function_type VARCHAR(50) NOT NULL,
-                comments_count INTEGER DEFAULT 0,
-                ai_tokens INTEGER DEFAULT 0,
-                ai_cost DECIMAL(10, 4) DEFAULT 0,
-                apify_cost DECIMAL(10, 4) DEFAULT 0,
-                total_cost DECIMAL(10, 4) DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        output.append("✅ 使用记录表创建成功")
-
-        # 创建分析结果表
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS analysis_results (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                title VARCHAR(255) NOT NULL,
-                result TEXT,
-                type VARCHAR(50) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        output.append("✅ 分析结果表创建成功")
-
-        # 检查是否已存在管理员
-        cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
-        admin_exists = cursor.fetchone()[0] > 0
-
-        if not admin_exists:
-            # 创建管理员账号
-            password_hash = bcrypt.generate_password_hash('Admin@123').decode('utf-8')
-            cursor.execute("""
-                INSERT INTO users (username, password_hash, real_name, department, role)
-                VALUES (%s, %s, %s, %s, %s)
-            """, ('admin', password_hash, '系统管理员', '管理层', 'admin'))
-            output.append("✅ 管理员账号创建成功")
-            output.append("   用户名: admin")
-            output.append("   密码: Admin@123")
-        else:
-            output.append("⚠️ 管理员账号已存在，跳过创建")
-
-        # 创建索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_user_id ON analysis_results(user_id)")
-        output.append("✅ 索引创建成功")
-
-        cursor.close()
-        conn.close()
-
-        output.append("=" * 60)
-        output.append("🎉 数据库初始化完成！")
-        output.append("=" * 60)
-        output.append("")
-        output.append("现在可以使用以下账号登录：")
-        output.append("用户名: admin")
-        output.append("密码: Admin@123")
-
-        return "<pre>" + "\n".join(output) + "</pre>"
-
-    except Exception as e:
-        import traceback
-        error_output = []
-        error_output.append("❌ 数据库初始化失败")
-        error_output.append(str(e))
-        error_output.append("")
-        error_output.append("详细错误：")
-        error_output.append(traceback.format_exc())
-        return "<pre>" + "\n".join(error_output) + "</pre>", 500
-
 # ============================================
 # 功能 1: 舆情分析
 # ============================================
@@ -925,16 +838,68 @@ def generate_video():
 # ============================================
 
 @app.route('/get_history')
+@login_required
 def get_history():
-    """获取历史记录"""
-    return jsonify(HISTORY_DB[::-1])
+    """获取历史记录（从数据库）"""
+    try:
+        user_id = session.get('user_id')
+
+        # 从数据库读取用户的历史记录
+        records = db.query_all("""
+            SELECT id, title, result, type, created_at
+            FROM analysis_results
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, (user_id,))
+
+        # 转换为前端需要的格式
+        result = []
+        for record in records:
+            result.append({
+                'id': record['id'],
+                'title': f"{record['title']} [{record['created_at'].strftime('%H:%M')}]",
+                'result': record['result'],
+                'type': record['type']
+            })
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"❌ 获取历史记录失败: {e}")
+        # 失败时返回内存中的记录
+        return jsonify(HISTORY_DB[::-1])
 
 
 @app.route('/get_record/<int:id>')
+@login_required
 def get_record(id):
-    """获取单条记录"""
-    record = next((x for x in HISTORY_DB if x['id'] == id), None)
-    return jsonify(record)
+    """获取单条记录（从数据库）"""
+    try:
+        user_id = session.get('user_id')
+
+        # 从数据库读取（确保只能读取自己的记录）
+        record = db.query_one("""
+            SELECT id, title, result, type, created_at
+            FROM analysis_results
+            WHERE id = %s AND user_id = %s
+        """, (id, user_id))
+
+        if record:
+            return jsonify({
+                'id': record['id'],
+                'title': record['title'],
+                'result': record['result'],
+                'type': record['type']
+            })
+        else:
+            return jsonify({'error': '记录不存在'}), 404
+
+    except Exception as e:
+        logger.error(f"❌ 获取记录失败: {e}")
+        # 失败时从内存查找
+        record = next((x for x in HISTORY_DB if x['id'] == id), None)
+        return jsonify(record) if record else jsonify({'error': '记录不存在'}), 404
 
 # ============================================
 # Excel 导出功能
