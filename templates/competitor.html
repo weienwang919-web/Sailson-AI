@@ -357,7 +357,7 @@
             const ld = document.getElementById('loading');
             const btn = document.getElementById('runBtn');
 
-            if(!url) return alert("请输入主页链接");
+            if (!url) return alert("请输入主页链接");
 
             out.style.display = 'none';
             ld.style.display = 'block';
@@ -367,21 +367,60 @@
                 const r = await fetch('/monitor_competitors', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ 
-                        competitor_name: url, 
-                        startDate: start, 
-                        endDate: end 
+                    body: JSON.stringify({
+                        competitor_name: url,
+                        startDate: start,
+                        endDate: end
                     })
                 });
                 const d = await r.json();
+
+                if (!r.ok) {
+                    throw new Error(d.error || '创建任务失败');
+                }
+
+                if (!d.task_id) {
+                    throw new Error('后端未返回任务ID');
+                }
+
+                // 开始轮询任务状态
+                pollCompetitorTask(d.task_id);
+            } catch (e) {
                 ld.style.display = 'none';
-                out.style.display = 'block';
-                out.innerHTML = `<div class="fade-in">${d.result}</div>`;
-                loadHistory();
-            } catch(e) { 
-                alert("抓取失败，请检查网络或 API 余额");
+                alert("抓取任务提交失败：" + e.message);
+                btn.disabled = false;
+            }
+        }
+
+        async function pollCompetitorTask(taskId) {
+            const out = document.getElementById('reportOutput');
+            const ld = document.getElementById('loading');
+            const btn = document.getElementById('runBtn');
+
+            try {
+                const r = await fetch(`/task_status/${taskId}`);
+                const d = await r.json();
+
+                // 根据任务状态更新 UI
+                if (d.status === 'completed') {
+                    ld.style.display = 'none';
+                    out.style.display = 'block';
+                    out.innerHTML = `<div class="fade-in">${d.result}</div>`;
+                    btn.disabled = false;
+                    loadHistory();
+                } else if (d.status === 'failed') {
+                    ld.style.display = 'none';
+                    btn.disabled = false;
+                    alert('竞品监控失败：' + (d.error || '未知错误'));
+                } else {
+                    // 任务仍在进行中，继续轮询（每 5 秒一次）
+                    setTimeout(() => pollCompetitorTask(taskId), 5000);
+                }
+            } catch (e) {
                 ld.style.display = 'none';
-            } finally { btn.disabled = false; }
+                btn.disabled = false;
+                alert('查询任务状态失败：' + e.message);
+            }
         }
 
         async function loadHistory() {
