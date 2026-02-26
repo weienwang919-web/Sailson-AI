@@ -217,12 +217,22 @@
         .wip-card {
             border: 2px dashed #E0E0E0; background: #FAFAFA;
             display: flex; align-items: center; flex-direction: row; padding: 30px 40px;
+            position: relative;
         }
         .wip-card:hover { border-color: #2962FF; background: #F5F8FF; transform: none; box-shadow: none; }
         .wip-content { margin-left: 24px; flex-grow: 1; text-align: left; }
         .wip-card .card-icon { margin-bottom: 0; font-size: 2.5rem; }
         .wip-card .card-arrow { position: static; opacity: 1; transform: none; font-size: 2rem; color: #ccc; transition: color 0.3s; }
         .wip-card:hover .card-arrow { color: #2962FF; }
+
+        /* 确保反馈表单可点击输入 */
+        .wip-card input,
+        .wip-card textarea,
+        .wip-card button {
+            position: relative;
+            z-index: 2;
+            background-color: #fff;
+        }
 
         .footer { text-align: center; padding: 60px 0; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 40px; }
 
@@ -389,7 +399,7 @@
             // 简单加载数据，不要任何动画
             loadDashboardStats();
 
-            // 反��表单提交
+            // 反馈表单提交
             document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
                 e.preventDefault();
 
@@ -416,13 +426,18 @@
                         messageDiv.style.color = '#2E7D32';
                         messageDiv.textContent = '✅ 感谢您的反馈！我们会尽快回复您。';
                         document.getElementById('feedbackForm').reset();
+                        alert('✅ 已收到您的反馈，感谢！');
                     } else {
+                        const msg = '❌ ' + (data.error || '发送失败，请稍后重试');
                         messageDiv.style.color = '#C62828';
-                        messageDiv.textContent = '❌ ' + (data.error || '发送失败，请稍后重试');
+                        messageDiv.textContent = msg;
+                        alert(msg);
                     }
                 } catch (e) {
+                    const msg = '❌ 网络错误，请稍后重试';
                     messageDiv.style.color = '#C62828';
-                    messageDiv.textContent = '❌ 网络错误，请稍后重试';
+                    messageDiv.textContent = msg;
+                    alert(msg);
                 } finally {
                     submitBtn.disabled = false;
                     submitBtn.textContent = '发送建议';

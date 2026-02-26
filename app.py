@@ -3,6 +3,8 @@ import sys
 import datetime
 import time
 import logging
+import smtplib
+from email.mime.text import MIMEText
 import pandas as pd
 import uuid
 import threading
@@ -48,6 +50,14 @@ DASHSCOPE_API_KEY = os.environ.get('DASHSCOPE_API_KEY')
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN')
 PORT = int(os.environ.get('PORT', 5001))
 
+# 反馈邮件配置（可选）
+SMTP_HOST = os.environ.get('SMTP_HOST')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
+SMTP_USER = os.environ.get('SMTP_USER')
+SMTP_PASS = os.environ.get('SMTP_PASS')
+FEEDBACK_EMAIL_TO = os.environ.get('FEEDBACK_EMAIL_TO')
+FEEDBACK_EMAIL_FROM = os.environ.get('FEEDBACK_EMAIL_FROM', SMTP_USER or FEEDBACK_EMAIL_TO or '')
+
 # 启动时输出配置状态
 logger.info("=" * 60)
 logger.info("🚀 Sailson AI 工作台启动中...")
@@ -88,6 +98,38 @@ bcrypt = Bcrypt(app)
 HISTORY_DB = []
 LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 # TASK_QUEUE 已迁移到数据库，不再使用内存字典
+
+def send_feedback_email(project_name: str, feedback: str) -> bool:
+    """发送用户反馈邮件到运维邮箱（可选功能）
+
+    依赖环境变量：
+    - SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS
+    - FEEDBACK_EMAIL_TO
+    """
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and FEEDBACK_EMAIL_TO):
+        logger.warning("⚠️ 反馈邮件未发送：SMTP 或收件人环境变量未完整配置")
+        return False
+
+    try:
+        subject = f"新用户反馈 - {project_name}"
+        body = f"项目名称: {project_name}\n\n反馈内容:\n{feedback}"
+
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = FEEDBACK_EMAIL_FROM or SMTP_USER
+        msg["To"] = FEEDBACK_EMAIL_TO
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+
+        logger.info("✅ 反馈邮件发送成功")
+        return True
+    except Exception as e:
+        logger.error(f"❌ 反馈邮件发送失败: {e}")
+        return False
+
 
 # 汇率配置
 USD_TO_CNY = 7.2
@@ -269,21 +311,23 @@ def process_uploaded_file(file_data):
         return "ERROR", error_msg
 
 
-def save_history(title, result, type_tag):
-    """保存到历史记录（数据库）"""
+def save_history(user_id, title, result, type_tag):
+    """保存到历史记录（数据库 + 内存）
+
+    注意：不要在此函数内部访问 Flask session，
+    需要在调用方把 user_id 显式传入，以便在线程中安全调用。
+    """
     try:
-        user_id = session.get('user_id')
         if not user_id:
-            logger.warning("⚠️ 未登录用户，跳过保存历史记录")
-            return
+            logger.warning("⚠️ 未提供 user_id，仅保存内存历史记录")
+        else:
+            # 保存到数据库
+            db.execute("""
+                INSERT INTO analysis_results (user_id, title, result, type)
+                VALUES (%s, %s, %s, %s)
+            """, (user_id, title, result, type_tag))
 
-        # 保存到数据库
-        db.execute("""
-            INSERT INTO analysis_results (user_id, title, result, type)
-            VALUES (%s, %s, %s, %s)
-        """, (user_id, title, result, type_tag))
-
-        logger.info(f"💾 已保存历史记录到数据库: {title}")
+            logger.info(f"💾 已保存历史记录到数据库: {title}")
 
         # 同时保存到内存（向后兼容）
         record = {
@@ -698,7 +742,7 @@ IMPORTANT:
             return
 
         # 保存历史记录
-        save_history(source_title, result, 'sentiment')
+        save_history(user_id, source_title, result, 'sentiment')
 
         # 记录使用成本
         if user_id:
@@ -867,15 +911,15 @@ def submit_feedback():
             # 如果表不存在，只记录日志
             logger.warning(f"⚠️ 保存反馈到数据库失败（表可能不存在）: {db_error}")
 
-        # TODO: 发送邮件通知管理员
-        # 这里可以集成邮件服务（如 SendGrid, AWS SES）
-        # send_email(
-        #     to="admin@sailson.com",
-        #     subject=f"新用户反馈 - {project_name}",
-        #     body=feedback
-        # )
+        # 发送邮件通知管理员（如果配置了 SMTP）
+        email_sent = send_feedback_email(project_name, feedback)
 
-        return jsonify({'success': True, 'message': '感谢您的反馈！'})
+        msg = '感谢您的反馈！'
+        if not email_sent:
+            # 不打扰用户，只在日志中记录邮件失败
+            logger.warning("⚠️ 反馈已保存，但邮件通知未成功发送")
+
+        return jsonify({'success': True, 'message': msg})
 
     except Exception as e:
         logger.error(f"❌ 处理反馈失败: {e}")
@@ -890,7 +934,24 @@ def submit_feedback():
 @login_required
 def sentiment_tool():
     """舆情分析工具页面"""
-    return render_template('analysis.html')
+    user_id = session.get('user_id')
+
+    has_used_sentiment = False
+    if user_id:
+        try:
+            row = db.query_one(
+                """
+                SELECT 1 FROM analysis_results
+                WHERE user_id = %s AND type = %s
+                LIMIT 1
+                """,
+                (user_id, 'sentiment')
+            )
+            has_used_sentiment = bool(row)
+        except Exception as e:
+            logger.error(f"❌ 检查舆情历史记录失败: {e}")
+
+    return render_template('analysis.html', has_used_sentiment=has_used_sentiment)
 
 
 @app.route('/analyze', methods=['POST'])
@@ -971,7 +1032,24 @@ def task_status(task_id):
 @login_required
 def competitor_tool():
     """竞品监控工具页面"""
-    return render_template('competitor.html')
+    user_id = session.get('user_id')
+
+    has_used_competitor = False
+    if user_id:
+        try:
+            row = db.query_one(
+                """
+                SELECT 1 FROM analysis_results
+                WHERE user_id = %s AND type = %s
+                LIMIT 1
+                """,
+                (user_id, 'competitor')
+            )
+            has_used_competitor = bool(row)
+        except Exception as e:
+            logger.error(f"❌ 检查竞品历史记录失败: {e}")
+
+    return render_template('competitor.html', has_used_competitor=has_used_competitor)
 
 
 @app.route('/monitor_competitors', methods=['POST'])
@@ -1246,7 +1324,7 @@ You are a Data Entry Assistant. Please fill the following TikTok data into the P
         result = result.replace('```html', '').replace('```', '').strip()
 
         # 保存历史记录
-        save_history(f"竞品数据:{target_url[20:30]}", result, 'competitor')
+        save_history(user_id, f"竞品数据:{target_url[20:30]}", result, 'competitor')
 
         # 记录使用成本
         if user_id:
@@ -1295,7 +1373,7 @@ def generate_video():
         logger.info(f"🎬 Prompt: {prompt[:50]}...")
 
         video_url = call_veo_api(prompt)
-        save_history(f"视频: {prompt[:10]}", video_url, 'video')
+        save_history(session.get('user_id'), f"视频: {prompt[:10]}", video_url, 'video')
 
         logger.info("✅ 视频生成完成")
         logger.info("=" * 60 + "\n")

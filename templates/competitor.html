@@ -251,8 +251,8 @@
                             <p class="text-muted">已连接 Apify 实时抓取该时间段内的视频指标</p>
                         </div>
 
-                        <!-- 空状态 -->
-                        <div id="emptyState" class="empty-state">
+                        <!-- 空状态（仅首次使用时展示） -->
+                        <div id="emptyState" class="empty-state"{% if has_used_competitor %} style="display:none;"{% endif %}>
                             <div class="empty-state-icon">📡</div>
                             <h3>开始你的第一次竞品监控</h3>
                             <p>输入竞品 TikTok 主页链接和时间范围，我们将自动抓取视频数据并生成详细的竞争分析报告。</p>
