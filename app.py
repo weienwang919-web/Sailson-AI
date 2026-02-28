@@ -141,8 +141,12 @@ def load_prompts():
                 "- Use Chinese for category, sentiment, language, and analysis\n"
                 "- Language options (MUST be one of these): 英语, 菲律宾语, 泰语, 越南语, 印尼语, 马来语\n"
                 "- Identify the language accurately based on the text\n"
-                "- Analysis requirements:\n  * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)\n"
-                "  * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)\n  * Include: main issue, player emotion, key details\n"
+                "- 本报告供 CFL 品牌方/客户查看，简要分析需便于快速把握玩家诉求与情绪。\n"
+                "- Analysis（简要分析）字数要求，必须严格执行：\n"
+                "  * 短评论（原文 < 30 字）：一句话概括，15-20 个中文字。\n"
+                "  * 中等评论（30-80 字）：两至三句话，包含问题点与情绪，50-70 个中文字。\n"
+                "  * 长评论（≥ 80 字）：展开分析，包含主要诉求、玩家情绪、关键细节及对品牌的参考点，80-120 个中文字，不得仅用一句话总结。\n"
+                "  * 内容须包含：主要问题、玩家情绪、关键细节；长评论务必多句展开，不可全部统一为一句话总结。\n"
             ),
             'PUBGM': '',
             'HOK': '',
