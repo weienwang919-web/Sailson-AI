@@ -21,6 +21,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 from functools import wraps
+import html
 import database as db
 
 # 加载 .env 文件
@@ -1446,7 +1447,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
 
             if target_start <= post_dt <= target_end:
                 cleaned.append({
-                    "desc": it.get("desc", "无描述"),
+                    "desc": it.get("text") or it.get("desc") or "无描述",
                     "likes": it.get("diggCount", 0),
                     "views": it.get("playCount", 0),
                     "comments": it.get("commentCount", 0),
@@ -1479,6 +1480,73 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
 
         # 清理 Markdown 代码块标记
         result = result.replace('```html', '').replace('```', '').strip()
+
+        # 在总览下方追加按视频维度的明细表（样式与总数据表格统一）
+        try:
+            rows_html = []
+            total_count = len(cleaned)
+            # 总计行：日期列显示总条数，样式与表头统一
+            rows_html.append(f"""
+            <tr style="background:#F8F9FA;">
+                <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">共 {total_count} 条</td>
+                <td colspan="7" style="padding:15px 10px; border-bottom:2px solid #EEE;"></td>
+            </tr>
+            """)
+
+            for item in cleaned:
+                date_str = html.escape(item.get("date", "") or "")
+                desc = html.escape(item.get("desc", "") or "无描述")
+                views = item.get("views", 0)
+                likes = item.get("likes", 0)
+                comments_cnt = item.get("comments", 0)
+                collects = item.get("collects", 0)
+                shares = item.get("shares", 0)
+                url = item.get("url") or ""
+                if url:
+                    url_html = f'<a href="{html.escape(url)}" target="_blank" style="color:#D32F2F; font-weight:600;">查看</a>'
+                else:
+                    url_html = "—"
+
+                rows_html.append(f"""
+                <tr>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{date_str}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:left; font-size:0.9rem; word-wrap:break-word; white-space:pre-wrap; max-width:320px;">{desc}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{views}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{likes}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{comments_cnt}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{collects}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{shares}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{url_html}</td>
+                </tr>
+                """)
+
+            per_video_table = f"""
+<div style="margin-top:30px;">
+<h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:15px;">
+    📺 明细列表（按视频）
+</h3>
+<table style="width:100%; table-layout:fixed; border-collapse:collapse; margin:20px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.9rem;">
+    <thead>
+        <tr>
+            <th style="width:95px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">日期</th>
+            <th style="background:#F8F9FA; padding:15px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE;">视频描述</th>
+            <th style="width:85px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">播放</th>
+            <th style="width:75px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">点赞</th>
+            <th style="width:70px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">评论</th>
+            <th style="width:70px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">收藏</th>
+            <th style="width:70px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">转发</th>
+            <th style="width:72px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">链接</th>
+        </tr>
+    </thead>
+    <tbody>
+        {''.join(rows_html)}
+    </tbody>
+</table>
+</div>
+"""
+            result = f"{result}\n{per_video_table}"
+        except Exception as build_table_error:
+            logger.error(f"⚠️ 构建竞品明细表失败: {build_table_error}")
 
         # 保存历史记录
         save_history(user_id, f"竞品数据:{target_url[20:30]}", result, 'competitor')
