@@ -1510,7 +1510,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                 rows_html.append(f"""
                 <tr>
                     <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{date_str}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:left; font-size:0.9rem; word-wrap:break-word; white-space:pre-wrap; max-width:320px;">{desc}</td>
+                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:left; font-size:0.9rem; word-wrap:break-word; white-space:pre-wrap;">{desc}</td>
                     <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{views}</td>
                     <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{likes}</td>
                     <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{comments_cnt}</td>
