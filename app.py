@@ -837,9 +837,9 @@ IMPORTANT:
                 </table>
                 """
 
-        # 保存结果用于导出（后续将改为从数据库读取）
-        LATEST_ANALYSIS_RESULTS[session_id] = all_results
-        source_title = f"FB: {url[:15]}..."
+                # 保存结果用于导出（后续将改为从数据库读取）
+                LATEST_ANALYSIS_RESULTS[session_id] = all_results
+                source_title = f"FB: {url[:15]}..."
 
             except Exception as e:
                 error_msg = f"爬虫任务失败: {str(e)}"
