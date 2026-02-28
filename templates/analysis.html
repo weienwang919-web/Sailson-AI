@@ -228,6 +228,14 @@
             </div>
 
             <div class="glass-card">
+                <div class="mb-3">
+                    <label class="small text-muted mb-1">项目</label>
+                    <select id="projectSelect" class="form-control form-select">
+                        <option value="CFL" selected>CFL</option>
+                        <option value="PUBGM">PUBGM</option>
+                        <option value="HOK">HOK</option>
+                    </select>
+                </div>
                 <ul class="nav nav-tabs">
                     <li class="nav-item"><a class="nav-link active" onclick="setMode('link', event)">🔗 链接爬取</a></li>
                     <li class="nav-item"><a class="nav-link" onclick="setMode('file', event)">📁 截图/Excel</a></li>
@@ -368,6 +376,7 @@
             const btn = document.getElementById('analyzeBtn');
 
             const formData = new FormData();
+            formData.append('project', document.getElementById('projectSelect').value);
             if (mode==='link') {
                 const url = document.getElementById('urlInput').value;
                 if(!url) return alert('请输入链接');

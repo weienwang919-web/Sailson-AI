@@ -128,7 +128,7 @@
             document.getElementById('btn').disabled = true;
 
             // 2. 启动“智能思考”动画 (每 800ms 换一句话)
-            const loadingTexts = ["🚀 正在连接 Gemini 2.5...", "🧠 正在梳理工作逻辑...", "✍️ 正在润色职场术语...", "📧 正在生成邮件格式..."];
+            const loadingTexts = ["🚀 正在连接通义千问...", "🧠 正在梳理工作逻辑...", "✍️ 正在润色职场术语...", "📧 正在生成邮件格式..."];
             let step = 0;
             const timer = setInterval(() => {
                 document.getElementById('loadingText').innerText = loadingTexts[step % loadingTexts.length];

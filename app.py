@@ -117,6 +117,91 @@ LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 TASK_QUEUE_HAS_FUNCTION_TYPE = True
 ANALYSIS_RESULTS_HAS_JSON = True
 
+# 项目与提示词外置（多项目接入）
+VALID_PROJECTS = ('CFL', 'PUBGM', 'HOK')
+_PROMPTS_CACHE = None
+
+def load_prompts():
+    """加载 config/prompts.json；缺失时回退到 CFL 硬编码，保证现有行为不变。"""
+    global _PROMPTS_CACHE
+    if _PROMPTS_CACHE is not None:
+        return _PROMPTS_CACHE
+    fallback = {
+        'sentiment': {
+            'CFL': (
+                "Analyze these comments and categorize them. Output ONLY a JSON array.\n\n"
+                "Comments:\n{batch_content}\n\n"
+                "Categories (Chinese only):\n1. 外挂作弊 - hackers, cheating\n2. 游戏优化 - lag, crashes\n"
+                "3. 游戏Bug - glitches, errors\n4. 充值退款 - payment issues\n"
+                "5. 新模式/地图/平衡性建议 - new content requests\n6. 其他 - spam, praise\n\n"
+                "Output format (JSON array only, no markdown):\n[\n  {{\n    \"text\": \"comment text\",\n    \"category\": \"外挂作弊\",\n"
+                "    \"sentiment\": \"负面\",\n    \"language\": \"英语\",\n    \"analysis\": \"详细分析内容\"\n  }},\n  ...\n]\n\n"
+                "IMPORTANT:\n- Output ONLY valid JSON array\n"
+                "- Output exactly one object per comment; do NOT skip any comment (use category \"其他\" for spam/praise if needed)\n"
+                "- Use Chinese for category, sentiment, language, and analysis\n"
+                "- Language options (MUST be one of these): 英语, 菲律宾语, 泰语, 越南语, 印尼语, 马来语\n"
+                "- Identify the language accurately based on the text\n"
+                "- Analysis requirements:\n  * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)\n"
+                "  * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)\n  * Include: main issue, player emotion, key details\n"
+            ),
+            'PUBGM': '',
+            'HOK': '',
+        },
+        'competitor': {
+            'CFL': (
+                "You are a Data Entry Assistant. Please fill the following TikTok data into the PROVIDED HTML TEMPLATE.\n\n"
+                "【Data Source】: {cleaned}\n【Period】: {start_dt_str} to {end_dt_str}\n\n"
+                "【STRICT TEMPLATE (Use this EXACT structure)】:\n<div style=\"width:100%; font-family:sans-serif;\">\n"
+                "    <h3 style=\"color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;\">📊 数据概览表 ({start_dt_str} 至 {end_dt_str})</h3>\n"
+                "    <table class=\"table\" style=\"width:100%; margin-bottom:30px; text-align:center; font-size:0.9rem;\">\n"
+                "        <tr style=\"background:#f8f9fa;\">\n"
+                "            <th>总播放</th><th>总互动</th><th>总点赞</th><th>总评论</th><th>总收藏</th><th>总转发</th>\n"
+                "        </tr>\n        <tr>\n"
+                "            <td>[总播放数]</td><td>[总互动数]</td><td>[总点赞数]</td><td>[总评论数]</td><td>[总收藏数]</td><td>[总转发数]</td>\n"
+                "        </tr>\n    </table>\n\n"
+                "    <h3 style=\"color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;\">🔥 爆款视频精选</h3>\n"
+                "    <div style=\"background:#FFF9F9; border-left:5px solid #D32F2F; padding:20px; margin-bottom:15px; border-radius:8px;\">\n"
+                "        <p><strong>视频描述：</strong> [描述内容]</p>\n"
+                "        <p><strong>核心指标：</strong> 播放: [播放数] | 点赞: [点赞数] | 互动: [评论数]评论 / [分享数]分享</p>\n"
+                "        <p><strong>查看详情：</strong> <a href=\"[webVideoUrl]\" target=\"_blank\" style=\"color:#2962FF;\">点击进入 TikTok 观看原文链接</a></p>\n"
+                "    </div>\n</div>\n\n"
+                "【Requirements】:\n- 必须使用中文填充模板。\n- 总互动 = 点赞 + 评论 + 收藏 + 转发的总和。\n"
+                "- 严禁添加模板之外的任何文字（包括分析、建议、前言、结语）。\n- 仅输出 Raw HTML 代码，禁止 Markdown 代码块。\n"
+            ),
+            'PUBGM': '',
+            'HOK': '',
+        },
+    }
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'prompts.json')
+    try:
+        if os.path.isfile(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for feat in ('sentiment', 'competitor'):
+                if feat not in data:
+                    data[feat] = fallback[feat]
+                else:
+                    for proj in VALID_PROJECTS:
+                        if proj not in data[feat]:
+                            data[feat][proj] = fallback[feat].get(proj, '')
+            _PROMPTS_CACHE = data
+            logger.info("✅ 已加载 config/prompts.json")
+        else:
+            _PROMPTS_CACHE = fallback
+            logger.info("⚠️ config/prompts.json 不存在，使用内置 CFL 提示词")
+    except Exception as e:
+        logger.warning(f"⚠️ 加载 config/prompts.json 失败: {e}，使用内置 CFL 提示词")
+        _PROMPTS_CACHE = fallback
+    return _PROMPTS_CACHE
+
+def get_prompt(feature, project):
+    """取指定功能、项目的提示词模板。feature 为 'sentiment' 或 'competitor'，project 为 CFL/PUBGM/HOK。"""
+    if project not in VALID_PROJECTS:
+        return ''
+    prompts = load_prompts()
+    by_feature = prompts.get(feature, {})
+    return (by_feature.get(project) or '').strip()
+
 
 def ensure_task_queue_schema():
     """确保 task_queue 表包含 function_type 字段（向后兼容老版本数据库）
@@ -508,11 +593,11 @@ def log_usage(user_id, username, department, function_type, comments_count, ai_t
         return 0
 
 
-def process_analysis_task(task_id, url, file_data, session_id, user_id, username, department):
-    """异步处理分析任务"""
+def process_analysis_task(task_id, url, file_data, session_id, user_id, username, department, project='CFL'):
+    """异步处理分析任务。project 为 CFL/PUBGM/HOK，用于选择提示词。"""
     # 用户信息已从主线程传入，不再从 session 获取
 
-    logger.info(f"🔄 后台线程已启动，任务ID: {task_id}")
+    logger.info(f"🔄 后台线程已启动，任务ID: {task_id}，项目: {project}")
     logger.info(f"👤 用户信息: user_id={user_id}, username={username}, department={department}")
     logger.info(f"📋 任务参数: url={url}, has_file={file_data is not None}")
 
@@ -730,6 +815,12 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                     update_task(task_id, status='failed', error="未发现公开评论")
                     return
 
+                # 按项目取提示词模板；空则直接失败
+                sentiment_template = get_prompt('sentiment', project)
+                if not sentiment_template:
+                    update_task(task_id, status='failed', error='该项目提示词尚未配置')
+                    return
+
                 # 分批处理评论
                 batch_size = 50
                 all_results = []
@@ -743,44 +834,7 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
                     logger.info(f"🔄 处理第 {batch_num}/{total_batches} 批（{len(batch)} 条评论）...")
 
                     batch_content = "\n".join([f"用户{j}: {it.get('text', '')}" for j, it in enumerate(batch)])
-
-                    batch_prompt = f"""
-Analyze these comments and categorize them. Output ONLY a JSON array.
-
-Comments:
-{batch_content}
-
-Categories (Chinese only):
-1. 外挂作弊 - hackers, cheating
-2. 游戏优化 - lag, crashes
-3. 游戏Bug - glitches, errors
-4. 充值退款 - payment issues
-5. 新模式/地图/平衡性建议 - new content requests
-6. 其他 - spam, praise
-
-Output format (JSON array only, no markdown):
-[
-  {{{{
-    "text": "comment text",
-    "category": "外挂作弊",
-    "sentiment": "负面",
-    "language": "英语",
-    "analysis": "详细分析内容"
-  }}}},
-  ...
-]
-
-IMPORTANT:
-- Output ONLY valid JSON array
-- Skip "其他" category
-- Use Chinese for category, sentiment, language, and analysis
-- Language options (MUST be one of these): 英语, 菲律宾语, 泰语, 越南语, 印尼语, 马来语
-- Identify the language accurately based on the text
-- Analysis requirements:
-  * For short comments (< 30 chars): One sentence summary (15-20 Chinese characters)
-  * For medium/long comments (>= 30 chars): Detailed analysis (40-50 Chinese characters)
-  * Include: main issue, player emotion, key details
-"""
+                    batch_prompt = sentiment_template.format(batch_content=batch_content)
 
                     result, tokens = call_gemini(batch_prompt, timeout=60)
                     total_tokens += tokens
@@ -802,8 +856,8 @@ IMPORTANT:
                 logger.info(f"📝 生成最终报告，共 {len(all_results)} 条有效评论...")
 
                 # 按分类排序
-                category_order = ["外挂作弊", "游戏优化", "游戏Bug", "充值退款", "新模式/地图/平衡性建议"]
-                all_results.sort(key=lambda x: category_order.index(x.get('category', '其他')) if x.get('category') in category_order else 999)
+                category_order = ["外挂作弊", "游戏优化", "游戏Bug", "充值退款", "新模式/地图/平衡性建议", "其他"]
+                all_results.sort(key=lambda x: category_order.index(x.get('category', '其他')) if x.get('category') in category_order else len(category_order))
 
                 # 生成 HTML
                 html_rows = []
@@ -1078,6 +1132,9 @@ def analyze():
 
     url = request.form.get('url')
     file = request.files.get('file')
+    project = (request.form.get('project') or 'CFL').strip().upper()
+    if project not in VALID_PROJECTS:
+        project = 'CFL'
 
     # 生成任务 ID
     task_id = str(uuid.uuid4())
@@ -1109,7 +1166,7 @@ def analyze():
     if not USE_DB_WORKER:
         thread = threading.Thread(
             target=process_analysis_task,
-            args=(task_id, url, file_data, session_id, user_id, username, department)
+            args=(task_id, url, file_data, session_id, user_id, username, department, project)
         )
         # 不设置 daemon=True，让线程自然完成，避免被 Flask 请求结束时杀死
         thread.start()
@@ -1179,9 +1236,12 @@ def monitor_competitors():
         target_url = data.get('competitor_name')
         start_dt_str = data.get('startDate')
         end_dt_str = data.get('endDate')
+        project = (data.get('project') or 'CFL').strip().upper()
+        if project not in VALID_PROJECTS:
+            project = 'CFL'
 
         logger.info(f"🎯 目标 URL: {target_url}")
-        logger.info(f"📅 时间段: {start_dt_str} ~ {end_dt_str}")
+        logger.info(f"📅 时间段: {start_dt_str} ~ {end_dt_str}，项目: {project}")
 
         if not APIFY_TOKEN:
             error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
@@ -1204,7 +1264,7 @@ def monitor_competitors():
         if not USE_DB_WORKER:
             thread = threading.Thread(
                 target=process_competitor_task,
-                args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id)
+                args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project)
             )
             # 不设置 daemon=True，让线程自然完成
             thread.start()
@@ -1227,8 +1287,8 @@ def monitor_competitors():
         return jsonify({'error': error_msg}), 500
 
 
-def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id):
-    """后台处理竞品监控任务"""
+def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project='CFL'):
+    """后台处理竞品监控任务。project 为 CFL/PUBGM/HOK，用于选择提示词。"""
     try:
         logger.info(f"🔄 开始处理竞品监控任务 {task_id}")
         update_task(task_id, status='processing', progress='正在初始化...')
@@ -1400,42 +1460,17 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             update_task(task_id, status='completed', result=f"<div class='alert alert-warning'>{warning_msg}</div>")
             return
 
-        # 4. Gemini 生成报告
+        # 4. 通义千问生成报告（按项目取提示词）
+        competitor_template = get_prompt('competitor', project)
+        if not competitor_template:
+            update_task(task_id, status='failed', error='该项目提示词尚未配置')
+            return
+
         update_task(task_id, progress='正在生成分析报告...')
-        prompt = f"""
-You are a Data Entry Assistant. Please fill the following TikTok data into the PROVIDED HTML TEMPLATE.
+        cleaned_str = json.dumps(cleaned, ensure_ascii=False)
+        prompt = competitor_template.format(cleaned=cleaned_str, start_dt_str=start_dt_str, end_dt_str=end_dt_str)
 
-【Data Source】: {cleaned}
-【Period】: {start_dt_str} to {end_dt_str}
-
-【STRICT TEMPLATE (Use this EXACT structure)】:
-<div style="width:100%; font-family:sans-serif;">
-    <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;">📊 数据概览表 ({start_dt_str} 至 {end_dt_str})</h3>
-    <table class="table" style="width:100%; margin-bottom:30px; text-align:center; font-size:0.9rem;">
-        <tr style="background:#f8f9fa;">
-            <th>总播放</th><th>总互动</th><th>总点赞</th><th>总评论</th><th>总收藏</th><th>总转发</th>
-        </tr>
-        <tr>
-            <td>[总播放数]</td><td>[总互动数]</td><td>[总点赞数]</td><td>[总评论数]</td><td>[总收藏数]</td><td>[总转发数]</td>
-        </tr>
-    </table>
-
-    <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;">🔥 爆款视频精选</h3>
-    <div style="background:#FFF9F9; border-left:5px solid #D32F2F; padding:20px; margin-bottom:15px; border-radius:8px;">
-        <p><strong>视频描述：</strong> [描述内容]</p>
-        <p><strong>核心指标：</strong> 播放: [播放数] | 点赞: [点赞数] | 互动: [评论数]评论 / [分享数]分享</p>
-        <p><strong>查看详情：</strong> <a href="[webVideoUrl]" target="_blank" style="color:#2962FF;">点击进入 TikTok 观看原文链接</a></p>
-    </div>
-</div>
-
-【Requirements】:
-- 必须使用中文填充模板。
-- 总互动 = 点赞 + 评论 + 收藏 + 转发的总和。
-- 严禁添加模板之外的任何文字（包括分析、建议、前言、结语）。
-- 仅输出 Raw HTML 代码，禁止 Markdown 代码块。
-"""
-
-        logger.info("🤖 开始调用 Gemini API 生成报告...")
+        logger.info("🤖 开始调用通义千问 API 生成报告...")
         result, tokens = call_gemini(prompt)
 
         # 清理 Markdown 代码块标记
