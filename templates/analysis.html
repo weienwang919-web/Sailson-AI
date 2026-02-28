@@ -284,6 +284,7 @@
         let mode = 'link';
         let allHistory = []; // 存储所有历史记录
         let currentFilter = 'all'; // 当前时间筛选
+        let currentRecordId = null; // 当前展示的历史记录 ID（用于导出）
         window.onload = loadHistory;
 
         // 填充示例链接
@@ -328,7 +329,7 @@
 
         // 渲染历史记录
         function renderHistory(items) {
-            const list = document.getElementById('historyList');
+                const list = document.getElementById('historyList');
             if (!items || items.length === 0) {
                 list.innerHTML = '<li style="padding: 20px; text-align: center; color: #999;">暂无历史记录</li>';
                 return;
@@ -420,11 +421,12 @@
                 }
 
                 if (data.status === 'completed') {
-                    // 任务完成
+                    // 任务完成：刷新历史列表，并把当前展示设为刚完成的这条（导出用）
                     loading.style.display = 'none';
                     resContainer.style.display = 'block';
                     resArea.innerHTML = data.result;
-                    loadHistory();
+                    const items = await loadHistory();
+                    if (items && items.length) currentRecordId = items[0].id;
                     btn.disabled = false;
                     btn.innerText = "✨ 立即分析";
                 } else if (data.status === 'failed') {
@@ -458,11 +460,19 @@
         }
 
         function exportByLanguage() {
-            window.location.href = '/export_by_language';
+            if (!currentRecordId) {
+                alert('请先选择一条分析记录（或先完成一次新的分析）');
+                return;
+            }
+            window.location.href = `/export_by_language?record_id=${currentRecordId}`;
         }
 
         function exportByCategory() {
-            window.location.href = '/export_by_category';
+            if (!currentRecordId) {
+                alert('请先选择一条分析记录（或先完成一次新的分析）');
+                return;
+            }
+            window.location.href = `/export_by_category?record_id=${currentRecordId}`;
         }
 
         async function loadHistory() {
@@ -471,7 +481,10 @@
                 const list = await resp.json();
                 const ul = document.getElementById('historyList');
                 ul.innerHTML = '';
-                list.filter(i => i.type === 'sentiment').forEach(item => {
+
+                const sentimentList = list.filter(i => i.type === 'sentiment');
+
+                sentimentList.forEach((item, index) => {
                     const li = document.createElement('li');
                     li.className = 'history-item';
                     li.innerText = item.title;
@@ -481,10 +494,23 @@
                         document.getElementById('resultContainer').style.display = 'block';
                         document.getElementById('resultArea').innerHTML = d.result;
                         document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
+
+                        // 记录当前查看的记录 ID，导出时使用
+                        currentRecordId = item.id;
+
+                        // 更新选中样式
+                        document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+                        li.classList.add('active');
                     };
                     ul.appendChild(li);
                 });
-            } catch(e) { console.log("历史记录加载失败"); }
+
+                // 如果当前还没有选中任何记录，但有历史记录，默认选中最新一条
+                if (!currentRecordId && sentimentList.length > 0) {
+                    currentRecordId = sentimentList[0].id;
+                }
+                return sentimentList;
+            } catch(e) { console.log("历史记录加载失败"); return []; }
         }
     </script>
 </body>

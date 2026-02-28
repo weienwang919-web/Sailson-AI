@@ -4,6 +4,7 @@ import datetime
 import time
 import logging
 import smtplib
+import json
 from email.mime.text import MIMEText
 import pandas as pd
 import uuid
@@ -50,6 +51,9 @@ DASHSCOPE_API_KEY = os.environ.get('DASHSCOPE_API_KEY')
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN')
 PORT = int(os.environ.get('PORT', 5001))
 
+# 长任务处理模式配置（预留开关，默认保持现状：由 Web 线程执行）
+USE_DB_WORKER = os.environ.get('USE_DB_WORKER', 'false').lower() == 'true'
+
 # 反馈邮件配置（可选）
 SMTP_HOST = os.environ.get('SMTP_HOST')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
@@ -64,6 +68,7 @@ logger.info("🚀 Sailson AI 工作台启动中...")
 logger.info(f"🔑 DASHSCOPE_API_KEY: {'✅ 已配置' if DASHSCOPE_API_KEY else '❌ 未配置'}")
 logger.info(f"🔑 APIFY_TOKEN: {'✅ 已配置' if APIFY_TOKEN else '❌ 未配置'}")
 logger.info(f"🌐 PORT: {PORT}")
+logger.info(f"🧵 Long-task mode: {'DB worker' if USE_DB_WORKER else 'in-process threads'}")
 logger.info(f"🐍 Python 版本: {sys.version}")
 logger.info("=" * 60)
 
@@ -91,13 +96,65 @@ else:
 
 # Flask 应用初始化
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'sailson_secure_key')
+
+secret_key = os.environ.get('SECRET_KEY')
+if not secret_key:
+    # 为了不影响现有功能，在缺少 SECRET_KEY 时自动生成一次性开发密钥
+    # 生产环境必须通过环境变量显式配置 SECRET_KEY
+    logger.warning("⚠️ SECRET_KEY 未配置，将使用临时开发密钥。请在生产环境中通过环境变量设置 SECRET_KEY！")
+    import secrets
+    secret_key = "dev-" + secrets.token_hex(32)
+
+app.secret_key = secret_key
 bcrypt = Bcrypt(app)
 
 # 内存存储（保留用于向后兼容）
 HISTORY_DB = []
 LATEST_ANALYSIS_RESULTS = {}  # 存储最新的分析结果，用于导出
 # TASK_QUEUE 已迁移到数据库，不再使用内存字典
+
+# task_queue 表结构状态（用于向后兼容老数据库）
+TASK_QUEUE_HAS_FUNCTION_TYPE = True
+ANALYSIS_RESULTS_HAS_JSON = True
+
+
+def ensure_task_queue_schema():
+    """确保 task_queue 表包含 function_type 字段（向后兼容老版本数据库）
+
+    - 正常情况下会执行一次 ALTER TABLE ADD COLUMN IF NOT EXISTS
+    - 若当前数据库用户无权限，或表不存在，只记录 warning，不中断启动
+    - create_task 会根据 TASK_QUEUE_HAS_FUNCTION_TYPE 自动降级为老的插入方式
+    """
+    global TASK_QUEUE_HAS_FUNCTION_TYPE
+    try:
+        db.execute("""
+            ALTER TABLE task_queue
+            ADD COLUMN IF NOT EXISTS function_type VARCHAR(50)
+        """)
+        logger.info("✅ 已确认 task_queue.function_type 列存在")
+        TASK_QUEUE_HAS_FUNCTION_TYPE = True
+    except Exception as e:
+        TASK_QUEUE_HAS_FUNCTION_TYPE = False
+        logger.warning(f"⚠️ 无法自动为 task_queue 添加 function_type 列，将使用兼容模式: {e}")
+
+
+def ensure_analysis_results_schema():
+    """确保 analysis_results 表包含 result_json 字段（用于导出结构化结果）
+
+    - 正常情况下会执行一次 ALTER TABLE ADD COLUMN IF NOT EXISTS
+    - 若当前数据库用户无权限，或表不存在，只记录 warning，不中断启动
+    """
+    global ANALYSIS_RESULTS_HAS_JSON
+    try:
+        db.execute("""
+            ALTER TABLE analysis_results
+            ADD COLUMN IF NOT EXISTS result_json TEXT
+        """)
+        logger.info("✅ 已确认 analysis_results.result_json 列存在")
+        ANALYSIS_RESULTS_HAS_JSON = True
+    except Exception as e:
+        ANALYSIS_RESULTS_HAS_JSON = False
+        logger.warning(f"⚠️ 无法自动为 analysis_results 添加 result_json 列，将暂不支持按任意历史记录导出: {e}")
 
 def send_feedback_email(project_name: str, feedback: str) -> bool:
     """发送用户反馈邮件到运维邮箱（可选功能）
@@ -137,6 +194,11 @@ USD_TO_CNY = 7.2
 # ============================================
 # 任务恢复机制（定义，稍后调用）
 # ============================================
+
+# 启动时尽早检查相关表结构
+ensure_task_queue_schema()
+ensure_analysis_results_schema()
+
 
 def recover_interrupted_tasks():
     """恢复被中断的任务"""
@@ -188,16 +250,43 @@ def admin_required(f):
 # 核心工具函数
 # ============================================
 
-def create_task(task_id, user_id, session_id):
-    """创建任务记录"""
+def create_task(task_id, user_id, session_id, function_type=None):
+    """创建任务记录
+
+    为兼容旧库：
+    - 优先尝试写入 function_type 字段
+    - 若字段不存在或无权限，则退回老的插入方式
+    """
+    global TASK_QUEUE_HAS_FUNCTION_TYPE
+
     try:
-        db.execute("""
-            INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (task_id, user_id, session_id, 'pending', '任务已创建'))
-        logger.info(f"✅ 任务 {task_id} 已写入数据库")
+        if TASK_QUEUE_HAS_FUNCTION_TYPE:
+            db.execute("""
+                INSERT INTO task_queue (task_id, user_id, session_id, function_type, status, progress)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (task_id, user_id, session_id, function_type, 'pending', '任务已创建'))
+        else:
+            db.execute("""
+                INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (task_id, user_id, session_id, 'pending', '任务已创建'))
+
+        logger.info(f"✅ 任务 {task_id} 已写入数据库（type={function_type}）")
     except Exception as e:
-        logger.error(f"❌ 创建任务失败: {e}")
+        # 如果是第一次写入发现没有 function_type 列，则自动降级为旧模式
+        if TASK_QUEUE_HAS_FUNCTION_TYPE and 'function_type' in str(e):
+            logger.warning(f"⚠️ task_queue 缺少 function_type 列，降级为兼容模式: {e}")
+            TASK_QUEUE_HAS_FUNCTION_TYPE = False
+            try:
+                db.execute("""
+                    INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (task_id, user_id, session_id, 'pending', '任务已创建'))
+                logger.info(f"✅ 任务 {task_id} 已在兼容模式下写入数据库")
+            except Exception as e2:
+                logger.error(f"❌ 创建任务失败（兼容模式）: {e2}")
+        else:
+            logger.error(f"❌ 创建任务失败: {e}")
 
 def update_task(task_id, status=None, progress=None, result=None, error=None):
     """更新任务状态"""
@@ -311,23 +400,45 @@ def process_uploaded_file(file_data):
         return "ERROR", error_msg
 
 
-def save_history(user_id, title, result, type_tag):
-    """保存到历史记录（数据库 + 内存）
+def save_history(user_id, title, result, type_tag, structured=None):
+    """保存到历史记录（数据库 + 内存），并可选保存结构化结果
+
+    - user_id: 用户 ID（可为空，空时仅保存到内存）
+    - title/result/type_tag: 展示用的标题与 HTML 结果
+    - structured: 可选的结构化结果（Python 列表/字典），会序列化到 result_json
 
     注意：不要在此函数内部访问 Flask session，
     需要在调用方把 user_id 显式传入，以便在线程中安全调用。
+    返回：数据库记录 ID（成功且有 user_id 且表结构支持时），否则 None
     """
     try:
+        record_id = None
+
         if not user_id:
             logger.warning("⚠️ 未提供 user_id，仅保存内存历史记录")
         else:
-            # 保存到数据库
-            db.execute("""
-                INSERT INTO analysis_results (user_id, title, result, type)
-                VALUES (%s, %s, %s, %s)
-            """, (user_id, title, result, type_tag))
+            # 保存到数据库，并返回记录 ID
+            try:
+                record_id = db.execute_and_fetch_id("""
+                    INSERT INTO analysis_results (user_id, title, result, type)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                """, (user_id, title, result, type_tag))
+                logger.info(f"💾 已保存历史记录到数据库: {title} (id={record_id})")
+            except Exception as e:
+                logger.error(f"❌ 保存历史记录到数据库失败: {e}")
 
-            logger.info(f"💾 已保存历史记录到数据库: {title}")
+            # 若提供了结构化结果且表结构支持，尝试写入 result_json
+            if record_id and structured is not None and ANALYSIS_RESULTS_HAS_JSON:
+                try:
+                    db.execute("""
+                        UPDATE analysis_results
+                        SET result_json = %s
+                        WHERE id = %s
+                    """, (json.dumps(structured, ensure_ascii=False), record_id))
+                    logger.info(f"💾 已为记录 {record_id} 写入结构化结果 result_json")
+                except Exception as e:
+                    logger.warning(f"⚠️ 写入 result_json 失败，将继续使用 HTML 结果: {e}")
 
         # 同时保存到内存（向后兼容）
         record = {
@@ -337,6 +448,8 @@ def save_history(user_id, title, result, type_tag):
             'type': type_tag
         }
         HISTORY_DB.append(record)
+
+        return record_id
 
     except Exception as e:
         logger.error(f"❌ 保存历史记录失败: {e}")
@@ -348,6 +461,7 @@ def save_history(user_id, title, result, type_tag):
             'type': type_tag
         }
         HISTORY_DB.append(record)
+        return None
 
 
 def call_veo_api(prompt):
@@ -723,9 +837,9 @@ IMPORTANT:
                 </table>
                 """
 
-                # 保存结果用于导出
-                LATEST_ANALYSIS_RESULTS[session_id] = all_results
-                source_title = f"FB: {url[:15]}..."
+        # 保存结果用于导出（后续将改为从数据库读取）
+        LATEST_ANALYSIS_RESULTS[session_id] = all_results
+        source_title = f"FB: {url[:15]}..."
 
             except Exception as e:
                 error_msg = f"爬虫任务失败: {str(e)}"
@@ -741,8 +855,8 @@ IMPORTANT:
             update_task(task_id, status='failed', error="请提供链接或文件")
             return
 
-        # 保存历史记录
-        save_history(user_id, source_title, result, 'sentiment')
+        # 保存历史记录（同时写入结构化结果，便于后续导出任意历史记录）
+        save_history(user_id, source_title, result, 'sentiment', structured=all_results)
 
         # 记录使用成本
         if user_id:
@@ -988,18 +1102,20 @@ def analyze():
             logger.error(f"❌ 读取文件失败: {e}")
             return jsonify({'error': f'读取文件失败: {str(e)}'}), 400
 
-    # 创建任务记录到数据库
-    create_task(task_id, user_id, session_id)
+    # 创建任务记录到数据库（标记类型为 sentiment）
+    create_task(task_id, user_id, session_id, function_type='sentiment')
 
-    # 启动后台线程处理任务
-    thread = threading.Thread(
-        target=process_analysis_task,
-        args=(task_id, url, file_data, session_id, user_id, username, department)
-    )
-    # 不设置 daemon=True，让线程自然完成，避免被 Flask 请求结束时杀死
-    thread.start()
-
-    logger.info(f"✅ 任务 {task_id} 已创建并启动")
+    # 目前仍由 Web 进程内线程执行长任务，后续可通过 USE_DB_WORKER 切换到独立 worker
+    if not USE_DB_WORKER:
+        thread = threading.Thread(
+            target=process_analysis_task,
+            args=(task_id, url, file_data, session_id, user_id, username, department)
+        )
+        # 不设置 daemon=True，让线程自然完成，避免被 Flask 请求结束时杀死
+        thread.start()
+        logger.info(f"✅ 任务 {task_id} 已创建并在本进程中启动")
+    else:
+        logger.info(f"✅ 任务 {task_id} 已创建，等待外部 worker 处理")
 
     # 立即返回任务 ID
     return jsonify({
@@ -1081,18 +1197,20 @@ def monitor_competitors():
         # 创建任务 ID
         task_id = str(uuid.uuid4())
 
-        # 创建任务记录到数据库
-        create_task(task_id, user_id, session_id)
+        # 创建任务记录到数据库（标记类型为 competitor）
+        create_task(task_id, user_id, session_id, function_type='competitor')
 
-        # 启动后台线程处理任务
-        thread = threading.Thread(
-            target=process_competitor_task,
-            args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id)
-        )
-        # 不设置 daemon=True，让线程自然完成
-        thread.start()
-
-        logger.info(f"✅ 竞品监控任务 {task_id} 已创建并启动")
+        # 目前仍由 Web 进程内线程执行长任务，后续可通过 USE_DB_WORKER 切换到独立 worker
+        if not USE_DB_WORKER:
+            thread = threading.Thread(
+                target=process_competitor_task,
+                args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id)
+            )
+            # 不设置 daemon=True，让线程自然完成
+            thread.start()
+            logger.info(f"✅ 竞品监控任务 {task_id} 已创建并在本进程中启动")
+        else:
+            logger.info(f"✅ 竞品监控任务 {task_id} 已创建，等待外部 worker 处理")
 
         # 立即返回任务 ID
         return jsonify({
@@ -1583,14 +1701,46 @@ def create_excel_by_category(results):
 @app.route('/export_by_language')
 @login_required
 def export_by_language():
-    """按语言导出 Excel"""
-    session_id = session.get('session_id', 'default')
-    results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
+    """按语言导出 Excel
 
-    if not results:
-        return jsonify({'error': '没有可导出的数据'}), 400
+    优先根据前端传入的 record_id 导出「当前查看的那一条」历史记录；
+    若未提供 record_id，则退回到旧逻辑：导出当前会话最近一次分析结果。
+    """
+    user_id = session.get('user_id')
+    record_id = request.args.get('record_id', type=int)
+
+    results = []
 
     try:
+        if record_id:
+            # 新逻辑：按记录 ID 精确导出当前查看的历史记录
+            logger.info(f"📥 按记录ID导出语言分类报告: record_id={record_id}, user_id={user_id}")
+            record = db.query_one("""
+                SELECT result_json
+                FROM analysis_results
+                WHERE id = %s AND user_id = %s AND type = %s
+            """, (record_id, user_id, 'sentiment'))
+
+            if not record:
+                return jsonify({'error': '记录不存在或无权限访问'}), 404
+
+            if ANALYSIS_RESULTS_HAS_JSON and record.get('result_json'):
+                try:
+                    results = json.loads(record['result_json'])
+                except Exception as e:
+                    logger.error(f"❌ 解析 result_json 失败: {e}")
+                    return jsonify({'error': '该记录的原始数据已损坏，无法导出'}), 500
+            else:
+                return jsonify({'error': '该历史记录生成于旧版本，暂不支持导出，请重新分析一次'}), 400
+        else:
+            # 兼容旧逻辑：按当前会话最近一次分析导出
+            session_id = session.get('session_id', 'default')
+            results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
+            logger.info(f"📥 按会话导出语言分类报告: session_id={session_id}, count={len(results)}")
+
+        if not results:
+            return jsonify({'error': '没有可导出的数据'}), 400
+
         wb = create_excel_by_language(results)
 
         # 生成文件
@@ -1618,14 +1768,46 @@ def export_by_language():
 @app.route('/export_by_category')
 @login_required
 def export_by_category():
-    """按分类导出 Excel"""
-    session_id = session.get('session_id', 'default')
-    results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
+    """按分类导出 Excel
 
-    if not results:
-        return jsonify({'error': '没有可导出的数据'}), 400
+    优先根据前端传入的 record_id 导出「当前查看的那一条」历史记录；
+    若未提供 record_id，则退回到旧逻辑：导出当前会话最近一次分析结果。
+    """
+    user_id = session.get('user_id')
+    record_id = request.args.get('record_id', type=int)
+
+    results = []
 
     try:
+        if record_id:
+            # 新逻辑：按记录 ID 精确导出当前查看的历史记录
+            logger.info(f"📥 按记录ID导出问题分类报告: record_id={record_id}, user_id={user_id}")
+            record = db.query_one("""
+                SELECT result_json
+                FROM analysis_results
+                WHERE id = %s AND user_id = %s AND type = %s
+            """, (record_id, user_id, 'sentiment'))
+
+            if not record:
+                return jsonify({'error': '记录不存在或无权限访问'}), 404
+
+            if ANALYSIS_RESULTS_HAS_JSON and record.get('result_json'):
+                try:
+                    results = json.loads(record['result_json'])
+                except Exception as e:
+                    logger.error(f"❌ 解析 result_json 失败: {e}")
+                    return jsonify({'error': '该记录的原始数据已损坏，无法导出'}), 500
+            else:
+                return jsonify({'error': '该历史记录生成于旧版本，暂不支持导出，请重新分析一次'}), 400
+        else:
+            # 兼容旧逻辑：按当前会话最近一次分析导出
+            session_id = session.get('session_id', 'default')
+            results = LATEST_ANALYSIS_RESULTS.get(session_id, [])
+            logger.info(f"📥 按会话导出问题分类报告: session_id={session_id}, count={len(results)}")
+
+        if not results:
+            return jsonify({'error': '没有可导出的数据'}), 400
+
         wb = create_excel_by_category(results)
 
         # 生成文件
