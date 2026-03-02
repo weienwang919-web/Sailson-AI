@@ -242,6 +242,17 @@
                             <div class="col-6"><input type="date" id="endDate" class="form-control mb-0"></div>
                         </div>
 
+                        <!-- 报告与看视频分析开关 -->
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" id="generateReport" checked>
+                            <label class="form-check-label small" for="generateReport">生成分析报告（含总览解读）</label>
+                        </div>
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="enableVideoVision" checked>
+                            <label class="form-check-label small" for="enableVideoVision">启用看视频分析（Top 5 热门视频）</label>
+                            <div class="form-text small text-muted">仅在「生成分析报告」开启时生效</div>
+                        </div>
+
                         <button onclick="startMonitor()" id="runBtn" class="btn-submit">🚀 启动云端探测</button>
                         <div class="mt-4 p-3 rounded bg-light">
                             <small class="text-muted">💡 提示：系统将自动同步云端视频数据，为您精准分析互动爆发点及内容特征。</small>
@@ -352,7 +363,7 @@
             }
         }
 
-        // 初始化日期：最近 7 天
+        // 初始化日期：最近 7 天 + 开关联动
         window.onload = () => {
             const end = new Date();
             const start = new Date();
@@ -360,6 +371,21 @@
             document.getElementById('endDate').value = end.toISOString().split('T')[0];
             document.getElementById('startDate').value = start.toISOString().split('T')[0];
             loadHistory();
+
+            // 「生成分析报告」与「启用看视频分析」联动
+            const gen = document.getElementById('generateReport');
+            const vis = document.getElementById('enableVideoVision');
+            if (gen && vis) {
+                vis.disabled = !gen.checked;
+                gen.addEventListener('change', () => {
+                    if (!gen.checked) {
+                        vis.checked = false;
+                        vis.disabled = true;
+                    } else {
+                        vis.disabled = false;
+                    }
+                });
+            }
         };
 
         async function startMonitor() {
@@ -384,7 +410,9 @@
                         competitor_name: url,
                         startDate: start,
                         endDate: end,
-                        project: document.getElementById('projectSelect').value
+                        project: document.getElementById('projectSelect').value,
+                        generateReport: document.getElementById('generateReport') ? document.getElementById('generateReport').checked : true,
+                        enableVideoVision: document.getElementById('enableVideoVision') ? document.getElementById('enableVideoVision').checked : false
                     })
                 });
                 const d = await r.json();

@@ -1243,16 +1243,19 @@ def monitor_competitors():
     logger.info("📥 收到竞品监控请求")
 
     try:
-        data = request.json
+        data = request.json or {}
         target_url = data.get('competitor_name')
         start_dt_str = data.get('startDate')
         end_dt_str = data.get('endDate')
         project = (data.get('project') or 'CFL').strip().upper()
+        generate_report = bool(data.get('generateReport', True))
+        enable_video_vision = bool(data.get('enableVideoVision', False))
         if project not in VALID_PROJECTS:
             project = 'CFL'
 
         logger.info(f"🎯 目标 URL: {target_url}")
         logger.info(f"📅 时间段: {start_dt_str} ~ {end_dt_str}，项目: {project}")
+        logger.info(f"📊 生成分析报告: {generate_report}，启用看视频分析: {enable_video_vision}")
 
         if not APIFY_TOKEN:
             error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
@@ -1275,7 +1278,7 @@ def monitor_competitors():
         if not USE_DB_WORKER:
             thread = threading.Thread(
                 target=process_competitor_task,
-                args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project)
+                args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project, generate_report, enable_video_vision)
             )
             # 不设置 daemon=True，让线程自然完成
             thread.start()
@@ -1298,8 +1301,13 @@ def monitor_competitors():
         return jsonify({'error': error_msg}), 500
 
 
-def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project='CFL'):
-    """后台处理竞品监控任务。project 为 CFL/PUBGM/HOK，用于选择提示词。"""
+def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project='CFL', generate_report=True, enable_video_vision=False):
+    """后台处理竞品监控任务。
+
+    project: CFL/PUBGM/HOK，用于选择提示词。
+    generate_report: 是否生成 AI 解读报告；关闭时仅输出数据看板（总览 + 明细）。
+    enable_video_vision: 预留开关，后续用于启用「看视频」分析，仅在 generate_report 为 True 时生效。
+    """
     try:
         logger.info(f"🔄 开始处理竞品监控任务 {task_id}")
         update_task(task_id, status='processing', progress='正在初始化...')
@@ -1471,62 +1479,57 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             update_task(task_id, status='completed', result=f"<div class='alert alert-warning'>{warning_msg}</div>")
             return
 
-        # 4. 通义千问生成报告（按项目取提示词）
-        competitor_template = get_prompt('competitor', project)
-        if not competitor_template:
-            update_task(task_id, status='failed', error='该项目提示词尚未配置')
-            return
+        # 4. 构建「数据看板」明细表
+        rows_html = []
+        total_count = len(cleaned)
+        total_views = sum(item.get("views", 0) for item in cleaned)
+        total_likes = sum(item.get("likes", 0) for item in cleaned)
+        total_comments = sum(item.get("comments", 0) for item in cleaned)
+        total_collects = sum(item.get("collects", 0) for item in cleaned)
+        total_shares = sum(item.get("shares", 0) for item in cleaned)
 
-        update_task(task_id, progress='正在生成分析报告...')
-        cleaned_str = json.dumps(cleaned, ensure_ascii=False)
-        prompt = competitor_template.format(cleaned=cleaned_str, start_dt_str=start_dt_str, end_dt_str=end_dt_str)
+        # 总计行：日期列显示总条数，样式与表头统一
+        rows_html.append(f"""
+        <tr style="background:#F8F9FA;">
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">共 {total_count} 条</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">合计</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_views}</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_likes}</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_comments}</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_collects}</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_shares}</td>
+            <td style="padding:15px 10px; border-bottom:2px solid #EEE;"></td>
+        </tr>
+        """)
 
-        logger.info("🤖 开始调用通义千问 API 生成报告...")
-        result, tokens = call_gemini(prompt)
+        for item in cleaned:
+            date_str = html.escape(item.get("date", "") or "")
+            desc = html.escape(item.get("desc", "") or "无描述")
+            views = item.get("views", 0)
+            likes = item.get("likes", 0)
+            comments_cnt = item.get("comments", 0)
+            collects = item.get("collects", 0)
+            shares = item.get("shares", 0)
+            url = item.get("url") or ""
+            if url:
+                url_html = f'<a href="{html.escape(url)}" target="_blank" style="color:#D32F2F; font-weight:600;">查看</a>'
+            else:
+                url_html = "—"
 
-        # 清理 Markdown 代码块标记
-        result = result.replace('```html', '').replace('```', '').strip()
-
-        # 在总览下方追加按视频维度的明细表（样式与总数据表格统一）
-        try:
-            rows_html = []
-            total_count = len(cleaned)
-            # 总计行：日期列显示总条数，样式与表头统一
             rows_html.append(f"""
-            <tr style="background:#F8F9FA;">
-                <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">共 {total_count} 条</td>
-                <td colspan="7" style="padding:15px 10px; border-bottom:2px solid #EEE;"></td>
+            <tr>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{date_str}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:left; font-size:0.9rem; word-wrap:break-word; white-space:pre-wrap;">{desc}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{views}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{likes}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{comments_cnt}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{collects}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{shares}</td>
+                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{url_html}</td>
             </tr>
             """)
 
-            for item in cleaned:
-                date_str = html.escape(item.get("date", "") or "")
-                desc = html.escape(item.get("desc", "") or "无描述")
-                views = item.get("views", 0)
-                likes = item.get("likes", 0)
-                comments_cnt = item.get("comments", 0)
-                collects = item.get("collects", 0)
-                shares = item.get("shares", 0)
-                url = item.get("url") or ""
-                if url:
-                    url_html = f'<a href="{html.escape(url)}" target="_blank" style="color:#D32F2F; font-weight:600;">查看</a>'
-                else:
-                    url_html = "—"
-
-                rows_html.append(f"""
-                <tr>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{date_str}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:left; font-size:0.9rem; word-wrap:break-word; white-space:pre-wrap;">{desc}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{views}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{likes}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{comments_cnt}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{collects}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{shares}</td>
-                    <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{url_html}</td>
-                </tr>
-                """)
-
-            per_video_table = f"""
+        per_video_table = f"""
 <div style="margin-top:30px;">
 <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:15px;">
     📺 明细列表（按视频）
@@ -1550,12 +1553,49 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
 </table>
 </div>
 """
-            result = f"{result}\n{per_video_table}"
-        except Exception as build_table_error:
-            logger.error(f"⚠️ 构建竞品明细表失败: {build_table_error}")
+
+        # 5. 生成最终输出：可选 AI 报告 + 数据看板
+        if generate_report:
+            # 通义千问生成报告（按项目取提示词）
+            competitor_template = get_prompt('competitor', project)
+            if not competitor_template:
+                update_task(task_id, status='failed', error='该项目提示词尚未配置')
+                return
+
+            update_task(task_id, progress='正在生成分析报告...')
+            cleaned_str = json.dumps(cleaned, ensure_ascii=False)
+            prompt = competitor_template.format(
+                cleaned=cleaned_str,
+                start_dt_str=start_dt_str,
+                end_dt_str=end_dt_str,
+                video_vision_summaries=""  # 预留占位，后续接入「看视频」分析
+            )
+
+            logger.info("🤖 开始调用通义千问 API 生成竞品报告...")
+            result, tokens = call_gemini(prompt)
+
+            # 清理 Markdown 代码块标记
+            result = (result or "").replace('```html', '').replace('```', '').strip()
+
+            # 将数据看板追加到报告后
+            full_html = f"{result}\n{per_video_table}"
+        else:
+            # 仅输出数据看板，不调用大模型
+            tokens = 0
+            full_html = f"""
+            <div style="margin-bottom:20px;">
+                <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
+                    📊 数据看板（仅数据，不含解读）
+                </h3>
+                <p style="color:#666; font-size:0.9rem;">
+                    时间范围：{html.escape(start_dt_str)} ~ {html.escape(end_dt_str)}，共 {total_count} 条视频。
+                </p>
+            </div>
+            {per_video_table}
+            """
 
         # 保存历史记录
-        save_history(user_id, f"竞品数据:{target_url[20:30]}", result, 'competitor')
+        save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor')
 
         # 记录使用成本
         if user_id:
@@ -1569,7 +1609,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             )
 
         # 更新任务状态为完成
-        update_task(task_id, status='completed', result=result, progress='分析完成')
+        update_task(task_id, status='completed', result=full_html, progress='分析完成')
 
         logger.info("✅ 竞品监控完成")
         logger.info("=" * 60 + "\n")
