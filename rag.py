@@ -128,38 +128,16 @@ def get_embedding(text):
 
 
 def get_embeddings_batch(texts, batch_size=10):
-    """批量获取 embedding，返回与 texts 等长的向量列表。DashScope 兼容接口单次最多 10 条。"""
+    """批量获取 embedding，返回与 texts 等长的向量列表。逐条调用单文本接口，避免兼容接口 400。"""
     results = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
+    for i, text in enumerate(texts):
         if not DASHSCOPE_API_KEY:
-            results.extend([None] * len(batch))
+            results.append(None)
             continue
-
-        url = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-        headers = {
-            "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": EMBEDDING_MODEL,
-            "input": [t[:8000] for t in batch],
-            "dimensions": EMBEDDING_DIM,
-            "encoding_format": "float",
-        }
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            for item in sorted(data["data"], key=lambda x: x["index"]):
-                results.append(item["embedding"])
-        except Exception as e:
-            err_detail = getattr(e, "response", None)
-            if err_detail is not None and hasattr(err_detail, "text"):
-                logger.error(f"❌ 批量 Embedding 调用失败: {e} | 响应: {err_detail.text[:500]}")
-            else:
-                logger.error(f"❌ 批量 Embedding 调用失败: {e}")
-            results.extend([None] * len(batch))
+        emb = get_embedding(text)
+        results.append(emb)
+        if (i + 1) % 5 == 0:
+            logger.info(f"📐 Embedding 进度: {i + 1}/{len(texts)}")
     return results
 
 
