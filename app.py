@@ -22,6 +22,10 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 from functools import wraps
 import html
+from docx import Document
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from bs4 import BeautifulSoup
 import database as db
 import rag
 
@@ -1859,6 +1863,98 @@ def get_record(id):
         # 失败时从内存查找
         record = next((x for x in HISTORY_DB if x['id'] == id), None)
         return jsonify(record) if record else jsonify({'error': '记录不存在'}), 404
+
+
+def build_competitor_docx(html_content):
+    """将竞品报告 HTML 转为 Word 文档，保留标题、表格、段落；内嵌 base64 图片。"""
+    import base64
+    doc = Document()
+    soup = BeautifulSoup(html_content, 'html.parser')
+    # 按文档顺序处理：先所有 h3，再所有 table，再带 base64 的 img；段落用 p 或 div 内文本
+    for el in soup.find_all(['h3', 'table', 'div', 'p', 'img']):
+        if el.name == 'h3':
+            p = doc.add_paragraph()
+            run = p.add_run(el.get_text(strip=True))
+            run.bold = True
+            run.font.size = Pt(14)
+        elif el.name == 'table':
+            rows = el.find_all('tr')
+            if not rows:
+                continue
+            cols = max(len(r.find_all(['th', 'td'])) for r in rows)
+            if cols == 0:
+                continue
+            table = doc.add_table(rows=len(rows), cols=cols)
+            table.style = 'Table Grid'
+            for ri, tr in enumerate(rows):
+                cells = tr.find_all(['th', 'td'])
+                for ci, cell in enumerate(cells):
+                    if ci < cols:
+                        table.rows[ri].cells[ci].text = cell.get_text(strip=True).replace('\n', ' ')
+            doc.add_paragraph()
+        elif el.name == 'div' and (el.get('style') or '').find('padding') >= 0:
+            for c in el.find_all('p'):
+                t = c.get_text(strip=True)
+                if t:
+                    doc.add_paragraph(t)
+            for img in el.find_all('img'):
+                src = img.get('src') or ''
+                if 'base64,' in src:
+                    try:
+                        b64 = src.split('base64,', 1)[1]
+                        blob = base64.b64decode(b64)
+                        doc.add_paragraph()
+                        para = doc.add_paragraph()
+                        run = para.add_run()
+                        run.add_picture(BytesIO(blob), width=Inches(3.5))
+                    except Exception:
+                        pass
+        elif el.name == 'p' and not el.find_parent('table'):
+            t = el.get_text(strip=True)
+            if t and len(t) > 1:
+                doc.add_paragraph(t)
+        elif el.name == 'img':
+            src = el.get('src') or ''
+            if 'base64,' in src:
+                try:
+                    b64 = src.split('base64,', 1)[1]
+                    blob = base64.b64decode(b64)
+                    doc.add_paragraph()
+                    para = doc.add_paragraph()
+                    run = para.add_run()
+                    run.add_picture(BytesIO(blob), width=Inches(3.5))
+                except Exception:
+                    pass
+    return doc
+
+
+@app.route('/export_competitor_word/<int:record_id>')
+@login_required
+def export_competitor_word(record_id):
+    """导出竞品报告为 Word（.docx）。仅限本人且 type=competitor 的记录。"""
+    user_id = session.get('user_id')
+    record = db.query_one(
+        "SELECT id, title, result, type FROM analysis_results WHERE id = %s AND user_id = %s",
+        (record_id, user_id)
+    )
+    if not record or record['type'] != 'competitor':
+        return jsonify({'error': '记录不存在或无权导出'}), 404
+    try:
+        doc = build_competitor_docx(record['result'] or '')
+        buf = BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        filename = f"竞品报告_{record['title'][:20]}_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.docx"
+        return send_file(
+            buf,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"❌ 导出 Word 失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 # ============================================
 # Excel 导出功能

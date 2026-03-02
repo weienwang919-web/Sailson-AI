@@ -10,3 +10,5 @@ psycopg2-binary
 flask-bcrypt
 requests
 PyPDF2
+python-docx
+beautifulsoup4

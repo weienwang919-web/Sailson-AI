@@ -265,6 +265,9 @@
                             <a href="#" class="btn-tutorial" onclick="showTutorial(); return false;">查看使用教程</a>
                         </div>
 
+                        <div id="reportToolbar" style="display:none; margin-bottom:12px;">
+                            <a href="#" id="exportWordBtn" class="btn btn-sm btn-outline-danger">📄 导出 Word</a>
+                        </div>
                         <div id="reportOutput" style="display:none;"></div>
                     </div>
                 </div>
@@ -275,6 +278,7 @@
     <script>
         let allHistory = []; // 存储所有历史记录
         let currentFilter = 'all'; // 当前时间筛选
+        let currentRecordId = null; // 当前展示的报告记录 ID，用于导出 Word
 
         // 填充示例链接
         function fillExample() {
@@ -329,11 +333,14 @@
 
         async function loadRecord(id) {
             try {
+                currentRecordId = id;
                 const r = await fetch(`/get_record/${id}`);
                 const d = await r.json();
                 document.getElementById('reportOutput').style.display = 'block';
                 document.getElementById('emptyState').style.display = 'none';
                 document.getElementById('reportOutput').innerHTML = d.result;
+                document.getElementById('reportToolbar').style.display = 'block';
+                document.getElementById('exportWordBtn').href = '/export_competitor_word/' + id;
 
                 // 更新活跃状态
                 document.querySelectorAll('.history-item').forEach(item => {
@@ -413,8 +420,19 @@
                     ld.style.display = 'none';
                     out.style.display = 'block';
                     out.innerHTML = `<div class="fade-in">${d.result}</div>`;
+                    document.getElementById('reportToolbar').style.display = 'block';
                     btn.disabled = false;
-                    loadHistory();
+                    await loadHistory();
+                    // 刚完成的任务会在历史第一条，取第一条竞品记录 ID 用于导出
+                    const r = await fetch('/get_history');
+                    const list = await r.json();
+                    const competitorFirst = list.find(i => i.type === 'competitor');
+                    if (competitorFirst) {
+                        currentRecordId = competitorFirst.id;
+                        document.getElementById('exportWordBtn').href = '/export_competitor_word/' + competitorFirst.id;
+                    } else {
+                        document.getElementById('exportWordBtn').href = '#';
+                    }
                 } else if (d.status === 'failed') {
                     ld.style.display = 'none';
                     btn.disabled = false;
@@ -433,18 +451,14 @@
         async function loadHistory() {
             const r = await fetch('/get_history');
             const list = await r.json();
+            allHistory = list;
             const ul = document.getElementById('historyList');
             ul.innerHTML = '';
             list.filter(i => i.type==='competitor').forEach(item => {
                 const li = document.createElement('li');
                 li.className = 'history-item';
                 li.innerText = item.title;
-                li.onclick = async () => {
-                    const res = await fetch(`/get_record/${item.id}`);
-                    const d = await res.json();
-                    document.getElementById('reportOutput').innerHTML = `<div class="fade-in">${d.result}</div>`;
-                    document.getElementById('reportOutput').style.display = 'block';
-                };
+                li.onclick = async () => { await loadRecord(item.id); };
                 ul.appendChild(li);
             });
         }

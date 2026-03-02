@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: flaskproject
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT"
+    envVars:
+      - key: PORT
+        value: "5000"
+      # DashScope API Key（用于大模型和向量）
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      # Apify Token（用于爬取 TikTok 等）
+      - key: APIFY_TOKEN
+        sync: false
+      # PostgreSQL 数据库地址（Render 创建的数据库会自动提供 DATABASE_URL）
+      - key: DATABASE_URL
+        sync: false
+      # SMTP 邮件配置（如不需要可留空）
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: FEEDBACK_EMAIL_TO
+        sync: false
+      - key: FEEDBACK_EMAIL_FROM
+        sync: false
