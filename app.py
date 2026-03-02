@@ -1480,7 +1480,23 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             update_task(task_id, status='completed', result=f"<div class='alert alert-warning'>{warning_msg}</div>")
             return
 
-        # 4. 构建「数据看板」明细表
+        # 4. （可选）调用「看视频」分析：仅在生成报告且开关开启时启用
+        video_vision_html = ""
+        video_vision_summaries = ""
+        if generate_report and enable_video_vision:
+            try:
+                logger.info("🎬 已开启看视频分析，准备对 Top 视频进行视觉分析...")
+                video_vision_html, video_vision_summaries = get_video_vision_section(cleaned, project=project, top_k=5)
+                if video_vision_html:
+                    logger.info("✅ 看视频分析完成，已生成视频画面总结模块")
+                else:
+                    logger.info("⚠️ 看视频分析未生成任何结果（可能是直链获取或视觉模型失败）")
+            except Exception as vision_error:
+                logger.error(f"❌ 看视频分析链路异常: {vision_error}")
+                video_vision_html = ""
+                video_vision_summaries = ""
+
+        # 5. 构建「数据看板」明细表
         rows_html = []
         total_count = len(cleaned)
         total_views = sum(item.get("views", 0) for item in cleaned)
@@ -1555,7 +1571,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
 </div>
 """
 
-        # 5. 生成最终输出：可选 AI 报告 + 数据看板
+        # 6. 生成最终输出：可选 AI 报告 + 看视频 + 数据看板
         if generate_report:
             # 通义千问生成报告（按项目取提示词）
             competitor_template = get_prompt('competitor', project)
@@ -1569,7 +1585,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                 cleaned=cleaned_str,
                 start_dt_str=start_dt_str,
                 end_dt_str=end_dt_str,
-                video_vision_summaries=""  # 预留占位，后续接入「看视频」分析
+                video_vision_summaries=video_vision_summaries or "（本期未启用或未成功获取视频画面分析，仅基于文本和指标生成报告。）"
             )
 
             logger.info("🤖 开始调用通义千问 API 生成竞品报告...")
@@ -1578,8 +1594,8 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             # 清理 Markdown 代码块标记
             result = (result or "").replace('```html', '').replace('```', '').strip()
 
-            # 将数据看板追加到报告后
-            full_html = f"{result}\n{per_video_table}"
+            # 将「视频画面总结」和数据看板追加到报告后
+            full_html = f"{result}\n{video_vision_html}\n{per_video_table}"
         else:
             # 仅输出数据看板，不调用大模型
             tokens = 0
