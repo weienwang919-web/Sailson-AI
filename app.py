@@ -1496,84 +1496,19 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                 video_vision_html = ""
                 video_vision_summaries = ""
 
-        # 5. 构建「数据看板」明细表
-        rows_html = []
+        # 5. 预计算聚合指标
         total_count = len(cleaned)
         total_views = sum(item.get("views", 0) for item in cleaned)
         total_likes = sum(item.get("likes", 0) for item in cleaned)
         total_comments = sum(item.get("comments", 0) for item in cleaned)
         total_collects = sum(item.get("collects", 0) for item in cleaned)
         total_shares = sum(item.get("shares", 0) for item in cleaned)
+        total_engagement = total_likes + total_comments + total_collects + total_shares
+        avg_views = total_views // total_count if total_count else 0
+        avg_engagement = total_engagement // total_count if total_count else 0
 
-        # 总计行：日期列显示总条数，样式与表头统一
-        rows_html.append(f"""
-        <tr style="background:#F8F9FA;">
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">共 {total_count} 条</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">合计</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_views}</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_likes}</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_comments}</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_collects}</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE; font-weight:600; color:#333;">{total_shares}</td>
-            <td style="padding:15px 10px; border-bottom:2px solid #EEE;"></td>
-        </tr>
-        """)
-
-        for item in cleaned:
-            date_str = html.escape(item.get("date", "") or "")
-            desc = html.escape(item.get("desc", "") or "无描述")
-            views = item.get("views", 0)
-            likes = item.get("likes", 0)
-            comments_cnt = item.get("comments", 0)
-            collects = item.get("collects", 0)
-            shares = item.get("shares", 0)
-            url = item.get("url") or ""
-            if url:
-                url_html = f'<a href="{html.escape(url)}" target="_blank" style="color:#D32F2F; font-weight:600;">查看</a>'
-            else:
-                url_html = "—"
-
-            rows_html.append(f"""
-            <tr>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{date_str}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:left; font-size:0.9rem; word-wrap:break-word; white-space:pre-wrap;">{desc}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{views}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{likes}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{comments_cnt}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{collects}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{shares}</td>
-                <td style="padding:15px 10px; vertical-align:middle; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{url_html}</td>
-            </tr>
-            """)
-
-        per_video_table = f"""
-<div style="margin-top:30px;">
-<h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:15px;">
-    📺 明细列表（按视频）
-</h3>
-<table style="width:100%; table-layout:fixed; border-collapse:collapse; margin:20px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.9rem;">
-    <thead>
-        <tr>
-            <th style="width:95px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">日期</th>
-            <th style="background:#F8F9FA; padding:15px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE;">视频描述</th>
-            <th style="width:85px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">播放</th>
-            <th style="width:75px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">点赞</th>
-            <th style="width:70px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">评论</th>
-            <th style="width:70px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">收藏</th>
-            <th style="width:70px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">转发</th>
-            <th style="width:72px; background:#F8F9FA; padding:15px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;">链接</th>
-        </tr>
-    </thead>
-    <tbody>
-        {''.join(rows_html)}
-    </tbody>
-</table>
-</div>
-"""
-
-        # 6. 生成最终输出：可选 AI 报告 + 看视频 + 数据看板
+        # 6. 生成最终输出
         if generate_report:
-            # 通义千问生成报告（按项目取提示词）
             competitor_template = get_prompt('competitor', project)
             if not competitor_template:
                 update_task(task_id, status='failed', error='该项目提示词尚未配置')
@@ -1585,31 +1520,37 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                 cleaned=cleaned_str,
                 start_dt_str=start_dt_str,
                 end_dt_str=end_dt_str,
-                video_vision_summaries=video_vision_summaries or "（本期未启用或未成功获取视频画面分析，仅基于文本和指标生成报告。）"
+                total_count=total_count,
+                total_views=total_views,
+                avg_views=avg_views,
+                total_engagement=total_engagement,
+                avg_engagement=avg_engagement,
+                video_vision_summaries=video_vision_summaries or ""
             )
 
             logger.info("🤖 开始调用通义千问 API 生成竞品报告...")
             result, tokens = call_gemini(prompt)
-
-            # 清理 Markdown 代码块标记
             result = (result or "").replace('```html', '').replace('```', '').strip()
 
-            # 将「视频画面总结」和数据看板追加到报告后
-            full_html = f"{result}\n{video_vision_html}\n{per_video_table}"
+            full_html = f"{result}\n{video_vision_html}"
         else:
-            # 仅输出数据看板，不调用大模型
             tokens = 0
-            full_html = f"""
-            <div style="margin-bottom:20px;">
-                <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
-                    📊 数据看板（仅数据，不含解读）
+            overview_html = f"""
+            <div style="width:100%; font-family:sans-serif;">
+                <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px;">
+                    📊 数据概览表 ({html.escape(start_dt_str)} 至 {html.escape(end_dt_str)})
                 </h3>
-                <p style="color:#666; font-size:0.9rem;">
-                    时间范围：{html.escape(start_dt_str)} ~ {html.escape(end_dt_str)}，共 {total_count} 条视频。
-                </p>
+                <table class="table" style="width:100%; margin-bottom:30px; text-align:center; font-size:0.9rem;">
+                    <tr style="background:#f8f9fa;">
+                        <th>总条数</th><th>总播放</th><th>播放均值</th><th>总互动</th><th>互动均值</th><th>总点赞</th><th>总评论</th><th>总收藏</th><th>总转发</th>
+                    </tr>
+                    <tr>
+                        <td>{total_count}</td><td>{total_views}</td><td>{avg_views}</td><td>{total_engagement}</td><td>{avg_engagement}</td><td>{total_likes}</td><td>{total_comments}</td><td>{total_collects}</td><td>{total_shares}</td>
+                    </tr>
+                </table>
             </div>
-            {per_video_table}
             """
+            full_html = overview_html
 
         # 保存历史记录
         save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor')

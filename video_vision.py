@@ -138,74 +138,76 @@ def _extract_frames(video_path: str, max_frames: int = 5) -> List[bytes]:
         cap.release()
 
 
-def _describe_video_with_vision(frames_b64: List[bytes], desc: str, project: str) -> str:
-    """调用 Qwen-VL 对多帧截图做画面总结，返回中文描述。"""
+def _classify_video_with_vision(frames_b64: List[bytes], desc: str, project: str) -> Dict:
+    """调用 Qwen-VL 对多帧截图判断营销动作类型，返回 {"type": "...", "summary": "..."}。"""
     if not _vision_client:
         logger.warning("⚠️ Qwen-VL 客户端不可用，跳过视觉分析")
-        return ""
+        return {}
 
     if not frames_b64:
-        return ""
+        return {}
 
-    # 只取前 4 帧，避免 prompt 太大
     frames_b64 = frames_b64[:4]
+
+    import json as _json
 
     project_name = project or "CFL"
     user_text = (
-        f"你是一名短视频内容分析师，正在为项目「{project_name}」做竞品监控。\n"
-        f"以下是同一条 TikTok 视频的多帧截图，请基于画面内容，用中文输出「视频画面总结」，要求：\n"
-        f"1）先用 1 句话概括整体画面风格与核心信息；\n"
-        f"2）再用 2-3 句话说明镜头中出现的关键元素（人物/场景/字幕/特效等）以及节奏感；\n"
-        f"3）最后补充 1 句话，说明该视频更适合用于什么类型的营销场景（如：新品曝光、活动预热、福利派发、品牌形象等）。\n"
-        f"如果你能从画面中推测出这条视频的脚本结构，也可以简单点出（如：开场钩子-亮点展示-福利收尾）。\n"
-        f"原始视频文案/描述（可能为空，仅供参考）：{desc[:200]}\n"
+        f"你是一名竞品情报分析师，正在为项目「{project_name}」做竞品监控。\n"
+        f"以下是同一条 TikTok 视频的多帧截图。\n"
+        f"请判断这条视频属于什么类型的营销动作，从以下类型中选择最匹配的一个：\n"
+        f"游戏实录、赛事预热、版本更新预告、KOL合作/开箱、福利/抽奖活动、品牌形象宣传、UGC互动征集、其他\n\n"
+        f"然后用 1 句话（不超过 30 字）概括该视频在做什么营销动作。\n"
+        f"例如：「与 KOL @xxx 合作推广新赛季武器皮肤」「官方赛事 S12 倒计时预告」\n\n"
+        f"仅输出 JSON，格式：{{\"type\":\"分类\",\"summary\":\"一句话概括\"}}\n"
+        f"不要输出任何其他文字。\n\n"
+        f"原始视频文案（仅供参考）：{desc[:200]}\n"
     )
 
-    content = [
-        {"type": "text", "text": user_text},
-    ]
+    content: List[Dict] = [{"type": "text", "text": user_text}]
     for b64 in frames_b64:
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": "data:image/jpeg;base64," + b64.decode("utf-8")
-                },
-            }
-        )
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64," + b64.decode("utf-8")},
+        })
 
     try:
-        logger.info("👀 调用 Qwen-VL 进行视频画面总结")
+        logger.info("👀 调用 Qwen-VL 进行视频营销类型判断")
         resp = _vision_client.chat.completions.create(
             model="qwen3-vl-plus",
-            messages=[
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ],
-            temperature=0.4,
+            messages=[{"role": "user", "content": content}],
+            temperature=0.3,
         )
-        result = resp.choices[0].message.content
-        return (result or "").strip()
+        raw = (resp.choices[0].message.content or "").strip()
+        # 清理可能的 markdown 包裹
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        result = _json.loads(raw)
+        if isinstance(result, dict) and "type" in result and "summary" in result:
+            return result
+        logger.warning(f"⚠️ Qwen-VL 返回格式异常: {raw}")
+        return {}
     except Exception as e:
         logger.error(f"❌ 调用 Qwen-VL 失败: {e}")
-        return ""
+        return {}
 
 
 def get_video_vision_section(
     cleaned_videos: List[Dict], project: str = "CFL", top_k: int = 5
 ) -> Tuple[str, str]:
-    """对播放量 Top K 的视频做「看视频」分析，返回 (html_section, text_summaries)。"""
+    """对播放量 Top K 的视频做「看视频」分析。
+
+    返回 (html_section, text_summaries)：
+    - html_section: 按营销类型归类的总结表 HTML
+    - text_summaries: 按类型归总的纯文本摘要（可传给 AI 报告模板）
+    """
     if not cleaned_videos:
         return "", ""
 
-    # 只保留有 URL 的视频
     videos = [v for v in cleaned_videos if v.get("url")]
     if not videos:
         return "", ""
 
-    # 按播放量排序，取 Top K
     videos = sorted(videos, key=lambda x: x.get("views", 0), reverse=True)[:top_k]
     input_urls = [v["url"] for v in videos]
 
@@ -215,14 +217,13 @@ def get_video_vision_section(
         logger.warning("⚠️ 未获取到任何视频直链，跳过看视频分析")
         return "", ""
 
-    cards_html: List[str] = []
-    summaries_text: List[str] = []
+    # 收集每条视频的分类结果
+    video_results: List[Dict] = []
 
-    for idx, v in enumerate(videos, start=1):
+    for v in videos:
         page_url = v["url"]
         storage_url = mapping.get(page_url)
         if not storage_url:
-            logger.warning(f"⚠️ 未找到直链，跳过视频: {page_url}")
             continue
 
         tmp_video = _download_video(storage_url)
@@ -230,34 +231,17 @@ def get_video_vision_section(
             continue
 
         try:
-            frames_b64 = _extract_frames(tmp_video, max_frames=5)
-            summary = _describe_video_with_vision(frames_b64, v.get("desc") or "", project)
-            if not summary:
+            frames_b64 = _extract_frames(tmp_video, max_frames=4)
+            classification = _classify_video_with_vision(frames_b64, v.get("desc") or "", project)
+            if not classification:
                 continue
 
-            # 用第一帧作为封面
-            cover_b64 = frames_b64[0].decode("utf-8") if frames_b64 else ""
-
-            views = v.get("views", 0)
-            desc = v.get("desc") or "无描述"
-
-            card_html = f"""
-            <div style="display:flex; gap:16px; align-items:flex-start; padding:12px; border-radius:10px; background:#FFF9F9; border:1px solid #F5C1C1; margin-bottom:12px;">
-                <div style="flex-shrink:0;">
-                    {'<img src="data:image/jpeg;base64,' + cover_b64 + '" style="width:180px; border-radius:8px; object-fit:cover;" />' if cover_b64 else ''}
-                </div>
-                <div style="flex:1;">
-                    <p style="margin-bottom:4px;"><strong>视频 {idx} · 播放 {views}</strong></p>
-                    <p style="margin-bottom:4px; font-size:0.85rem; color:#777;">原始描述：{desc}</p>
-                    <p style="margin-bottom:6px; font-size:0.9rem; color:#333; white-space:pre-wrap;">{summary}</p>
-                    <p style="margin-bottom:0; font-size:0.85rem;">
-                        <a href="{page_url}" target="_blank" style="color:#D32F2F; text-decoration:none;">🔗 查看 TikTok 原视频</a>
-                    </p>
-                </div>
-            </div>
-            """
-            cards_html.append(card_html)
-            summaries_text.append(f"【视频{idx}，播放 {views}】{summary}")
+            video_results.append({
+                "type": classification.get("type", "其他"),
+                "summary": classification.get("summary", ""),
+                "url": page_url,
+                "views": v.get("views", 0),
+            })
         finally:
             try:
                 if os.path.exists(tmp_video):
@@ -265,20 +249,64 @@ def get_video_vision_section(
             except Exception:
                 pass
 
-    if not cards_html:
+    if not video_results:
         return "", ""
 
+    # 按营销类型分组
+    from collections import OrderedDict
+    groups: Dict[str, List[Dict]] = OrderedDict()
+    for vr in video_results:
+        t = vr["type"]
+        if t not in groups:
+            groups[t] = []
+        groups[t].append(vr)
+
+    # 构建 HTML 归类表
+    rows_html: List[str] = []
+    text_lines: List[str] = []
+
+    for type_name, members in groups.items():
+        count = len(members)
+        links = ", ".join(
+            f'<a href="{m["url"]}" target="_blank" style="color:#D32F2F; text-decoration:none;">查看</a>'
+            for m in members
+        )
+        # 用该类型下所有视频的 summary 合并为策略总结
+        summaries = "; ".join(m["summary"] for m in members if m["summary"])
+        if not summaries:
+            summaries = type_name
+
+        rows_html.append(f"""
+        <tr>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-weight:600; font-size:0.9rem;">{type_name}</td>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{count}</td>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.85rem;">{links}</td>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.9rem;">{summaries}</td>
+        </tr>
+        """)
+        text_lines.append(f"【{type_name}】({count}条) {summaries}")
+
     section_html = f"""
-    <div style="margin-top:30px;">
-        <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
-            🎬 视频画面总结（Top {len(cards_html)} 热门视频）
-        </h3>
-        <div>
-            {''.join(cards_html)}
-        </div>
-    </div>
-    """
-    section_html = section_html.strip()
-    text_block = "\n".join(summaries_text)
+<div style="margin-top:30px;">
+    <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
+        🎬 竞品本周宣发动作归类（Top {len(video_results)} 热门视频）
+    </h3>
+    <table style="width:100%; border-collapse:collapse; margin:15px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.9rem;">
+        <thead>
+            <tr style="background:#f8f9fa;">
+                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:140px;">营销类型</th>
+                <th style="padding:12px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:60px;">条数</th>
+                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:160px;">代表视频</th>
+                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE;">策略总结</th>
+            </tr>
+        </thead>
+        <tbody>
+            {''.join(rows_html)}
+        </tbody>
+    </table>
+</div>
+""".strip()
+
+    text_block = "\n".join(text_lines)
     return section_html, text_block
 
