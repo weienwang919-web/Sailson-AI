@@ -23,6 +23,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from functools import wraps
 import html
 import database as db
+import rag
 
 # 加载 .env 文件
 load_dotenv()
@@ -200,7 +201,7 @@ def load_prompts():
     return _PROMPTS_CACHE
 
 def get_prompt(feature, project):
-    """取指定功能、项目的提示词模板。feature 为 'sentiment' 或 'competitor'，project 为 CFL/PUBGM/HOK。"""
+    """取指定功能、项目的提示词模板。feature: sentiment/competitor/copywriting/video_script"""
     if project not in VALID_PROJECTS:
         return ''
     prompts = load_prompts()
@@ -288,6 +289,7 @@ USD_TO_CNY = 7.2
 # 启动时尽早检查相关表结构
 ensure_task_queue_schema()
 ensure_analysis_results_schema()
+rag.ensure_tables()
 
 
 def recover_interrupted_tasks():
@@ -1575,6 +1577,268 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
         logger.error(traceback.format_exc())
         update_task(task_id, status='failed', error=error_msg)
         return jsonify({'result': f"<div class='alert alert-danger'>{error_msg}</div>"})
+
+# ============================================
+# 功能 4: 内容创作（RAG 对话）
+# ============================================
+
+@app.route('/chat-tool')
+@login_required
+def chat_tool():
+    """内容创作对话页面"""
+    return render_template('chat.html')
+
+
+@app.route('/corpus-manage')
+@login_required
+def corpus_manage():
+    """语料管理页面"""
+    return render_template('corpus.html')
+
+
+@app.route('/corpus/upload', methods=['POST'])
+@login_required
+def corpus_upload():
+    """上传语料文件"""
+    try:
+        file = request.files.get('file')
+        if not file or not file.filename:
+            return jsonify({'error': '请选择文件'}), 400
+
+        project = request.form.get('project', 'CFL')
+        doc_type = request.form.get('doc_type', 'general')
+
+        allowed_ext = ('.txt', '.pdf', '.docx', '.xlsx', '.xls')
+        if not file.filename.lower().endswith(allowed_ext):
+            return jsonify({'error': f'不支持的文件格式，请上传 {", ".join(allowed_ext)}'}), 400
+
+        content_bytes = file.read()
+        if len(content_bytes) > 10 * 1024 * 1024:
+            return jsonify({'error': '文件大小不能超过 10MB'}), 400
+
+        user_id = session.get('user_id')
+        doc_id, result = rag.ingest_document(file.filename, content_bytes, project, doc_type, user_id)
+        if doc_id is None:
+            return jsonify({'error': result}), 400
+
+        return jsonify({'success': True, 'doc_id': doc_id, 'chunks': result})
+    except Exception as e:
+        logger.error(f"❌ 语料上传失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/corpus/list')
+@login_required
+def corpus_list():
+    """列出已上传的语料"""
+    project = request.args.get('project', '')
+    try:
+        if project:
+            docs = db.query_all("""
+                SELECT d.id, d.filename, d.doc_type, d.project, d.created_at,
+                       COUNT(c.id) as chunk_count
+                FROM corpus_documents d
+                LEFT JOIN corpus_chunks c ON c.doc_id = d.id
+                WHERE d.project = %s
+                GROUP BY d.id
+                ORDER BY d.created_at DESC
+            """, (project,))
+        else:
+            docs = db.query_all("""
+                SELECT d.id, d.filename, d.doc_type, d.project, d.created_at,
+                       COUNT(c.id) as chunk_count
+                FROM corpus_documents d
+                LEFT JOIN corpus_chunks c ON c.doc_id = d.id
+                GROUP BY d.id
+                ORDER BY d.created_at DESC
+            """)
+        result = []
+        for d in docs:
+            result.append({
+                'id': d['id'],
+                'filename': d['filename'],
+                'doc_type': d['doc_type'],
+                'project': d['project'],
+                'chunk_count': d['chunk_count'],
+                'created_at': d['created_at'].strftime('%Y-%m-%d %H:%M') if d['created_at'] else '',
+            })
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"❌ 查询语料列表失败: {e}")
+        return jsonify([])
+
+
+@app.route('/corpus/<int:doc_id>', methods=['DELETE'])
+@login_required
+def corpus_delete(doc_id):
+    """删除语料文档及其 chunks"""
+    try:
+        db.execute("DELETE FROM corpus_documents WHERE id = %s", (doc_id,))
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"❌ 删除语料失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# --- 对话 API ---
+
+@app.route('/chat/send', methods=['POST'])
+@login_required
+def chat_send():
+    """发送消息并获取 AI 回复"""
+    try:
+        data = request.json or {}
+        user_message = (data.get('message') or '').strip()
+        if not user_message:
+            return jsonify({'error': '消息不能为空'}), 400
+
+        session_id_chat = data.get('session_id')
+        mode = data.get('mode', 'copywriting')
+        project = data.get('project', 'CFL')
+
+        user_id = session.get('user_id')
+
+        if not session_id_chat:
+            title = user_message[:20]
+            session_id_chat = db.execute_and_fetch_id(
+                """
+                INSERT INTO chat_sessions (user_id, mode, project, title)
+                VALUES (%s, %s, %s, %s) RETURNING id
+                """,
+                (user_id, mode, project, title)
+            )
+
+        db.execute(
+            "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)",
+            (session_id_chat, 'user', user_message)
+        )
+
+        query_emb = rag.get_embedding(user_message)
+        doc_type_filter = mode if mode in ('copywriting', 'video_script') else None
+        chunks = rag.search_similar(query_emb, project, doc_type=doc_type_filter, top_k=5)
+
+        history_rows = db.query_all(
+            """
+            SELECT role, content FROM chat_messages
+            WHERE session_id = %s
+            ORDER BY created_at ASC
+            """,
+            (session_id_chat,)
+        )
+        recent_history = [{'role': r['role'], 'content': r['content']} for r in (history_rows or [])]
+        recent_history = recent_history[-10:]
+
+        system_template = get_prompt(mode, project)
+        if not system_template:
+            if mode == 'copywriting':
+                system_template = "你是一位专业的社媒文案策划。请根据用户需求生成优质文案。\n\n【参考语料】:\n{retrieved_context}\n"
+            else:
+                system_template = "你是一位专业的视频内容策划。请根据用户需求输出视频脚本大纲。\n\n【参考语料】:\n{retrieved_context}\n"
+
+        messages = rag.build_rag_prompt(system_template, chunks, recent_history[:-1], user_message)
+
+        if not qwen_client:
+            return jsonify({'error': 'AI 服务未配置'}), 500
+
+        response = qwen_client.chat.completions.create(
+            model='qwen-turbo',
+            messages=messages,
+            temperature=0.7
+        )
+        ai_reply = response.choices[0].message.content
+
+        db.execute(
+            "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)",
+            (session_id_chat, 'assistant', ai_reply)
+        )
+
+        return jsonify({
+            'session_id': session_id_chat,
+            'reply': ai_reply,
+        })
+    except Exception as e:
+        logger.error(f"❌ 对话失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/chat/history')
+@login_required
+def chat_history():
+    """获取当前用户的所有对话会话"""
+    user_id = session.get('user_id')
+    try:
+        sessions = db.query_all(
+            """
+            SELECT id, mode, project, title, created_at
+            FROM chat_sessions
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            """,
+            (user_id,)
+        )
+        result = []
+        for s in (sessions or []):
+            result.append({
+                'id': s['id'],
+                'mode': s['mode'],
+                'project': s['project'],
+                'title': s['title'] or '新对话',
+                'created_at': s['created_at'].strftime('%Y-%m-%d %H:%M') if s['created_at'] else '',
+            })
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"❌ 获取对话历史失败: {e}")
+        return jsonify([])
+
+
+@app.route('/chat/messages/<int:sid>')
+@login_required
+def chat_messages(sid):
+    """获取某会话的全部消息"""
+    user_id = session.get('user_id')
+    try:
+        owner = db.query_one(
+            "SELECT user_id FROM chat_sessions WHERE id = %s", (sid,)
+        )
+        if not owner or owner['user_id'] != user_id:
+            return jsonify({'error': '无权访问'}), 403
+
+        msgs = db.query_all(
+            "SELECT role, content, created_at FROM chat_messages WHERE session_id = %s ORDER BY created_at ASC",
+            (sid,)
+        )
+        result = []
+        for m in (msgs or []):
+            result.append({
+                'role': m['role'],
+                'content': m['content'],
+                'created_at': m['created_at'].strftime('%Y-%m-%d %H:%M') if m['created_at'] else '',
+            })
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"❌ 获取消息失败: {e}")
+        return jsonify([])
+
+
+@app.route('/chat/session/<int:sid>', methods=['DELETE'])
+@login_required
+def chat_delete_session(sid):
+    """删除对话会话"""
+    user_id = session.get('user_id')
+    try:
+        owner = db.query_one(
+            "SELECT user_id FROM chat_sessions WHERE id = %s", (sid,)
+        )
+        if not owner or owner['user_id'] != user_id:
+            return jsonify({'error': '无权访问'}), 403
+        db.execute("DELETE FROM chat_sessions WHERE id = %s", (sid,))
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"❌ 删除会话失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 # ============================================
 # 功能 3: 视频生成
