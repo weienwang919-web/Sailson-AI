@@ -1589,95 +1589,7 @@ def chat_tool():
     return render_template('chat.html')
 
 
-@app.route('/corpus-manage')
-@login_required
-def corpus_manage():
-    """语料管理页面"""
-    return render_template('corpus.html')
-
-
-@app.route('/corpus/upload', methods=['POST'])
-@login_required
-def corpus_upload():
-    """上传语料文件"""
-    try:
-        file = request.files.get('file')
-        if not file or not file.filename:
-            return jsonify({'error': '请选择文件'}), 400
-
-        project = request.form.get('project', 'CFL')
-        doc_type = request.form.get('doc_type', 'general')
-
-        allowed_ext = ('.txt', '.pdf', '.docx', '.xlsx', '.xls')
-        if not file.filename.lower().endswith(allowed_ext):
-            return jsonify({'error': f'不支持的文件格式，请上传 {", ".join(allowed_ext)}'}), 400
-
-        content_bytes = file.read()
-        if len(content_bytes) > 10 * 1024 * 1024:
-            return jsonify({'error': '文件大小不能超过 10MB'}), 400
-
-        user_id = session.get('user_id')
-        doc_id, result = rag.ingest_document(file.filename, content_bytes, project, doc_type, user_id)
-        if doc_id is None:
-            return jsonify({'error': result}), 400
-
-        return jsonify({'success': True, 'doc_id': doc_id, 'chunks': result})
-    except Exception as e:
-        logger.error(f"❌ 语料上传失败: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/corpus/list')
-@login_required
-def corpus_list():
-    """列出已上传的语料"""
-    project = request.args.get('project', '')
-    try:
-        if project:
-            docs = db.query_all("""
-                SELECT d.id, d.filename, d.doc_type, d.project, d.created_at,
-                       COUNT(c.id) as chunk_count
-                FROM corpus_documents d
-                LEFT JOIN corpus_chunks c ON c.doc_id = d.id
-                WHERE d.project = %s
-                GROUP BY d.id
-                ORDER BY d.created_at DESC
-            """, (project,))
-        else:
-            docs = db.query_all("""
-                SELECT d.id, d.filename, d.doc_type, d.project, d.created_at,
-                       COUNT(c.id) as chunk_count
-                FROM corpus_documents d
-                LEFT JOIN corpus_chunks c ON c.doc_id = d.id
-                GROUP BY d.id
-                ORDER BY d.created_at DESC
-            """)
-        result = []
-        for d in docs:
-            result.append({
-                'id': d['id'],
-                'filename': d['filename'],
-                'doc_type': d['doc_type'],
-                'project': d['project'],
-                'chunk_count': d['chunk_count'],
-                'created_at': d['created_at'].strftime('%Y-%m-%d %H:%M') if d['created_at'] else '',
-            })
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"❌ 查询语料列表失败: {e}")
-        return jsonify([])
-
-
-@app.route('/corpus/<int:doc_id>', methods=['DELETE'])
-@login_required
-def corpus_delete(doc_id):
-    """删除语料文档及其 chunks"""
-    try:
-        db.execute("DELETE FROM corpus_documents WHERE id = %s", (doc_id,))
-        return jsonify({'success': True})
-    except Exception as e:
-        logger.error(f"❌ 删除语料失败: {e}")
-        return jsonify({'error': str(e)}), 500
+# 语料库入口已移除：/corpus-manage 及 /corpus/* 路由已删除
 
 
 # --- 对话 API ---
@@ -1713,9 +1625,13 @@ def chat_send():
             (session_id_chat, 'user', user_message)
         )
 
-        query_emb = rag.get_embedding(user_message)
-        doc_type_filter = mode if mode in ('copywriting', 'video_script') else None
-        chunks = rag.search_similar(query_emb, project, doc_type=doc_type_filter, top_k=5)
+        # 内容创作模式不使用语料检索，仅用固定提示词
+        if mode in ('copywriting', 'video_script'):
+            chunks = []
+        else:
+            query_emb = rag.get_embedding(user_message)
+            doc_type_filter = mode if mode in ('copywriting', 'video_script') else None
+            chunks = rag.search_similar(query_emb, project, doc_type=doc_type_filter, top_k=5)
 
         history_rows = db.query_all(
             """

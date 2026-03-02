@@ -147,7 +147,6 @@
     <ul class="session-list" id="sessionList"></ul>
 
     <div style="padding-top: 12px; border-top: 1px solid #eee; margin-top: 8px;">
-        <a href="/corpus-manage" class="nav-link-side">📚 语料管理</a>
         <a href="/" style="text-decoration:none; color:#666; font-size:0.9rem; display:block; padding:10px 14px;">← 返回首页</a>
     </div>
 </div>
@@ -159,7 +158,7 @@
         <div class="empty-chat" id="emptyState">
             <div class="icon">✍️</div>
             <div style="font-size:1.1rem; font-weight:600; margin-bottom:8px;">开始你的创作</div>
-            <div style="font-size:0.9rem;">描述你的需求，AI 将基于品牌语料生成内容</div>
+            <div style="font-size:0.9rem;">描述你的需求，AI 将为你生成文案或视频脚本</div>
         </div>
     </div>
 
@@ -200,7 +199,7 @@ function newChat() {
         `<div class="empty-chat" id="emptyState">
             <div class="icon">✍️</div>
             <div style="font-size:1.1rem; font-weight:600; margin-bottom:8px;">开始你的创作</div>
-            <div style="font-size:0.9rem;">描述你的需求，AI 将基于品牌语料生成内容</div>
+            <div style="font-size:0.9rem;">描述你的需求，AI 将为你生成文案或视频脚本</div>
         </div>`;
     document.getElementById('chatHeader').textContent = '内容创作 · 新对话';
     document.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
