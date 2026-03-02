@@ -28,6 +28,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from bs4 import BeautifulSoup
 import database as db
 import rag
+from video_vision import get_video_vision_section
 
 # 加载 .env 文件
 load_dotenv()

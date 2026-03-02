@@ -12,3 +12,5 @@ requests
 PyPDF2
 python-docx
 beautifulsoup4
+opencv-python-headless
+numpy
