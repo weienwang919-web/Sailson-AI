@@ -1,12 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>我的统计 | Sailson AI</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
-    <style>
+{% extends "base.html" %}
+{% block title %}我的统计 | Sailson AI{% endblock %}
+{% block head %}
+<style>
         body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; }
         .navbar { background: #fff; border-bottom: 1px solid #eee; padding: 15px 30px; }
         .navbar-brand { font-weight: 700; color: #333; }
@@ -19,10 +14,10 @@
         .table-custom { background: #fff; border-radius: 12px; overflow: hidden; }
         .table-custom th { background: #f8f9fa; font-weight: 600; padding: 15px; }
         .table-custom td { padding: 12px 15px; }
-    </style>
-</head>
-<body>
-    <nav class="navbar">
+</style>
+{% endblock %}
+{% block content %}
+<nav class="navbar">
         <div class="container-fluid">
             <span class="navbar-brand">Sailson AI - 我的统计</span>
             <div>
@@ -104,5 +99,4 @@
             </div>
         </div>
     </div>
-</body>
-</html>
+{% endblock %}

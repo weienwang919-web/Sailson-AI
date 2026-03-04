@@ -26,7 +26,31 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from bs4 import BeautifulSoup
+import bleach
 import database as db
+
+# XSS 防护：报告 HTML 允许的标签与属性
+ALLOWED_TAGS = {
+    'div', 'span', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'ul', 'ol', 'li', 'br', 'strong', 'em', 'b', 'i',
+    'a', 'img', 'blockquote', 'code', 'pre'
+}
+ALLOWED_ATTRS = {
+    '*': ['class', 'style', 'id'],
+    'a': ['href', 'title', 'target'],
+    'img': ['src', 'alt', 'width', 'height'],
+    'td': ['colspan', 'rowspan'],
+    'th': ['colspan', 'rowspan'],
+}
+ALLOWED_PROTOCOLS = ['http', 'https', 'data', 'mailto']
+
+
+def sanitize_html(html_content):
+    """对返回前端的 HTML 做 XSS 清洗"""
+    if not html_content:
+        return ''
+    return bleach.clean(html_content, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, protocols=ALLOWED_PROTOCOLS)
 import rag
 from video_vision import get_video_vision_section
 
@@ -232,6 +256,14 @@ def ensure_task_queue_schema():
     except Exception as e:
         TASK_QUEUE_HAS_FUNCTION_TYPE = False
         logger.warning(f"⚠️ 无法自动为 task_queue 添加 function_type 列，将使用兼容模式: {e}")
+    try:
+        db.execute("""
+            ALTER TABLE task_queue
+            ADD COLUMN IF NOT EXISTS record_id INTEGER
+        """)
+        logger.info("✅ 已确认 task_queue.record_id 列存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法添加 task_queue.record_id 列: {e}")
 
 
 def ensure_analysis_results_schema():
@@ -385,7 +417,7 @@ def create_task(task_id, user_id, session_id, function_type=None):
         else:
             logger.error(f"❌ 创建任务失败: {e}")
 
-def update_task(task_id, status=None, progress=None, result=None, error=None):
+def update_task(task_id, status=None, progress=None, result=None, error=None, record_id=None):
     """更新任务状态"""
     try:
         updates = []
@@ -403,6 +435,9 @@ def update_task(task_id, status=None, progress=None, result=None, error=None):
         if error is not None:
             updates.append("error = %s")
             params.append(error)
+        if record_id is not None:
+            updates.append("record_id = %s")
+            params.append(record_id)
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -417,7 +452,7 @@ def get_task(task_id):
     """获取任务状态"""
     try:
         task = db.query_one("""
-            SELECT task_id, status, progress, result, error
+            SELECT task_id, status, progress, result, error, record_id
             FROM task_queue
             WHERE task_id = %s
         """, (task_id,))
@@ -922,14 +957,14 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
             return
 
         # 保存历史记录（同时写入结构化结果，便于后续导出任意历史记录）
-        save_history(user_id, source_title, result, 'sentiment', structured=all_results)
+        record_id = save_history(user_id, source_title, result, 'sentiment', structured=all_results)
 
         # 记录使用成本
         if user_id:
             log_usage(user_id, username, department, 'sentiment', total_comments, total_tokens)
 
         # 任务完成
-        update_task(task_id, status='completed', result=result, progress='分析完成！')
+        update_task(task_id, status='completed', result=result, progress='分析完成！', record_id=record_id)
         logger.info(f"✅ 任务 {task_id} 完成")
 
     except Exception as e:
@@ -1202,12 +1237,18 @@ def task_status(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    return jsonify({
+    result = task.get('result') or ''
+    if result and task['status'] == 'completed':
+        result = sanitize_html(result)
+    resp = {
         'status': task['status'],
         'progress': task['progress'],
-        'result': task['result'],
+        'result': result,
         'error': task['error']
-    })
+    }
+    if task.get('record_id'):
+        resp['record_id'] = task['record_id']
+    return jsonify(resp)
 
 # ============================================
 # 功能 2: 竞品监控
@@ -1553,7 +1594,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             full_html = overview_html
 
         # 保存历史记录
-        save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor')
+        record_id = save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor')
 
         # 记录使用成本
         if user_id:
@@ -1566,8 +1607,8 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                 tokens
             )
 
-        # 更新任务状态为完成
-        update_task(task_id, status='completed', result=full_html, progress='分析完成')
+        # 更新任务状态为完成（含 record_id 供前端导出）
+        update_task(task_id, status='completed', result=full_html, progress='分析完成', record_id=record_id)
 
         logger.info("✅ 竞品监控完成")
         logger.info("=" * 60 + "\n")
@@ -1814,14 +1855,16 @@ def get_history():
             LIMIT 50
         """, (user_id,))
 
-        # 转换为前端需要的格式
+        # 转换为前端需要的格式（含 created_at 供时间筛选）
         result = []
         for record in records:
+            created_at = record['created_at']
             result.append({
                 'id': record['id'],
-                'title': f"{record['title']} [{record['created_at'].strftime('%H:%M')}]",
+                'title': f"{record['title']} [{created_at.strftime('%H:%M')}]",
                 'result': record['result'],
-                'type': record['type']
+                'type': record['type'],
+                'created_at': created_at.isoformat() if created_at else None
             })
 
         return jsonify(result)
@@ -1850,7 +1893,7 @@ def get_record(id):
             return jsonify({
                 'id': record['id'],
                 'title': record['title'],
-                'result': record['result'],
+                'result': sanitize_html(record['result'] or ''),
                 'type': record['type']
             })
         else:

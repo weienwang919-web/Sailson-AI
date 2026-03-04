@@ -1,12 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>功能许愿池 | Sailson AI</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
-    <style>
+{% extends "base.html" %}
+{% block title %}功能许愿池 | Sailson AI{% endblock %}
+{% block body_class %}d-flex justify-content-center align-items-center min-vh-100{% endblock %}
+{% block head %}
+<style>
         body { background-color: #F8F9FA; font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
         
         .request-card {
@@ -43,11 +39,10 @@
         }
         .success-icon { font-size: 60px; margin-bottom: 20px; animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
         @keyframes popIn { from { transform: scale(0); } to { transform: scale(1); } }
-    </style>
-</head>
-<body>
-
-    <div class="request-card">
+</style>
+{% endblock %}
+{% block content %}
+<div class="request-card">
         <div class="header-area">
             <div class="icon-badge">🛠️</div>
             <h2 class="fw-bold">功能许愿池</h2>
@@ -83,9 +78,10 @@
         <h3 class="fw-bold">提交成功！</h3>
         <p class="text-muted">产品经理已收到您的需求，感谢反馈。</p>
         <button onclick="location.href='/'" class="btn btn-primary mt-3 px-4" style="border-radius: 20px;">返回首页</button>
-    </div>
-
-    <script>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
         async function submitForm() {
             const toolType = document.getElementById('toolType').value;
             const project = document.getElementById('project').value;
@@ -107,6 +103,5 @@
             // 显示成功动画
             document.getElementById('successLayer').style.display = 'flex';
         }
-    </script>
-</body>
-</html>
+</script>
+{% endblock %}

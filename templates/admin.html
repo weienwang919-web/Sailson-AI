@@ -1,12 +1,7 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>管理后台 | Sailson AI</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
-    <style>
+{% extends "base.html" %}
+{% block title %}管理后台 | Sailson AI{% endblock %}
+{% block head %}
+<style>
         body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; }
         .navbar { background: #fff; border-bottom: 1px solid #eee; padding: 15px 30px; }
         .navbar-brand { font-weight: 700; color: #333; }
@@ -20,10 +15,10 @@
         .table-custom th { background: #f8f9fa; font-weight: 600; padding: 15px; }
         .table-custom td { padding: 12px 15px; }
         .btn-custom { border-radius: 8px; padding: 8px 16px; font-weight: 600; }
-    </style>
-</head>
-<body>
-    <nav class="navbar">
+</style>
+{% endblock %}
+{% block content %}
+<nav class="navbar">
         <div class="container-fluid">
             <span class="navbar-brand">Sailson AI - 管理后台</span>
             <div>
@@ -149,7 +144,7 @@
                         <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
                         <td>
                             {% if user.username != 'admin' %}
-                            <button class="btn btn-sm btn-outline-danger" onclick="deleteUser({{ user.id }}, '{{ user.username }}')">删除</button>
+                            <button class="btn btn-sm btn-outline-danger btn-delete-user" data-user-id="{{ user.id }}" data-username="{{ user.username|e }}">删除</button>
                             {% endif %}
                         </td>
                     </tr>
@@ -204,14 +199,19 @@
                 </div>
             </div>
         </div>
-    </div>
-
-    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
-    <script>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
         let addUserModal;
 
         window.onload = function() {
             addUserModal = new bootstrap.Modal(document.getElementById('addUserModal'));
+            document.querySelectorAll('.btn-delete-user').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    deleteUser(parseInt(this.dataset.userId), this.dataset.username || '');
+                });
+            });
         };
 
         function showAddUserModal() {
@@ -263,6 +263,5 @@
                 alert('❌ 请求失败：' + e.message);
             }
         }
-    </script>
-</body>
-</html>
+</script>
+{% endblock %}

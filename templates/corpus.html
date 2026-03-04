@@ -1,12 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>语料管理 | Sailson AI</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
-    <style>
+{% extends "base.html" %}
+{% block title %}语料管理 | Sailson AI{% endblock %}
+{% block body_class %}d-flex{% endblock %}
+{% block head %}
+<style>
         body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; height: 100vh; display: flex; margin: 0; }
         .sidebar {
             width: 260px;
@@ -73,10 +69,10 @@
         }
         .nav-link-side:hover { background: #f0fdf4; color: #10B981; }
         .nav-link-side.active { background: #ecfdf5; color: #10B981; font-weight: 600; }
-    </style>
-</head>
-<body>
-    <div class="sidebar">
+</style>
+{% endblock %}
+{% block content %}
+<div class="sidebar">
         <div class="logo-area" onclick="location.href='/chat-tool'">
             <img src="{{ url_for('static', filename='logo.png') }}" class="logo-img">
             <span style="font-weight: 700; font-size: 1.1rem; color: #333;">内容创作</span>
@@ -147,7 +143,8 @@
             </div>
         </div>
     </div>
-
+{% endblock %}
+{% block scripts %}
 <script>
 let selectedFile = null;
 
@@ -253,5 +250,4 @@ async function deleteDoc(id) {
 
 loadDocs();
 </script>
-</body>
-</html>
+{% endblock %}

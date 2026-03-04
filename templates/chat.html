@@ -1,13 +1,10 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>内容创作 | Sailson AI</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <style>
+{% extends "base.html" %}
+{% block title %}内容创作 | Sailson AI{% endblock %}
+{% block body_class %}d-flex{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.9/dist/purify.min.js"></script>
+<style>
         :root { --accent: #10B981; --bg: #FAFAFA; --sidebar-w: 280px; }
         * { box-sizing: border-box; }
         body { background: var(--bg); font-family: 'Inter', sans-serif; height: 100vh; display: flex; margin: 0; overflow: hidden; }
@@ -118,10 +115,9 @@
         .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
         @keyframes bounce { 0%,80%,100%{transform:scale(0)} 40%{transform:scale(1)} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-    </style>
-</head>
-<body>
-
+</style>
+{% endblock %}
+{% block content %}
 <div class="sidebar">
     <div class="logo-area" onclick="location.href='/'">
         <img src="{{ url_for('static', filename='logo.png') }}" class="logo-img">
@@ -163,12 +159,14 @@
     </div>
 
     <div class="chat-input-area">
+        <label for="msgInput" class="visually-hidden">输入消息</label>
         <textarea id="msgInput" rows="1" placeholder="输入你的需求，例如：帮我写一篇 CFL 新赛季上线的 Facebook 帖文..."
-            oninput="autoResize(this)" onkeydown="handleKey(event)"></textarea>
-        <button class="btn-send" id="sendBtn" onclick="sendMessage()">发送</button>
+            oninput="autoResize(this)" onkeydown="handleKey(event)" aria-label="输入消息"></textarea>
+        <button class="btn-send" id="sendBtn" onclick="sendMessage()" type="button">发送</button>
     </div>
 </div>
-
+{% endblock %}
+{% block scripts %}
 <script>
 let currentSessionId = null;
 let currentMode = 'copywriting';
@@ -220,7 +218,8 @@ function appendMsg(role, content) {
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
     if (role === 'assistant') {
-        bubble.innerHTML = marked.parse(content);
+        const rawHtml = marked.parse(content);
+        bubble.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
     } else {
         bubble.textContent = content;
     }
@@ -305,8 +304,18 @@ async function loadSessions() {
         sessions.forEach(s => {
             const li = document.createElement('li');
             li.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+            li.dataset.sessionId = s.id;
             const modeIcon = s.mode === 'video_script' ? '🎬' : '✍️';
-            li.innerHTML = `<span onclick="loadSession(${s.id})">${modeIcon} ${s.title}</span><button class="del-btn" onclick="event.stopPropagation(); deleteSession(${s.id})">✕</button>`;
+            const span = document.createElement('span');
+            span.textContent = modeIcon + ' ' + (s.title || '');
+            span.style.cursor = 'pointer';
+            span.onclick = () => loadSession(s.id);
+            const btn = document.createElement('button');
+            btn.className = 'del-btn';
+            btn.textContent = '✕';
+            btn.onclick = (e) => { e.stopPropagation(); deleteSession(s.id); };
+            li.appendChild(span);
+            li.appendChild(btn);
             list.appendChild(li);
         });
     } catch(e) {}
@@ -320,11 +329,9 @@ async function loadSession(sid) {
         const area = document.getElementById('chatMessages');
         area.innerHTML = '';
         msgs.forEach(m => appendMsg(m.role, m.content));
-        document.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
         document.querySelectorAll('.session-item').forEach(s => {
-            if (s.querySelector('span') && s.querySelector('span').getAttribute('onclick')?.includes(sid)) {
-                s.classList.add('active');
-            }
+            s.classList.remove('active');
+            if (parseInt(s.dataset.sessionId) === sid) s.classList.add('active');
         });
     } catch(e) {}
 }
@@ -340,5 +347,4 @@ async function deleteSession(sid) {
 
 loadSessions();
 </script>
-</body>
-</html>
+{% endblock %}
