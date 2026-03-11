@@ -16,5 +16,6 @@ bleach>=6.0.0
 opencv-python-headless
 numpy
 apscheduler
+sqlalchemy
 matplotlib
 wordcloud
