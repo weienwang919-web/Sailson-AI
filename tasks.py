@@ -8,6 +8,8 @@ import os
 import json
 import logging
 import datetime
+import time
+import requests
 from apify_client import ApifyClient
 from openai import OpenAI
 import database as db
@@ -90,27 +92,85 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
         try:
             logger.info(f"📥 Scraping comments from: {post_url}")
 
-            # Run Apify actor for FB comments
+            # Run Apify actor using REST API (same as analysis.py)
             run_input = {
                 "startUrls": [{"url": post_url}],
                 "maxComments": 500,
                 "maxReplies": 0
             }
 
-            # 启动 Apify actor 并等待完成（设置超时）
-            logger.info(f"🚀 Starting Apify actor...")
-            run = apify_client.actor("apify/facebook-comments-scraper").call(
-                run_input=run_input,
-                timeout_secs=300  # 5分钟超时
+            logger.info("🚀 Starting Apify actor via REST API...")
+            api_url = "https://api.apify.com/v2/acts/apify~facebook-comments-scraper/runs"
+            headers = {
+                "Authorization": f"Bearer {APIFY_TOKEN}",
+                "Content-Type": "application/json"
+            }
+
+            # 启动 actor
+            response = requests.post(
+                api_url,
+                json=run_input,
+                headers=headers,
+                timeout=30
             )
 
-            logger.info(f"✅ Apify actor completed, fetching results...")
+            if response.status_code != 201:
+                logger.error(f"❌ Apify API error: {response.status_code}, {response.text}")
+                continue
 
-            # Fetch results
-            items = []
-            for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
-                items.append(item)
+            run = response.json()['data']
+            run_id = run['id']
+            logger.info(f"✅ Apify actor started, Run ID: {run_id}")
 
+            # 轮询任务状态
+            logger.info("⏳ Polling for completion...")
+            start_time = time.time()
+            max_wait_time = 300  # 5 分钟
+            poll_interval = 5
+
+            status_api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
+
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > max_wait_time:
+                    logger.error(f"❌ Timeout waiting for actor to complete")
+                    break
+
+                time.sleep(poll_interval)
+
+                status_response = requests.get(status_api_url, headers=headers, timeout=10)
+                if status_response.status_code != 200:
+                    logger.error(f"❌ Failed to get status: {status_response.status_code}")
+                    break
+
+                run_data = status_response.json()['data']
+                status = run_data['status']
+
+                logger.info(f"   Status: {status} (elapsed: {elapsed:.0f}s)")
+
+                if status in ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT']:
+                    run = run_data
+                    break
+
+            if run['status'] != 'SUCCEEDED':
+                logger.error(f"❌ Actor failed with status: {run['status']}")
+                continue
+
+            # 获取结果
+            dataset_id = run.get("defaultDatasetId")
+            if not dataset_id:
+                logger.error(f"❌ No dataset ID found")
+                continue
+
+            logger.info(f"📦 Fetching results from dataset: {dataset_id}")
+            dataset_api_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+            dataset_response = requests.get(dataset_api_url, headers=headers, timeout=30)
+
+            if dataset_response.status_code != 200:
+                logger.error(f"❌ Failed to fetch dataset: {dataset_response.status_code}")
+                continue
+
+            items = dataset_response.json()
             logger.info(f"✅ Scraped {len(items)} comments from {post_url}")
 
             # Process each comment
