@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>FB 舆情看板 | Sailson AI</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            background-color: #FAFAFA;
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .header {
+            background: #fff;
+            padding: 20px 30px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            color: #333;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #fff;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .stat-card h3 {
+            font-size: 0.9rem;
+            color: #666;
+            margin: 0 0 10px 0;
+            font-weight: 500;
+        }
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #2962FF;
+        }
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .chart-card {
+            background: #fff;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .chart-card h3 {
+            font-size: 1.1rem;
+            margin: 0 0 20px 0;
+            color: #333;
+        }
+        .search-section {
+            background: #fff;
+            padding: 25px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .search-controls {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: end;
+        }
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+            color: #666;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+        .btn-primary {
+            background: #2962FF;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .btn-primary:hover {
+            background: #1E4FD9;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .btn-success {
+            background: #28a745;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .data-table {
+            background: #fff;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .data-table h3 {
+            margin: 0 0 20px 0;
+            font-size: 1.1rem;
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            background: #f8f9fa;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #666;
+            border-bottom: 2px solid #dee2e6;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 0.85rem;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .sentiment-positive {
+            color: #28a745;
+            font-weight: 600;
+        }
+        .sentiment-negative {
+            color: #dc3545;
+            font-weight: 600;
+        }
+        .sentiment-neutral {
+            color: #6c757d;
+            font-weight: 600;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        .config-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .config-info {
+            flex: 1;
+        }
+        .config-url {
+            font-size: 0.9rem;
+            color: #333;
+            margin-bottom: 5px;
+            word-break: break-all;
+        }
+        .config-meta {
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .config-actions {
+            display: flex;
+            gap: 10px;
+        }
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .btn-toggle {
+            background: #28a745;
+            color: white;
+        }
+        .btn-toggle.inactive {
+            background: #6c757d;
+        }
+        .btn-delete {
+            background: #dc3545;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Facebook 舆情看板</h1>
+        <p style="margin: 10px 0 0 0; color: #666;">实时监控 Facebook 评论舆情动态</p>
+    </div>
+
+    <!-- 监控配置管理 -->
+    <div class="search-section">
+        <h3 style="margin: 0 0 15px 0;">监控配置</h3>
+        <div style="display: flex; gap: 15px; margin-bottom: 15px; align-items: end;">
+            <div class="form-group" style="flex: 2;">
+                <label>Facebook 帖子链接</label>
+                <input type="text" id="newPostUrl" placeholder="https://www.facebook.com/...">
+            </div>
+            <div class="form-group" style="flex: 1;">
+                <label>备注名称（可选）</label>
+                <input type="text" id="newPostTitle" placeholder="例如：CFL 官方帖子">
+            </div>
+            <button class="btn-success" onclick="addConfig()">添加监控</button>
+        </div>
+        <div id="configList" style="margin-top: 20px;">
+            <div class="loading">加载配置中...</div>
+        </div>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>今日新增评论</h3>
+            <div class="value" id="todayCount">-</div>
+        </div>
+        <div class="stat-card">
+            <h3>近 7 天总评论</h3>
+            <div class="value" id="weekCount">-</div>
+        </div>
+        <div class="stat-card">
+            <h3>正面评论占比</h3>
+            <div class="value" id="positiveRate">-</div>
+        </div>
+        <div class="stat-card">
+            <h3>负面评论占比</h3>
+            <div class="value" id="negativeRate">-</div>
+        </div>
+    </div>
+
+    <!-- 图表 -->
+    <div class="charts-grid">
+        <div class="chart-card">
+            <h3>近 7 天评论趋势</h3>
+            <canvas id="trendChart"></canvas>
+        </div>
+        <div class="chart-card">
+            <h3>情感分布</h3>
+            <canvas id="sentimentChart"></canvas>
+        </div>
+        <div class="chart-card" style="grid-column: span 2;">
+            <h3>内容分类 Top 10</h3>
+            <canvas id="categoryChart"></canvas>
+        </div>
+    </div>
+
+    <!-- 搜索控制 -->
+    <div class="search-section">
+        <div class="search-controls">
+            <div class="form-group">
+                <label>关键词搜索</label>
+                <input type="text" id="searchQuery" placeholder="输入关键词进行语义搜索...">
+            </div>
+            <div class="form-group">
+                <label>开始日期</label>
+                <input type="date" id="startDate">
+            </div>
+            <div class="form-group">
+                <label>结束日期</label>
+                <input type="date" id="endDate">
+            </div>
+            <button class="btn-primary" onclick="searchComments()">搜索</button>
+            <button class="btn-secondary" onclick="resetSearch()">重置</button>
+            <button class="btn-success" onclick="exportSelected()">导出选中</button>
+            <button class="btn-secondary" onclick="triggerScrape()">手动抓取</button>
+        </div>
+    </div>
+
+    <!-- 数据表格 -->
+    <div class="data-table">
+        <h3>评论列表</h3>
+        <div id="tableContainer">
+            <div class="loading">加载中...</div>
+        </div>
+    </div>
+
+    <script>
+        let allComments = [];
+        let selectedIds = new Set();
+
+        // 加载统计数据
+        async function loadStats() {
+            try {
+                const response = await fetch('/fb_stats');
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    document.getElementById('todayCount').textContent = data.today_count;
+
+                    const weekTotal = data.trend.reduce((sum, item) => sum + item.count, 0);
+                    document.getElementById('weekCount').textContent = weekTotal;
+
+                    const sentimentMap = {};
+                    data.sentiment.forEach(item => {
+                        sentimentMap[item.sentiment] = item.count;
+                    });
+                    const total = Object.values(sentimentMap).reduce((a, b) => a + b, 0);
+                    const positiveRate = total > 0 ? ((sentimentMap.positive || 0) / total * 100).toFixed(1) : 0;
+                    const negativeRate = total > 0 ? ((sentimentMap.negative || 0) / total * 100).toFixed(1) : 0;
+
+                    document.getElementById('positiveRate').textContent = positiveRate + '%';
+                    document.getElementById('negativeRate').textContent = negativeRate + '%';
+
+                    // 绘制图表
+                    drawTrendChart(data.trend);
+                    drawSentimentChart(data.sentiment);
+                    drawCategoryChart(data.categories);
+                }
+            } catch (error) {
+                console.error('加载统计数据失败:', error);
+            }
+        }
+
+        // 趋势图
+        function drawTrendChart(data) {
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(item => item.date),
+                    datasets: [{
+                        label: '评论数',
+                        data: data.map(item => item.count),
+                        borderColor: '#2962FF',
+                        backgroundColor: 'rgba(41, 98, 255, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // 情感饼图
+        function drawSentimentChart(data) {
+            const ctx = document.getElementById('sentimentChart').getContext('2d');
+            const labels = { positive: '正面', negative: '负面', neutral: '中性' };
+            const colors = { positive: '#28a745', negative: '#dc3545', neutral: '#6c757d' };
+
+            new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: data.map(item => labels[item.sentiment] || item.sentiment),
+                    datasets: [{
+                        data: data.map(item => item.count),
+                        backgroundColor: data.map(item => colors[item.sentiment] || '#999')
+                    }]
+                },
+                options: {
+                    responsive: true
+                }
+            });
+        }
+
+        // 分类柱状图
+        function drawCategoryChart(data) {
+            const ctx = document.getElementById('categoryChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(item => item.category),
+                    datasets: [{
+                        label: '评论数',
+                        data: data.map(item => item.count),
+                        backgroundColor: '#2962FF'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // 搜索评论
+        async function searchComments() {
+            const query = document.getElementById('searchQuery').value;
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+
+            const params = new URLSearchParams();
+            if (query) params.append('query', query);
+            if (startDate) params.append('start_date', startDate);
+            if (endDate) params.append('end_date', endDate);
+
+            document.getElementById('tableContainer').innerHTML = '<div class="loading">搜索中...</div>';
+
+            try {
+                const response = await fetch('/fb_search?' + params.toString());
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    allComments = data.results;
+                    renderTable(allComments);
+                } else {
+                    document.getElementById('tableContainer').innerHTML = '<div class="no-data">搜索失败</div>';
+                }
+            } catch (error) {
+                console.error('搜索失败:', error);
+                document.getElementById('tableContainer').innerHTML = '<div class="no-data">搜索失败</div>';
+            }
+        }
+
+        // 渲染表格
+        function renderTable(comments) {
+            if (comments.length === 0) {
+                document.getElementById('tableContainer').innerHTML = '<div class="no-data">暂无数据</div>';
+                return;
+            }
+
+            let html = '<table><thead><tr>';
+            html += '<th><input type="checkbox" onchange="toggleAll(this)"></th>';
+            html += '<th>作者</th><th>评论时间</th><th>内容</th><th>情感</th><th>分类</th><th>语言</th>';
+            html += '</tr></thead><tbody>';
+
+            comments.forEach(comment => {
+                const sentiment = comment.sentiment_score > 0.3 ? 'positive' :
+                                 comment.sentiment_score < -0.3 ? 'negative' : 'neutral';
+                const sentimentText = sentiment === 'positive' ? '正面' :
+                                     sentiment === 'negative' ? '负面' : '中性';
+
+                html += '<tr>';
+                html += `<td><input type="checkbox" value="${comment.id}" onchange="toggleSelect(${comment.id})"></td>`;
+                html += `<td>${comment.author || '-'}</td>`;
+                html += `<td>${comment.created_at ? new Date(comment.created_at).toLocaleString('zh-CN') : '-'}</td>`;
+                html += `<td style="max-width: 400px;">${comment.content}</td>`;
+                html += `<td class="sentiment-${sentiment}">${sentimentText}</td>`;
+                html += `<td>${comment.category || '-'}</td>`;
+                html += `<td>${comment.language || '-'}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            document.getElementById('tableContainer').innerHTML = html;
+        }
+
+        // 全选/取消全选
+        function toggleAll(checkbox) {
+            const checkboxes = document.querySelectorAll('tbody input[type="checkbox"]');
+            checkboxes.forEach(cb => {
+                cb.checked = checkbox.checked;
+                const id = parseInt(cb.value);
+                if (checkbox.checked) {
+                    selectedIds.add(id);
+                } else {
+                    selectedIds.delete(id);
+                }
+            });
+        }
+
+        // 切换选中
+        function toggleSelect(id) {
+            if (selectedIds.has(id)) {
+                selectedIds.delete(id);
+            } else {
+                selectedIds.add(id);
+            }
+        }
+
+        // 导出选中
+        async function exportSelected() {
+            if (selectedIds.size === 0) {
+                alert('请先选择要导出的评论');
+                return;
+            }
+
+            try {
+                const response = await fetch('/fb_export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ comment_ids: Array.from(selectedIds) })
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `FB评论导出_${new Date().toISOString().slice(0,10)}.xlsx`;
+                    a.click();
+                } else {
+                    alert('导出失败');
+                }
+            } catch (error) {
+                console.error('导出失败:', error);
+                alert('导出失败');
+            }
+        }
+
+        // 重置搜索
+        function resetSearch() {
+            document.getElementById('searchQuery').value = '';
+            document.getElementById('startDate').value = '';
+            document.getElementById('endDate').value = '';
+            searchComments();
+        }
+
+        // 手动触发抓取
+        async function triggerScrape() {
+            if (!confirm('确定要手动触发 FB 评论抓取吗？')) return;
+
+            try {
+                const response = await fetch('/fb_schedule', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert(`抓取完成！新增 ${data.new_comments} 条评论`);
+                    loadStats();
+                    searchComments();
+                } else {
+                    alert('抓取失败: ' + data.message);
+                }
+            } catch (error) {
+                console.error('抓取失败:', error);
+                alert('抓取失败');
+            }
+        }
+
+        // 页面加载时初始化
+        window.onload = function() {
+            loadConfigs();
+            loadStats();
+            searchComments();
+        };
+
+        // 加载监控配置
+        async function loadConfigs() {
+            try {
+                const response = await fetch('/fb_config');
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    renderConfigs(data.configs);
+                }
+            } catch (error) {
+                console.error('加载配置失败:', error);
+                document.getElementById('configList').innerHTML = '<div class="no-data">加载失败</div>';
+            }
+        }
+
+        // 渲染配置列表
+        function renderConfigs(configs) {
+            if (configs.length === 0) {
+                document.getElementById('configList').innerHTML = '<div class="no-data">暂无监控配置，请添加要监控的 Facebook 帖子</div>';
+                return;
+            }
+
+            let html = '';
+            configs.forEach(config => {
+                const statusText = config.is_active ? '已启用' : '已禁用';
+                const statusClass = config.is_active ? '' : 'inactive';
+                const lastScraped = config.last_scraped_at
+                    ? new Date(config.last_scraped_at).toLocaleString('zh-CN')
+                    : '从未抓取';
+
+                html += `
+                    <div class="config-item">
+                        <div class="config-info">
+                            <div class="config-url">
+                                <strong>${config.post_title || '未命名'}</strong>
+                            </div>
+                            <div class="config-url" style="font-size: 0.8rem; color: #666;">
+                                ${config.post_url}
+                            </div>
+                            <div class="config-meta">
+                                状态: ${statusText} | 最后抓取: ${lastScraped}
+                            </div>
+                        </div>
+                        <div class="config-actions">
+                            <button class="btn-small btn-toggle ${statusClass}" onclick="toggleConfig(${config.id})">
+                                ${config.is_active ? '禁用' : '启用'}
+                            </button>
+                            <button class="btn-small btn-delete" onclick="deleteConfig(${config.id})">删除</button>
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('configList').innerHTML = html;
+        }
+
+        // 添加配置
+        async function addConfig() {
+            const postUrl = document.getElementById('newPostUrl').value.trim();
+            const postTitle = document.getElementById('newPostTitle').value.trim();
+
+            if (!postUrl) {
+                alert('请输入 Facebook 帖子链接');
+                return;
+            }
+
+            try {
+                const response = await fetch('/fb_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ post_url: postUrl, post_title: postTitle })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('添加成功！');
+                    document.getElementById('newPostUrl').value = '';
+                    document.getElementById('newPostTitle').value = '';
+                    loadConfigs();
+                } else {
+                    alert('添加失败: ' + data.error);
+                }
+            } catch (error) {
+                console.error('添加配置失败:', error);
+                alert('添加失败');
+            }
+        }
+
+        // 切换配置状态
+        async function toggleConfig(configId) {
+            try {
+                const response = await fetch(`/fb_config/${configId}/toggle`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    loadConfigs();
+                } else {
+                    alert('操作失败: ' + data.error);
+                }
+            } catch (error) {
+                console.error('切换状态失败:', error);
+                alert('操作失败');
+            }
+        }
+
+        // 删除配置
+        async function deleteConfig(configId) {
+            if (!confirm('确定要删除这个监控配置吗？')) return;
+
+            try {
+                const response = await fetch(`/fb_config/${configId}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('删除成功');
+                    loadConfigs();
+                } else {
+                    alert('删除失败: ' + data.error);
+                }
+            } catch (error) {
+                console.error('删除配置失败:', error);
+                alert('删除失败');
+            }
+        }
+    </script>
+</body>
+</html>

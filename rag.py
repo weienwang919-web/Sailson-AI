@@ -65,6 +65,43 @@ def ensure_tables():
             created_at TIMESTAMP DEFAULT NOW()
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS fb_comments (
+            id SERIAL PRIMARY KEY,
+            post_url VARCHAR(1024) NOT NULL,
+            comment_id VARCHAR(256) UNIQUE,
+            author VARCHAR(256),
+            created_at TIMESTAMP,
+            content TEXT NOT NULL,
+            sentiment_score FLOAT,
+            category VARCHAR(128),
+            language VARCHAR(32),
+            post_link VARCHAR(1024),
+            embedding TEXT,
+            scraped_at TIMESTAMP DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_hotspots (
+            id SERIAL PRIMARY KEY,
+            hotspot_name VARCHAR(512) NOT NULL,
+            type VARCHAR(64),
+            metric_score BIGINT,
+            date DATE NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fb_monitor_config (
+            id SERIAL PRIMARY KEY,
+            post_url VARCHAR(1024) NOT NULL UNIQUE,
+            post_title VARCHAR(512),
+            is_active BOOLEAN DEFAULT TRUE,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT NOW(),
+            last_scraped_at TIMESTAMP
+        )
+        """,
     ]
     try:
         for sql in sqls:

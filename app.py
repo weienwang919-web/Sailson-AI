@@ -28,6 +28,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from bs4 import BeautifulSoup
 import bleach
 import database as db
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.pool import ThreadPoolExecutor
 
 # XSS 防护：报告 HTML 允许的标签与属性
 ALLOWED_TAGS = {
@@ -52,6 +55,7 @@ def sanitize_html(html_content):
         return ''
     return bleach.clean(html_content, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, protocols=ALLOWED_PROTOCOLS)
 import rag
+import tasks
 from video_vision import get_video_vision_section
 
 # 加载 .env 文件
@@ -138,6 +142,50 @@ if not secret_key:
 
 app.secret_key = secret_key
 bcrypt = Bcrypt(app)
+
+# ============================================
+# APScheduler 初始化
+# ============================================
+jobstores = {
+    'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
+}
+executors = {
+    'default': ThreadPoolExecutor(5)
+}
+job_defaults = {
+    'coalesce': False,
+    'max_instances': 1
+}
+scheduler = BackgroundScheduler(
+    jobstores=jobstores,
+    executors=executors,
+    job_defaults=job_defaults,
+    timezone='Asia/Shanghai'
+)
+
+# 注册定时任务
+# FB 评论抓取：每 6 小时执行一次
+scheduler.add_job(
+    func=tasks.scrape_fb_comments,
+    trigger='cron',
+    hour='*/6',
+    id='fb_scrape_job',
+    replace_existing=True
+)
+
+# TikTok 热点刷新：每天凌晨 2 点执行
+scheduler.add_job(
+    func=tasks.refresh_tiktok_hotspots,
+    trigger='cron',
+    hour=2,
+    minute=0,
+    id='tiktok_hotspot_job',
+    replace_existing=True
+)
+
+scheduler.start()
+logger.info("✅ APScheduler 已启动，定时任务已注册")
+
 
 # 内存存储（保留用于向后兼容）
 HISTORY_DB = []
@@ -2414,6 +2462,346 @@ def delete_user(user_id):
 
     except Exception as e:
         logger.error(f"❌ 删除用户失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================
+# FB 舆情分析新接口
+# ============================================
+
+@app.route('/fb_dashboard')
+@login_required
+def fb_dashboard():
+    """FB 舆情看板页面"""
+    return render_template('fb_dashboard.html', user=session)
+
+
+@app.route('/fb_schedule', methods=['POST'])
+@login_required
+def fb_schedule():
+    """手动触发 FB 评论抓取"""
+    try:
+        result = tasks.scrape_fb_comments()
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"❌ FB 抓取失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/fb_search', methods=['GET'])
+@login_required
+def fb_search():
+    """
+    FB 评论语义检索 + 日期过滤
+
+    Query params:
+        - query: 搜索关键词（可选）
+        - start_date: 开始日期 YYYY-MM-DD（可选）
+        - end_date: 结束日期 YYYY-MM-DD（可选）
+        - limit: 返回数量（默认 200）
+    """
+    try:
+        query = request.args.get('query', '').strip()
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        limit = int(request.args.get('limit', 200))
+
+        # 构建 SQL
+        sql = "SELECT * FROM fb_comments WHERE 1=1"
+        params = []
+
+        # 日期过滤
+        if start_date:
+            sql += " AND created_at >= %s"
+            params.append(start_date)
+        if end_date:
+            sql += " AND created_at <= %s"
+            params.append(end_date + ' 23:59:59')
+
+        # 如果有搜索词，使用语义检索
+        if query:
+            # 生成查询向量
+            query_embedding = rag.get_embedding(query)
+            if not query_embedding:
+                return jsonify({'error': '无法生成查询向量'}), 500
+
+            # 获取所有符合日期条件的评论
+            rows = db.query_all(sql, tuple(params))
+
+            # 计算相似度并排序
+            scored = []
+            for row in rows:
+                emb_json = row.get('embedding')
+                if not emb_json:
+                    continue
+                try:
+                    emb = json.loads(emb_json)
+                    score = rag._cosine_similarity(query_embedding, emb)
+                    row_dict = dict(row)
+                    row_dict['similarity_score'] = score
+                    scored.append(row_dict)
+                except:
+                    continue
+
+            scored.sort(key=lambda x: x['similarity_score'], reverse=True)
+            results = scored[:limit]
+        else:
+            # 无搜索词，按时间倒序
+            sql += " ORDER BY created_at DESC LIMIT %s"
+            params.append(limit)
+            rows = db.query_all(sql, tuple(params))
+            results = [dict(row) for row in rows]
+
+        # 格式化返回
+        for r in results:
+            if 'created_at' in r and r['created_at']:
+                r['created_at'] = r['created_at'].isoformat()
+            if 'scraped_at' in r and r['scraped_at']:
+                r['scraped_at'] = r['scraped_at'].isoformat()
+            # 移除 embedding 字段（太大）
+            r.pop('embedding', None)
+
+        return jsonify({
+            'status': 'success',
+            'count': len(results),
+            'results': results
+        })
+
+    except Exception as e:
+        logger.error(f"❌ FB 搜索失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_export', methods=['POST'])
+@login_required
+def fb_export():
+    """导出 FB 评论为 Excel"""
+    try:
+        data = request.json
+        comment_ids = data.get('comment_ids', [])
+
+        if not comment_ids:
+            return jsonify({'error': '未选择评论'}), 400
+
+        # 查询评论
+        placeholders = ','.join(['%s'] * len(comment_ids))
+        sql = f"SELECT * FROM fb_comments WHERE id IN ({placeholders}) ORDER BY created_at DESC"
+        rows = db.query_all(sql, tuple(comment_ids))
+
+        if not rows:
+            return jsonify({'error': '未找到评论'}), 404
+
+        # 创建 Excel
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "FB评论导出"
+
+        # 表头
+        headers = ['ID', '作者', '评论时间', '内容', '情感分数', '分类', '语言', '原帖链接']
+        ws.append(headers)
+
+        # 样式
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        # 数据行
+        for row in rows:
+            ws.append([
+                row['id'],
+                row.get('author', ''),
+                row.get('created_at').strftime('%Y-%m-%d %H:%M:%S') if row.get('created_at') else '',
+                row.get('content', ''),
+                row.get('sentiment_score', 0),
+                row.get('category', ''),
+                row.get('language', ''),
+                row.get('post_link', '')
+            ])
+
+        # 调整列宽
+        ws.column_dimensions['A'].width = 8
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 50
+        ws.column_dimensions['E'].width = 12
+        ws.column_dimensions['F'].width = 15
+        ws.column_dimensions['G'].width = 10
+        ws.column_dimensions['H'].width = 40
+
+        # 保存到内存
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        filename = f"FB评论导出_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        logger.error(f"❌ FB 导出失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_stats', methods=['GET'])
+@login_required
+def fb_stats():
+    """获取 FB 评论统计数据（用于看板图表）"""
+    try:
+        # 今日新增
+        today_count = db.query_one("""
+            SELECT COUNT(*) as count FROM fb_comments
+            WHERE DATE(scraped_at) = CURRENT_DATE
+        """)
+
+        # 近 7 天趋势
+        trend_data = db.query_all("""
+            SELECT DATE(scraped_at) as date, COUNT(*) as count
+            FROM fb_comments
+            WHERE scraped_at >= CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY DATE(scraped_at)
+            ORDER BY date
+        """)
+
+        # 情感分布
+        sentiment_dist = db.query_all("""
+            SELECT
+                CASE
+                    WHEN sentiment_score > 0.3 THEN 'positive'
+                    WHEN sentiment_score < -0.3 THEN 'negative'
+                    ELSE 'neutral'
+                END as sentiment,
+                COUNT(*) as count
+            FROM fb_comments
+            GROUP BY sentiment
+        """)
+
+        # 高频关键词（简化版，从分类统计）
+        category_dist = db.query_all("""
+            SELECT category, COUNT(*) as count
+            FROM fb_comments
+            WHERE category IS NOT NULL AND category != 'unknown'
+            GROUP BY category
+            ORDER BY count DESC
+            LIMIT 10
+        """)
+
+        return jsonify({
+            'status': 'success',
+            'today_count': today_count['count'] if today_count else 0,
+            'trend': [{'date': str(r['date']), 'count': r['count']} for r in trend_data],
+            'sentiment': [{'sentiment': r['sentiment'], 'count': r['count']} for r in sentiment_dist],
+            'categories': [{'category': r['category'], 'count': r['count']} for r in category_dist]
+        })
+
+    except Exception as e:
+        logger.error(f"❌ FB 统计失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_config', methods=['GET'])
+@login_required
+def fb_config():
+    """获取 FB 监控配置列表"""
+    try:
+        configs = db.query_all("""
+            SELECT id, post_url, post_title, is_active, last_scraped_at, created_at
+            FROM fb_monitor_config
+            ORDER BY created_at DESC
+        """)
+
+        result = []
+        for config in configs:
+            result.append({
+                'id': config['id'],
+                'post_url': config['post_url'],
+                'post_title': config.get('post_title', ''),
+                'is_active': config['is_active'],
+                'last_scraped_at': config['last_scraped_at'].isoformat() if config.get('last_scraped_at') else None,
+                'created_at': config['created_at'].isoformat() if config.get('created_at') else None
+            })
+
+        return jsonify({
+            'status': 'success',
+            'configs': result
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 获取配置失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_config', methods=['POST'])
+@login_required
+def add_fb_config():
+    """添加 FB 监控配置"""
+    try:
+        data = request.json
+        post_url = data.get('post_url', '').strip()
+        post_title = data.get('post_title', '').strip()
+
+        if not post_url:
+            return jsonify({'error': '帖子链接不能为空'}), 400
+
+        # 检查是否已存在
+        existing = db.query_one("SELECT id FROM fb_monitor_config WHERE post_url = %s", (post_url,))
+        if existing:
+            return jsonify({'error': '该帖子已在监控列表中'}), 400
+
+        # 插入配置
+        db.execute("""
+            INSERT INTO fb_monitor_config (post_url, post_title, created_by)
+            VALUES (%s, %s, %s)
+        """, (post_url, post_title, session.get('user_id')))
+
+        logger.info(f"✅ 添加 FB 监控配置: {post_url}")
+
+        return jsonify({'status': 'success', 'message': '添加成功'})
+
+    except Exception as e:
+        logger.error(f"❌ 添加配置失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_config/<int:config_id>', methods=['DELETE'])
+@login_required
+def delete_fb_config(config_id):
+    """删除 FB 监控配置"""
+    try:
+        db.execute("DELETE FROM fb_monitor_config WHERE id = %s", (config_id,))
+        logger.info(f"✅ 删除 FB 监控配置: ID={config_id}")
+        return jsonify({'status': 'success', 'message': '删除成功'})
+
+    except Exception as e:
+        logger.error(f"❌ 删除配置失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_config/<int:config_id>/toggle', methods=['POST'])
+@login_required
+def toggle_fb_config(config_id):
+    """启用/禁用 FB 监控配置"""
+    try:
+        config = db.query_one("SELECT is_active FROM fb_monitor_config WHERE id = %s", (config_id,))
+        if not config:
+            return jsonify({'error': '配置不存在'}), 404
+
+        new_status = not config['is_active']
+        db.execute("UPDATE fb_monitor_config SET is_active = %s WHERE id = %s", (new_status, config_id))
+
+        logger.info(f"✅ 切换 FB 监控配置状态: ID={config_id}, active={new_status}")
+
+        return jsonify({'status': 'success', 'is_active': new_status})
+
+    except Exception as e:
+        logger.error(f"❌ 切换配置状态失败: {e}")
         return jsonify({'error': str(e)}), 500
 
 
