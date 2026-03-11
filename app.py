@@ -2479,12 +2479,25 @@ def fb_dashboard():
 @app.route('/fb_schedule', methods=['POST'])
 @login_required
 def fb_schedule():
-    """手动触发 FB 评论抓取"""
+    """手动触发 FB 评论抓取（异步执行）"""
     try:
-        result = tasks.scrape_fb_comments()
-        return jsonify(result)
+        # 在后台线程中执行抓取任务
+        def run_scrape():
+            try:
+                result = tasks.scrape_fb_comments()
+                logger.info(f"✅ 后台抓取完成: {result}")
+            except Exception as e:
+                logger.error(f"❌ 后台抓取失败: {e}")
+
+        thread = threading.Thread(target=run_scrape, daemon=True)
+        thread.start()
+
+        return jsonify({
+            'status': 'success',
+            'message': '抓取任务已启动，请稍后刷新页面查看结果'
+        })
     except Exception as e:
-        logger.error(f"❌ FB 抓取失败: {e}")
+        logger.error(f"❌ FB 抓取启动失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

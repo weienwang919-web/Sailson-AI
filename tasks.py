@@ -71,7 +71,14 @@ def scrape_fb_comments(post_urls=None, days_back=7):
                 "maxReplies": 0
             }
 
-            run = apify_client.actor("apify/facebook-comments-scraper").call(run_input=run_input)
+            # 启动 Apify actor 并等待完成（设置超时）
+            logger.info(f"🚀 Starting Apify actor...")
+            run = apify_client.actor("apify/facebook-comments-scraper").call(
+                run_input=run_input,
+                timeout_secs=300  # 5分钟超时
+            )
+
+            logger.info(f"✅ Apify actor completed, fetching results...")
 
             # Fetch results
             items = []

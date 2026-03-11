@@ -548,22 +548,33 @@
 
         // 手动触发抓取
         async function triggerScrape() {
-            if (!confirm('确定要手动触发 FB 评论抓取吗？')) return;
+            if (!confirm('确定要手动触发 FB 评论抓取吗？\n\n抓取任务将在后台运行，大约需要 1-3 分钟。')) return;
+
+            const button = event.target;
+            button.disabled = true;
+            button.textContent = '抓取中...';
 
             try {
                 const response = await fetch('/fb_schedule', { method: 'POST' });
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    alert(`抓取完成！新增 ${data.new_comments} 条评论`);
-                    loadStats();
-                    searchComments();
+                    alert('抓取任务已启动！\n\n任务将在后台运行，请等待 1-3 分钟后刷新页面查看结果。');
+
+                    // 30秒后自动刷新统计数据
+                    setTimeout(() => {
+                        loadStats();
+                        searchComments();
+                    }, 30000);
                 } else {
-                    alert('抓取失败: ' + data.message);
+                    alert('抓取失败: ' + (data.message || '未知错误'));
                 }
             } catch (error) {
                 console.error('抓取失败:', error);
-                alert('抓取失败');
+                alert('抓取失败，请查看控制台日志');
+            } finally {
+                button.disabled = false;
+                button.textContent = '手动抓取';
             }
         }
 
