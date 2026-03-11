@@ -24,22 +24,39 @@ apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 qwen_client = OpenAI(api_key=DASHSCOPE_API_KEY, base_url=QWEN_BASE_URL) if DASHSCOPE_API_KEY else None
 
 
-def scrape_fb_comments(post_urls=None, days_back=7):
+def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
     """
     Scrape FB comments from configured post URLs
 
     Args:
         post_urls: List of FB post URLs to scrape. If None, fetch from database config
         days_back: Only process comments from last N days
+        task_id: Optional task ID for status tracking
 
     Returns:
         dict with status and stats
     """
-    logger.info(f"🔄 Starting FB comment scraping task (days_back={days_back})")
+    logger.info(f"🔄 Starting FB comment scraping task (days_back={days_back}, task_id={task_id})")
+
+    # Update task status to running
+    if task_id:
+        try:
+            db.execute("UPDATE scrape_tasks SET status = 'running' WHERE id = %s", (task_id,))
+        except:
+            pass
 
     if not apify_client:
-        logger.error("❌ Apify client not initialized")
-        return {"status": "error", "message": "Apify not configured"}
+        error_msg = "Apify not configured"
+        logger.error(f"❌ {error_msg}")
+        if task_id:
+            try:
+                db.execute(
+                    "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
+                    (error_msg, task_id)
+                )
+            except:
+                pass
+        return {"status": "error", "message": error_msg}
 
     if not post_urls:
         # Fetch from database config
@@ -54,7 +71,16 @@ def scrape_fb_comments(post_urls=None, days_back=7):
 
     if not post_urls:
         logger.warning("⚠️ No FB post URLs configured")
-        return {"status": "error", "message": "No URLs to scrape"}
+        error_msg = "No URLs to scrape"
+        if task_id:
+            try:
+                db.execute(
+                    "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
+                    (error_msg, task_id)
+                )
+            except:
+                pass
+        return {"status": "error", "message": error_msg}
 
     total_new = 0
     total_updated = 0
@@ -149,11 +175,25 @@ def scrape_fb_comments(post_urls=None, days_back=7):
             pass
 
     logger.info(f"✅ FB scraping complete: {total_new} new, {total_updated} existing")
-    return {
+
+    result = {
         "status": "success",
         "new_comments": total_new,
         "existing_comments": total_updated
     }
+
+    # Update task status to completed
+    if task_id:
+        try:
+            summary = f"New: {total_new}, Existing: {total_updated}"
+            db.execute(
+                "UPDATE scrape_tasks SET status = 'completed', completed_at = NOW(), result_summary = %s WHERE id = %s",
+                (summary, task_id)
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to update task status: {e}")
+
+    return result
 
 
 def analyze_comment_sentiment(content):

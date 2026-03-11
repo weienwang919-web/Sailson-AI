@@ -102,6 +102,17 @@ def ensure_tables():
             last_scraped_at TIMESTAMP
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS scrape_tasks (
+            id SERIAL PRIMARY KEY,
+            task_type VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            started_at TIMESTAMP DEFAULT NOW(),
+            completed_at TIMESTAMP,
+            result_summary TEXT,
+            error_message TEXT
+        )
+        """,
     ]
     try:
         for sql in sqls:

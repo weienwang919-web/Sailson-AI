@@ -2481,24 +2481,61 @@ def fb_dashboard():
 def fb_schedule():
     """手动触发 FB 评论抓取（异步执行）"""
     try:
+        # 创建任务记录
+        task_id = db.execute_and_fetch_id(
+            "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+            ('fb_scrape', 'pending')
+        )
+
         # 在后台线程中执行抓取任务
         def run_scrape():
             try:
-                result = tasks.scrape_fb_comments()
-                logger.info(f"✅ 后台抓取完成: {result}")
+                result = tasks.scrape_fb_comments(task_id=task_id)
+                logger.info(f"✅ 后台抓取完成 (task_id={task_id}): {result}")
             except Exception as e:
-                logger.error(f"❌ 后台抓取失败: {e}")
+                logger.error(f"❌ 后台抓取失败 (task_id={task_id}): {e}")
+                try:
+                    db.execute(
+                        "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
+                        (str(e), task_id)
+                    )
+                except:
+                    pass
 
         thread = threading.Thread(target=run_scrape, daemon=True)
         thread.start()
 
         return jsonify({
             'status': 'success',
-            'message': '抓取任务已启动，请稍后刷新页面查看结果'
+            'message': '抓取任务已启动，请稍后刷新页面查看结果',
+            'task_id': task_id
         })
     except Exception as e:
         logger.error(f"❌ FB 抓取启动失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/fb_task_status/<int:task_id>', methods=['GET'])
+@login_required
+def fb_task_status(task_id):
+    """查询抓取任务状态"""
+    try:
+        task = db.query_one("SELECT * FROM scrape_tasks WHERE id = %s", (task_id,))
+
+        if not task:
+            return jsonify({'error': '任务不存在'}), 404
+
+        return jsonify({
+            'status': task['status'],
+            'started_at': task['started_at'].isoformat() if task.get('started_at') else None,
+            'completed_at': task['completed_at'].isoformat() if task.get('completed_at') else None,
+            'result_summary': task.get('result_summary'),
+            'error_message': task.get('error_message')
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 查询任务状态失败: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/fb_search', methods=['GET'])
