@@ -15,13 +15,13 @@ import rag
 
 logger = logging.getLogger(__name__)
 
-APIFY_API_TOKEN = os.environ.get('APIFY_API_TOKEN')
-QWEN_API_KEY = os.environ.get('QWEN_API_KEY')
+APIFY_TOKEN = os.environ.get('APIFY_TOKEN')
+DASHSCOPE_API_KEY = os.environ.get('DASHSCOPE_API_KEY')
 QWEN_BASE_URL = os.environ.get('QWEN_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
 
 # Initialize clients
-apify_client = ApifyClient(APIFY_API_TOKEN) if APIFY_API_TOKEN else None
-qwen_client = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL) if QWEN_API_KEY else None
+apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
+qwen_client = OpenAI(api_key=DASHSCOPE_API_KEY, base_url=QWEN_BASE_URL) if DASHSCOPE_API_KEY else None
 
 
 def scrape_fb_comments(post_urls=None, days_back=7):
