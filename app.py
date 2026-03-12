@@ -2555,6 +2555,8 @@ def fb_search():
         query = request.args.get('query', '').strip()
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
+        sentiment = request.args.get('sentiment', '').strip()
+        post_url = request.args.get('post_url', '').strip()
         limit = int(request.args.get('limit', 200))
 
         # 构建 WHERE 条件
@@ -2573,6 +2575,20 @@ def fb_search():
         if query:
             where_clauses.append("content ILIKE %s")
             params.append(f"%{query}%")
+
+        # 情感筛选
+        if sentiment:
+            if sentiment == 'positive':
+                where_clauses.append("sentiment_score > 0.3")
+            elif sentiment == 'negative':
+                where_clauses.append("sentiment_score < -0.2")
+            elif sentiment == 'neutral':
+                where_clauses.append("sentiment_score BETWEEN -0.2 AND 0.3")
+
+        # 帖文筛选
+        if post_url:
+            where_clauses.append("post_url = %s")
+            params.append(post_url)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 

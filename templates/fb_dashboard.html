@@ -92,12 +92,14 @@
             font-size: 0.9rem;
             color: #666;
         }
-        .form-group input {
+        .form-group input,
+        .form-group select {
             width: 100%;
             padding: 10px;
             border: 1px solid #ddd;
             border-radius: 8px;
             font-size: 0.9rem;
+            background: #fff;
         }
         .btn-primary {
             background: #2962FF;
@@ -309,6 +311,21 @@
                 <label>结束日期</label>
                 <input type="date" id="endDate">
             </div>
+            <div class="form-group">
+                <label>情感筛选</label>
+                <select id="sentimentFilter">
+                    <option value="">全部</option>
+                    <option value="positive">正面</option>
+                    <option value="neutral">中性</option>
+                    <option value="negative">负面</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>选择帖文</label>
+                <select id="postFilter">
+                    <option value="">全部帖文</option>
+                </select>
+            </div>
             <button class="btn-primary" onclick="searchComments()">搜索</button>
             <button class="btn-secondary" onclick="resetSearch()">重置</button>
             <button class="btn-success" onclick="exportSelected()">导出选中</button>
@@ -438,11 +455,15 @@
             const query = document.getElementById('searchQuery').value;
             const startDate = document.getElementById('startDate').value;
             const endDate = document.getElementById('endDate').value;
+            const sentiment = document.getElementById('sentimentFilter').value;
+            const postUrl = document.getElementById('postFilter').value;
 
             const params = new URLSearchParams();
             if (query) params.append('query', query);
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
+            if (sentiment) params.append('sentiment', sentiment);
+            if (postUrl) params.append('post_url', postUrl);
 
             document.getElementById('tableContainer').innerHTML = '<div class="loading">搜索中...</div>';
 
@@ -476,7 +497,7 @@
 
             comments.forEach(comment => {
                 const sentiment = comment.sentiment_score > 0.3 ? 'positive' :
-                                 comment.sentiment_score < -0.3 ? 'negative' : 'neutral';
+                                 comment.sentiment_score < -0.2 ? 'negative' : 'neutral';
                 const sentimentText = sentiment === 'positive' ? '正面' :
                                      sentiment === 'negative' ? '负面' : '中性';
 
@@ -554,6 +575,8 @@
             document.getElementById('searchQuery').value = '';
             document.getElementById('startDate').value = '';
             document.getElementById('endDate').value = '';
+            document.getElementById('sentimentFilter').value = '';
+            document.getElementById('postFilter').value = '';
             searchComments();
         }
 
@@ -641,7 +664,27 @@
             loadStats();
             searchComments();
             loadSchedulerStatus();
+            loadPostFilter();
         };
+
+        // 加载帖文筛选下拉框
+        async function loadPostFilter() {
+            try {
+                const response = await fetch('/fb_config');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    const select = document.getElementById('postFilter');
+                    data.configs.forEach(config => {
+                        const option = document.createElement('option');
+                        option.value = config.post_url;
+                        option.textContent = config.post_title || config.post_url.substring(0, 60) + '...';
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('加载帖文列表失败:', error);
+            }
+        }
 
         // 加载调度器状态
         async function loadSchedulerStatus() {

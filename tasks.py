@@ -15,6 +15,9 @@ from openai import OpenAI
 import database as db
 import rag
 
+# 北京时区
+BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
 logger = logging.getLogger(__name__)
 
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN')
@@ -86,7 +89,7 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
 
     total_new = 0
     total_updated = 0
-    cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_back)
+    cutoff_date = datetime.datetime.now(BEIJING_TZ) - datetime.timedelta(days=days_back)
 
     for post_url in post_urls:
         try:
@@ -202,8 +205,9 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                 # Parse timestamp
                 try:
                     created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                    created_at = created_at.astimezone(BEIJING_TZ)
                 except:
-                    created_at = datetime.datetime.now()
+                    created_at = datetime.datetime.now(BEIJING_TZ)
 
                 # Skip old comments
                 if created_at < cutoff_date:
@@ -304,6 +308,14 @@ def analyze_comment_sentiment(content):
 4. 充值退款 - payment issues, 充值、退款、支付问题
 5. 新模式地图平衡性建议 - new content requests, 新内容、平衡性建议
 6. 其他 - spam, praise, 其他内容
+
+情感评分细则：
+- 直接骂人、投诉、强烈不满：-0.6 到 -1.0
+- 隐晦负面（反讽、阴阳怪气、失望、冷嘲热讽、无奈放弃）：-0.3 到 -0.6
+- emoji 表达不满（如 💀🤡😤😡）：识别为负面
+- 多语言注意：印尼语/越南语/泰语的俚语抱怨也需正确识别
+- 中性咨询、提问：-0.1 到 0.1
+- 正面评价、夸赞：0.4 到 1.0
 
 简要分析要求：
 - 短评论（原文 < 30 字）：一句话概括，15-20 个中文字
