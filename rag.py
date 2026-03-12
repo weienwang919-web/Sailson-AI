@@ -78,7 +78,8 @@ def ensure_tables():
             language VARCHAR(32),
             post_link VARCHAR(1024),
             embedding TEXT,
-            scraped_at TIMESTAMP DEFAULT NOW()
+            scraped_at TIMESTAMP DEFAULT NOW(),
+            brief_analysis TEXT
         )
         """,
         """
@@ -117,6 +118,13 @@ def ensure_tables():
     try:
         for sql in sqls:
             db.execute(sql)
+
+        # Add brief_analysis column if it doesn't exist (migration)
+        db.execute("""
+            ALTER TABLE fb_comments
+            ADD COLUMN IF NOT EXISTS brief_analysis TEXT
+        """)
+
         logger.info("✅ RAG 相关表已就绪")
     except Exception as e:
         logger.warning(f"⚠️ RAG 建表失败（数据库可能不可用）: {e}")

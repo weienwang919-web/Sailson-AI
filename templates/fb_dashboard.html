@@ -471,7 +471,7 @@
 
             let html = '<table><thead><tr>';
             html += '<th><input type="checkbox" onchange="toggleAll(this)"></th>';
-            html += '<th>作者</th><th>评论时间</th><th>内容</th><th>情感</th><th>分类</th><th>语言</th>';
+            html += '<th>作者</th><th>评论时间</th><th>内容</th><th>简要分析</th><th>情感</th><th>分类</th><th>语言</th>';
             html += '</tr></thead><tbody>';
 
             comments.forEach(comment => {
@@ -484,7 +484,8 @@
                 html += `<td><input type="checkbox" value="${comment.id}" onchange="toggleSelect(${comment.id})"></td>`;
                 html += `<td>${comment.author || '-'}</td>`;
                 html += `<td>${comment.created_at ? new Date(comment.created_at).toLocaleString('zh-CN') : '-'}</td>`;
-                html += `<td style="max-width: 400px;">${comment.content}</td>`;
+                html += `<td style="max-width: 300px;">${comment.content}</td>`;
+                html += `<td style="max-width: 400px;">${comment.brief_analysis || '-'}</td>`;
                 html += `<td class="sentiment-${sentiment}">${sentimentText}</td>`;
                 html += `<td>${comment.category || '-'}</td>`;
                 html += `<td>${comment.language || '-'}</td>`;

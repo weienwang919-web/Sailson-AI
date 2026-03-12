@@ -215,7 +215,7 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                     continue
 
                 # Analyze sentiment using Qwen
-                sentiment_score, category, language = analyze_comment_sentiment(content)
+                sentiment_score, category, language, brief_analysis = analyze_comment_sentiment(content)
 
                 # Generate embedding
                 embedding = rag.get_embedding(content)
@@ -226,11 +226,11 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                     """
                     INSERT INTO fb_comments
                     (post_url, comment_id, author, created_at, content, sentiment_score,
-                     category, language, post_link, embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     category, language, post_link, embedding, brief_analysis)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (post_url, comment_id, author, created_at, content, sentiment_score,
-                     category, language, post_url, embedding_json)
+                     category, language, post_url, embedding_json, brief_analysis)
                 )
                 total_new += 1
 
@@ -275,13 +275,16 @@ def analyze_comment_sentiment(content):
     Analyze comment sentiment using Qwen
 
     Returns:
-        tuple: (sentiment_score, category, language)
+        tuple: (sentiment_score, category, language, brief_analysis)
     """
     if not qwen_client:
-        return 0.0, "unknown", "unknown"
+        return 0.0, "unknown", "unknown", ""
 
     try:
-        prompt = f"""分析以下评论的情感倾向、内容分类和语言。
+        # Count words to determine analysis depth
+        word_count = len(content)
+
+        prompt = f"""分析以下评论的情感倾向、内容分类、语言和简要分析。
 
 评论内容：
 {content}
@@ -290,7 +293,8 @@ def analyze_comment_sentiment(content):
 {{
   "sentiment_score": <-1到1之间的浮点数，-1最负面，1最正面>,
   "category": "<内容分类，必须是以下之一：外挂作弊/游戏优化/游戏Bug/充值退款/新模式地图平衡性建议/其他>",
-  "language": "<语言代码，如：zh/en/id/th/vi>"
+  "language": "<语言代码，如：zh/en/id/th/vi>",
+  "brief_analysis": "<简要分析>"
 }}
 
 分类说明：
@@ -299,7 +303,11 @@ def analyze_comment_sentiment(content):
 3. 游戏Bug - glitches, errors, 游戏错误、异常
 4. 充值退款 - payment issues, 充值、退款、支付问题
 5. 新模式地图平衡性建议 - new content requests, 新内容、平衡性建议
-6. 其他 - spam, praise, 其他内容"""
+6. 其他 - spam, praise, 其他内容
+
+简要分析要求：
+- 短评论（原文 < 30 字）：一句话概括，15-20 个中文字
+- 长评论（原文 ≥ 30 字）：详细解释，包含主要问题、玩家情绪、关键细节，50-100 个中文字"""
 
         response = qwen_client.chat.completions.create(
             model="qwen-plus",
@@ -320,12 +328,13 @@ def analyze_comment_sentiment(content):
         return (
             float(result.get("sentiment_score", 0.0)),
             result.get("category", "unknown"),
-            result.get("language", "unknown")
+            result.get("language", "unknown"),
+            result.get("brief_analysis", "")
         )
 
     except Exception as e:
         logger.error(f"❌ Sentiment analysis failed: {e}")
-        return 0.0, "unknown", "unknown"
+        return 0.0, "unknown", "unknown", ""
 
 
 def refresh_tiktok_hotspots(region='sea', top_n=50):

@@ -2543,7 +2543,7 @@ def fb_task_status(task_id):
 @login_required
 def fb_search():
     """
-    FB 评论语义检索 + 日期过滤
+    FB 评论语义检索 + 日期过滤 + 关键词过滤
 
     Query params:
         - query: 搜索关键词（可选）
@@ -2557,60 +2557,66 @@ def fb_search():
         end_date = request.args.get('end_date')
         limit = int(request.args.get('limit', 200))
 
-        # 构建 SQL
-        sql = "SELECT * FROM fb_comments WHERE 1=1"
+        # 构建 WHERE 条件
+        where_clauses = []
         params = []
 
         # 日期过滤
         if start_date:
-            sql += " AND created_at >= %s"
+            where_clauses.append("created_at >= %s")
             params.append(start_date)
         if end_date:
-            sql += " AND created_at <= %s"
+            where_clauses.append("created_at <= %s")
             params.append(end_date + ' 23:59:59')
 
-        # 如果有搜索词，使用语义检索
+        # 关键词过滤（新增）
         if query:
-            # 生成查询向量
+            where_clauses.append("content ILIKE %s")
+            params.append(f"%{query}%")
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        # 查询评论
+        sql = f"""
+            SELECT id, post_url, comment_id, author, created_at, content,
+                   sentiment_score, category, language, post_link, embedding, brief_analysis
+            FROM fb_comments
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        params.append(limit)
+
+        rows = db.query_all(sql, tuple(params))
+
+        # 如果有搜索词且有 embedding，进行相似度排序
+        if query and rows:
             query_embedding = rag.get_embedding(query)
-            if not query_embedding:
-                return jsonify({'error': '无法生成查询向量'}), 500
-
-            # 获取所有符合日期条件的评论
-            rows = db.query_all(sql, tuple(params))
-
-            # 计算相似度并排序
-            scored = []
-            for row in rows:
-                emb_json = row.get('embedding')
-                if not emb_json:
-                    continue
-                try:
-                    emb = json.loads(emb_json)
-                    score = rag._cosine_similarity(query_embedding, emb)
-                    row_dict = dict(row)
-                    row_dict['similarity_score'] = score
-                    scored.append(row_dict)
-                except:
-                    continue
-
-            scored.sort(key=lambda x: x['similarity_score'], reverse=True)
-            results = scored[:limit]
-        else:
-            # 无搜索词，按时间倒序
-            sql += " ORDER BY created_at DESC LIMIT %s"
-            params.append(limit)
-            rows = db.query_all(sql, tuple(params))
-            results = [dict(row) for row in rows]
+            if query_embedding:
+                for row in rows:
+                    if row.get('embedding'):
+                        try:
+                            comment_embedding = json.loads(row['embedding'])
+                            similarity = rag._cosine_similarity(query_embedding, comment_embedding)
+                            row['similarity'] = similarity
+                        except:
+                            row['similarity'] = 0.0
+                    else:
+                        row['similarity'] = 0.0
+                # 按相似度排序
+                rows.sort(key=lambda x: x.get('similarity', 0), reverse=True)
 
         # 格式化返回
-        for r in results:
-            if 'created_at' in r and r['created_at']:
-                r['created_at'] = r['created_at'].isoformat()
-            if 'scraped_at' in r and r['scraped_at']:
-                r['scraped_at'] = r['scraped_at'].isoformat()
+        results = []
+        for r in rows:
+            row_dict = dict(r)
+            if 'created_at' in row_dict and row_dict['created_at']:
+                row_dict['created_at'] = row_dict['created_at'].isoformat()
+            if 'scraped_at' in row_dict and row_dict['scraped_at']:
+                row_dict['scraped_at'] = row_dict['scraped_at'].isoformat()
             # 移除 embedding 字段（太大）
-            r.pop('embedding', None)
+            row_dict.pop('embedding', None)
+            results.append(row_dict)
 
         return jsonify({
             'status': 'success',
@@ -2648,7 +2654,7 @@ def fb_export():
         ws.title = "FB评论导出"
 
         # 表头
-        headers = ['ID', '作者', '评论时间', '内容', '情感分数', '分类', '语言', '原帖链接']
+        headers = ['ID', '作者', '评论时间', '内容', '简要分析', '情感分数', '分类', '语言', '原帖链接']
         ws.append(headers)
 
         # 样式
@@ -2666,6 +2672,7 @@ def fb_export():
                 row.get('author', ''),
                 row.get('created_at').strftime('%Y-%m-%d %H:%M:%S') if row.get('created_at') else '',
                 row.get('content', ''),
+                row.get('brief_analysis', ''),
                 row.get('sentiment_score', 0),
                 row.get('category', ''),
                 row.get('language', ''),
@@ -2677,10 +2684,11 @@ def fb_export():
         ws.column_dimensions['B'].width = 15
         ws.column_dimensions['C'].width = 20
         ws.column_dimensions['D'].width = 50
-        ws.column_dimensions['E'].width = 12
-        ws.column_dimensions['F'].width = 15
-        ws.column_dimensions['G'].width = 10
-        ws.column_dimensions['H'].width = 40
+        ws.column_dimensions['E'].width = 50
+        ws.column_dimensions['F'].width = 12
+        ws.column_dimensions['G'].width = 15
+        ws.column_dimensions['H'].width = 10
+        ws.column_dimensions['I'].width = 40
 
         # 保存到内存
         output = BytesIO()
