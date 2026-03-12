@@ -51,7 +51,7 @@
         }
         .charts-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            grid-template-columns: 1fr 1fr;
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -60,6 +60,9 @@
             padding: 25px;
             border-radius: 12px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .chart-card canvas {
+            height: 300px !important;
         }
         .chart-card h3 {
             font-size: 1.1rem;
@@ -231,6 +234,9 @@
     <div class="header">
         <h1>📊 Facebook 舆情看板</h1>
         <p style="margin: 10px 0 0 0; color: #666;">实时监控 Facebook 评论舆情动态</p>
+        <p style="margin: 5px 0 0 0; color: #999; font-size: 0.85rem;">
+            下次自动抓取: <span id="nextRunTime" style="color: #2962FF; font-weight: 600;">加载中...</span>
+        </p>
     </div>
 
     <!-- 监控配置管理 -->
@@ -373,6 +379,7 @@
                 },
                 options: {
                     responsive: true,
+                    maintainAspectRatio: false,
                     plugins: {
                         legend: { display: false }
                     }
@@ -396,7 +403,9 @@
                     }]
                 },
                 options: {
-                    responsive: true
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    aspectRatio: 1
                 }
             });
         }
@@ -416,6 +425,7 @@
                 },
                 options: {
                     responsive: true,
+                    maintainAspectRatio: false,
                     plugins: {
                         legend: { display: false }
                     }
@@ -629,7 +639,26 @@
             loadConfigs();
             loadStats();
             searchComments();
+            loadSchedulerStatus();
         };
+
+        // 加载调度器状态
+        async function loadSchedulerStatus() {
+            try {
+                const response = await fetch('/fb_scheduler_status');
+                const data = await response.json();
+
+                if (data.status === 'success' && data.next_run_time) {
+                    const nextRun = new Date(data.next_run_time);
+                    document.getElementById('nextRunTime').textContent = nextRun.toLocaleString('zh-CN');
+                } else {
+                    document.getElementById('nextRunTime').textContent = '未知';
+                }
+            } catch (error) {
+                console.error('加载调度器状态失败:', error);
+                document.getElementById('nextRunTime').textContent = '加载失败';
+            }
+        }
 
         // 加载监控配置
         async function loadConfigs() {

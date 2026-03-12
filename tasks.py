@@ -171,7 +171,22 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                 continue
 
             items = dataset_response.json()
-            logger.info(f"✅ Scraped {len(items)} comments from {post_url}")
+            logger.info(f"✅ Apify returned {len(items)} items")
+
+            # Check for unusually low item count
+            if len(items) < 10:
+                logger.warning(f"⚠️ Unusually low item count: {len(items)}, expected more")
+
+            # Batch deduplication: query all existing comment_ids at once
+            comment_ids = [item.get('id') for item in items if item.get('id')]
+            existing_ids = set()
+
+            if comment_ids:
+                placeholders = ','.join(['%s'] * len(comment_ids))
+                sql = f"SELECT comment_id FROM fb_comments WHERE comment_id IN ({placeholders})"
+                rows = db.query_all(sql, tuple(comment_ids))
+                existing_ids = {row['comment_id'] for row in rows}
+                logger.info(f"📊 Found {len(existing_ids)} existing comments out of {len(comment_ids)}")
 
             # Process each comment
             for item in items:
@@ -193,10 +208,8 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                 if created_at < cutoff_date:
                     continue
 
-                # Check if comment already exists
-                existing = db.query_one("SELECT id FROM fb_comments WHERE comment_id = %s", (comment_id,))
-
-                if existing:
+                # Memory-based deduplication (fast)
+                if comment_id in existing_ids:
                     total_updated += 1
                     continue
 
@@ -275,9 +288,17 @@ def analyze_comment_sentiment(content):
 请以JSON格式返回：
 {{
   "sentiment_score": <-1到1之间的浮点数，-1最负面，1最正面>,
-  "category": "<内容分类，如：产品反馈/客服咨询/游戏体验/社交互动/其他>",
+  "category": "<内容分类，必须是以下之一：外挂作弊/游戏优化/游戏Bug/充值退款/新模式地图平衡性建议/其他>",
   "language": "<语言代码，如：zh/en/id/th/vi>"
-}}"""
+}}
+
+分类说明：
+1. 外挂作弊 - hackers, cheating, 作弊相关
+2. 游戏优化 - lag, crashes, 卡顿、闪退、性能问题
+3. 游戏Bug - glitches, errors, 游戏错误、异常
+4. 充值退款 - payment issues, 充值、退款、支付问题
+5. 新模式地图平衡性建议 - new content requests, 新内容、平衡性建议
+6. 其他 - spam, praise, 其他内容"""
 
         response = qwen_client.chat.completions.create(
             model="qwen-plus",

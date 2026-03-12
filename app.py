@@ -2855,6 +2855,27 @@ def toggle_fb_config(config_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/fb_scheduler_status', methods=['GET'])
+@login_required
+def fb_scheduler_status():
+    """查询 FB 抓取调度器状态"""
+    try:
+        job = scheduler.get_job('fb_scrape_job')
+        if not job:
+            return jsonify({'error': '任务未找到'}), 404
+
+        return jsonify({
+            'status': 'success',
+            'job_id': job.id,
+            'next_run_time': job.next_run_time.isoformat() if job.next_run_time else None,
+            'trigger': str(job.trigger),
+            'timezone': str(scheduler.timezone)
+        })
+    except Exception as e:
+        logger.error(f"❌ 查询调度器状态失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================
 # 应用启动
 # ============================================
