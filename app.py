@@ -164,11 +164,12 @@ scheduler = BackgroundScheduler(
 )
 
 # 注册定时任务
-# FB 评论抓取：每 6 小时执行一次
+# FB 评论抓取：每 6 小时执行一次（0, 6, 12, 18 点）
 scheduler.add_job(
     func=tasks.scrape_fb_comments,
     trigger='cron',
-    hour='*/6',
+    hour='0,6,12,18',
+    minute=0,
     id='fb_scrape_job',
     replace_existing=True
 )

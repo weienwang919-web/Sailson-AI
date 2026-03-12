@@ -94,9 +94,10 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
 
             # Run Apify actor using REST API (same as analysis.py)
             run_input = {
+                "includeNestedComments": True,
+                "resultsLimit": 2500,
                 "startUrls": [{"url": post_url}],
-                "maxComments": 500,
-                "maxReplies": 0
+                "viewOption": "RANKED_UNFILTERED"
             }
 
             logger.info("🚀 Starting Apify actor via REST API...")
