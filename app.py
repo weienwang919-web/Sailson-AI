@@ -2995,10 +2995,53 @@ def process_existing_data():
     """处理已抓取但未分析的 Apify 数据"""
     try:
         data = request.json
+        run_ids = data.get('run_ids', [])  # 改为接收 run_ids
         datasets = data.get('datasets', [])
 
+        if not run_ids and not datasets:
+            return jsonify({'error': '未提供 run_id 或 dataset 信息'}), 400
+
+        # 如果提供的是 run_ids，先转换为 datasets
+        if run_ids:
+            headers = {
+                "Authorization": f"Bearer {APIFY_TOKEN}",
+                "Content-Type": "application/json"
+            }
+
+            datasets = []
+            for run_id in run_ids:
+                try:
+                    # 从 run_id 获取 dataset_id
+                    run_api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
+                    response = requests.get(run_api_url, headers=headers, timeout=10)
+
+                    if response.status_code == 200:
+                        run_data = response.json()['data']
+                        dataset_id = run_data.get('defaultDatasetId')
+
+                        # 获取 post_url
+                        run_input = run_data.get('buildInput', {}) or run_data.get('input', {})
+                        start_urls = run_input.get('startUrls', [])
+                        post_url = start_urls[0].get('url') if start_urls else None
+
+                        if dataset_id and post_url:
+                            datasets.append({
+                                'dataset_id': dataset_id,
+                                'post_url': post_url
+                            })
+                            logger.info(f"✅ Run {run_id} -> Dataset {dataset_id}")
+                        else:
+                            logger.warning(f"⚠️ Run {run_id} 缺少 dataset_id 或 post_url")
+                    else:
+                        logger.error(f"❌ 获取 run {run_id} 失败: {response.status_code}")
+                except Exception as e:
+                    logger.error(f"❌ 处理 run {run_id} 失败: {e}")
+                    continue
+
         if not datasets:
-            return jsonify({'error': '未提供 dataset 信息'}), 400
+            return jsonify({'error': '未找到有效的 dataset'}), 400
+
+        logger.info(f"📦 准备处理 {len(datasets)} 个 datasets")
 
         # 在后台线程处理
         def run_process():
