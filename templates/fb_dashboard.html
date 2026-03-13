@@ -869,11 +869,16 @@
 
         // 处理已抓取的数据
         async function processExistingData() {
-            // 直接使用 run IDs
+            // 3 个 run IDs 和对应的帖子 URL
             const runIds = [
                 '0ee4Rv3eg6K8KPyJG',
                 'BgWPEkmt1s6nxxXtL',
                 'KzxJ2v9vJyIC2bnH2'
+            ];
+            const postUrls = [
+                'https://www.facebook.com/share/p/1B5TLssT6E/',
+                'https://www.facebook.com/share/p/1CSUZjn6ph/',
+                'https://www.facebook.com/share/p/1UTaqJqFYj/'
             ];
 
             if (!confirm('确定要处理已抓取但未分析的数据吗？\n\n这将处理 3 个帖子的数据，可能需要 10-20 分钟。')) return;
@@ -882,7 +887,7 @@
                 const response = await fetch('/fb_process_existing_data', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ run_ids: runIds })
+                    body: JSON.stringify({ run_ids: runIds, post_urls: postUrls })
                 });
 
                 const data = await response.json();

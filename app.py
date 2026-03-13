@@ -3008,10 +3008,13 @@ def process_existing_data():
                 "Content-Type": "application/json"
             }
 
+            # 已知的帖子 URL 映射（按 run_id 顺序）
+            known_post_urls = data.get('post_urls', [])
+
             datasets = []
-            for run_id in run_ids:
+            for idx, run_id in enumerate(run_ids):
                 try:
-                    # 从 run_id 获取 dataset_id
+                    # 从 run_id 获取 dataset_id 和 input
                     run_api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
                     response = requests.get(run_api_url, headers=headers, timeout=10)
 
@@ -3019,19 +3022,35 @@ def process_existing_data():
                         run_data = response.json()['data']
                         dataset_id = run_data.get('defaultDatasetId')
 
-                        # 获取 post_url
-                        run_input = run_data.get('buildInput', {}) or run_data.get('input', {})
-                        start_urls = run_input.get('startUrls', [])
-                        post_url = start_urls[0].get('url') if start_urls else None
+                        # 打印完整数据结构帮助调试
+                        logger.info(f"📋 Run {run_id} keys: {list(run_data.keys())}")
+                        logger.info(f"📋 Run {run_id} defaultDatasetId: {dataset_id}")
+
+                        # 尝试多种方式获取 post_url
+                        post_url = None
+
+                        # 方式1：从 input 获取
+                        for input_key in ['input', 'buildInput', 'options']:
+                            run_input = run_data.get(input_key)
+                            if run_input and isinstance(run_input, dict):
+                                start_urls = run_input.get('startUrls', [])
+                                if start_urls:
+                                    post_url = start_urls[0].get('url') if isinstance(start_urls[0], dict) else start_urls[0]
+                                    break
+
+                        # 方式2：从已知的 URL 列表匹配
+                        if not post_url and known_post_urls and idx < len(known_post_urls):
+                            post_url = known_post_urls[idx]
+                            logger.info(f"📋 Using known post_url: {post_url}")
 
                         if dataset_id and post_url:
                             datasets.append({
                                 'dataset_id': dataset_id,
                                 'post_url': post_url
                             })
-                            logger.info(f"✅ Run {run_id} -> Dataset {dataset_id}")
+                            logger.info(f"✅ Run {run_id} -> Dataset {dataset_id}, URL: {post_url[:60]}")
                         else:
-                            logger.warning(f"⚠️ Run {run_id} 缺少 dataset_id 或 post_url")
+                            logger.warning(f"⚠️ Run {run_id} 缺少 dataset_id({dataset_id}) 或 post_url({post_url})")
                     else:
                         logger.error(f"❌ 获取 run {run_id} 失败: {response.status_code}")
                 except Exception as e:
