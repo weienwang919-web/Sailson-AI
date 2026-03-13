@@ -2937,6 +2937,58 @@ def cleanup_orphan_comments():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/fb_get_recent_datasets', methods=['GET'])
+@login_required
+def get_recent_datasets():
+    """获取最近的 Apify runs 和 datasets"""
+    try:
+        if not APIFY_TOKEN:
+            return jsonify({'error': 'Apify token 未配置'}), 500
+
+        headers = {
+            "Authorization": f"Bearer {APIFY_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        # 获取最近的 runs
+        api_url = "https://api.apify.com/v2/acts/apify~facebook-comments-scraper/runs?limit=10&status=SUCCEEDED"
+        response = requests.get(api_url, headers=headers, timeout=30)
+
+        if response.status_code != 200:
+            return jsonify({'error': f'Apify API 错误: {response.status_code}'}), 500
+
+        data = response.json()
+        runs = data.get('data', {}).get('items', [])
+
+        results = []
+        for run in runs:
+            dataset_id = run.get('defaultDatasetId')
+            started_at = run.get('startedAt')
+            finished_at = run.get('finishedAt')
+
+            # 尝试从 input 获取 post URL
+            run_input = run.get('buildInput', {}) or run.get('input', {})
+            start_urls = run_input.get('startUrls', [])
+            post_url = start_urls[0].get('url') if start_urls else 'Unknown'
+
+            results.append({
+                'run_id': run.get('id'),
+                'dataset_id': dataset_id,
+                'post_url': post_url,
+                'started_at': started_at,
+                'finished_at': finished_at
+            })
+
+        return jsonify({
+            'status': 'success',
+            'runs': results
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 获取 runs 失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/fb_process_existing_data', methods=['POST'])
 @login_required
 def process_existing_data():

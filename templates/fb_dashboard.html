@@ -869,40 +869,51 @@
 
         // 处理已抓取的数据
         async function processExistingData() {
-            if (!confirm('确定要处理已抓取但未分析的数据吗？\n\n这将处理 3 个帖子的数据，可能需要 10-20 分钟。')) return;
-
-            const datasets = [
-                {
-                    dataset_id: '0ee4Rv3eg6K8KPyJG',
-                    post_url: 'https://www.facebook.com/share/p/1B5TLssT6E/'
-                },
-                {
-                    dataset_id: 'BgWPEkmt1s6nxxXtL',
-                    post_url: 'https://www.facebook.com/share/p/1CSUZjn6ph/'
-                },
-                {
-                    dataset_id: 'KzxJ2v9vJyIC2bnH2',
-                    post_url: 'https://www.facebook.com/share/p/1UTaqJqFYj/'
-                }
-            ];
-
             try {
-                const response = await fetch('/fb_process_existing_data', {
+                // 先获取可用的 datasets
+                const response = await fetch('/fb_get_recent_datasets');
+                const data = await response.json();
+
+                if (data.status !== 'success' || !data.runs || data.runs.length === 0) {
+                    alert('未找到可用的 Apify 数据集\n\n可能原因：\n1. 数据集已过期（免费版 7 天）\n2. 最近没有成功的抓取任务');
+                    return;
+                }
+
+                // 显示可用的 datasets
+                let message = '找到以下可用的数据集：\n\n';
+                data.runs.forEach((run, idx) => {
+                    const startTime = new Date(run.started_at).toLocaleString('zh-CN');
+                    message += `${idx + 1}. ${run.post_url.substring(0, 50)}...\n`;
+                    message += `   开始时间: ${startTime}\n`;
+                    message += `   Dataset ID: ${run.dataset_id}\n\n`;
+                });
+                message += '确定要处理这些数据吗？\n\n处理可能需要 10-20 分钟。';
+
+                if (!confirm(message)) return;
+
+                // 构建 datasets 数组
+                const datasets = data.runs.map(run => ({
+                    dataset_id: run.dataset_id,
+                    post_url: run.post_url
+                }));
+
+                // 开始处理
+                const processResponse = await fetch('/fb_process_existing_data', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ datasets: datasets })
                 });
 
-                const data = await response.json();
+                const processData = await processResponse.json();
 
-                if (data.status === 'success') {
-                    alert(data.message + '\n\n任务在后台运行，请等待 10-20 分钟后刷新页面查看结果。');
+                if (processData.status === 'success') {
+                    alert(processData.message + '\n\n任务在后台运行，请等待 10-20 分钟后刷新页面查看结果。');
                 } else {
-                    alert('处理失败: ' + (data.error || '未知错误'));
+                    alert('处理失败: ' + (processData.error || '未知错误'));
                 }
             } catch (error) {
                 console.error('处理失败:', error);
-                alert('处理失败');
+                alert('处理失败: ' + error.message);
             }
         }
     </script>
