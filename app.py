@@ -2848,11 +2848,28 @@ def add_fb_config():
 @app.route('/fb_config/<int:config_id>', methods=['DELETE'])
 @login_required
 def delete_fb_config(config_id):
-    """删除 FB 监控配置"""
+    """删除 FB 监控配置（同时删除该帖子的所有评论数据）"""
     try:
+        # 先查询配置的 post_url
+        config = db.query_one("SELECT post_url FROM fb_monitor_config WHERE id = %s", (config_id,))
+        if not config:
+            return jsonify({'error': '配置不存在'}), 404
+
+        post_url = config['post_url']
+
+        # 删除该帖子的所有评论
+        result = db.execute("DELETE FROM fb_comments WHERE post_url = %s", (post_url,))
+        deleted_comments = result if isinstance(result, int) else 0
+        logger.info(f"🗑️ 删除帖子评论: post_url={post_url}, 删除 {deleted_comments} 条评论")
+
+        # 删除监控配置
         db.execute("DELETE FROM fb_monitor_config WHERE id = %s", (config_id,))
         logger.info(f"✅ 删除 FB 监控配置: ID={config_id}")
-        return jsonify({'status': 'success', 'message': '删除成功'})
+
+        return jsonify({
+            'status': 'success',
+            'message': f'删除成功（配置 + {deleted_comments} 条评论）'
+        })
 
     except Exception as e:
         logger.error(f"❌ 删除配置失败: {e}")
