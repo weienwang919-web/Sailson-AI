@@ -254,6 +254,7 @@
                 <input type="text" id="newPostTitle" placeholder="例如：CFL 官方帖子">
             </div>
             <button class="btn-success" onclick="addConfig()">添加监控</button>
+            <button class="btn-secondary" onclick="cleanupOrphanComments()" style="background: #dc3545;">清理孤立评论</button>
         </div>
         <div id="configList" style="margin-top: 20px;">
             <div class="loading">加载配置中...</div>
@@ -836,6 +837,34 @@
                 } else {
                     alert('删除失败: ' + data.error);
                 }
+            } catch (error) {
+                console.error('删除配置失败:', error);
+                alert('删除失败');
+            }
+        }
+
+        // 清理孤立评论
+        async function cleanupOrphanComments() {
+            if (!confirm('确定要清理孤立评论吗？\n\n这将删除所有"监控配置已删除但评论还在"的数据。')) return;
+
+            try {
+                const response = await fetch('/fb_cleanup_orphan_comments', {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert(data.message);
+                    searchComments(); // 刷新评论列表
+                } else {
+                    alert('清理失败: ' + (data.error || '未知错误'));
+                }
+            } catch (error) {
+                console.error('清理失败:', error);
+                alert('清理失败');
+            }
+        }
             } catch (error) {
                 console.error('删除配置失败:', error);
                 alert('删除失败');

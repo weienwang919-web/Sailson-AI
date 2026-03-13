@@ -2878,6 +2878,65 @@ def delete_fb_config(config_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/fb_cleanup_orphan_comments', methods=['POST'])
+@login_required
+def cleanup_orphan_comments():
+    """清理孤立评论数据（监控配置已删除但评论还在的数据）"""
+    try:
+        # 查询所有有效的监控配置 post_url
+        valid_urls = db.query_all("SELECT post_url FROM fb_monitor_config")
+        valid_url_set = {row['post_url'] for row in valid_urls}
+
+        logger.info(f"📋 当前有效监控配置: {len(valid_url_set)} 个")
+
+        if not valid_url_set:
+            # 如果没有任何监控配置，删除所有评论
+            logger.warning("⚠️  没有任何监控配置，将删除所有评论数据")
+            result = db.execute("DELETE FROM fb_comments")
+            deleted_count = result if isinstance(result, int) else 0
+            logger.info(f"✅ 删除了 {deleted_count} 条评论")
+            return jsonify({
+                'status': 'success',
+                'message': f'已删除所有评论数据（{deleted_count} 条）'
+            })
+
+        # 查询所有评论的 post_url
+        all_comments = db.query_all("SELECT DISTINCT post_url FROM fb_comments")
+        comment_urls = {row['post_url'] for row in all_comments}
+
+        logger.info(f"📊 数据库中有 {len(comment_urls)} 个不同的帖子评论")
+
+        # 找出孤立的 URL（评论存在但配置不存在）
+        orphan_urls = comment_urls - valid_url_set
+
+        if not orphan_urls:
+            logger.info("✅ 没有孤立评论，数据库干净")
+            return jsonify({
+                'status': 'success',
+                'message': '没有孤立评论，数据库已是干净状态'
+            })
+
+        logger.info(f"🗑️  发现 {len(orphan_urls)} 个孤立帖子的评论，准备删除...")
+
+        total_deleted = 0
+        for url in orphan_urls:
+            result = db.execute("DELETE FROM fb_comments WHERE post_url = %s", (url,))
+            deleted = result if isinstance(result, int) else 0
+            total_deleted += deleted
+            logger.info(f"   删除: {url[:80]}... ({deleted} 条评论)")
+
+        logger.info(f"✅ 清理完成，共删除 {total_deleted} 条孤立评论")
+
+        return jsonify({
+            'status': 'success',
+            'message': f'清理完成，删除了 {len(orphan_urls)} 个帖子的 {total_deleted} 条孤立评论'
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 清理失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/fb_config/<int:config_id>/toggle', methods=['POST'])
 @login_required
 def toggle_fb_config(config_id):
