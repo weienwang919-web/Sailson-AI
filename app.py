@@ -2556,7 +2556,8 @@ def fb_search():
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
         sentiment = request.args.get('sentiment', '').strip()
-        post_url = request.args.get('post_url', '').strip()
+        post_urls = request.args.getlist('post_url')  # 支持多选
+        post_urls = [url.strip() for url in post_urls if url.strip()]
         limit = int(request.args.get('limit', 200))
 
         # 构建 WHERE 条件
@@ -2585,10 +2586,11 @@ def fb_search():
             elif sentiment == 'neutral':
                 where_clauses.append("sentiment_score BETWEEN -0.2 AND 0.3")
 
-        # 帖文筛选
-        if post_url:
-            where_clauses.append("post_url = %s")
-            params.append(post_url)
+        # 帖文筛选（支持多选）
+        if post_urls:
+            placeholders = ','.join(['%s'] * len(post_urls))
+            where_clauses.append(f"post_url IN ({placeholders})")
+            params.extend(post_urls)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 

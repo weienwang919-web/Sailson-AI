@@ -322,7 +322,7 @@
             </div>
             <div class="form-group">
                 <label>选择帖文</label>
-                <select id="postFilter">
+                <select id="postFilter" multiple size="3">
                     <option value="">全部帖文</option>
                 </select>
             </div>
@@ -456,14 +456,18 @@
             const startDate = document.getElementById('startDate').value;
             const endDate = document.getElementById('endDate').value;
             const sentiment = document.getElementById('sentimentFilter').value;
-            const postUrl = document.getElementById('postFilter').value;
+            const postSelect = document.getElementById('postFilter');
+            const selectedPosts = Array.from(postSelect.selectedOptions)
+                .map(opt => opt.value)
+                .filter(val => val !== ''); // 过滤掉"全部帖文"选项
 
             const params = new URLSearchParams();
             if (query) params.append('query', query);
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
             if (sentiment) params.append('sentiment', sentiment);
-            if (postUrl) params.append('post_url', postUrl);
+            // 多选帖文：每个 URL 作为独立参数
+            selectedPosts.forEach(url => params.append('post_url', url));
 
             document.getElementById('tableContainer').innerHTML = '<div class="loading">搜索中...</div>';
 
@@ -576,7 +580,9 @@
             document.getElementById('startDate').value = '';
             document.getElementById('endDate').value = '';
             document.getElementById('sentimentFilter').value = '';
-            document.getElementById('postFilter').value = '';
+            // 清空多选
+            const postSelect = document.getElementById('postFilter');
+            Array.from(postSelect.options).forEach(opt => opt.selected = false);
             searchComments();
         }
 
