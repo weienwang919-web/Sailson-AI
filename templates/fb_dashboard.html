@@ -255,6 +255,7 @@
             </div>
             <button class="btn-success" onclick="addConfig()">添加监控</button>
             <button class="btn-secondary" onclick="cleanupOrphanComments()" style="background: #dc3545;">清理孤立评论</button>
+            <button class="btn-success" onclick="processExistingData()" style="background: #17a2b8;">处理已抓取数据</button>
         </div>
         <div id="configList" style="margin-top: 20px;">
             <div class="loading">加载配置中...</div>
@@ -863,6 +864,45 @@
             } catch (error) {
                 console.error('清理失败:', error);
                 alert('清理失败');
+            }
+        }
+
+        // 处理已抓取的数据
+        async function processExistingData() {
+            if (!confirm('确定要处理已抓取但未分析的数据吗？\n\n这将处理 3 个帖子的数据，可能需要 10-20 分钟。')) return;
+
+            const datasets = [
+                {
+                    dataset_id: '0ee4Rv3eg6K8KPyJG',
+                    post_url: 'https://www.facebook.com/share/p/1B5TLssT6E/'
+                },
+                {
+                    dataset_id: 'BgWPEkmt1s6nxxXtL',
+                    post_url: 'https://www.facebook.com/share/p/1CSUZjn6ph/'
+                },
+                {
+                    dataset_id: 'KzxJ2v9vJyIC2bnH2',
+                    post_url: 'https://www.facebook.com/share/p/1UTaqJqFYj/'
+                }
+            ];
+
+            try {
+                const response = await fetch('/fb_process_existing_data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ datasets: datasets })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert(data.message + '\n\n任务在后台运行，请等待 10-20 分钟后刷新页面查看结果。');
+                } else {
+                    alert('处理失败: ' + (data.error || '未知错误'));
+                }
+            } catch (error) {
+                console.error('处理失败:', error);
+                alert('处理失败');
             }
         }
     </script>

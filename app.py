@@ -2937,6 +2937,131 @@ def cleanup_orphan_comments():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/fb_process_existing_data', methods=['POST'])
+@login_required
+def process_existing_data():
+    """处理已抓取但未分析的 Apify 数据"""
+    try:
+        data = request.json
+        datasets = data.get('datasets', [])
+
+        if not datasets:
+            return jsonify({'error': '未提供 dataset 信息'}), 400
+
+        # 在后台线程处理
+        def run_process():
+            total_new = 0
+            total_updated = 0
+
+            for item in datasets:
+                dataset_id = item.get('dataset_id')
+                post_url = item.get('post_url')
+
+                if not dataset_id or not post_url:
+                    continue
+
+                logger.info(f"📦 处理 dataset: {dataset_id}")
+
+                try:
+                    # 获取数据
+                    headers = {
+                        "Authorization": f"Bearer {APIFY_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+
+                    dataset_api_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+                    response = requests.get(dataset_api_url, headers=headers, timeout=30)
+
+                    if response.status_code != 200:
+                        logger.error(f"❌ Failed to fetch dataset: {response.status_code}")
+                        continue
+
+                    items = response.json()
+                    logger.info(f"✅ 获取到 {len(items)} 条评论")
+
+                    # 批量查询已存在的 comment_id
+                    comment_ids = [i.get('id') for i in items if i.get('id')]
+                    existing_ids = set()
+
+                    if comment_ids:
+                        placeholders = ','.join(['%s'] * len(comment_ids))
+                        sql = f"SELECT comment_id FROM fb_comments WHERE comment_id IN ({placeholders})"
+                        rows = db.query_all(sql, tuple(comment_ids))
+                        existing_ids = {row['comment_id'] for row in rows}
+                        logger.info(f"📊 已存在 {len(existing_ids)} 条评论")
+
+                    # 处理每条评论
+                    cutoff_date = datetime.datetime.now(tasks.BEIJING_TZ) - datetime.timedelta(days=7)
+
+                    for idx, comment_item in enumerate(items, 1):
+                        comment_id = comment_item.get('id')
+                        author = comment_item.get('author', {}).get('name', 'Unknown')
+                        content = comment_item.get('text', '')
+                        created_at_str = comment_item.get('createdTime')
+
+                        if not content or not comment_id:
+                            continue
+
+                        # 解析时间
+                        try:
+                            created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                            created_at = created_at.astimezone(tasks.BEIJING_TZ)
+                        except:
+                            created_at = datetime.datetime.now(tasks.BEIJING_TZ)
+
+                        # 跳过旧评论
+                        if created_at < cutoff_date:
+                            continue
+
+                        # 跳过已存在的评论
+                        if comment_id in existing_ids:
+                            total_updated += 1
+                            continue
+
+                        if idx % 10 == 0:
+                            logger.info(f"🔄 处理进度: {idx}/{len(items)}")
+
+                        # 分析情感
+                        sentiment_score, category, language, brief_analysis = tasks.analyze_comment_sentiment(content)
+
+                        # 生成 embedding
+                        embedding = rag.get_embedding(content)
+                        embedding_json = json.dumps(embedding) if embedding else None
+
+                        # 插入数据库
+                        db.execute(
+                            """
+                            INSERT INTO fb_comments
+                            (post_url, comment_id, author, created_at, content, sentiment_score,
+                             category, language, post_link, embedding, brief_analysis)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (post_url, comment_id, author, created_at, content, sentiment_score,
+                             category, language, post_url, embedding_json, brief_analysis)
+                        )
+                        total_new += 1
+
+                    logger.info(f"✅ Dataset {dataset_id} 处理完成")
+
+                except Exception as e:
+                    logger.error(f"❌ 处理 dataset {dataset_id} 失败: {e}")
+                    continue
+
+            logger.info(f"✅ 全部处理完成: {total_new} 条新增, {total_updated} 条已存在")
+
+        thread = threading.Thread(target=run_process, daemon=True)
+        thread.start()
+
+        return jsonify({
+            'status': 'success',
+            'message': f'开始处理 {len(datasets)} 个 dataset，请稍后刷新页面查看结果'
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 启动处理失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/fb_config/<int:config_id>/toggle', methods=['POST'])
 @login_required
 def toggle_fb_config(config_id):
