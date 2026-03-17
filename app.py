@@ -56,7 +56,7 @@ def sanitize_html(html_content):
     return bleach.clean(html_content, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, protocols=ALLOWED_PROTOCOLS)
 import rag
 import tasks
-from video_vision import get_video_vision_section
+from video_vision import get_video_vision_section, analyze_all_videos_for_export, _build_vision_html_from_results
 
 # 加载 .env 文件
 load_dotenv()
@@ -1559,7 +1559,8 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                     "shares": it.get("shareCount", 0),
                     "collects": it.get("collectCount", 0),
                     "url": it.get("webVideoUrl"),
-                    "date": str(post_dt)
+                    "date": str(post_dt),
+                    "author": (it.get("authorMeta") or {}).get("name") or (it.get("authorMeta") or {}).get("uniqueId") or "未知"
                 })
 
         logger.info(f"✅ 时间过滤后剩余 {len(cleaned)} 条数据")
@@ -1573,18 +1574,23 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
         # 4. （可选）调用「看视频」分析：仅在生成报告且开关开启时启用
         video_vision_html = ""
         video_vision_summaries = ""
+        video_analysis_results = []
         if generate_report and enable_video_vision:
             try:
-                logger.info("🎬 已开启看视频分析，准备对 Top 视频进行视觉分析...")
-                video_vision_html, video_vision_summaries = get_video_vision_section(cleaned, project=project, top_k=5)
-                if video_vision_html:
-                    logger.info("✅ 看视频分析完成，已生成视频画面总结模块")
+                logger.info("🎬 已开启看视频分析，准备对全量视频进行视觉分析...")
+                update_task(task_id, progress='正在分析视频内容（全量）...')
+                video_analysis_results = analyze_all_videos_for_export(cleaned, project=project)
+                if video_analysis_results:
+                    # 兼容现有报告：从全量结果中提取营销分类 HTML
+                    video_vision_html, video_vision_summaries = _build_vision_html_from_results(video_analysis_results)
+                    logger.info("✅ 全量看视频分析完成，已生成视频画面总结模块")
                 else:
                     logger.info("⚠️ 看视频分析未生成任何结果（可能是直链获取或视觉模型失败）")
             except Exception as vision_error:
                 logger.error(f"❌ 看视频分析链路异常: {vision_error}")
                 video_vision_html = ""
                 video_vision_summaries = ""
+                video_analysis_results = []
 
         # 5. 预计算聚合指标
         total_count = len(cleaned)
@@ -1642,8 +1648,9 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             """
             full_html = overview_html
 
-        # 保存历史记录
-        record_id = save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor')
+        # 保存历史记录（HTML + 结构化 JSON）
+        structured_data = video_analysis_results if video_analysis_results else None
+        record_id = save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor', structured=structured_data)
 
         # 记录使用成本
         if user_id:
@@ -2043,6 +2050,150 @@ def export_competitor_word(record_id):
         )
     except Exception as e:
         logger.error(f"❌ 导出 Word 失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def build_competitor_excel(video_results):
+    """构建竞品分析 Excel，按情绪分类分组并合并单元格，嵌入关键帧截图。
+
+    表头：情绪 | 目标用户 | 简述 | 发布账号 | 参考图 | 链接
+    """
+    from openpyxl.drawing.image import Image as XlImage
+    import tempfile
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "竞品视频分析"
+
+    # 表头样式
+    header_fill = PatternFill(start_color='D32F2F', end_color='D32F2F', fill_type='solid')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    headers = ['情绪', '目标用户', '简述', '发布账号', '参考图', '链接']
+    col_widths = [14, 14, 40, 16, 18, 40]
+
+    for col_idx, (header, width) in enumerate(zip(headers, col_widths), 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+        ws.column_dimensions[chr(64 + col_idx)].width = width
+
+    ws.row_dimensions[1].height = 28
+
+    # 按 emotion 排序
+    sorted_results = sorted(video_results, key=lambda x: x.get('emotion', '其他'))
+
+    # 写入数据行
+    cell_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    link_font = Font(color='0563C1', underline='single', size=10)
+    normal_font = Font(size=10)
+
+    tmp_files = []  # 跟踪临时文件以便清理
+    row = 2
+    for item in sorted_results:
+        ws.cell(row=row, column=1, value=item.get('emotion', '其他')).alignment = cell_align
+        ws.cell(row=row, column=1).font = normal_font
+        ws.cell(row=row, column=2, value=item.get('target_user', '未知')).alignment = cell_align
+        ws.cell(row=row, column=2).font = normal_font
+        ws.cell(row=row, column=3, value=item.get('summary', '')).alignment = Alignment(vertical='center', wrap_text=True)
+        ws.cell(row=row, column=3).font = normal_font
+        ws.cell(row=row, column=4, value=item.get('author', '未知')).alignment = cell_align
+        ws.cell(row=row, column=4).font = normal_font
+
+        # 嵌入关键帧截图
+        thumb_b64 = item.get('thumbnail_b64', '')
+        if thumb_b64:
+            try:
+                import base64 as _b64
+                img_data = _b64.b64decode(thumb_b64)
+                fd, tmp_path = tempfile.mkstemp(suffix='.jpg')
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(img_data)
+                tmp_files.append(tmp_path)
+
+                img = XlImage(tmp_path)
+                img.width = 120
+                img.height = 80
+                ws.add_image(img, f'E{row}')
+                ws.row_dimensions[row].height = 65
+            except Exception as img_err:
+                logger.warning(f"⚠️ 嵌入缩略图失败: {img_err}")
+                ws.cell(row=row, column=5, value='(图片加载失败)').alignment = cell_align
+                ws.row_dimensions[row].height = 30
+        else:
+            ws.cell(row=row, column=5, value='(无截图)').alignment = cell_align
+            ws.row_dimensions[row].height = 30
+
+        # 链接列
+        url = item.get('url', '')
+        cell = ws.cell(row=row, column=6, value=url)
+        cell.alignment = Alignment(vertical='center', wrap_text=True)
+        cell.font = link_font
+        if url:
+            cell.hyperlink = url
+
+        row += 1
+
+    # 合并同情绪分类的第一列单元格
+    if len(sorted_results) > 1:
+        merge_start = 2
+        for i in range(2, row):
+            current_emotion = ws.cell(row=i, column=1).value
+            next_emotion = ws.cell(row=i + 1, column=1).value if i + 1 < row else None
+            if current_emotion != next_emotion:
+                if i > merge_start:
+                    ws.merge_cells(start_row=merge_start, start_column=1, end_row=i, end_column=1)
+                merge_start = i + 1
+
+    # 保存到 BytesIO
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    # 清理临时图片文件
+    for tmp_path in tmp_files:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+    return buf
+
+
+@app.route('/export_competitor_excel/<int:record_id>')
+@login_required
+def export_competitor_excel(record_id):
+    """导出竞品分析 Excel（含情绪分类+关键帧截图）"""
+    user_id = session.get('user_id')
+    record = db.query_one(
+        "SELECT id, title, result_json, type FROM analysis_results WHERE id = %s AND user_id = %s",
+        (record_id, user_id)
+    )
+    if not record or record['type'] != 'competitor':
+        return jsonify({'error': '记录不存在或无权导出'}), 404
+
+    result_json = record.get('result_json')
+    if not result_json:
+        return jsonify({'error': '该报告无视频分析数据，无法导出 Excel。请重新生成报告并开启「看视频分析」。'}), 400
+
+    try:
+        video_results = json.loads(result_json)
+        if not video_results:
+            return jsonify({'error': '视频分析数据为空'}), 400
+
+        buf = build_competitor_excel(video_results)
+        filename = f"竞品Excel_{record['title'][:20]}_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.xlsx"
+        return send_file(
+            buf,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"❌ 导出竞品 Excel 失败: {e}")
         return jsonify({'error': str(e)}), 500
 
 

@@ -154,12 +154,16 @@ def _classify_video_with_vision(frames_b64: List[bytes], desc: str, project: str
     project_name = project or "CFL"
     user_text = (
         f"你是一名竞品情报分析师，正在为项目「{project_name}」做竞品监控。\n"
-        f"以下是同一条 TikTok 视频的多帧截图。\n"
-        f"请判断这条视频属于什么类型的营销动作，从以下类型中选择最匹配的一个：\n"
-        f"游戏实录、赛事预热、版本更新预告、KOL合作/开箱、福利/抽奖活动、品牌形象宣传、UGC互动征集、其他\n\n"
-        f"然后用 1 句话（不超过 30 字）概括该视频在做什么营销动作。\n"
-        f"例如：「与 KOL @xxx 合作推广新赛季武器皮肤」「官方赛事 S12 倒计时预告」\n\n"
-        f"仅输出 JSON，格式：{{\"type\":\"分类\",\"summary\":\"一句话概括\"}}\n"
+        f"以下是同一条 TikTok 视频的多帧截图。\n\n"
+        f"请完成以下判断：\n"
+        f"1. 营销类型（type）：从以下类型中选择最匹配的一个：\n"
+        f"   游戏实录、赛事预热、版本更新预告、KOL合作/开箱、福利/抽奖活动、品牌形象宣传、UGC互动征集、其他\n"
+        f"2. 情绪分类（emotion）：从以下类型中选择最匹配的一个：\n"
+        f"   有趣好玩、荣誉关怀、好奇炫酷、抽象类\n"
+        f"3. 目标用户（target_user）：从以下类型中选择最匹配的一个：\n"
+        f"   新进用户、大盘活跃用户、回流用户\n"
+        f"4. 简述（summary）：用 1-2 句话概括该视频的主要内容（不超过 50 字）。\n\n"
+        f"仅输出 JSON，格式：{{\"type\":\"营销类型\",\"emotion\":\"情绪分类\",\"target_user\":\"目标用户\",\"summary\":\"简述\"}}\n"
         f"不要输出任何其他文字。\n\n"
         f"原始视频文案（仅供参考）：{desc[:200]}\n"
     )
@@ -183,13 +187,156 @@ def _classify_video_with_vision(frames_b64: List[bytes], desc: str, project: str
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         result = _json.loads(raw)
-        if isinstance(result, dict) and "type" in result and "summary" in result:
+        if isinstance(result, dict) and "type" in result:
             return result
         logger.warning(f"⚠️ Qwen-VL 返回格式异常: {raw}")
         return {}
     except Exception as e:
         logger.error(f"❌ 调用 Qwen-VL 失败: {e}")
         return {}
+
+
+def analyze_all_videos_for_export(
+    cleaned_videos: List[Dict], project: str = "CFL"
+) -> List[Dict]:
+    """对所有视频做 VL 分析，返回包含情绪/目标用户/简述/关键帧的完整数据列表。
+
+    返回：[{
+        "emotion": "有趣好玩",
+        "target_user": "新进用户",
+        "summary": "视频内容描述",
+        "type": "营销类型",
+        "author": "发布账号",
+        "url": "视频链接",
+        "thumbnail_b64": "关键帧 base64 JPEG",
+        "views": 播放量,
+        "date": "发布日期"
+    }, ...]
+    """
+    if not cleaned_videos:
+        return []
+
+    videos = [v for v in cleaned_videos if v.get("url")]
+    if not videos:
+        return []
+
+    # 不限制数量，处理所有视频
+    input_urls = [v["url"] for v in videos]
+
+    # 批量获取视频直链（Apify 支持批量）
+    items = _run_tiktok_video_downloader(input_urls)
+    mapping = _build_input_to_storage_map(items)
+    if not mapping:
+        logger.warning("⚠️ 未获取到任何视频直链，跳过全量视频分析")
+        return []
+
+    results: List[Dict] = []
+
+    for v in videos:
+        page_url = v["url"]
+        storage_url = mapping.get(page_url)
+        if not storage_url:
+            continue
+
+        tmp_video = _download_video(storage_url)
+        if not tmp_video:
+            continue
+
+        try:
+            frames_b64 = _extract_frames(tmp_video, max_frames=4)
+            classification = _classify_video_with_vision(
+                frames_b64, v.get("desc") or "", project
+            )
+            if not classification:
+                continue
+
+            # 选取中间帧作为参考图缩略图
+            thumbnail_b64 = ""
+            if frames_b64:
+                mid = len(frames_b64) // 2
+                thumbnail_b64 = frames_b64[mid].decode("utf-8") if isinstance(frames_b64[mid], bytes) else frames_b64[mid]
+
+            results.append({
+                "emotion": classification.get("emotion", "其他"),
+                "target_user": classification.get("target_user", "未知"),
+                "summary": classification.get("summary", ""),
+                "type": classification.get("type", "其他"),
+                "author": v.get("author", "未知"),
+                "url": page_url,
+                "thumbnail_b64": thumbnail_b64,
+                "views": v.get("views", 0),
+                "date": v.get("date", ""),
+            })
+        finally:
+            try:
+                if os.path.exists(tmp_video):
+                    os.remove(tmp_video)
+            except Exception:
+                pass
+
+    logger.info(f"✅ 全量视频分析完成，共 {len(results)} 条结果")
+    return results
+
+
+def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str]:
+    """从全量分析结果中提取营销分类 HTML 和文本摘要（兼容现有报告格式）。"""
+    if not video_results:
+        return "", ""
+
+    from collections import OrderedDict
+    groups: Dict[str, List[Dict]] = OrderedDict()
+    for vr in video_results:
+        t = vr.get("type", "其他")
+        if t not in groups:
+            groups[t] = []
+        groups[t].append(vr)
+
+    rows_html: List[str] = []
+    text_lines: List[str] = []
+
+    for type_name, members in groups.items():
+        count = len(members)
+        links = ", ".join(
+            f'<a href="{m["url"]}" target="_blank" style="color:#D32F2F; text-decoration:none;">查看</a>'
+            for m in members
+        )
+        summaries = "; ".join(m["summary"] for m in members if m.get("summary"))
+        if not summaries:
+            summaries = type_name
+
+        rows_html.append(f"""
+        <tr>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-weight:600; font-size:0.9rem;">{type_name}</td>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{count}</td>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.85rem;">{links}</td>
+            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.9rem;">{summaries}</td>
+        </tr>
+        """)
+        text_lines.append(f"【{type_name}】({count}条) {summaries}")
+
+    section_html = f"""
+<div style="margin-top:30px;">
+    <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
+        🎬 竞品本周宣发动作归类（共 {len(video_results)} 条视频）
+    </h3>
+    <table style="width:100%; border-collapse:collapse; margin:15px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.9rem;">
+        <thead>
+            <tr style="background:#f8f9fa;">
+                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:140px;">营销类型</th>
+                <th style="padding:12px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:60px;">条数</th>
+                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:160px;">代表视频</th>
+                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE;">策略总结</th>
+            </tr>
+        </thead>
+        <tbody>
+            {''.join(rows_html)}
+        </tbody>
+    </table>
+</div>
+""".strip()
+
+    text_block = "\n".join(text_lines)
+    return section_html, text_block
 
 
 def get_video_vision_section(
