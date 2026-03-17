@@ -183,9 +183,13 @@ def _classify_video_with_vision(frames_b64: List[bytes], desc: str, project: str
             temperature=0.3,
         )
         raw = (resp.choices[0].message.content or "").strip()
+        # 清理 Qwen3 的 <think>...</think> 思考过程
+        import re
+        raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
         # 清理可能的 markdown 包裹
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        logger.info(f"🔍 Qwen-VL 原始返回（清理后）: {raw[:200]}")
         result = _json.loads(raw)
         if isinstance(result, dict) and "type" in result:
             return result

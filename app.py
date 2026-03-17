@@ -1585,9 +1585,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                     video_vision_html, video_vision_summaries = _build_vision_html_from_results(video_analysis_results)
                     logger.info(f"✅ 全量看视频分析完成，共 {len(video_analysis_results)} 条结果")
                 else:
-                    logger.warning("⚠️ 全量分析未返回结果，回退到 Top 5 分析...")
-                    update_task(task_id, progress='全量分析未成功，正在尝试 Top 5 分析...')
-                    video_vision_html, video_vision_summaries = get_video_vision_section(cleaned, project=project, top_k=5)
+                    logger.warning("⚠️ 全量分析未返回结果（可能是直链获取或视觉模型失败）")
             except Exception as vision_error:
                 logger.error(f"❌ 看视频分析链路异常: {vision_error}")
                 import traceback
