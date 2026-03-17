@@ -190,7 +190,28 @@ function showReport(htmlContent, recordId) {
     document.getElementById('reportOutput').innerHTML = '<div class="fade-in">' + htmlContent + '</div>';
     document.getElementById('reportHeader').style.display = 'flex';
     document.getElementById('exportWordBtn').href = recordId ? '/export_competitor_word/' + recordId : '#';
-    document.getElementById('exportExcelBtn').href = recordId ? '/export_competitor_excel/' + recordId : '#';
+    if (recordId) {
+        document.getElementById('exportExcelBtn').onclick = async function(e) {
+            e.preventDefault();
+            try {
+                const resp = await fetch('/export_competitor_excel/' + recordId);
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert(err.error || '导出失败');
+                    return;
+                }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = '竞品分析.xlsx';
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch(err) {
+                alert('导出 Excel 失败：' + err.message);
+            }
+        };
+    }
     document.querySelectorAll('.history-item').forEach(i => i.classList.remove('active'));
     document.querySelectorAll('.history-item[data-record-id="' + recordId + '"]').forEach(i => i.classList.add('active'));
 }

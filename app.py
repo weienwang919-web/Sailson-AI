@@ -1650,6 +1650,7 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
 
         # 保存历史记录（HTML + 结构化 JSON）
         structured_data = video_analysis_results if video_analysis_results else None
+        logger.info(f"📊 视频分析结果数量: {len(video_analysis_results)}，structured_data 是否为 None: {structured_data is None}")
         record_id = save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor', structured=structured_data)
 
         # 记录使用成本
