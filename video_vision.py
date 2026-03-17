@@ -77,9 +77,22 @@ def _build_input_to_storage_map(items: List[Dict]) -> Dict[str, str]:
     """将 actor 输出转换为 inputUrl -> storageUrl 映射。"""
     mapping: Dict[str, str] = {}
     for it in items or []:
-        logger.info(f"🔍 DEBUG Downloader item keys: {list(it.keys())}, values preview: { {k: str(v)[:80] for k, v in it.items()} }")
         input_url = it.get("inputUrl") or it.get("url")
+        # storageUrl 可能在顶层，也可能嵌套在 data 字段中
         storage_url = it.get("storageUrl") or it.get("play")
+        if not storage_url:
+            data = it.get("data")
+            if isinstance(data, dict):
+                storage_url = data.get("play") or data.get("wmplay") or data.get("hdplay")
+            elif isinstance(data, str):
+                # data 可能是字符串形式的字典
+                try:
+                    import ast
+                    parsed = ast.literal_eval(data)
+                    if isinstance(parsed, dict):
+                        storage_url = parsed.get("play") or parsed.get("wmplay") or parsed.get("hdplay")
+                except Exception:
+                    pass
         if input_url and storage_url:
             mapping[input_url] = storage_url
         else:
