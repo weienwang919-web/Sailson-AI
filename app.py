@@ -1575,11 +1575,15 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
         video_vision_html = ""
         video_vision_summaries = ""
         video_analysis_results = []
+        logger.info(f"🔍 DEBUG: generate_report={generate_report}, enable_video_vision={enable_video_vision}, cleaned 数量={len(cleaned)}, ANALYSIS_RESULTS_HAS_JSON={ANALYSIS_RESULTS_HAS_JSON}")
         if generate_report and enable_video_vision:
             try:
                 logger.info("🎬 已开启看视频分析，准备对全量视频进行视觉分析...")
                 update_task(task_id, progress='正在分析视频内容（全量）...')
+                video_urls_count = len([v for v in cleaned if v.get("url")])
+                logger.info(f"🔍 DEBUG: 有 URL 的视频数量={video_urls_count}")
                 video_analysis_results = analyze_all_videos_for_export(cleaned, project=project)
+                logger.info(f"🔍 DEBUG: analyze_all_videos_for_export 返回 {len(video_analysis_results)} 条结果")
                 if video_analysis_results:
                     # 兼容现有报告：从全量结果中提取营销分类 HTML
                     video_vision_html, video_vision_summaries = _build_vision_html_from_results(video_analysis_results)
@@ -1593,6 +1597,8 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
                 video_vision_html = ""
                 video_vision_summaries = ""
                 video_analysis_results = []
+        else:
+            logger.info(f"⏭️ 跳过看视频分析: generate_report={generate_report}, enable_video_vision={enable_video_vision}")
 
         # 5. 预计算聚合指标
         total_count = len(cleaned)
