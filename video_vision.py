@@ -320,16 +320,16 @@ def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str
 
     rows_html: List[str] = []
     text_lines: List[str] = []
-    td_style = 'padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.9rem; vertical-align:middle;'
+    td_style = 'padding:8px 6px; border-bottom:1px solid #F1F3F5; font-size:0.85rem; vertical-align:middle;'
 
     for emotion, members in groups.items():
         count = len(members)
         for i, m in enumerate(members):
             thumb_html = ''
             if m.get('thumbnail_b64'):
-                thumb_html = f'<img src="data:image/jpeg;base64,{m["thumbnail_b64"]}" style="width:120px; height:auto; border-radius:4px;">'
+                thumb_html = f'<img src="data:image/jpeg;base64,{m["thumbnail_b64"]}" style="width:60px; height:45px; object-fit:cover; border-radius:3px;">'
 
-            link_html = f'<a href="{m.get("url", "#")}" target="_blank" style="color:#D32F2F; text-decoration:none;">查看视频</a>' if m.get("url") else ''
+            link_html = f'<a href="{m.get("url", "#")}" target="_blank" style="color:#D32F2F; text-decoration:none; font-size:0.8rem;">查看</a>' if m.get("url") else ''
 
             if i == 0:
                 rows_html.append(f"""
@@ -337,7 +337,7 @@ def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str
                     <td rowspan="{count}" style="{td_style} font-weight:600; text-align:center;">{emotion}</td>
                     <td style="{td_style} text-align:center;">{m.get('target_user', '未知')}</td>
                     <td style="{td_style}">{m.get('summary', '')}</td>
-                    <td style="{td_style} text-align:center;">{m.get('author', '未知')}</td>
+                    <td style="{td_style} text-align:center; overflow:hidden; text-overflow:ellipsis;">{m.get('author', '未知')}</td>
                     <td style="{td_style} text-align:center;">{thumb_html}</td>
                     <td style="{td_style} text-align:center;">{link_html}</td>
                 </tr>""")
@@ -346,7 +346,7 @@ def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str
                 <tr>
                     <td style="{td_style} text-align:center;">{m.get('target_user', '未知')}</td>
                     <td style="{td_style}">{m.get('summary', '')}</td>
-                    <td style="{td_style} text-align:center;">{m.get('author', '未知')}</td>
+                    <td style="{td_style} text-align:center; overflow:hidden; text-overflow:ellipsis;">{m.get('author', '未知')}</td>
                     <td style="{td_style} text-align:center;">{thumb_html}</td>
                     <td style="{td_style} text-align:center;">{link_html}</td>
                 </tr>""")
@@ -354,21 +354,21 @@ def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str
         summaries = "; ".join(m.get("summary", "") for m in members if m.get("summary"))
         text_lines.append(f"【{emotion}】({count}条) {summaries}")
 
-    th_style = 'padding:12px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;'
+    th_style = 'padding:8px 6px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE; font-size:0.85rem;'
     section_html = f"""
 <div style="margin-top:30px;">
     <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
         🎬 竞品视频情绪分类总览（共 {len(video_results)} 条视频）
     </h3>
-    <table style="width:100%; border-collapse:collapse; margin:15px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.9rem;">
+    <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin:15px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.85rem;">
         <thead>
             <tr style="background:#f8f9fa;">
-                <th style="{th_style} width:100px;">情绪</th>
-                <th style="{th_style} width:110px;">目标用户</th>
+                <th style="{th_style} width:70px;">情绪</th>
+                <th style="{th_style} width:80px;">目标用户</th>
                 <th style="{th_style}">简述</th>
-                <th style="{th_style} width:110px;">发布账号</th>
-                <th style="{th_style} width:140px;">参考图</th>
-                <th style="{th_style} width:80px;">链接</th>
+                <th style="{th_style} width:90px;">发布账号</th>
+                <th style="{th_style} width:70px;">参考图</th>
+                <th style="{th_style} width:50px;">链接</th>
             </tr>
         </thead>
         <tbody>
