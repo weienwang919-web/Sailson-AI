@@ -52,7 +52,7 @@ def _run_tiktok_video_downloader(video_urls: List[str]) -> List[Dict]:
     try:
         logger.info(f"🎬 调用 TikTok Video Downloader，视频数: {len(video_urls)}")
         start = time.time()
-        resp = requests.post(api_url, params=params, json=payload, timeout=120)
+        resp = requests.post(api_url, params=params, json=payload, timeout=300)
         resp.raise_for_status()
         data = resp.json()
         elapsed = time.time() - start
