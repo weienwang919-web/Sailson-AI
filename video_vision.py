@@ -299,53 +299,76 @@ def analyze_all_videos_for_export(
 
 
 def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str]:
-    """从全量分析结果中提取营销分类 HTML 和文本摘要（兼容现有报告格式）。"""
+    """从全量分析结果构建 HTML 表格和文本摘要。
+
+    表头：情绪 | 目标用户 | 简述 | 发布账号 | 参考图 | 链接
+    按情绪分类排序，同情绪的视频相邻，第一列用 rowspan 合并。
+    """
     if not video_results:
         return "", ""
 
     from collections import OrderedDict
+
+    # 按情绪分组
     groups: Dict[str, List[Dict]] = OrderedDict()
-    for vr in video_results:
-        t = vr.get("type", "其他")
-        if t not in groups:
-            groups[t] = []
-        groups[t].append(vr)
+    sorted_results = sorted(video_results, key=lambda x: x.get("emotion", "其他"))
+    for vr in sorted_results:
+        e = vr.get("emotion", "其他")
+        if e not in groups:
+            groups[e] = []
+        groups[e].append(vr)
 
     rows_html: List[str] = []
     text_lines: List[str] = []
+    td_style = 'padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.9rem; vertical-align:middle;'
 
-    for type_name, members in groups.items():
+    for emotion, members in groups.items():
         count = len(members)
-        links = ", ".join(
-            f'<a href="{m["url"]}" target="_blank" style="color:#D32F2F; text-decoration:none;">查看</a>'
-            for m in members
-        )
-        summaries = "; ".join(m["summary"] for m in members if m.get("summary"))
-        if not summaries:
-            summaries = type_name
+        for i, m in enumerate(members):
+            thumb_html = ''
+            if m.get('thumbnail_b64'):
+                thumb_html = f'<img src="data:image/jpeg;base64,{m["thumbnail_b64"]}" style="width:120px; height:auto; border-radius:4px;">'
 
-        rows_html.append(f"""
-        <tr>
-            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-weight:600; font-size:0.9rem;">{type_name}</td>
-            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; text-align:center; font-size:0.9rem;">{count}</td>
-            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.85rem;">{links}</td>
-            <td style="padding:12px 10px; border-bottom:1px solid #F1F3F5; font-size:0.9rem;">{summaries}</td>
-        </tr>
-        """)
-        text_lines.append(f"【{type_name}】({count}条) {summaries}")
+            link_html = f'<a href="{m.get("url", "#")}" target="_blank" style="color:#D32F2F; text-decoration:none;">查看视频</a>' if m.get("url") else ''
 
+            if i == 0:
+                rows_html.append(f"""
+                <tr>
+                    <td rowspan="{count}" style="{td_style} font-weight:600; text-align:center;">{emotion}</td>
+                    <td style="{td_style} text-align:center;">{m.get('target_user', '未知')}</td>
+                    <td style="{td_style}">{m.get('summary', '')}</td>
+                    <td style="{td_style} text-align:center;">{m.get('author', '未知')}</td>
+                    <td style="{td_style} text-align:center;">{thumb_html}</td>
+                    <td style="{td_style} text-align:center;">{link_html}</td>
+                </tr>""")
+            else:
+                rows_html.append(f"""
+                <tr>
+                    <td style="{td_style} text-align:center;">{m.get('target_user', '未知')}</td>
+                    <td style="{td_style}">{m.get('summary', '')}</td>
+                    <td style="{td_style} text-align:center;">{m.get('author', '未知')}</td>
+                    <td style="{td_style} text-align:center;">{thumb_html}</td>
+                    <td style="{td_style} text-align:center;">{link_html}</td>
+                </tr>""")
+
+        summaries = "; ".join(m.get("summary", "") for m in members if m.get("summary"))
+        text_lines.append(f"【{emotion}】({count}条) {summaries}")
+
+    th_style = 'padding:12px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE;'
     section_html = f"""
 <div style="margin-top:30px;">
     <h3 style="color:#D32F2F; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
-        🎬 竞品本周宣发动作归类（共 {len(video_results)} 条视频）
+        🎬 竞品视频情绪分类总览（共 {len(video_results)} 条视频）
     </h3>
     <table style="width:100%; border-collapse:collapse; margin:15px 0; border:1px solid #eee; border-radius:10px; overflow:hidden; font-size:0.9rem;">
         <thead>
             <tr style="background:#f8f9fa;">
-                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:140px;">营销类型</th>
-                <th style="padding:12px 10px; text-align:center; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:60px;">条数</th>
-                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE; width:160px;">代表视频</th>
-                <th style="padding:12px 10px; text-align:left; color:#666; font-weight:600; border-bottom:2px solid #EEE;">策略总结</th>
+                <th style="{th_style} width:100px;">情绪</th>
+                <th style="{th_style} width:110px;">目标用户</th>
+                <th style="{th_style}">简述</th>
+                <th style="{th_style} width:110px;">发布账号</th>
+                <th style="{th_style} width:140px;">参考图</th>
+                <th style="{th_style} width:80px;">链接</th>
             </tr>
         </thead>
         <tbody>
