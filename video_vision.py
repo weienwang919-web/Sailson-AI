@@ -77,10 +77,13 @@ def _build_input_to_storage_map(items: List[Dict]) -> Dict[str, str]:
     """将 actor 输出转换为 inputUrl -> storageUrl 映射。"""
     mapping: Dict[str, str] = {}
     for it in items or []:
+        logger.info(f"🔍 DEBUG Downloader item keys: {list(it.keys())}, values preview: { {k: str(v)[:80] for k, v in it.items()} }")
         input_url = it.get("inputUrl") or it.get("url")
         storage_url = it.get("storageUrl") or it.get("play")
         if input_url and storage_url:
             mapping[input_url] = storage_url
+        else:
+            logger.warning(f"⚠️ 映射失败: inputUrl={input_url}, storageUrl={storage_url}")
     logger.info(f"📦 视频直链映射构建完成，共 {len(mapping)} 条")
     return mapping
 
