@@ -375,13 +375,14 @@ function switchTab(tab, el) {
 async function loadDashboard(recordId) {
     try {
         const r = await fetch('/api/competitor/dashboard/' + recordId);
-        if (!r.ok) return;
+        if (!r.ok) { console.error('看板API返回错误', r.status); return; }
         const data = await r.json();
+        console.log('看板数据:', data);
         dashboardLoaded = true;
-        renderTrendChart(data.trend);
-        renderEngagementChart(data.engagement);
-        renderEmotionChart(data.emotions);
-        renderTopVideoChart(data.top_videos);
+        renderTrendChart(data.trend || []);
+        renderEngagementChart(data.engagement || {});
+        renderEmotionChart(data.emotions || []);
+        renderTopVideoChart(data.top_videos || []);
     } catch(e) { console.error('看板加载失败', e); }
 }
 
@@ -392,6 +393,11 @@ function destroyChart(key) {
 function renderTrendChart(trend) {
     destroyChart('trend');
     const ctx = document.getElementById('trendChart').getContext('2d');
+    if (!trend || trend.length === 0) {
+        ctx.font = '14px sans-serif'; ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+        ctx.fillText('暂无趋势数据', ctx.canvas.width / 2, ctx.canvas.height / 2);
+        return;
+    }
     chartInstances.trend = new Chart(ctx, {
         type: 'line',
         data: {
@@ -416,6 +422,11 @@ function renderTrendChart(trend) {
 function renderEngagementChart(eng) {
     destroyChart('engagement');
     const ctx = document.getElementById('engagementChart').getContext('2d');
+    if (!eng || (!eng.views && !eng.likes && !eng.comments)) {
+        ctx.font = '14px sans-serif'; ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+        ctx.fillText('暂无互动数据', ctx.canvas.width / 2, ctx.canvas.height / 2);
+        return;
+    }
     const labels = ['播放', '点赞', '评论', '收藏', '转发'];
     const values = [eng.views, eng.likes, eng.comments, eng.collects, eng.shares];
     const colors = ['#D32F2F', '#FF7043', '#FFA726', '#66BB6A', '#42A5F5'];
@@ -452,6 +463,11 @@ function renderEmotionChart(emotions) {
 function renderTopVideoChart(videos) {
     destroyChart('topVideo');
     const ctx = document.getElementById('topVideoChart').getContext('2d');
+    if (!videos || videos.length === 0) {
+        ctx.font = '14px sans-serif'; ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+        ctx.fillText('暂无视频数据', ctx.canvas.width / 2, ctx.canvas.height / 2);
+        return;
+    }
     const labels = videos.map(v => v.desc || '无描述');
     const values = videos.map(v => v.views);
     chartInstances.topVideo = new Chart(ctx, {
