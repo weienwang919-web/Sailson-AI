@@ -327,7 +327,7 @@ def _build_vision_html_from_results(video_results: List[Dict]) -> Tuple[str, str
         for i, m in enumerate(members):
             thumb_html = ''
             if m.get('thumbnail_b64'):
-                thumb_html = f'<img src="data:image/jpeg;base64,{m["thumbnail_b64"]}" style="width:60px; height:45px; object-fit:cover; border-radius:3px;">'
+                thumb_html = f'<img src="data:image/jpeg;base64,{m["thumbnail_b64"]}" class="vision-thumb">'
 
             link_html = f'<a href="{m.get("url", "#")}" target="_blank" style="color:#D32F2F; text-decoration:none; font-size:0.8rem;">查看</a>' if m.get("url") else ''
 
