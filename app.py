@@ -1650,7 +1650,10 @@ def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_
             full_html = overview_html
 
         # 保存历史记录（HTML + 结构化 JSON）
-        structured_data = video_analysis_results if video_analysis_results else None
+        structured_data = {
+            "cleaned": cleaned,
+            "video_analysis": video_analysis_results or []
+        }
         record_id = save_history(user_id, f"竞品数据:{target_url[20:30]}", full_html, 'competitor', structured=structured_data)
 
         # 记录使用成本
@@ -2164,6 +2167,62 @@ def build_competitor_excel(video_results):
     return buf
 
 
+@app.route('/api/competitor/dashboard/<int:record_id>')
+@login_required
+def competitor_dashboard_data(record_id):
+    """返回竞品看板所需的聚合数据（4 个图表）"""
+    user_id = session.get('user_id')
+    record = db.query_one(
+        "SELECT id, result_json FROM analysis_results WHERE id = %s AND user_id = %s AND type = 'competitor'",
+        (record_id, user_id)
+    )
+    if not record or not record.get('result_json'):
+        return jsonify({'error': '无数据'}), 404
+
+    try:
+        data = json.loads(record['result_json'])
+        # 兼容新旧格式
+        if isinstance(data, dict):
+            cleaned = data.get("cleaned", [])
+            video_analysis = data.get("video_analysis", [])
+        else:
+            cleaned = []
+            video_analysis = data if isinstance(data, list) else []
+
+        # 1. 发布趋势（按日期聚合）
+        from collections import Counter, OrderedDict
+        date_counts = Counter()
+        date_views = Counter()
+        for v in cleaned:
+            d = v.get("date", "未知")
+            date_counts[d] += 1
+            date_views[d] += v.get("views", 0)
+        sorted_dates = sorted(date_counts.keys())
+        trend = [{"date": d, "count": date_counts[d], "views": date_views[d]} for d in sorted_dates]
+
+        # 2. 互动指标汇总
+        engagement = {
+            "views": sum(v.get("views", 0) for v in cleaned),
+            "likes": sum(v.get("likes", 0) for v in cleaned),
+            "comments": sum(v.get("comments", 0) for v in cleaned),
+            "collects": sum(v.get("collects", 0) for v in cleaned),
+            "shares": sum(v.get("shares", 0) for v in cleaned),
+        }
+
+        # 3. 情绪分布
+        emotion_counts = Counter(v.get("emotion", "未知") for v in video_analysis)
+        emotions = [{"label": k, "count": v} for k, v in emotion_counts.items()]
+
+        # 4. Top 10 视频（按播放量）
+        sorted_videos = sorted(cleaned, key=lambda x: x.get("views", 0), reverse=True)[:10]
+        top_videos = [{"desc": v.get("desc", "")[:30], "views": v.get("views", 0), "url": v.get("url", "")} for v in sorted_videos]
+
+        return jsonify({"trend": trend, "engagement": engagement, "emotions": emotions, "top_videos": top_videos})
+    except Exception as e:
+        logger.error(f"❌ 看板数据聚合失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/export_competitor_excel/<int:record_id>')
 @login_required
 def export_competitor_excel(record_id):
@@ -2182,6 +2241,9 @@ def export_competitor_excel(record_id):
 
     try:
         video_results = json.loads(result_json)
+        # 兼容新格式（dict 含 cleaned + video_analysis）和旧格式（直接是 list）
+        if isinstance(video_results, dict):
+            video_results = video_results.get("video_analysis", [])
         if not video_results:
             return jsonify({'error': '视频分析数据为空'}), 400
 

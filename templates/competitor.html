@@ -40,10 +40,18 @@
     #reportOutput th { background: #F8F9FA; padding: 12px 10px; text-align: center; color: #666; font-weight: 600; border-bottom: 2px solid #EEE; }
     #reportOutput td { padding: 12px 10px; vertical-align: middle; border-bottom: 1px solid #F1F3F5; text-align: center; font-size: 0.9rem; word-wrap: break-word; overflow: hidden; }
     #reportOutput td img, #reportOutput .vision-thumb { max-width: 60px !important; max-height: 45px !important; width: 60px !important; height: 45px !important; object-fit: cover; border-radius: 3px; display: block; margin: 0 auto; }
+    .tab-btns { display:flex; gap:6px; }
+    .tab-btn { padding:5px 14px; border-radius:16px; font-size:0.8rem; font-weight:600; cursor:pointer; border:1px solid #ddd; background:#f5f5f5; color:#666; transition:all 0.2s; }
+    .tab-btn.active { background:#FFEBEE; color:var(--primary); border-color:var(--primary); }
+    .dashboard-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 0; }
+    .chart-card { background:#fff; border:1px solid #eee; border-radius:12px; padding:16px; }
+    .chart-card h4 { font-size:0.9rem; color:#555; margin:0 0 12px 0; font-weight:600; }
+    .chart-card canvas { width:100% !important; max-height:220px; }
     #reportOutput tr:hover { background-color: #FFF9F9; }
     .fade-in { animation: fadeIn 0.4s ease-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 {% endblock %}
 {% block content %}
 <aside class="sidebar">
@@ -103,7 +111,10 @@
             <div class="col-lg-8">
                 <div class="glass-card" style="min-height: 600px; overflow-y: auto; display:flex; flex-direction:column;">
                     <div id="reportHeader" class="report-header" style="display:none;">
-                        <h5>竞品分析报告</h5>
+                        <div class="tab-btns">
+                            <span class="tab-btn active" onclick="switchTab('report', this)">报告</span>
+                            <span class="tab-btn" onclick="switchTab('dashboard', this)">看板</span>
+                        </div>
                         <span>
                             <a href="#" id="exportWordBtn" class="btn btn-sm btn-outline-danger" style="border-radius:8px; font-size:0.8rem;">导出 Word</a>
                             <a href="#" id="exportExcelBtn" class="btn btn-sm btn-outline-danger" style="border-radius:8px; font-size:0.8rem; margin-left:8px;">导出 Excel</a>
@@ -120,6 +131,26 @@
                         <p>在左侧输入竞品 TikTok 主页链接和时间范围，点击「启动云端探测」即可生成竞品分析报告。</p>
                     </div>
                     <div id="reportOutput" style="display:none; flex:1;"></div>
+                    <div id="dashboardView" style="display:none; flex:1; overflow-y:auto;">
+                        <div class="dashboard-grid">
+                            <div class="chart-card">
+                                <h4>📈 发布趋势</h4>
+                                <canvas id="trendChart"></canvas>
+                            </div>
+                            <div class="chart-card">
+                                <h4>📊 互动指标对比</h4>
+                                <canvas id="engagementChart"></canvas>
+                            </div>
+                            <div class="chart-card">
+                                <h4>🎭 情绪分布</h4>
+                                <canvas id="emotionChart"></canvas>
+                            </div>
+                            <div class="chart-card">
+                                <h4>🏆 Top 视频排行</h4>
+                                <canvas id="topVideoChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -185,11 +216,14 @@ function renderHistory(items) {
 
 function showReport(htmlContent, recordId) {
     currentRecordId = recordId;
+    dashboardLoaded = false;
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('loading').style.display = 'none';
+    document.getElementById('dashboardView').style.display = 'none';
     document.getElementById('reportOutput').style.display = 'block';
     document.getElementById('reportOutput').innerHTML = '<div class="fade-in">' + htmlContent + '</div>';
     document.getElementById('reportHeader').style.display = 'flex';
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
     document.getElementById('exportWordBtn').href = recordId ? '/export_competitor_word/' + recordId : '#';
     if (recordId) {
         document.getElementById('exportExcelBtn').onclick = async function(e) {
@@ -319,6 +353,122 @@ async function loadHistory() {
     const filtered = term ? timeFiltered.filter(i => i.title.toLowerCase().includes(term)) : timeFiltered;
     renderHistory(filtered);
     return allHistory;
+}
+
+// ========== 看板功能 ==========
+let chartInstances = {};
+let dashboardLoaded = false;
+
+function switchTab(tab, el) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    el.classList.add('active');
+    if (tab === 'report') {
+        document.getElementById('reportOutput').style.display = 'block';
+        document.getElementById('dashboardView').style.display = 'none';
+    } else {
+        document.getElementById('reportOutput').style.display = 'none';
+        document.getElementById('dashboardView').style.display = 'block';
+        if (!dashboardLoaded && currentRecordId) loadDashboard(currentRecordId);
+    }
+}
+
+async function loadDashboard(recordId) {
+    try {
+        const r = await fetch('/api/competitor/dashboard/' + recordId);
+        if (!r.ok) return;
+        const data = await r.json();
+        dashboardLoaded = true;
+        renderTrendChart(data.trend);
+        renderEngagementChart(data.engagement);
+        renderEmotionChart(data.emotions);
+        renderTopVideoChart(data.top_videos);
+    } catch(e) { console.error('看板加载失败', e); }
+}
+
+function destroyChart(key) {
+    if (chartInstances[key]) { chartInstances[key].destroy(); chartInstances[key] = null; }
+}
+
+function renderTrendChart(trend) {
+    destroyChart('trend');
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    chartInstances.trend = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: trend.map(t => t.date),
+            datasets: [
+                { label: '发布数', data: trend.map(t => t.count), borderColor: '#D32F2F', backgroundColor: 'rgba(211,47,47,0.1)', yAxisID: 'y', tension: 0.3, fill: true },
+                { label: '播放量', data: trend.map(t => t.views), borderColor: '#1976D2', backgroundColor: 'rgba(25,118,210,0.1)', yAxisID: 'y1', tension: 0.3, fill: false }
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { font: { size: 11 } } } },
+            scales: {
+                y: { position: 'left', title: { display: true, text: '发布数', font: { size: 11 } }, ticks: { font: { size: 10 } } },
+                y1: { position: 'right', title: { display: true, text: '播放量', font: { size: 11 } }, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } } },
+                x: { ticks: { font: { size: 10 } } }
+            }
+        }
+    });
+}
+
+function renderEngagementChart(eng) {
+    destroyChart('engagement');
+    const ctx = document.getElementById('engagementChart').getContext('2d');
+    const labels = ['播放', '点赞', '评论', '收藏', '转发'];
+    const values = [eng.views, eng.likes, eng.comments, eng.collects, eng.shares];
+    const colors = ['#D32F2F', '#FF7043', '#FFA726', '#66BB6A', '#42A5F5'];
+    chartInstances.engagement = new Chart(ctx, {
+        type: 'bar',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 6 }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 11 } } } }
+        }
+    });
+}
+
+function renderEmotionChart(emotions) {
+    destroyChart('emotion');
+    const ctx = document.getElementById('emotionChart').getContext('2d');
+    if (!emotions || emotions.length === 0) {
+        ctx.font = '14px sans-serif'; ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+        ctx.fillText('暂无情绪分析数据', ctx.canvas.width / 2, ctx.canvas.height / 2);
+        return;
+    }
+    const colors = ['#D32F2F', '#FF7043', '#FFA726', '#66BB6A', '#AB47BC', '#42A5F5'];
+    chartInstances.emotion = new Chart(ctx, {
+        type: 'doughnut',
+        data: { labels: emotions.map(e => e.label), datasets: [{ data: emotions.map(e => e.count), backgroundColor: colors.slice(0, emotions.length), borderWidth: 2 }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'right', labels: { font: { size: 11 }, padding: 12 } } }
+        }
+    });
+}
+
+function renderTopVideoChart(videos) {
+    destroyChart('topVideo');
+    const ctx = document.getElementById('topVideoChart').getContext('2d');
+    const labels = videos.map(v => v.desc || '无描述');
+    const values = videos.map(v => v.views);
+    chartInstances.topVideo = new Chart(ctx, {
+        type: 'bar',
+        data: { labels, datasets: [{ label: '播放量', data: values, backgroundColor: '#D32F2F', borderRadius: 4 }] },
+        options: {
+            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } },
+            onClick: (e, elements) => {
+                if (elements.length > 0) {
+                    const url = videos[elements[0].index].url;
+                    if (url) window.open(url, '_blank');
+                }
+            }
+        }
+    });
 }
 </script>
 {% endblock %}
