@@ -1,0 +1,247 @@
+"""
+独立 Worker 进程 —— 轮询 task_queue 表，执行后台长任务。
+
+支持的任务类型：
+  - sentiment   : 舆情分析（调用 process_analysis_task）
+  - competitor  : 竞品监控（调用 process_competitor_task）
+  - fb_scrape   : FB 舆情看板抓取（调用 tasks.scrape_fb_comments）
+
+启动方式：
+  python worker.py
+
+Render 部署时作为 Background Worker service 运行，
+与 Web service 共享同一个 PostgreSQL 数据库。
+"""
+
+import os
+import sys
+import time
+import json
+import base64
+import logging
+import signal
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# ============================================
+# 日志配置
+# ============================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] [worker] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+# ============================================
+# 环境变量
+# ============================================
+POLL_INTERVAL = int(os.environ.get('WORKER_POLL_INTERVAL', '3'))  # 秒
+WORKER_MAX_IDLE = int(os.environ.get('WORKER_MAX_IDLE', '0'))     # 0 = 永不退出
+
+# ============================================
+# 导入业务模块
+# ============================================
+import database as db
+import tasks
+
+# 标记为 worker 进程，避免 app 模块启动 APScheduler
+os.environ['_IS_WORKER'] = 'true'
+
+# 延迟导入 app 模块（它会初始化 Flask、AI 客户端等）
+# 仅导入所需函数，不启动 Flask 服务器
+logger.info("🔧 Worker 正在加载 app 模块...")
+from app import (
+    process_analysis_task,
+    process_competitor_task,
+    update_task,
+)
+logger.info("✅ app 模块加载完成")
+
+# ============================================
+# 优雅退出
+# ============================================
+_shutdown = False
+
+def _signal_handler(signum, frame):
+    global _shutdown
+    logger.info(f"📛 收到信号 {signum}，准备优雅退出...")
+    _shutdown = True
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
+
+# ============================================
+# 任务拾取与分发
+# ============================================
+
+def claim_task():
+    """从 task_queue 中拾取一条 pending 任务（先进先出）。
+
+    使用 UPDATE ... RETURNING 实现原子性抢占，
+    避免多 worker 实例重复处理同一任务。
+    """
+    try:
+        row = db.execute_and_fetch_one("""
+            UPDATE task_queue
+            SET status = 'claimed', updated_at = NOW()
+            WHERE task_id = (
+                SELECT task_id FROM task_queue
+                WHERE status = 'pending'
+                  AND task_params IS NOT NULL
+                ORDER BY created_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING task_id, function_type, task_params, user_id, session_id
+        """)
+        return row
+    except Exception as e:
+        logger.error(f"❌ 拾取任务失败: {e}")
+        return None
+
+
+def dispatch_task(task_row):
+    """根据 function_type 分发到对应的处理函数。"""
+    task_id = task_row['task_id']
+    func_type = task_row['function_type']
+    raw_params = task_row['task_params']
+
+    try:
+        params = json.loads(raw_params) if raw_params else {}
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ 任务 {task_id} 的 task_params JSON 解析失败: {e}")
+        update_task(task_id, status='failed', error=f'参数解析失败: {e}')
+        return
+
+    logger.info(f"🚀 开始处理任务 {task_id}  type={func_type}")
+
+    try:
+        if func_type == 'sentiment':
+            _handle_sentiment(task_id, params)
+        elif func_type == 'competitor':
+            _handle_competitor(task_id, params)
+        elif func_type == 'fb_scrape':
+            _handle_fb_scrape(task_id, params)
+        else:
+            logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
+            update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
+    except Exception as e:
+        logger.error(f"❌ 任务 {task_id} 执行异常: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=f'Worker 异常: {str(e)[:500]}')
+
+
+# ============================================
+# 各类型任务处理器
+# ============================================
+
+def _handle_sentiment(task_id, params):
+    """舆情分析"""
+    # 还原 file_data（如果有）
+    file_data = None
+    if params.get('file_data'):
+        fd = params['file_data']
+        file_data = {
+            'filename': fd['filename'],
+            'content': base64.b64decode(fd['content']),
+            'content_type': fd['content_type'],
+        }
+
+    process_analysis_task(
+        task_id=task_id,
+        url=params.get('url'),
+        file_data=file_data,
+        session_id=params.get('session_id', 'worker'),
+        user_id=params.get('user_id'),
+        username=params.get('username', 'unknown'),
+        department=params.get('department', '未知'),
+        project=params.get('project', 'CFL'),
+    )
+
+
+def _handle_competitor(task_id, params):
+    """竞品监控"""
+    process_competitor_task(
+        task_id=task_id,
+        target_url=params.get('target_url'),
+        start_dt_str=params.get('start_dt_str'),
+        end_dt_str=params.get('end_dt_str'),
+        user_id=params.get('user_id'),
+        username=params.get('username', 'unknown'),
+        department=params.get('department', '未知'),
+        session_id=params.get('session_id', 'worker'),
+        project=params.get('project', 'CFL'),
+        generate_report=params.get('generate_report', True),
+        enable_video_vision=params.get('enable_video_vision', False),
+    )
+
+
+def _handle_fb_scrape(task_id, params):
+    """FB 舆情看板抓取"""
+    scrape_task_id = params.get('scrape_task_id')
+
+    try:
+        result = tasks.scrape_fb_comments(task_id=scrape_task_id)
+        logger.info(f"✅ FB 抓取完成: {result}")
+        update_task(task_id, status='completed', progress='抓取完成')
+    except Exception as e:
+        logger.error(f"❌ FB 抓取失败: {e}")
+        update_task(task_id, status='failed', error=str(e)[:500])
+        # 同步更新 scrape_tasks 表
+        if scrape_task_id:
+            try:
+                db.execute(
+                    "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
+                    (str(e)[:500], scrape_task_id)
+                )
+            except:
+                pass
+
+
+# ============================================
+# 主循环
+# ============================================
+
+def main():
+    logger.info("=" * 60)
+    logger.info("🏭 Worker 进程启动")
+    logger.info(f"   轮询间隔: {POLL_INTERVAL}s")
+    logger.info("=" * 60)
+
+    # 启动时把残留的 claimed 状态任务重置为 pending（上一次 worker 崩溃遗留）
+    try:
+        reset_count = db.execute("""
+            UPDATE task_queue
+            SET status = 'pending', updated_at = NOW()
+            WHERE status = 'claimed'
+        """)
+        if reset_count:
+            logger.info(f"♻️ 重置了 {reset_count} 个 claimed 状态的残留任务")
+    except Exception as e:
+        logger.warning(f"⚠️ 重置 claimed 任务失败: {e}")
+
+    idle_count = 0
+
+    while not _shutdown:
+        task_row = claim_task()
+
+        if task_row:
+            idle_count = 0
+            dispatch_task(task_row)
+        else:
+            idle_count += 1
+            # 每 20 次空轮询打一条日志（约 60 秒一次）
+            if idle_count % 20 == 0:
+                logger.info(f"💤 空闲中... (已空转 {idle_count * POLL_INTERVAL}s)")
+
+        time.sleep(POLL_INTERVAL)
+
+    logger.info("👋 Worker 进程已退出")
+
+
+if __name__ == '__main__':
+    main()

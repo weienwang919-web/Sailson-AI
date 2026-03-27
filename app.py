@@ -145,47 +145,54 @@ bcrypt = Bcrypt(app)
 
 # ============================================
 # APScheduler 初始化
+# Worker 进程不需要启动定时调度器
 # ============================================
-jobstores = {
-    'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
-}
-executors = {
-    'default': ThreadPoolExecutor(5)
-}
-job_defaults = {
-    'coalesce': False,
-    'max_instances': 1
-}
-scheduler = BackgroundScheduler(
-    jobstores=jobstores,
-    executors=executors,
-    job_defaults=job_defaults,
-    timezone='Asia/Shanghai'
-)
+_IS_WORKER = os.environ.get('_IS_WORKER', 'false').lower() == 'true'
 
-# 注册定时任务
-# FB 评论抓取：每 6 小时执行一次（0, 6, 12, 18 点）
-scheduler.add_job(
-    func=tasks.scrape_fb_comments,
-    trigger='cron',
-    hour='0,6,12,18',
-    minute=0,
-    id='fb_scrape_job',
-    replace_existing=True
-)
+if not _IS_WORKER:
+    jobstores = {
+        'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
+    }
+    executors = {
+        'default': ThreadPoolExecutor(5)
+    }
+    job_defaults = {
+        'coalesce': False,
+        'max_instances': 1
+    }
+    scheduler = BackgroundScheduler(
+        jobstores=jobstores,
+        executors=executors,
+        job_defaults=job_defaults,
+        timezone='Asia/Shanghai'
+    )
 
-# TikTok 热点刷新：每天凌晨 2 点执行
-scheduler.add_job(
-    func=tasks.refresh_tiktok_hotspots,
-    trigger='cron',
-    hour=2,
-    minute=0,
-    id='tiktok_hotspot_job',
-    replace_existing=True
-)
+    # 注册定时任务
+    # FB 评论抓取：每 6 小时执行一次（0, 6, 12, 18 点）
+    scheduler.add_job(
+        func=tasks.scrape_fb_comments,
+        trigger='cron',
+        hour='0,6,12,18',
+        minute=0,
+        id='fb_scrape_job',
+        replace_existing=True
+    )
 
-scheduler.start()
-logger.info("✅ APScheduler 已启动，定时任务已注册")
+    # TikTok 热点刷新：每天凌晨 2 点执行
+    scheduler.add_job(
+        func=tasks.refresh_tiktok_hotspots,
+        trigger='cron',
+        hour=2,
+        minute=0,
+        id='tiktok_hotspot_job',
+        replace_existing=True
+    )
+
+    scheduler.start()
+    logger.info("✅ APScheduler 已启动，定时任务已注册")
+else:
+    scheduler = None
+    logger.info("⏭️ Worker 模式，跳过 APScheduler 初始化")
 
 
 # 内存存储（保留用于向后兼容）
@@ -313,6 +320,14 @@ def ensure_task_queue_schema():
         logger.info("✅ 已确认 task_queue.record_id 列存在")
     except Exception as e:
         logger.warning(f"⚠️ 无法添加 task_queue.record_id 列: {e}")
+    try:
+        db.execute("""
+            ALTER TABLE task_queue
+            ADD COLUMN IF NOT EXISTS task_params TEXT
+        """)
+        logger.info("✅ 已确认 task_queue.task_params 列存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法添加 task_queue.task_params 列: {e}")
 
 
 def ensure_analysis_results_schema():
@@ -511,9 +526,10 @@ def get_task(task_id):
         return None
 
 # ============================================
-# 启动时恢复被中断的任务
+# 启动时恢复被中断的任务（仅 Web 进程执行）
 # ============================================
-recover_interrupted_tasks()
+if not _IS_WORKER:
+    recover_interrupted_tasks()
 
 
 def call_gemini(prompt, image=None, timeout=60):
@@ -1258,16 +1274,40 @@ def analyze():
     # 创建任务记录到数据库（标记类型为 sentiment）
     create_task(task_id, user_id, session_id, function_type='sentiment')
 
-    # 目前仍由 Web 进程内线程执行长任务，后续可通过 USE_DB_WORKER 切换到独立 worker
+    # 根据模式选择执行方式
     if not USE_DB_WORKER:
+        # 进程内线程执行
         thread = threading.Thread(
             target=process_analysis_task,
             args=(task_id, url, file_data, session_id, user_id, username, department, project)
         )
-        # 不设置 daemon=True，让线程自然完成，避免被 Flask 请求结束时杀死
         thread.start()
         logger.info(f"✅ 任务 {task_id} 已创建并在本进程中启动")
     else:
+        # DB worker 模式：把参数序列化写入 task_params，由独立 worker 进程拾取
+        import base64
+        task_params = {
+            'url': url,
+            'session_id': session_id,
+            'user_id': user_id,
+            'username': username,
+            'department': department,
+            'project': project,
+        }
+        # file_data 含二进制内容，需要 base64 编码
+        if file_data:
+            task_params['file_data'] = {
+                'filename': file_data['filename'],
+                'content': base64.b64encode(file_data['content']).decode('utf-8'),
+                'content_type': file_data['content_type'],
+            }
+        try:
+            db.execute(
+                "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                (json.dumps(task_params, ensure_ascii=False), task_id)
+            )
+        except Exception as e:
+            logger.error(f"❌ 写入 task_params 失败: {e}")
         logger.info(f"✅ 任务 {task_id} 已创建，等待外部 worker 处理")
 
     # 立即返回任务 ID
@@ -1365,16 +1405,36 @@ def monitor_competitors():
         # 创建任务记录到数据库（标记类型为 competitor）
         create_task(task_id, user_id, session_id, function_type='competitor')
 
-        # 目前仍由 Web 进程内线程执行长任务，后续可通过 USE_DB_WORKER 切换到独立 worker
+        # 根据模式选择执行方式
         if not USE_DB_WORKER:
+            # 进程内线程执行
             thread = threading.Thread(
                 target=process_competitor_task,
                 args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project, generate_report, enable_video_vision)
             )
-            # 不设置 daemon=True，让线程自然完成
             thread.start()
             logger.info(f"✅ 竞品监控任务 {task_id} 已创建并在本进程中启动")
         else:
+            # DB worker 模式
+            task_params = {
+                'target_url': target_url,
+                'start_dt_str': start_dt_str,
+                'end_dt_str': end_dt_str,
+                'user_id': user_id,
+                'username': username,
+                'department': department,
+                'session_id': session_id,
+                'project': project,
+                'generate_report': generate_report,
+                'enable_video_vision': enable_video_vision,
+            }
+            try:
+                db.execute(
+                    "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                    (json.dumps(task_params, ensure_ascii=False), task_id)
+                )
+            except Exception as e:
+                logger.error(f"❌ 写入 task_params 失败: {e}")
             logger.info(f"✅ 竞品监控任务 {task_id} 已创建，等待外部 worker 处理")
 
         # 立即返回任务 ID
@@ -2696,29 +2756,60 @@ def fb_dashboard():
 def fb_schedule():
     """手动触发 FB 评论抓取（异步执行）"""
     try:
-        # 创建任务记录
-        task_id = db.execute_and_fetch_id(
-            "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
-            ('fb_scrape', 'pending')
-        )
+        if not USE_DB_WORKER:
+            # 进程内线程执行（旧模式）
+            # 创建任务记录
+            task_id = db.execute_and_fetch_id(
+                "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+                ('fb_scrape', 'pending')
+            )
 
-        # 在后台线程中执行抓取任务
-        def run_scrape():
-            try:
-                result = tasks.scrape_fb_comments(task_id=task_id)
-                logger.info(f"✅ 后台抓取完成 (task_id={task_id}): {result}")
-            except Exception as e:
-                logger.error(f"❌ 后台抓取失败 (task_id={task_id}): {e}")
+            # 在后台线程中执行抓取任务
+            def run_scrape():
                 try:
-                    db.execute(
-                        "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
-                        (str(e), task_id)
-                    )
-                except:
-                    pass
+                    result = tasks.scrape_fb_comments(task_id=task_id)
+                    logger.info(f"✅ 后台抓取完成 (task_id={task_id}): {result}")
+                except Exception as e:
+                    logger.error(f"❌ 后台抓取失败 (task_id={task_id}): {e}")
+                    try:
+                        db.execute(
+                            "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
+                            (str(e), task_id)
+                        )
+                    except:
+                        pass
 
-        thread = threading.Thread(target=run_scrape, daemon=True)
-        thread.start()
+            thread = threading.Thread(target=run_scrape, daemon=True)
+            thread.start()
+        else:
+            # DB worker 模式：写入 task_queue，由独立 worker 拾取
+            task_id_str = str(uuid.uuid4())
+            user_id = session.get('user_id')
+            session_id = session.get('session_id', 'default')
+            create_task(task_id_str, user_id, session_id, function_type='fb_scrape')
+            try:
+                db.execute(
+                    "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                    (json.dumps({'source': 'fb_schedule'}), task_id_str)
+                )
+            except Exception as e:
+                logger.error(f"❌ 写入 task_params 失败: {e}")
+
+            # 同时在 scrape_tasks 表也创建一条记录（保持前端轮询兼容）
+            task_id = db.execute_and_fetch_id(
+                "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+                ('fb_scrape', 'pending')
+            )
+            # 把 scrape_task_id 也存入 task_params 方便 worker 更新
+            try:
+                db.execute(
+                    "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                    (json.dumps({'source': 'fb_schedule', 'scrape_task_id': task_id}), task_id_str)
+                )
+            except Exception as e:
+                logger.error(f"❌ 更新 task_params 失败: {e}")
+
+            logger.info(f"✅ FB 抓取任务已创建 (task_queue={task_id_str}, scrape_tasks={task_id})，等待 worker 处理")
 
         return jsonify({
             'status': 'success',

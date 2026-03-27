@@ -93,3 +93,9 @@ def execute_and_fetch_id(sql, params=None):
         cursor.execute(sql, params or ())
         result = cursor.fetchone()
         return result['id'] if result else None
+
+def execute_and_fetch_one(sql, params=None):
+    """执行带 RETURNING 的 UPDATE/INSERT 并返回一行结果（带 commit）"""
+    with get_db_cursor(commit=True) as cursor:
+        cursor.execute(sql, params or ())
+        return cursor.fetchone()

@@ -1,4 +1,5 @@
 services:
+  # ---- Web 前端 ----
   - type: web
     name: flaskproject
     env: python
@@ -8,6 +9,8 @@ services:
     envVars:
       - key: PORT
         value: "5000"
+      - key: USE_DB_WORKER
+        value: "true"
       # DashScope API Key（用于大模型和向量）
       - key: DASHSCOPE_API_KEY
         sync: false
@@ -29,4 +32,23 @@ services:
       - key: FEEDBACK_EMAIL_TO
         sync: false
       - key: FEEDBACK_EMAIL_FROM
+        sync: false
+
+  # ---- Background Worker（独立进程处理长任务）----
+  - type: worker
+    name: flaskproject-worker
+    env: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python worker.py"
+    envVars:
+      - key: USE_DB_WORKER
+        value: "true"
+      - key: WORKER_POLL_INTERVAL
+        value: "3"
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      - key: APIFY_TOKEN
+        sync: false
+      - key: DATABASE_URL
         sync: false

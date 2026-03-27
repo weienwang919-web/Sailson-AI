@@ -96,6 +96,9 @@ try:
             result TEXT,
             error TEXT,
             session_id VARCHAR(100),
+            function_type VARCHAR(50),
+            record_id INTEGER,
+            task_params TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
