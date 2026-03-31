@@ -309,7 +309,7 @@
 
     <div class="chart-card wordcloud-panel" style="margin-bottom: 24px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h3 style="margin: 0;">评论关键词气泡图（中文归一）</h3>
+            <h3 style="margin: 0;">评论词云（中文归一）</h3>
             <select id="wordcloudTone" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.85rem;">
                 <option value="negative" selected>负面风向</option>
                 <option value="all">全部</option>
@@ -480,71 +480,64 @@
                     return;
                 }
 
-                // 气泡图映射：按权重映射泡泡半径，避免词云随机布局导致难读
-                const sortedItems = [...items].sort((a, b) => (b.value || 0) - (a.value || 0)).slice(0, 20);
+                // 前端二次重标定：强制拉开词大小，避免后端值接近导致“全是小字”
+                const sortedItems = [...items].sort((a, b) => (b.value || 0) - (a.value || 0));
                 const maxValue = Math.max(...sortedItems.map(i => i.value || 0), 1);
                 const minValue = Math.min(...sortedItems.map(i => i.value || 0), maxValue);
                 const spread = Math.max(maxValue - minValue, 1);
-                const palette = ['#c62828', '#1565c0', '#2e7d32', '#6a1b9a', '#ef6c00', '#00838f'];
-                const nodes = sortedItems.map((item, idx) => {
+                const remappedItems = sortedItems.map((item, idx) => {
                     const raw = item.value || 0;
                     const normalized = (raw - minValue) / spread;
-                    const symbolSize = Math.round(36 + normalized * 78); // 36 ~ 114
-                    return {
-                        name: item.name,
-                        rawValue: raw,
-                        value: raw,
-                        symbolSize,
-                        draggable: false,
-                        itemStyle: {
-                            color: palette[idx % palette.length],
-                            shadowBlur: 8,
-                            shadowColor: 'rgba(0,0,0,0.2)'
-                        },
-                        label: {
-                            show: true,
-                            color: '#fff',
-                            fontWeight: 700,
-                            fontSize: Math.max(12, Math.min(24, Math.round(symbolSize * 0.24))),
-                            formatter: '{b}'
-                        }
-                    };
+                    const rankBoost = Math.max(0, 1 - idx / Math.max(sortedItems.length, 1));
+                    // 强制字级范围 60~220，头部词显著放大
+                    const visualValue = Math.round(60 + normalized * 110 + rankBoost * 50);
+                    return { ...item, value: visualValue };
                 });
-
-                const links = nodes.slice(1).map((node, idx) => ({
-                    source: 0,
-                    target: idx + 1,
-                    lineStyle: { opacity: 0 }
-                }));
 
                 wordcloudChart.setOption({
                     tooltip: {
                         backgroundColor: 'rgba(20, 24, 35, 0.9)',
                         borderColor: 'rgba(255,255,255,0.2)',
                         textStyle: { color: '#fff' },
-                        formatter: params => `${params.name}: ${params.data.rawValue}条评论提及`
+                        formatter: params => `${params.name}: ${params.value}条评论提及`
                     },
                     series: [{
-                        type: 'graph',
-                        layout: 'force',
-                        roam: false,
-                        data: nodes,
-                        links: links,
-                        edgeSymbol: ['none', 'none'],
-                        lineStyle: { opacity: 0 },
-                        force: {
-                            repulsion: 420,
-                            gravity: 0.08,
-                            edgeLength: [90, 140],
-                            layoutAnimation: true
+                        type: 'wordCloud',
+                        shape: 'circle',
+                        keepAspect: true,
+                        left: 'center',
+                        top: 'center',
+                        width: '100%',
+                        height: '100%',
+                        right: null,
+                        bottom: null,
+                        sizeRange: [60, 220],
+                        rotationRange: [-8, 8],
+                        rotationStep: 8,
+                        gridSize: 2,
+                        drawOutOfBound: false,
+                        textStyle: {
+                            fontFamily: 'Inter, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif',
+                            fontWeight: function (params) {
+                                return params.value >= 70 ? '800' : (params.value >= 45 ? '700' : '600');
+                            },
+                            color: function (params) {
+                                const value = params.value || 0;
+                                if (value >= 90) return '#b71c1c';
+                                if (value >= 70) return '#0d47a1';
+                                if (value >= 50) return '#1b5e20';
+                                if (value >= 35) return '#4a148c';
+                                return '#455a64';
+                            }
                         },
                         emphasis: {
                             focus: 'self',
-                            itemStyle: {
-                                shadowBlur: 14,
-                                shadowColor: 'rgba(0,0,0,0.32)'
+                            textStyle: {
+                                shadowBlur: 16,
+                                shadowColor: 'rgba(0,0,0,0.35)'
                             }
-                        }
+                        },
+                        data: remappedItems
                     }]
                 });
             } catch (error) {
