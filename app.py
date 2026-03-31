@@ -3345,6 +3345,9 @@ def fb_wordcloud():
                 continue
             if _is_noise_token(zh_word):
                 continue
+            # 词云展示只保留中文词，避免出现大量外语碎词影响可读性
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(zh_word):
+                continue
             zh_tf_counter[zh_word] += count
 
         for word, count in df_counter.items():
@@ -3358,14 +3361,27 @@ def fb_wordcloud():
                 continue
             if _is_noise_token(zh_word):
                 continue
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(zh_word):
+                continue
             zh_df_counter[zh_word] += count
 
         min_count = 1 if len(rows) < 50 else FB_WORD_MIN_COUNT_DEFAULT
-        items = [
-            {'name': word, 'value': df}
-            for word, df in sorted(zh_df_counter.items(), key=lambda x: (x[1], zh_tf_counter.get(x[0], 0)), reverse=True)[:FB_WORDCLOUD_MAX_TERMS]
+        ranked = [
+            (word, df, zh_tf_counter.get(word, 0))
+            for word, df in sorted(zh_df_counter.items(), key=lambda x: (x[1], zh_tf_counter.get(x[0], 0)), reverse=True)
             if df >= min_count
-        ]
+        ][:40]
+
+        max_df = max((item[1] for item in ranked), default=1)
+        max_tf = max((item[2] for item in ranked), default=1)
+        items = []
+        total = len(ranked) if ranked else 1
+        for idx, (word, df, tf) in enumerate(ranked):
+            # 强制梯度：即使 df 接近，也保证头部词明显更大
+            rank_factor = max(0.0, 1.0 - (idx / total))
+            score = int(round(20 + rank_factor * 85 + (df / max_df) * 25 + (tf / max_tf) * 10))
+            score = max(score, 18)
+            items.append({'name': word, 'value': score})
 
         return jsonify({
             'status': 'success',
@@ -3435,6 +3451,8 @@ def fb_topic_top10():
                 continue
             if _is_noise_token(zh_word):
                 continue
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(zh_word):
+                continue
             zh_tf_counter[zh_word] += count
 
         for word, count in df_counter.items():
@@ -3447,6 +3465,8 @@ def fb_topic_top10():
             if len(zh_word) < FB_WORD_MIN_CHARS:
                 continue
             if _is_noise_token(zh_word):
+                continue
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(zh_word):
                 continue
             zh_df_counter[zh_word] += count
 

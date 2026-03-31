@@ -72,7 +72,11 @@
             color: #333;
         }
         #wordcloudChart {
-            height: 320px;
+            height: 420px;
+        }
+        .wordcloud-panel {
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            border: 1px solid #eef2f7;
         }
         .search-section {
             background: #fff;
@@ -301,18 +305,19 @@
             <h3>内容分类 Top 10</h3>
             <canvas id="categoryChart"></canvas>
         </div>
-        <div class="chart-card" style="grid-column: span 2;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                <h3 style="margin: 0;">评论词云（中文归一）</h3>
-                <select id="wordcloudTone" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.85rem;">
-                    <option value="negative" selected>负面风向</option>
-                    <option value="all">全部</option>
-                    <option value="neutral">中性</option>
-                    <option value="positive">正面</option>
-                </select>
-            </div>
-            <div id="wordcloudChart"></div>
+    </div>
+
+    <div class="chart-card wordcloud-panel" style="margin-bottom: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="margin: 0;">评论词云（中文归一）</h3>
+            <select id="wordcloudTone" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.85rem;">
+                <option value="negative" selected>负面风向</option>
+                <option value="all">全部</option>
+                <option value="neutral">中性</option>
+                <option value="positive">正面</option>
+            </select>
         </div>
+        <div id="wordcloudChart"></div>
     </div>
 
     <!-- 搜索控制 -->
@@ -484,7 +489,7 @@
                     },
                     series: [{
                         type: 'wordCloud',
-                        shape: 'diamond',
+                        shape: 'pentagon',
                         keepAspect: true,
                         left: 'center',
                         top: 'center',
@@ -492,22 +497,23 @@
                         height: '100%',
                         right: null,
                         bottom: null,
-                        sizeRange: [16, 58],
-                        rotationRange: [-30, 30],
-                        rotationStep: 30,
-                        gridSize: 7,
+                        sizeRange: [26, 110],
+                        rotationRange: [-12, 12],
+                        rotationStep: 15,
+                        gridSize: 6,
                         drawOutOfBound: false,
                         textStyle: {
                             fontFamily: 'Inter, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif',
                             fontWeight: function (params) {
-                                return params.value >= 6 ? '700' : '500';
+                                return params.value >= 70 ? '800' : (params.value >= 45 ? '700' : '600');
                             },
                             color: function (params) {
                                 const value = params.value || 0;
-                                if (value >= 8) return '#c62828';
-                                if (value >= 6) return '#1565c0';
-                                if (value >= 4) return '#2e7d32';
-                                return '#6a1b9a';
+                                if (value >= 90) return '#b71c1c';
+                                if (value >= 70) return '#0d47a1';
+                                if (value >= 50) return '#1b5e20';
+                                if (value >= 35) return '#4a148c';
+                                return '#455a64';
                             }
                         },
                         emphasis: {
