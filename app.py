@@ -3,8 +3,10 @@ import sys
 import datetime
 import time
 import logging
+import re
 import smtplib
 import json
+from collections import Counter
 from email.mime.text import MIMEText
 import pandas as pd
 import uuid
@@ -2844,6 +2846,281 @@ def fb_task_status(task_id):
         return jsonify({'error': str(e)}), 500
 
 
+FB_QUERY_SEPARATOR_PATTERN = re.compile(r"[\s,，、/|]+")
+FB_CHINESE_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}")
+FB_LATIN_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_+-]{1,}")
+FB_TRANSLATE_CACHE = {}
+FB_MAX_TRANSLATE_TERMS = 40
+FB_WORDCLOUD_MAX_ROWS = 1500
+FB_WORDCLOUD_MAX_TERMS = 100
+FB_WORD_MIN_CHARS = 2
+FB_QUERY_MAX_TERMS = 25
+FB_QUERY_SQL_MAX_TERMS = 20
+FB_TRANSLATE_CACHE_MAX_SIZE = 3000
+
+# 业务同义词词典（可按运营反馈持续扩充）
+FB_SYNONYM_GROUPS = [
+    {
+        "canonical": "版本更新",
+        "terms": ["版本更新", "新版本", "版更", "版本迭代", "更新后", "update", "new patch", "patch", "latest version"]
+    },
+    {
+        "canonical": "外挂",
+        "terms": ["外挂", "开挂", "作弊", "脚本", "hack", "hacker", "hacks", "cheat", "cheater", "cheating"]
+    },
+    {
+        "canonical": "bug",
+        "terms": ["bug", "bugs", "错误", "异常", "故障", "闪退", "crash", "crashes", "glitch", "glitches"]
+    },
+    {
+        "canonical": "卡顿",
+        "terms": ["卡顿", "掉帧", "延迟", "lag", "stutter", "latency", "fps drop", "freeze"]
+    }
+]
+
+FB_STOP_WORDS = {
+    "这个", "那个", "我们", "你们", "他们", "就是", "真的", "感觉", "还是", "然后", "已经", "现在", "可以",
+    "非常", "比较", "不是", "没有", "一个", "一下", "因为", "所以", "什么", "怎么", "the", "and", "for",
+    "with", "this", "that", "you", "your", "are", "was", "were", "from", "have", "has", "had", "but", "not",
+    "too", "very", "pls", "please", "game", "player", "players"
+}
+
+FB_WORD_NORMALIZATION_MAP = {
+    "update": "版本更新",
+    "patch": "版本更新",
+    "new patch": "版本更新",
+    "latest version": "版本更新",
+    "bug": "bug",
+    "bugs": "bug",
+    "glitch": "bug",
+    "glitches": "bug",
+    "hack": "外挂",
+    "hacker": "外挂",
+    "hacks": "外挂",
+    "cheat": "外挂",
+    "cheating": "外挂",
+    "cheater": "外挂",
+    "lag": "卡顿",
+    "stutter": "卡顿",
+    "latency": "卡顿",
+    "crash": "闪退",
+    "crashes": "闪退",
+}
+
+
+def _dedupe_preserve_order(items):
+    seen = set()
+    result = []
+    for item in items:
+        if not item:
+            continue
+        value = item.strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _put_translate_cache(key, value):
+    if len(FB_TRANSLATE_CACHE) >= FB_TRANSLATE_CACHE_MAX_SIZE:
+        # 轻量淘汰：删除最早插入的一批键，避免缓存无界增长
+        stale_keys = list(FB_TRANSLATE_CACHE.keys())[:300]
+        for stale_key in stale_keys:
+            FB_TRANSLATE_CACHE.pop(stale_key, None)
+    FB_TRANSLATE_CACHE[key] = value
+
+
+def _escape_like_term(term):
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
+def _split_query_terms(query):
+    if not query:
+        return []
+    raw_parts = FB_QUERY_SEPARATOR_PATTERN.split(query.strip())
+    terms = _dedupe_preserve_order(raw_parts)
+    return terms[:FB_QUERY_MAX_TERMS]
+
+
+def _expand_synonyms(terms):
+    if not terms:
+        return []
+    expanded = list(terms)
+    lowered_terms = {t.lower() for t in terms}
+    for group in FB_SYNONYM_GROUPS:
+        group_terms = group.get("terms", [])
+        lowered_group = {g.lower() for g in group_terms}
+        if lowered_terms & lowered_group:
+            expanded.extend(group_terms)
+            expanded.append(group.get("canonical", ""))
+    return _dedupe_preserve_order(expanded)
+
+
+def _translate_terms_to_multilang(terms, target_languages=None):
+    if not terms:
+        return []
+    if target_languages is None:
+        target_languages = ["en", "id", "th", "vi"]
+
+    cache_key = ("multi", "|".join(sorted([t.lower() for t in terms])))
+    cached = FB_TRANSLATE_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    if not qwen_client:
+        return []
+
+    try:
+        term_list = terms[:FB_MAX_TRANSLATE_TERMS]
+        prompt = (
+            "你是多语言查询扩展助手。请把输入词列表分别翻译成目标语言并返回 JSON。\n"
+            "要求：\n"
+            "1) 只返回 JSON，不要解释；\n"
+            "2) JSON 结构：{\"items\":[{\"source\":\"原词\",\"translations\":[\"词1\",\"词2\"]}]}\n"
+            "3) 仅保留适合社媒评论检索的常见表达；\n"
+            "4) 去掉无意义词；\n"
+            f"目标语言: {', '.join(target_languages)}\n"
+            f"输入词: {json.dumps(term_list, ensure_ascii=False)}"
+        )
+        response = qwen_client.chat.completions.create(
+            model="qwen-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif content.startswith("```"):
+            content = content.split("```")[1].split("```")[0].strip()
+        data = json.loads(content)
+        translations = []
+        for item in data.get("items", []):
+            translations.extend(item.get("translations", []))
+        result = _dedupe_preserve_order(translations)
+        _put_translate_cache(cache_key, result)
+        return result
+    except Exception as e:
+        logger.warning(f"⚠️ 多语言扩展失败，降级为原词检索: {e}")
+        return []
+
+
+def _expand_query_terms(query):
+    base_terms = _split_query_terms(query)
+    if not base_terms:
+        return []
+    synonym_terms = _expand_synonyms(base_terms)
+    translated_terms = _translate_terms_to_multilang(synonym_terms)
+    all_terms = _dedupe_preserve_order(synonym_terms + translated_terms)
+    return all_terms[: (FB_QUERY_MAX_TERMS * 3)]
+
+
+def _build_fb_search_filters(start_date, end_date, sentiment, post_urls, expanded_terms=None):
+    where_clauses = []
+    params = []
+
+    if start_date:
+        where_clauses.append("created_at >= %s")
+        params.append(start_date)
+    if end_date:
+        where_clauses.append("created_at <= %s")
+        params.append(end_date + ' 23:59:59')
+
+    if expanded_terms:
+        term_clauses = []
+        for term in expanded_terms[:FB_QUERY_SQL_MAX_TERMS]:
+            term_clauses.append("(content ILIKE %s ESCAPE '\\' OR brief_analysis ILIKE %s ESCAPE '\\')")
+            escaped = _escape_like_term(term)
+            like_value = f"%{escaped}%"
+            params.extend([like_value, like_value])
+        where_clauses.append("(" + " OR ".join(term_clauses) + ")")
+
+    if sentiment:
+        if sentiment == 'positive':
+            where_clauses.append("sentiment_score > 0.3")
+        elif sentiment == 'negative':
+            where_clauses.append("sentiment_score < -0.2")
+        elif sentiment == 'neutral':
+            where_clauses.append("sentiment_score BETWEEN -0.2 AND 0.3")
+
+    if post_urls:
+        placeholders = ','.join(['%s'] * len(post_urls))
+        where_clauses.append(f"post_url IN ({placeholders})")
+        params.extend(post_urls)
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    return where_sql, params
+
+
+def _extract_tokens_for_wordcloud(text):
+    if not text:
+        return []
+    chinese_tokens = FB_CHINESE_TOKEN_PATTERN.findall(text)
+    latin_tokens = FB_LATIN_TOKEN_PATTERN.findall(text.lower())
+    return chinese_tokens + latin_tokens
+
+
+def _normalize_word(word):
+    if not word:
+        return ""
+    w = word.strip().lower()
+    if not w:
+        return ""
+    mapped = FB_WORD_NORMALIZATION_MAP.get(w)
+    if mapped:
+        return mapped
+    if FB_CHINESE_TOKEN_PATTERN.fullmatch(word):
+        return word
+    return w
+
+
+def _translate_words_to_chinese(words):
+    if not words:
+        return {}
+    uncached = []
+    result = {}
+    for word in words:
+        cache_key = ("zh", word.lower())
+        if cache_key in FB_TRANSLATE_CACHE:
+            result[word] = FB_TRANSLATE_CACHE[cache_key]
+        else:
+            uncached.append(word)
+
+    if not uncached or not qwen_client:
+        return result
+
+    try:
+        batch = uncached[:FB_MAX_TRANSLATE_TERMS]
+        prompt = (
+            "请将以下词汇翻译为简体中文检索词，返回 JSON，禁止解释。\n"
+            "格式: {\"items\":[{\"source\":\"word\",\"zh\":\"中文词\"}]}\n"
+            f"词汇: {json.dumps(batch, ensure_ascii=False)}"
+        )
+        response = qwen_client.chat.completions.create(
+            model="qwen-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif content.startswith("```"):
+            content = content.split("```")[1].split("```")[0].strip()
+        data = json.loads(content)
+        for item in data.get("items", []):
+            source = (item.get("source") or "").strip()
+            zh = (item.get("zh") or "").strip()
+            if source and zh:
+                result[source] = zh
+                _put_translate_cache(("zh", source.lower()), zh)
+    except Exception as e:
+        logger.warning(f"⚠️ 词云翻译降级: {e}")
+    return result
+
+
 @app.route('/fb_search', methods=['GET'])
 @login_required
 def fb_search():
@@ -2864,40 +3141,16 @@ def fb_search():
         post_urls = request.args.getlist('post_url')  # 支持多选
         post_urls = [url.strip() for url in post_urls if url.strip()]
         limit = int(request.args.get('limit', 200))
+        limit = min(max(limit, 1), 500)
 
-        # 构建 WHERE 条件
-        where_clauses = []
-        params = []
-
-        # 日期过滤
-        if start_date:
-            where_clauses.append("created_at >= %s")
-            params.append(start_date)
-        if end_date:
-            where_clauses.append("created_at <= %s")
-            params.append(end_date + ' 23:59:59')
-
-        # 关键词过滤（新增）
-        if query:
-            where_clauses.append("content ILIKE %s")
-            params.append(f"%{query}%")
-
-        # 情感筛选
-        if sentiment:
-            if sentiment == 'positive':
-                where_clauses.append("sentiment_score > 0.3")
-            elif sentiment == 'negative':
-                where_clauses.append("sentiment_score < -0.2")
-            elif sentiment == 'neutral':
-                where_clauses.append("sentiment_score BETWEEN -0.2 AND 0.3")
-
-        # 帖文筛选（支持多选）
-        if post_urls:
-            placeholders = ','.join(['%s'] * len(post_urls))
-            where_clauses.append(f"post_url IN ({placeholders})")
-            params.extend(post_urls)
-
-        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        expanded_terms = _expand_query_terms(query)
+        where_sql, params = _build_fb_search_filters(
+            start_date=start_date,
+            end_date=end_date,
+            sentiment=sentiment,
+            post_urls=post_urls,
+            expanded_terms=expanded_terms
+        )
 
         # 查询评论
         sql = f"""
@@ -2922,7 +3175,7 @@ def fb_search():
                             comment_embedding = json.loads(row['embedding'])
                             similarity = rag._cosine_similarity(query_embedding, comment_embedding)
                             row['similarity'] = similarity
-                        except:
+                        except (ValueError, TypeError, json.JSONDecodeError):
                             row['similarity'] = 0.0
                     else:
                         row['similarity'] = 0.0
@@ -2944,11 +3197,91 @@ def fb_search():
         return jsonify({
             'status': 'success',
             'count': len(results),
+            'expanded_terms': expanded_terms[:20],
             'results': results
         })
 
     except Exception as e:
         logger.error(f"❌ FB 搜索失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_wordcloud', methods=['GET'])
+@login_required
+def fb_wordcloud():
+    """获取 FB 评论词云（统一中文展示）"""
+    try:
+        query = request.args.get('query', '').strip()
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        sentiment = request.args.get('sentiment', '').strip()
+        post_urls = request.args.getlist('post_url')
+        post_urls = [url.strip() for url in post_urls if url.strip()]
+        limit = int(request.args.get('limit', FB_WORDCLOUD_MAX_ROWS))
+        limit = min(max(limit, 100), FB_WORDCLOUD_MAX_ROWS)
+
+        expanded_terms = _expand_query_terms(query)
+        where_sql, params = _build_fb_search_filters(
+            start_date=start_date,
+            end_date=end_date,
+            sentiment=sentiment,
+            post_urls=post_urls,
+            expanded_terms=expanded_terms
+        )
+
+        sql = f"""
+            SELECT content, brief_analysis
+            FROM fb_comments
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        params.append(limit)
+        rows = db.query_all(sql, tuple(params))
+
+        token_counter = Counter()
+        for row in rows:
+            merged_text = f"{row.get('content', '')} {row.get('brief_analysis', '')}"
+            for token in _extract_tokens_for_wordcloud(merged_text):
+                normalized = _normalize_word(token)
+                if len(normalized) < FB_WORD_MIN_CHARS:
+                    continue
+                if normalized.lower() in FB_STOP_WORDS:
+                    continue
+                token_counter[normalized] += 1
+
+        if not token_counter:
+            return jsonify({'status': 'success', 'items': [], 'expanded_terms': expanded_terms[:20]})
+
+        foreign_top_words = [
+            w for w, c in token_counter.most_common(FB_MAX_TRANSLATE_TERMS)
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(w)
+        ]
+        translated_map = _translate_words_to_chinese(foreign_top_words)
+
+        zh_counter = Counter()
+        for word, count in token_counter.items():
+            normalized = _normalize_word(word)
+            if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized):
+                zh_word = normalized
+            else:
+                zh_word = translated_map.get(word, normalized)
+                zh_word = _normalize_word(zh_word)
+            if len(zh_word) < FB_WORD_MIN_CHARS:
+                continue
+            if zh_word.lower() in FB_STOP_WORDS:
+                continue
+            zh_counter[zh_word] += count
+
+        items = [{'name': word, 'value': value} for word, value in zh_counter.most_common(FB_WORDCLOUD_MAX_TERMS)]
+
+        return jsonify({
+            'status': 'success',
+            'items': items,
+            'expanded_terms': expanded_terms[:20]
+        })
+    except Exception as e:
+        logger.error(f"❌ FB 词云失败: {e}")
         return jsonify({'error': str(e)}), 500
 
 

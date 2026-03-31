@@ -7,6 +7,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link rel="icon" href="{{ url_for('static', filename='logo.png') }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js"></script>
     <style>
         body {
             background-color: #FAFAFA;
@@ -68,6 +70,9 @@
             font-size: 1.1rem;
             margin: 0 0 20px 0;
             color: #333;
+        }
+        #wordcloudChart {
+            height: 320px;
         }
         .search-section {
             background: #fff;
@@ -296,6 +301,10 @@
             <h3>内容分类 Top 10</h3>
             <canvas id="categoryChart"></canvas>
         </div>
+        <div class="chart-card" style="grid-column: span 2;">
+            <h3>评论词云（中文归一）</h3>
+            <div id="wordcloudChart"></div>
+        </div>
     </div>
 
     <!-- 搜索控制 -->
@@ -346,6 +355,26 @@
     <script>
         let allComments = [];
         let selectedIds = new Set();
+        let wordcloudChart = null;
+
+        function collectSearchParams() {
+            const query = document.getElementById('searchQuery').value;
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            const sentiment = document.getElementById('sentimentFilter').value;
+            const postSelect = document.getElementById('postFilter');
+            const selectedPosts = Array.from(postSelect.selectedOptions)
+                .map(opt => opt.value)
+                .filter(val => val !== '');
+
+            const params = new URLSearchParams();
+            if (query) params.append('query', query);
+            if (startDate) params.append('start_date', startDate);
+            if (endDate) params.append('end_date', endDate);
+            if (sentiment) params.append('sentiment', sentiment);
+            selectedPosts.forEach(url => params.append('post_url', url));
+            return params;
+        }
 
         // 加载统计数据
         async function loadStats() {
@@ -377,6 +406,91 @@
                 }
             } catch (error) {
                 console.error('加载统计数据失败:', error);
+            }
+        }
+
+        async function loadWordcloud(queryString) {
+            const qs = queryString || collectSearchParams().toString();
+            try {
+                const response = await fetch('/fb_wordcloud?' + qs);
+                if (!response.ok) {
+                    throw new Error(`词云接口异常: ${response.status}`);
+                }
+                const data = await response.json();
+                if (data.status === 'success') {
+                    renderWordcloud(data.items || []);
+                } else {
+                    renderWordcloud([]);
+                }
+            } catch (error) {
+                console.error('加载词云失败:', error);
+                renderWordcloud([]);
+            }
+        }
+
+        function renderWordcloud(items) {
+            const dom = document.getElementById('wordcloudChart');
+            if (!dom) return;
+            if (!window.echarts) {
+                dom.innerHTML = '<div class="no-data">词云组件加载失败</div>';
+                return;
+            }
+            if (wordcloudChart) {
+                wordcloudChart.dispose();
+            }
+            try {
+                wordcloudChart = echarts.init(dom);
+
+                if (!items || items.length === 0) {
+                    wordcloudChart.setOption({
+                        title: {
+                            text: '暂无可展示词云数据',
+                            left: 'center',
+                            top: 'middle',
+                            textStyle: { color: '#999', fontSize: 16, fontWeight: 'normal' }
+                        }
+                    });
+                    return;
+                }
+
+                wordcloudChart.setOption({
+                    tooltip: {
+                        formatter: params => `${params.name}: ${params.value}`
+                    },
+                    series: [{
+                        type: 'wordCloud',
+                        shape: 'circle',
+                        keepAspect: true,
+                        left: 'center',
+                        top: 'center',
+                        width: '100%',
+                        height: '100%',
+                        right: null,
+                        bottom: null,
+                        sizeRange: [14, 50],
+                        rotationRange: [-45, 45],
+                        rotationStep: 45,
+                        gridSize: 10,
+                        drawOutOfBound: false,
+                        textStyle: {
+                            color: function () {
+                                const colors = ['#2962FF', '#00A6A6', '#2E7D32', '#7B1FA2', '#D84315'];
+                                return colors[Math.floor(Math.random() * colors.length)];
+                            }
+                        },
+                        emphasis: {
+                            focus: 'self',
+                            textStyle: {
+                                shadowBlur: 10,
+                                shadowColor: '#333'
+                            }
+                        },
+                        data: items
+                    }]
+                });
+            } catch (error) {
+                console.error('词云渲染失败:', error);
+                dom.innerHTML = '<div class="no-data">词云渲染失败</div>';
             }
         }
 
@@ -454,38 +568,28 @@
 
         // 搜索评论
         async function searchComments() {
-            const query = document.getElementById('searchQuery').value;
-            const startDate = document.getElementById('startDate').value;
-            const endDate = document.getElementById('endDate').value;
-            const sentiment = document.getElementById('sentimentFilter').value;
-            const postSelect = document.getElementById('postFilter');
-            const selectedPosts = Array.from(postSelect.selectedOptions)
-                .map(opt => opt.value)
-                .filter(val => val !== ''); // 过滤掉"全部帖文"选项
-
-            const params = new URLSearchParams();
-            if (query) params.append('query', query);
-            if (startDate) params.append('start_date', startDate);
-            if (endDate) params.append('end_date', endDate);
-            if (sentiment) params.append('sentiment', sentiment);
-            // 多选帖文：每个 URL 作为独立参数
-            selectedPosts.forEach(url => params.append('post_url', url));
+            const params = collectSearchParams();
+            const queryString = params.toString();
+            selectedIds = new Set();
 
             document.getElementById('tableContainer').innerHTML = '<div class="loading">搜索中...</div>';
 
             try {
-                const response = await fetch('/fb_search?' + params.toString());
+                const response = await fetch('/fb_search?' + queryString);
                 const data = await response.json();
 
                 if (data.status === 'success') {
                     allComments = data.results;
                     renderTable(allComments);
+                    loadWordcloud(queryString);
                 } else {
                     document.getElementById('tableContainer').innerHTML = '<div class="no-data">搜索失败</div>';
+                    renderWordcloud([]);
                 }
             } catch (error) {
                 console.error('搜索失败:', error);
                 document.getElementById('tableContainer').innerHTML = '<div class="no-data">搜索失败</div>';
+                renderWordcloud([]);
             }
         }
 
