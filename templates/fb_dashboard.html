@@ -72,7 +72,7 @@
             color: #333;
         }
         #wordcloudChart {
-            height: 420px;
+            height: 520px;
         }
         .wordcloud-panel {
             background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
@@ -480,6 +480,20 @@
                     return;
                 }
 
+                // 前端二次重标定：强制拉开词大小，避免后端值接近导致“全是小字”
+                const sortedItems = [...items].sort((a, b) => (b.value || 0) - (a.value || 0));
+                const maxValue = Math.max(...sortedItems.map(i => i.value || 0), 1);
+                const minValue = Math.min(...sortedItems.map(i => i.value || 0), maxValue);
+                const spread = Math.max(maxValue - minValue, 1);
+                const remappedItems = sortedItems.map((item, idx) => {
+                    const raw = item.value || 0;
+                    const normalized = (raw - minValue) / spread;
+                    const rankBoost = Math.max(0, 1 - idx / Math.max(sortedItems.length, 1));
+                    // 强制字级范围 60~220，头部词显著放大
+                    const visualValue = Math.round(60 + normalized * 110 + rankBoost * 50);
+                    return { ...item, value: visualValue };
+                });
+
                 wordcloudChart.setOption({
                     tooltip: {
                         backgroundColor: 'rgba(20, 24, 35, 0.9)',
@@ -489,7 +503,7 @@
                     },
                     series: [{
                         type: 'wordCloud',
-                        shape: 'pentagon',
+                        shape: 'circle',
                         keepAspect: true,
                         left: 'center',
                         top: 'center',
@@ -497,10 +511,10 @@
                         height: '100%',
                         right: null,
                         bottom: null,
-                        sizeRange: [26, 110],
-                        rotationRange: [-12, 12],
-                        rotationStep: 15,
-                        gridSize: 6,
+                        sizeRange: [60, 220],
+                        rotationRange: [-8, 8],
+                        rotationStep: 8,
+                        gridSize: 2,
                         drawOutOfBound: false,
                         textStyle: {
                             fontFamily: 'Inter, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif',
@@ -523,7 +537,7 @@
                                 shadowColor: 'rgba(0,0,0,0.35)'
                             }
                         },
-                        data: items
+                        data: remappedItems
                     }]
                 });
             } catch (error) {
