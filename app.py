@@ -2886,7 +2886,8 @@ FB_STOP_WORDS = {
     "非常", "比较", "不是", "没有", "一个", "一下", "因为", "所以", "什么", "怎么", "the", "and", "for",
     "with", "this", "that", "you", "your", "are", "was", "were", "from", "have", "has", "had", "but", "not",
     "too", "very", "pls", "please", "game", "player", "players",
-    "ng", "na", "th", "ko", "mo", "sa", "pa", "ba", "nga", "ako", "lang", "cfl"
+    "ng", "na", "th", "ko", "mo", "sa", "pa", "ba", "nga", "ako", "lang", "cfl",
+    "年轻", "哈哈", "记录", "队伍", "时间", "所有", "只是", "还有", "一下", "一个", "一些", "已经"
 }
 
 FB_WORD_NORMALIZATION_MAP = {
@@ -3100,6 +3101,57 @@ def _normalize_word(word):
     return w
 
 
+def _is_noise_token(token):
+    if not token:
+        return True
+    t = token.strip().lower()
+    if not t:
+        return True
+    if t in FB_STOP_WORDS:
+        return True
+    # 中文/英文笑声噪声
+    if re.fullmatch(r"哈{2,}", token):
+        return True
+    if re.fullmatch(r"(ha){2,}", t):
+        return True
+    if t in {"lol", "lmao", "rofl"}:
+        return True
+    return False
+
+
+def _count_keyword_stats_from_rows(rows):
+    """
+    返回:
+      - tf_counter: 词项总出现次数
+      - df_counter: 出现在多少条评论中（更适合舆情风向）
+    """
+    tf_counter = Counter()
+    df_counter = Counter()
+
+    for row in rows:
+        original_comment = row.get('content', '')
+        tokens_in_comment = set()
+        for token in _extract_tokens_for_wordcloud(original_comment):
+            normalized = _normalize_word(token)
+            if len(normalized) < FB_WORD_MIN_CHARS:
+                continue
+            if normalized.isdigit():
+                continue
+            if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized) and len(normalized) > FB_CHINESE_MAX_CHARS:
+                continue
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized) and len(normalized) < FB_LATIN_MIN_CHARS:
+                continue
+            if _is_noise_token(normalized):
+                continue
+            tf_counter[normalized] += 1
+            tokens_in_comment.add(normalized)
+
+        for token in tokens_in_comment:
+            df_counter[token] += 1
+
+    return tf_counter, df_counter
+
+
 def _translate_words_to_chinese(words):
     if not words:
         return {}
@@ -3264,25 +3316,9 @@ def fb_wordcloud():
         params.append(limit)
         rows = db.query_all(sql, tuple(params))
 
-        token_counter = Counter()
-        for row in rows:
-            # 词云仅基于评论原文 content，避免混入 brief_analysis 中的模型描述语句
-            original_comment = row.get('content', '')
-            for token in _extract_tokens_for_wordcloud(original_comment):
-                normalized = _normalize_word(token)
-                if len(normalized) < FB_WORD_MIN_CHARS:
-                    continue
-                if normalized.isdigit():
-                    continue
-                if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized) and len(normalized) > FB_CHINESE_MAX_CHARS:
-                    continue
-                if not FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized) and len(normalized) < FB_LATIN_MIN_CHARS:
-                    continue
-                if normalized.lower() in FB_STOP_WORDS:
-                    continue
-                token_counter[normalized] += 1
+        tf_counter, df_counter = _count_keyword_stats_from_rows(rows)
 
-        if not token_counter:
+        if not tf_counter:
             return jsonify({
                 'status': 'success',
                 'items': [],
@@ -3291,13 +3327,14 @@ def fb_wordcloud():
             })
 
         foreign_top_words = [
-            w for w, c in token_counter.most_common(FB_MAX_TRANSLATE_TERMS)
+            w for w, _ in tf_counter.most_common(FB_MAX_TRANSLATE_TERMS)
             if not FB_CHINESE_TOKEN_PATTERN.fullmatch(w)
         ]
         translated_map = _translate_words_to_chinese(foreign_top_words)
 
-        zh_counter = Counter()
-        for word, count in token_counter.items():
+        zh_tf_counter = Counter()
+        zh_df_counter = Counter()
+        for word, count in tf_counter.items():
             normalized = _normalize_word(word)
             if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized):
                 zh_word = normalized
@@ -3306,15 +3343,28 @@ def fb_wordcloud():
                 zh_word = _normalize_word(zh_word)
             if len(zh_word) < FB_WORD_MIN_CHARS:
                 continue
-            if zh_word.lower() in FB_STOP_WORDS:
+            if _is_noise_token(zh_word):
                 continue
-            zh_counter[zh_word] += count
+            zh_tf_counter[zh_word] += count
+
+        for word, count in df_counter.items():
+            normalized = _normalize_word(word)
+            if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized):
+                zh_word = normalized
+            else:
+                zh_word = translated_map.get(word, normalized)
+                zh_word = _normalize_word(zh_word)
+            if len(zh_word) < FB_WORD_MIN_CHARS:
+                continue
+            if _is_noise_token(zh_word):
+                continue
+            zh_df_counter[zh_word] += count
 
         min_count = 1 if len(rows) < 50 else FB_WORD_MIN_COUNT_DEFAULT
         items = [
-            {'name': word, 'value': value}
-            for word, value in zh_counter.most_common(FB_WORDCLOUD_MAX_TERMS)
-            if value >= min_count
+            {'name': word, 'value': df}
+            for word, df in sorted(zh_df_counter.items(), key=lambda x: (x[1], zh_tf_counter.get(x[0], 0)), reverse=True)[:FB_WORDCLOUD_MAX_TERMS]
+            if df >= min_count
         ]
 
         return jsonify({
@@ -3322,7 +3372,8 @@ def fb_wordcloud():
             'items': items,
             'expanded_terms': expanded_terms[:20],
             'tone': _public_tone_value(effective_sentiment),
-            'min_count': min_count
+            'min_count': min_count,
+            'score_mode': 'document_frequency'
         })
     except Exception as e:
         logger.error(f"❌ FB 词云失败: {e}")
@@ -3332,7 +3383,7 @@ def fb_wordcloud():
 @app.route('/fb_topic_top10', methods=['GET'])
 @login_required
 def fb_topic_top10():
-    """获取主题 Top10，默认负面视角"""
+    """获取关键词 Top10，默认负面视角（基于评论原文）"""
     try:
         query = request.args.get('query', '').strip()
         start_date = request.args.get('start_date')
@@ -3353,17 +3404,57 @@ def fb_topic_top10():
         )
 
         sql = f"""
-            SELECT category, COUNT(*) AS count
+            SELECT content
             FROM fb_comments
             WHERE {where_sql}
-              AND category IS NOT NULL
-              AND category NOT IN ('', 'unknown')
-            GROUP BY category
-            ORDER BY count DESC
-            LIMIT 10
+            ORDER BY created_at DESC
+            LIMIT %s
         """
+        params.append(1000)
         rows = db.query_all(sql, tuple(params))
-        items = [{'name': row['category'], 'value': row['count']} for row in rows]
+
+        tf_counter, df_counter = _count_keyword_stats_from_rows(rows)
+
+        foreign_top_words = [
+            w for w, _ in tf_counter.most_common(FB_MAX_TRANSLATE_TERMS)
+            if not FB_CHINESE_TOKEN_PATTERN.fullmatch(w)
+        ]
+        translated_map = _translate_words_to_chinese(foreign_top_words)
+
+        zh_tf_counter = Counter()
+        zh_df_counter = Counter()
+
+        for word, count in tf_counter.items():
+            normalized = _normalize_word(word)
+            if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized):
+                zh_word = normalized
+            else:
+                zh_word = translated_map.get(word, normalized)
+                zh_word = _normalize_word(zh_word)
+            if len(zh_word) < FB_WORD_MIN_CHARS:
+                continue
+            if _is_noise_token(zh_word):
+                continue
+            zh_tf_counter[zh_word] += count
+
+        for word, count in df_counter.items():
+            normalized = _normalize_word(word)
+            if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized):
+                zh_word = normalized
+            else:
+                zh_word = translated_map.get(word, normalized)
+                zh_word = _normalize_word(zh_word)
+            if len(zh_word) < FB_WORD_MIN_CHARS:
+                continue
+            if _is_noise_token(zh_word):
+                continue
+            zh_df_counter[zh_word] += count
+
+        items = [
+            {'name': word, 'value': df}
+            for word, df in sorted(zh_df_counter.items(), key=lambda x: (x[1], zh_tf_counter.get(x[0], 0)), reverse=True)[:10]
+            if df >= 2
+        ]
 
         return jsonify({
             'status': 'success',
