@@ -74,6 +74,9 @@
         #wordcloudChart {
             height: 320px;
         }
+        #negativeTopicChart {
+            height: 320px !important;
+        }
         .search-section {
             background: #fff;
             padding: 25px;
@@ -301,9 +304,21 @@
             <h3>内容分类 Top 10</h3>
             <canvas id="categoryChart"></canvas>
         </div>
-        <div class="chart-card" style="grid-column: span 2;">
-            <h3>评论词云（中文归一）</h3>
+        <div class="chart-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="margin: 0;">评论词云（中文归一）</h3>
+                <select id="wordcloudTone" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.85rem;">
+                    <option value="negative" selected>负面风向</option>
+                    <option value="all">全部</option>
+                    <option value="neutral">中性</option>
+                    <option value="positive">正面</option>
+                </select>
+            </div>
             <div id="wordcloudChart"></div>
+        </div>
+        <div class="chart-card">
+            <h3>主题 Top 10（默认负面）</h3>
+            <canvas id="negativeTopicChart"></canvas>
         </div>
     </div>
 
@@ -356,12 +371,12 @@
         let allComments = [];
         let selectedIds = new Set();
         let wordcloudChart = null;
+        let negativeTopicChart = null;
 
-        function collectSearchParams() {
+        function collectBaseFilterParams() {
             const query = document.getElementById('searchQuery').value;
             const startDate = document.getElementById('startDate').value;
             const endDate = document.getElementById('endDate').value;
-            const sentiment = document.getElementById('sentimentFilter').value;
             const postSelect = document.getElementById('postFilter');
             const selectedPosts = Array.from(postSelect.selectedOptions)
                 .map(opt => opt.value)
@@ -371,8 +386,23 @@
             if (query) params.append('query', query);
             if (startDate) params.append('start_date', startDate);
             if (endDate) params.append('end_date', endDate);
-            if (sentiment) params.append('sentiment', sentiment);
             selectedPosts.forEach(url => params.append('post_url', url));
+            return params;
+        }
+
+        function collectSearchParams() {
+            const params = collectBaseFilterParams();
+            const sentiment = document.getElementById('sentimentFilter').value;
+            if (sentiment) params.append('sentiment', sentiment);
+            return params;
+        }
+
+        function collectInsightParams() {
+            const params = collectBaseFilterParams();
+            const tone = document.getElementById('wordcloudTone')?.value || 'negative';
+            if (tone) {
+                params.append('tone', tone);
+            }
             return params;
         }
 
@@ -410,7 +440,7 @@
         }
 
         async function loadWordcloud(queryString) {
-            const qs = queryString || collectSearchParams().toString();
+            const qs = queryString || collectInsightParams().toString();
             try {
                 const response = await fetch('/fb_wordcloud?' + qs);
                 if (!response.ok) {
@@ -425,6 +455,25 @@
             } catch (error) {
                 console.error('加载词云失败:', error);
                 renderWordcloud([]);
+            }
+        }
+
+        async function loadNegativeTopics(queryString) {
+            const qs = queryString || collectInsightParams().toString();
+            try {
+                const response = await fetch('/fb_topic_top10?' + qs);
+                if (!response.ok) {
+                    throw new Error(`主题接口异常: ${response.status}`);
+                }
+                const data = await response.json();
+                if (data.status === 'success') {
+                    renderNegativeTopics(data.items || []);
+                } else {
+                    renderNegativeTopics([]);
+                }
+            } catch (error) {
+                console.error('加载主题Top10失败:', error);
+                renderNegativeTopics([]);
             }
         }
 
@@ -492,6 +541,58 @@
                 console.error('词云渲染失败:', error);
                 dom.innerHTML = '<div class="no-data">词云渲染失败</div>';
             }
+        }
+
+        function renderNegativeTopics(items) {
+            const canvas = document.getElementById('negativeTopicChart');
+            if (!canvas) return;
+            if (!window.Chart) {
+                const parent = canvas.parentElement;
+                if (parent) {
+                    parent.innerHTML = '<div class="no-data">主题图组件加载失败</div>';
+                }
+                return;
+            }
+            const ctx = canvas.getContext('2d');
+            if (negativeTopicChart) {
+                negativeTopicChart.destroy();
+            }
+            if (!items || items.length === 0) {
+                negativeTopicChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['暂无数据'],
+                        datasets: [{
+                            label: '评论数',
+                            data: [0],
+                            backgroundColor: '#e0e0e0'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } }
+                    }
+                });
+                return;
+            }
+            negativeTopicChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: items.map(item => item.name),
+                    datasets: [{
+                        label: '评论数',
+                        data: items.map(item => item.value),
+                        backgroundColor: '#dc3545'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: { legend: { display: false } }
+                }
+            });
         }
 
         // 趋势图
@@ -568,8 +669,10 @@
 
         // 搜索评论
         async function searchComments() {
-            const params = collectSearchParams();
-            const queryString = params.toString();
+            const searchParams = collectSearchParams();
+            const insightParams = collectInsightParams();
+            const queryString = searchParams.toString();
+            const insightQueryString = insightParams.toString();
             selectedIds = new Set();
 
             document.getElementById('tableContainer').innerHTML = '<div class="loading">搜索中...</div>';
@@ -581,15 +684,18 @@
                 if (data.status === 'success') {
                     allComments = data.results;
                     renderTable(allComments);
-                    loadWordcloud(queryString);
+                    loadWordcloud(insightQueryString);
+                    loadNegativeTopics(insightQueryString);
                 } else {
                     document.getElementById('tableContainer').innerHTML = '<div class="no-data">搜索失败</div>';
                     renderWordcloud([]);
+                    renderNegativeTopics([]);
                 }
             } catch (error) {
                 console.error('搜索失败:', error);
                 document.getElementById('tableContainer').innerHTML = '<div class="no-data">搜索失败</div>';
                 renderWordcloud([]);
+                renderNegativeTopics([]);
             }
         }
 
@@ -686,6 +792,7 @@
             document.getElementById('startDate').value = '';
             document.getElementById('endDate').value = '';
             document.getElementById('sentimentFilter').value = '';
+            document.getElementById('wordcloudTone').value = 'negative';
             // 清空多选
             const postSelect = document.getElementById('postFilter');
             Array.from(postSelect.options).forEach(opt => opt.selected = false);
@@ -777,6 +884,14 @@
             searchComments();
             loadSchedulerStatus();
             loadPostFilter();
+            const toneSelector = document.getElementById('wordcloudTone');
+            if (toneSelector) {
+                toneSelector.addEventListener('change', function() {
+                    const insightQueryString = collectInsightParams().toString();
+                    loadWordcloud(insightQueryString);
+                    loadNegativeTopics(insightQueryString);
+                });
+            }
         };
 
         // 加载帖文筛选下拉框

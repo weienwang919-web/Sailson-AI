@@ -2857,6 +2857,9 @@ FB_WORD_MIN_CHARS = 2
 FB_QUERY_MAX_TERMS = 25
 FB_QUERY_SQL_MAX_TERMS = 20
 FB_TRANSLATE_CACHE_MAX_SIZE = 3000
+FB_LATIN_MIN_CHARS = 3
+FB_CHINESE_MAX_CHARS = 8
+FB_WORD_MIN_COUNT_DEFAULT = 2
 
 # 业务同义词词典（可按运营反馈持续扩充）
 FB_SYNONYM_GROUPS = [
@@ -2882,7 +2885,8 @@ FB_STOP_WORDS = {
     "这个", "那个", "我们", "你们", "他们", "就是", "真的", "感觉", "还是", "然后", "已经", "现在", "可以",
     "非常", "比较", "不是", "没有", "一个", "一下", "因为", "所以", "什么", "怎么", "the", "and", "for",
     "with", "this", "that", "you", "your", "are", "was", "were", "from", "have", "has", "had", "but", "not",
-    "too", "very", "pls", "please", "game", "player", "players"
+    "too", "very", "pls", "please", "game", "player", "players",
+    "ng", "na", "th", "ko", "mo", "sa", "pa", "ba", "nga", "ako", "lang", "cfl"
 }
 
 FB_WORD_NORMALIZATION_MAP = {
@@ -3063,6 +3067,25 @@ def _extract_tokens_for_wordcloud(text):
     return chinese_tokens + latin_tokens
 
 
+def _resolve_sentiment_filter(sentiment, tone, default=''):
+    valid_sentiments = {'positive', 'neutral', 'negative'}
+    tone_normalized = (tone or '').strip().lower()
+    if tone_normalized == 'all':
+        return ''
+    if tone_normalized in valid_sentiments:
+        return tone_normalized
+    sentiment_normalized = (sentiment or '').strip().lower()
+    if sentiment_normalized == 'all':
+        return ''
+    if sentiment_normalized in valid_sentiments:
+        return sentiment_normalized
+    return default
+
+
+def _public_tone_value(effective_sentiment):
+    return effective_sentiment if effective_sentiment else 'all'
+
+
 def _normalize_word(word):
     if not word:
         return ""
@@ -3215,16 +3238,18 @@ def fb_wordcloud():
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
         sentiment = request.args.get('sentiment', '').strip()
+        tone = request.args.get('tone', '').strip()
         post_urls = request.args.getlist('post_url')
         post_urls = [url.strip() for url in post_urls if url.strip()]
         limit = int(request.args.get('limit', FB_WORDCLOUD_MAX_ROWS))
         limit = min(max(limit, 100), FB_WORDCLOUD_MAX_ROWS)
+        effective_sentiment = _resolve_sentiment_filter(sentiment, tone, default='negative')
 
         expanded_terms = _expand_query_terms(query)
         where_sql, params = _build_fb_search_filters(
             start_date=start_date,
             end_date=end_date,
-            sentiment=sentiment,
+            sentiment=effective_sentiment,
             post_urls=post_urls,
             expanded_terms=expanded_terms
         )
@@ -3247,12 +3272,23 @@ def fb_wordcloud():
                 normalized = _normalize_word(token)
                 if len(normalized) < FB_WORD_MIN_CHARS:
                     continue
+                if normalized.isdigit():
+                    continue
+                if FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized) and len(normalized) > FB_CHINESE_MAX_CHARS:
+                    continue
+                if not FB_CHINESE_TOKEN_PATTERN.fullmatch(normalized) and len(normalized) < FB_LATIN_MIN_CHARS:
+                    continue
                 if normalized.lower() in FB_STOP_WORDS:
                     continue
                 token_counter[normalized] += 1
 
         if not token_counter:
-            return jsonify({'status': 'success', 'items': [], 'expanded_terms': expanded_terms[:20]})
+            return jsonify({
+                'status': 'success',
+                'items': [],
+                'expanded_terms': expanded_terms[:20],
+                'tone': _public_tone_value(effective_sentiment)
+            })
 
         foreign_top_words = [
             w for w, c in token_counter.most_common(FB_MAX_TRANSLATE_TERMS)
@@ -3274,15 +3310,68 @@ def fb_wordcloud():
                 continue
             zh_counter[zh_word] += count
 
-        items = [{'name': word, 'value': value} for word, value in zh_counter.most_common(FB_WORDCLOUD_MAX_TERMS)]
+        min_count = 1 if len(rows) < 50 else FB_WORD_MIN_COUNT_DEFAULT
+        items = [
+            {'name': word, 'value': value}
+            for word, value in zh_counter.most_common(FB_WORDCLOUD_MAX_TERMS)
+            if value >= min_count
+        ]
 
         return jsonify({
             'status': 'success',
             'items': items,
-            'expanded_terms': expanded_terms[:20]
+            'expanded_terms': expanded_terms[:20],
+            'tone': _public_tone_value(effective_sentiment),
+            'min_count': min_count
         })
     except Exception as e:
         logger.error(f"❌ FB 词云失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/fb_topic_top10', methods=['GET'])
+@login_required
+def fb_topic_top10():
+    """获取主题 Top10，默认负面视角"""
+    try:
+        query = request.args.get('query', '').strip()
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        sentiment = request.args.get('sentiment', '').strip()
+        tone = request.args.get('tone', '').strip()
+        post_urls = request.args.getlist('post_url')
+        post_urls = [url.strip() for url in post_urls if url.strip()]
+        effective_sentiment = _resolve_sentiment_filter(sentiment, tone, default='negative')
+
+        expanded_terms = _expand_query_terms(query)
+        where_sql, params = _build_fb_search_filters(
+            start_date=start_date,
+            end_date=end_date,
+            sentiment=effective_sentiment,
+            post_urls=post_urls,
+            expanded_terms=expanded_terms
+        )
+
+        sql = f"""
+            SELECT category, COUNT(*) AS count
+            FROM fb_comments
+            WHERE {where_sql}
+              AND category IS NOT NULL
+              AND category NOT IN ('', 'unknown')
+            GROUP BY category
+            ORDER BY count DESC
+            LIMIT 10
+        """
+        rows = db.query_all(sql, tuple(params))
+        items = [{'name': row['category'], 'value': row['count']} for row in rows]
+
+        return jsonify({
+            'status': 'success',
+            'items': items,
+            'tone': _public_tone_value(effective_sentiment)
+        })
+    except Exception as e:
+        logger.error(f"❌ FB 主题Top10失败: {e}")
         return jsonify({'error': str(e)}), 500
 
 
