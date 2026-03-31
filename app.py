@@ -3230,7 +3230,7 @@ def fb_wordcloud():
         )
 
         sql = f"""
-            SELECT content, brief_analysis
+            SELECT content
             FROM fb_comments
             WHERE {where_sql}
             ORDER BY created_at DESC
@@ -3241,8 +3241,9 @@ def fb_wordcloud():
 
         token_counter = Counter()
         for row in rows:
-            merged_text = f"{row.get('content', '')} {row.get('brief_analysis', '')}"
-            for token in _extract_tokens_for_wordcloud(merged_text):
+            # 词云仅基于评论原文 content，避免混入 brief_analysis 中的模型描述语句
+            original_comment = row.get('content', '')
+            for token in _extract_tokens_for_wordcloud(original_comment):
                 normalized = _normalize_word(token)
                 if len(normalized) < FB_WORD_MIN_CHARS:
                     continue
