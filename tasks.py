@@ -8,8 +8,7 @@ import os
 import json
 import logging
 import datetime
-import time
-import requests
+from urllib.parse import urlparse
 from apify_client import ApifyClient
 from openai import OpenAI
 import database as db
@@ -28,20 +27,298 @@ QWEN_BASE_URL = os.environ.get('QWEN_BASE_URL', 'https://dashscope.aliyuncs.com/
 apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 qwen_client = OpenAI(api_key=DASHSCOPE_API_KEY, base_url=QWEN_BASE_URL) if DASHSCOPE_API_KEY else None
 
+DEFAULT_FB_HASHTAG_ACTOR = "apify/facebook-hashtag-scraper"
+DEFAULT_IG_HASHTAG_ACTOR = "apify/instagram-hashtag-scraper"
+DEFAULT_FB_COMMENTS_ACTOR = "apify/facebook-comments-scraper"
+DEFAULT_IG_COMMENTS_ACTOR = "apify/instagram-comment-scraper"
 
-def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
+
+def _normalize_list_input(values):
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    result = []
+    seen = set()
+    for val in values:
+        if not isinstance(val, str):
+            continue
+        cleaned = val.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(cleaned)
+    return result
+
+
+def _is_facebook_url(url):
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return False
+        if hostname == "fb.watch":
+            return True
+        if hostname == "facebook.com":
+            return True
+        return hostname.endswith(".facebook.com")
+    except Exception:
+        return False
+
+
+def _is_instagram_url(url):
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return False
+        if hostname == "instagram.com":
+            return True
+        return hostname.endswith(".instagram.com")
+    except Exception:
+        return False
+
+
+def _detect_social_platform(url):
+    if _is_facebook_url(url):
+        return "facebook"
+    if _is_instagram_url(url):
+        return "instagram"
+    return "unknown"
+
+
+def _extract_post_url(item):
+    if not isinstance(item, dict):
+        return None
+    candidate_keys = [
+        "postUrl", "postURL", "post_url", "url", "link", "permalink",
+        "canonicalUrl", "postLink"
+    ]
+    for key in candidate_keys:
+        value = item.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned.startswith("http://") or cleaned.startswith("https://"):
+                return cleaned
+    return None
+
+
+def _parse_created_at(value):
+    if value is None:
+        return datetime.datetime.now(BEIJING_TZ)
+    try:
+        if isinstance(value, (int, float)):
+            created = datetime.datetime.fromtimestamp(float(value), tz=datetime.timezone.utc)
+            return created.astimezone(BEIJING_TZ)
+        text = str(value).strip()
+        if not text:
+            return datetime.datetime.now(BEIJING_TZ)
+        if text.isdigit():
+            created = datetime.datetime.fromtimestamp(float(text), tz=datetime.timezone.utc)
+            return created.astimezone(BEIJING_TZ)
+        created = datetime.datetime.fromisoformat(text.replace('Z', '+00:00'))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=datetime.timezone.utc)
+        return created.astimezone(BEIJING_TZ)
+    except Exception:
+        return datetime.datetime.now(BEIJING_TZ)
+
+
+def _extract_comment_fields(item, platform, default_post_url):
+    if not isinstance(item, dict):
+        return None
+
+    raw_comment_id = (
+        item.get('id') or item.get('commentId') or item.get('comment_id') or item.get('pk')
+    )
+    content = (
+        item.get('text') or item.get('content') or item.get('comment') or item.get('message') or ""
+    )
+    created_at_raw = (
+        item.get('createdTime') or item.get('created_at') or item.get('createdAt')
+        or item.get('timestamp') or item.get('time')
+    )
+
+    author = "Unknown"
+    raw_author = item.get('author')
+    if isinstance(raw_author, dict):
+        author = raw_author.get('name') or raw_author.get('username') or author
+    elif isinstance(raw_author, str) and raw_author.strip():
+        author = raw_author.strip()
+    else:
+        author = (
+            item.get('ownerUsername') or item.get('username') or item.get('userName') or author
+        )
+
+    post_url = _extract_post_url(item) or default_post_url
+
+    if not raw_comment_id or not str(raw_comment_id).strip() or not str(content).strip():
+        return None
+
+    comment_id = str(raw_comment_id).strip()
+    # 为避免不同平台 comment_id 冲突，IG 加前缀
+    if platform == "instagram" and not comment_id.startswith("ig:"):
+        comment_id = f"ig:{comment_id}"
+
+    return {
+        "comment_id": comment_id,
+        "author": str(author).strip() or "Unknown",
+        "content": str(content).strip(),
+        "created_at": _parse_created_at(created_at_raw),
+        "post_url": post_url
+    }
+
+
+def _run_actor_with_inputs(actor_id, inputs, timeout_secs=600):
+    last_error = None
+    for run_input in inputs:
+        try:
+            run = apify_client.actor(actor_id).call(run_input=run_input, timeout_secs=timeout_secs)
+            dataset_id = run.get("defaultDatasetId")
+            if not dataset_id:
+                raise RuntimeError("actor missing defaultDatasetId")
+            items = list(apify_client.dataset(dataset_id).iterate_items())
+            return items, run_input
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"⚠️ Actor call failed ({actor_id}) with one input: {e}")
+            continue
+    raise RuntimeError(last_error or "actor call failed")
+
+
+def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200):
+    """按标签/关键词发现帖子 URL（按平台调用 hashtag actors）。"""
+    if not apify_client:
+        return {"status": "error", "message": "Apify not configured", "post_urls": []}
+
+    tags = _normalize_list_input(seed_tags)
+    if not tags:
+        return {"status": "error", "message": "seed_tags is empty", "post_urls": []}
+
+    target_platforms = [p.lower() for p in _normalize_list_input(platforms)] or ["facebook", "instagram"]
+    max_posts = max(20, min(int(max_posts), 5000))
+    days_back = max(1, min(int(days_back), 60))
+
+    actor_map = {
+        "facebook": os.environ.get("APIFY_FB_HASHTAG_ACTOR_ID", DEFAULT_FB_HASHTAG_ACTOR).strip(),
+        "instagram": os.environ.get("APIFY_IG_HASHTAG_ACTOR_ID", DEFAULT_IG_HASHTAG_ACTOR).strip(),
+    }
+
+    end_dt = datetime.datetime.now(datetime.timezone.utc)
+    start_dt = end_dt - datetime.timedelta(days=days_back)
+    per_platform_limit = max(20, int(max_posts / max(len(target_platforms), 1)))
+    hashtags = [t.lstrip("#") for t in tags if t.strip()]
+
+    urls = []
+    seen = set()
+    actor_runs = []
+    errors = []
+
+    for platform in target_platforms:
+        actor_id = actor_map.get(platform)
+        if not actor_id:
+            continue
+
+        # 不同 actor 的输入 schema 不同，按候选输入依次尝试
+        candidate_inputs = [
+            {
+                "hashtags": hashtags,
+                "resultsLimit": per_platform_limit,
+                "startDate": start_dt.date().isoformat(),
+                "endDate": end_dt.date().isoformat()
+            },
+            {
+                "searchQueries": tags,
+                "resultsLimit": per_platform_limit,
+                "startDate": start_dt.date().isoformat(),
+                "endDate": end_dt.date().isoformat()
+            },
+            {
+                "searchTerms": tags,
+                "maxItems": per_platform_limit,
+                "startDate": start_dt.date().isoformat(),
+                "endDate": end_dt.date().isoformat()
+            }
+        ]
+
+        try:
+            logger.info(f"🔎 Discover {platform} posts via actor: {actor_id}")
+            items, used_input = _run_actor_with_inputs(actor_id, candidate_inputs, timeout_secs=600)
+            actor_runs.append({"platform": platform, "actor_id": actor_id, "items": len(items)})
+            for item in items:
+                url = _extract_post_url(item)
+                if not url:
+                    continue
+                key = url.strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                urls.append(url)
+                if len(urls) >= max_posts:
+                    break
+            logger.info(f"✅ Discover {platform} done: {len(items)} items")
+        except Exception as e:
+            errors.append(f"{platform}:{e}")
+            logger.warning(f"⚠️ Discover failed for {platform}: {e}")
+            continue
+
+        if len(urls) >= max_posts:
+            break
+
+    if not actor_runs and errors:
+        return {
+            "status": "error",
+            "message": f"discover actor failed: {'; '.join(errors)[:500]}",
+            "post_urls": []
+        }
+
+    logger.info(f"✅ Discover done: {len(urls)} URLs")
+    return {
+        "status": "success",
+        "actor_runs": actor_runs,
+        "total_urls": len(urls),
+        "post_urls": urls
+    }
+
+
+def scrape_fb_comments(
+    post_urls=None,
+    days_back=7,
+    task_id=None,
+    results_limit=2500,
+    enable_ai_analysis=True,
+    max_ai_comments=1200,
+    allow_fallback_to_config=True
+):
     """
-    Scrape FB comments from configured post URLs
+    Scrape FB/IG comments from post URLs
 
     Args:
         post_urls: List of FB post URLs to scrape. If None, fetch from database config
         days_back: Only process comments from last N days
         task_id: Optional task ID for status tracking
+        results_limit: Apify actor maximum comments per post
+        enable_ai_analysis: Whether to run sentiment/topic AI analysis
+        max_ai_comments: Safety cap for number of comments to run AI analysis
+        allow_fallback_to_config: If True, fallback to fb_monitor_config when post_urls is None
 
     Returns:
         dict with status and stats
     """
-    logger.info(f"🔄 Starting FB comment scraping task (days_back={days_back}, task_id={task_id})")
+    logger.info(f"🔄 Starting social comment scraping task (days_back={days_back}, task_id={task_id})")
 
     # Update task status to running
     if task_id:
@@ -63,7 +340,7 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                 pass
         return {"status": "error", "message": error_msg}
 
-    if not post_urls:
+    if post_urls is None and allow_fallback_to_config:
         # Fetch from database config
         try:
             rows = db.query_all("SELECT post_url FROM fb_monitor_config WHERE is_active = TRUE")
@@ -89,92 +366,41 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
 
     total_new = 0
     total_updated = 0
+    total_skipped_unsupported = 0
     cutoff_date = datetime.datetime.now(BEIJING_TZ) - datetime.timedelta(days=days_back)
 
     for post_url in post_urls:
         try:
+            platform = _detect_social_platform(post_url)
+            if platform not in ("facebook", "instagram"):
+                total_skipped_unsupported += 1
+                logger.info(f"⏭️ Skip unsupported URL in social scraper: {post_url}")
+                continue
+
             logger.info(f"📥 Scraping comments from: {post_url}")
 
-            # Run Apify actor using REST API (same as analysis.py)
-            run_input = {
-                "includeNestedComments": True,
-                "resultsLimit": 2500,
-                "startUrls": [{"url": post_url}],
-                "viewOption": "RANKED_UNFILTERED"
-            }
+            if platform == "facebook":
+                actor_id = os.environ.get("APIFY_FB_COMMENTS_ACTOR_ID", DEFAULT_FB_COMMENTS_ACTOR).strip()
+                candidate_inputs = [{
+                    "includeNestedComments": True,
+                    "resultsLimit": int(results_limit),
+                    "startUrls": [{"url": post_url}],
+                    "viewOption": "RANKED_UNFILTERED"
+                }]
+            else:
+                actor_id = os.environ.get("APIFY_IG_COMMENTS_ACTOR_ID", DEFAULT_IG_COMMENTS_ACTOR).strip()
+                candidate_inputs = [
+                    {"directUrls": [post_url], "resultsLimit": int(results_limit)},
+                    {"postUrls": [post_url], "resultsLimit": int(results_limit)},
+                    {"startUrls": [{"url": post_url}], "resultsLimit": int(results_limit)}
+                ]
 
-            logger.info("🚀 Starting Apify actor via REST API...")
-            api_url = "https://api.apify.com/v2/acts/apify~facebook-comments-scraper/runs"
-            headers = {
-                "Authorization": f"Bearer {APIFY_TOKEN}",
-                "Content-Type": "application/json"
-            }
-
-            # 启动 actor
-            response = requests.post(
-                api_url,
-                json=run_input,
-                headers=headers,
-                timeout=30
-            )
-
-            if response.status_code != 201:
-                logger.error(f"❌ Apify API error: {response.status_code}, {response.text}")
+            if not actor_id:
+                logger.error(f"❌ Missing actor id for platform={platform}")
                 continue
 
-            run = response.json()['data']
-            run_id = run['id']
-            logger.info(f"✅ Apify actor started, Run ID: {run_id}")
-
-            # 轮询任务状态
-            logger.info("⏳ Polling for completion...")
-            start_time = time.time()
-            max_wait_time = 300  # 5 分钟
-            poll_interval = 5
-
-            status_api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
-
-            while True:
-                elapsed = time.time() - start_time
-                if elapsed > max_wait_time:
-                    logger.error(f"❌ Timeout waiting for actor to complete")
-                    break
-
-                time.sleep(poll_interval)
-
-                status_response = requests.get(status_api_url, headers=headers, timeout=10)
-                if status_response.status_code != 200:
-                    logger.error(f"❌ Failed to get status: {status_response.status_code}")
-                    break
-
-                run_data = status_response.json()['data']
-                status = run_data['status']
-
-                logger.info(f"   Status: {status} (elapsed: {elapsed:.0f}s)")
-
-                if status in ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT']:
-                    run = run_data
-                    break
-
-            if run['status'] != 'SUCCEEDED':
-                logger.error(f"❌ Actor failed with status: {run['status']}")
-                continue
-
-            # 获取结果
-            dataset_id = run.get("defaultDatasetId")
-            if not dataset_id:
-                logger.error(f"❌ No dataset ID found")
-                continue
-
-            logger.info(f"📦 Fetching results from dataset: {dataset_id}")
-            dataset_api_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
-            dataset_response = requests.get(dataset_api_url, headers=headers, timeout=30)
-
-            if dataset_response.status_code != 200:
-                logger.error(f"❌ Failed to fetch dataset: {dataset_response.status_code}")
-                continue
-
-            items = dataset_response.json()
+            logger.info(f"🚀 Starting comments actor ({platform}): {actor_id}")
+            items, _ = _run_actor_with_inputs(actor_id, candidate_inputs, timeout_secs=600)
             logger.info(f"✅ Apify returned {len(items)} items")
 
             # Check for unusually low item count
@@ -182,7 +408,14 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                 logger.warning(f"⚠️ Unusually low item count: {len(items)}, expected more")
 
             # Batch deduplication: query all existing comment_ids at once
-            comment_ids = [item.get('id') for item in items if item.get('id')]
+            normalized_rows = []
+            comment_ids = []
+            for item in items:
+                parsed = _extract_comment_fields(item, platform, post_url)
+                if not parsed:
+                    continue
+                normalized_rows.append(parsed)
+                comment_ids.append(parsed["comment_id"])
             existing_ids = set()
 
             if comment_ids:
@@ -192,22 +425,14 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                 existing_ids = {row['comment_id'] for row in rows}
                 logger.info(f"📊 Found {len(existing_ids)} existing comments out of {len(comment_ids)}")
 
+            ai_processed = 0
             # Process each comment
-            for item in items:
-                comment_id = item.get('id')
-                author = item.get('author', {}).get('name', 'Unknown')
-                content = item.get('text', '')
-                created_at_str = item.get('createdTime')
-
-                if not content or not comment_id:
-                    continue
-
-                # Parse timestamp
-                try:
-                    created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                    created_at = created_at.astimezone(BEIJING_TZ)
-                except:
-                    created_at = datetime.datetime.now(BEIJING_TZ)
+            for row in normalized_rows:
+                comment_id = row["comment_id"]
+                author = row["author"]
+                content = row["content"]
+                created_at = row["created_at"]
+                row_post_url = row["post_url"]
 
                 # Skip old comments
                 if created_at < cutoff_date:
@@ -218,8 +443,12 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                     total_updated += 1
                     continue
 
-                # Analyze sentiment using Qwen
-                sentiment_score, category, language, brief_analysis = analyze_comment_sentiment(content)
+                # Analyze sentiment using Qwen (with cap to control latency/cost)
+                if enable_ai_analysis and ai_processed < max_ai_comments:
+                    sentiment_score, category, language, brief_analysis = analyze_comment_sentiment(content)
+                    ai_processed += 1
+                else:
+                    sentiment_score, category, language, brief_analysis = 0.0, "unknown", "unknown", ""
 
                 # Generate embedding
                 embedding = rag.get_embedding(content)
@@ -233,8 +462,8 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
                      category, language, post_link, embedding, brief_analysis)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (post_url, comment_id, author, created_at, content, sentiment_score,
-                     category, language, post_url, embedding_json, brief_analysis)
+                    (row_post_url, comment_id, author, created_at, content, sentiment_score,
+                     category, language, row_post_url, embedding_json, brief_analysis)
                 )
                 total_new += 1
 
@@ -252,12 +481,16 @@ def scrape_fb_comments(post_urls=None, days_back=7, task_id=None):
         except:
             pass
 
-    logger.info(f"✅ FB scraping complete: {total_new} new, {total_updated} existing")
+    logger.info(f"✅ Social scraping complete: {total_new} new, {total_updated} existing")
 
     result = {
         "status": "success",
         "new_comments": total_new,
-        "existing_comments": total_updated
+        "existing_comments": total_updated,
+        "skipped_non_facebook": total_skipped_unsupported,  # backward compatibility
+        "skipped_unsupported_urls": total_skipped_unsupported,
+        "enable_ai_analysis": enable_ai_analysis,
+        "max_ai_comments": max_ai_comments
     }
 
     # Update task status to completed

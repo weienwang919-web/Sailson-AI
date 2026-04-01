@@ -7,10 +7,17 @@
     .page-wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
     .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
     .card { background: #fff; border: 1px solid #eceff3; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
-    .filters { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; }
+    .filters { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto auto; gap: 12px; align-items: end; }
     .filters label { font-size: 12px; color: #666; margin-bottom: 4px; }
     .filters input, .filters select { width: 100%; border: 1px solid #dfe3ea; border-radius: 8px; padding: 10px; }
     .btn-run { background: #2962ff; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 600; }
+    .btn-crawl { background: #0f9d58; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 600; }
+    .btn-disabled { opacity: 0.6; cursor: not-allowed; }
+    .advanced-toggle { margin-top: 10px; font-size: 13px; color: #2952cc; cursor: pointer; user-select: none; }
+    .advanced-panel { margin-top: 10px; border: 1px dashed #d7deea; border-radius: 10px; padding: 12px; background: #fbfcff; }
+    .advanced-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr; gap: 10px; align-items: end; }
+    .platform-inline { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #4d5562; }
+    .advanced-panel textarea { width: 100%; min-height: 70px; border: 1px solid #dfe3ea; border-radius: 8px; padding: 8px; font-size: 13px; }
     .section-title { font-weight: 700; margin-bottom: 10px; font-size: 18px; }
     .muted { color: #70757a; font-size: 13px; }
     .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
@@ -50,8 +57,47 @@
                     <option value="th">TH</option>
                 </select>
             </div>
+            <button id="crawlBtn" class="btn-crawl" onclick="startSpdCrawl()">开始采集</button>
             <button class="btn-run" onclick="runReport()">试跑报告</button>
         </div>
+        <div class="advanced-toggle" onclick="toggleAdvancedPanel()">
+            <span id="advancedArrow">▶</span> 高级参数（可选）
+        </div>
+        <div id="advancedPanel" class="advanced-panel" style="display:none;">
+            <div style="margin-bottom:8px;">
+                <label>种子标签（逗号或换行分隔）</label>
+                <textarea id="seedTagsInput" placeholder="#MLBBxNARUTO, #MLBBNewSkin, naruto, 火影"></textarea>
+            </div>
+            <div class="advanced-grid">
+                <div>
+                    <label>Discover 帖子上限</label>
+                    <input id="discoverMaxPostsInput" type="number" min="20" max="5000" value="200">
+                </div>
+                <div>
+                    <label>单帖评论抓取上限</label>
+                    <input id="resultsLimitInput" type="number" min="100" max="10000" value="800">
+                </div>
+                <div>
+                    <label>AI 分析评论上限</label>
+                    <input id="maxAiCommentsInput" type="number" min="0" max="5000" value="500">
+                </div>
+                <div>
+                    <label>days_back（留空自动）</label>
+                    <input id="daysBackInput" type="number" min="1" max="60" placeholder="自动按日期计算">
+                </div>
+                <div>
+                    <label>平台</label>
+                    <div class="platform-inline">
+                        <label><input id="platformFb" type="checkbox" checked> Facebook</label>
+                        <label><input id="platformIg" type="checkbox" checked> Instagram</label>
+                    </div>
+                </div>
+            </div>
+            <div style="margin-top:8px;" class="platform-inline">
+                <label><input id="enableAiInput" type="checkbox" checked> 启用 AI 情感分析</label>
+            </div>
+        </div>
+        <div id="taskStatus" class="muted" style="margin-top:10px;">任务状态：未启动</div>
     </div>
 
     <div class="card">
@@ -99,6 +145,8 @@
 {% block scripts %}
 <script>
 let trendChart = null;
+let activeTaskId = null;
+let pollTimer = null;
 
 function escapeHtml(input) {
     const value = String(input || '');
@@ -126,6 +174,44 @@ function setDefaultDateRange() {
     start.setDate(end.getDate() - 13);
     document.getElementById('startDate').value = start.toISOString().slice(0, 10);
     document.getElementById('endDate').value = end.toISOString().slice(0, 10);
+}
+
+function toggleAdvancedPanel() {
+    const panel = document.getElementById('advancedPanel');
+    const arrow = document.getElementById('advancedArrow');
+    const opening = panel.style.display === 'none';
+    panel.style.display = opening ? 'block' : 'none';
+    arrow.textContent = opening ? '▼' : '▶';
+}
+
+function clampNumber(value, min, max, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+}
+
+function parseSeedTags() {
+    const raw = (document.getElementById('seedTagsInput').value || '').trim();
+    if (!raw) return [];
+    const parts = raw.split(/[\n,，、]+/).map(s => s.trim()).filter(Boolean);
+    const seen = new Set();
+    const result = [];
+    for (const tag of parts) {
+        const key = tag.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(tag);
+    }
+    return result;
+}
+
+function collectPlatforms() {
+    const vals = [];
+    if (document.getElementById('platformFb').checked) vals.push('facebook');
+    if (document.getElementById('platformIg').checked) vals.push('instagram');
+    return vals.length ? vals : ['facebook', 'instagram'];
 }
 
 function renderTrend(trend) {
@@ -212,6 +298,118 @@ function resetViewWithMessage(message) {
     document.getElementById('peakContainer').innerHTML = `<div class="muted">${escapeHtml(message)}</div>`;
     renderSummary({ total_comments: 0, sentiment_ratio: {}, key_opinions: [] });
     renderTop5([]);
+}
+
+function setTaskStatus(message) {
+    const el = document.getElementById('taskStatus');
+    el.textContent = `任务状态：${message}`;
+}
+
+function setCrawlButtonState(disabled) {
+    const btn = document.getElementById('crawlBtn');
+    btn.disabled = !!disabled;
+    if (disabled) {
+        btn.classList.add('btn-disabled');
+    } else {
+        btn.classList.remove('btn-disabled');
+    }
+}
+
+function normalizeTaskStatus(status) {
+    const s = String(status || '').toLowerCase();
+    if (s === 'pending') return '排队中';
+    if (s === 'running') return '执行中';
+    if (s === 'completed') return '已完成';
+    if (s === 'failed') return '失败';
+    return status || '未知';
+}
+
+async function pollTaskStatus(taskId) {
+    if (!taskId) return;
+    if (pollTimer) clearInterval(pollTimer);
+
+    const pollOnce = async () => {
+        try {
+            const response = await fetch(`/fb_task_status/${taskId}`);
+            if (!response.ok) {
+                setTaskStatus(`查询失败（${response.status}）`);
+                return;
+            }
+            const data = await response.json();
+            const statusText = normalizeTaskStatus(data.status);
+            let message = statusText;
+            if (data.result_summary) message += ` | ${data.result_summary}`;
+            if (data.error_message) message += ` | ${data.error_message}`;
+            setTaskStatus(message);
+
+            if (data.status === 'completed' || data.status === 'failed') {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                setCrawlButtonState(false);
+                if (data.status === 'completed') {
+                    await runReport();
+                }
+            }
+        } catch (error) {
+            console.error('pollTaskStatus error:', error);
+            setTaskStatus('状态轮询异常，请稍后手动刷新');
+        }
+    };
+
+    await pollOnce();
+    pollTimer = setInterval(pollOnce, 10000);
+}
+
+async function startSpdCrawl() {
+    try {
+        setCrawlButtonState(true);
+        setTaskStatus('提交任务中...');
+
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        const ms = end.getTime() - start.getTime();
+        const autoDaysBack = Math.min(Math.max(Math.floor(ms / (24 * 3600 * 1000)) + 1, 1), 60);
+        const customDaysBack = document.getElementById('daysBackInput').value;
+        const daysBack = clampNumber(customDaysBack, 1, 60, autoDaysBack);
+        const discoverMaxPosts = clampNumber(document.getElementById('discoverMaxPostsInput').value, 20, 5000, 200);
+        const resultsLimit = clampNumber(document.getElementById('resultsLimitInput').value, 100, 10000, 800);
+        const maxAiComments = clampNumber(document.getElementById('maxAiCommentsInput').value, 0, 5000, 500);
+        const seedTags = parseSeedTags();
+        const platforms = collectPlatforms();
+        const enableAi = document.getElementById('enableAiInput').checked;
+
+        const payload = {
+            days_back: daysBack,
+            discover_max_posts: discoverMaxPosts,
+            results_limit: resultsLimit,
+            enable_ai_analysis: enableAi,
+            max_ai_comments: maxAiComments,
+            platforms: platforms
+        };
+        if (seedTags.length) payload.seed_tags = seedTags;
+
+        const response = await fetch('/api/spd_schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok || data.status !== 'success') {
+            setTaskStatus(data.message || '任务启动失败');
+            setCrawlButtonState(false);
+            return;
+        }
+
+        activeTaskId = data.task_id;
+        setTaskStatus(`已启动（task_id=${activeTaskId}）`);
+        await pollTaskStatus(activeTaskId);
+    } catch (error) {
+        console.error('startSpdCrawl error:', error);
+        setTaskStatus('任务启动异常，请稍后重试');
+        setCrawlButtonState(false);
+    }
 }
 
 async function runReport() {

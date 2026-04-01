@@ -3125,7 +3125,12 @@ def fb_schedule():
             # 在后台线程中执行抓取任务
             def run_scrape():
                 try:
-                    result = tasks.scrape_fb_comments(task_id=task_id)
+                    result = tasks.scrape_fb_comments(
+                        task_id=task_id,
+                        results_limit=2500,
+                        enable_ai_analysis=True,
+                        max_ai_comments=1200
+                    )
                     logger.info(f"✅ 后台抓取完成 (task_id={task_id}): {result}")
                 except Exception as e:
                     logger.error(f"❌ 后台抓取失败 (task_id={task_id}): {e}")
@@ -3145,24 +3150,25 @@ def fb_schedule():
             user_id = session.get('user_id')
             session_id = session.get('session_id', 'default')
             create_task(task_id_str, user_id, session_id, function_type='fb_scrape')
-            try:
-                db.execute(
-                    "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
-                    (json.dumps({'source': 'fb_schedule'}), task_id_str)
-                )
-            except Exception as e:
-                logger.error(f"❌ 写入 task_params 失败: {e}")
 
             # 同时在 scrape_tasks 表也创建一条记录（保持前端轮询兼容）
             task_id = db.execute_and_fetch_id(
                 "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
                 ('fb_scrape', 'pending')
             )
-            # 把 scrape_task_id 也存入 task_params 方便 worker 更新
+            # 把 scrape_task_id 与参数存入 task_params 方便 worker 更新
             try:
+                task_params = {
+                    'source': 'fb_schedule',
+                    'scrape_task_id': task_id,
+                    'days_back': 7,
+                    'results_limit': 2500,
+                    'enable_ai_analysis': True,
+                    'max_ai_comments': 1200
+                }
                 db.execute(
                     "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
-                    (json.dumps({'source': 'fb_schedule', 'scrape_task_id': task_id}), task_id_str)
+                    (json.dumps(task_params, ensure_ascii=False), task_id_str)
                 )
             except Exception as e:
                 logger.error(f"❌ 更新 task_params 失败: {e}")
@@ -3177,6 +3183,147 @@ def fb_schedule():
     except Exception as e:
         logger.error(f"❌ FB 抓取启动失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/spd_schedule', methods=['POST'])
+@login_required
+def spd_schedule():
+    """触发 SPD 专项抓取任务（支持试跑参数控制）"""
+    try:
+        def _normalize_string_list(raw_value):
+            if raw_value is None:
+                return []
+            if isinstance(raw_value, str):
+                raw_value = [raw_value]
+            if not isinstance(raw_value, list):
+                return []
+            cleaned = []
+            seen = set()
+            for item in raw_value:
+                if not isinstance(item, str):
+                    continue
+                val = item.strip()
+                if not val:
+                    continue
+                key = val.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned.append(val)
+            return cleaned
+
+        data = request.get_json(silent=True) or {}
+        try:
+            days_back = int(data.get('days_back', 7))
+            results_limit = int(data.get('results_limit', 1500))
+            max_ai_comments = int(data.get('max_ai_comments', 800))
+            discover_max_posts = int(data.get('discover_max_posts', 300))
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': '数值参数格式错误'}), 400
+        enable_ai_raw = data.get('enable_ai_analysis', True)
+        if isinstance(enable_ai_raw, str):
+            enable_ai_analysis = enable_ai_raw.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+        else:
+            enable_ai_analysis = bool(enable_ai_raw)
+        post_urls = _normalize_string_list(data.get('post_urls')) or None
+        seed_tags = _normalize_string_list(data.get('seed_tags'))
+        platforms = _normalize_string_list(data.get('platforms')) or ['facebook', 'instagram']
+        if (not post_urls) and (not seed_tags):
+            seed_tags = list(SPD_KEYWORDS)
+
+        if days_back < 1 or days_back > 60:
+            return jsonify({'status': 'error', 'message': 'days_back 需在 1~60 之间'}), 400
+        if results_limit < 100 or results_limit > 10000:
+            return jsonify({'status': 'error', 'message': 'results_limit 需在 100~10000 之间'}), 400
+        if max_ai_comments < 0 or max_ai_comments > 5000:
+            return jsonify({'status': 'error', 'message': 'max_ai_comments 需在 0~5000 之间'}), 400
+        if discover_max_posts < 20 or discover_max_posts > 5000:
+            return jsonify({'status': 'error', 'message': 'discover_max_posts 需在 20~5000 之间'}), 400
+
+        task_id = db.execute_and_fetch_id(
+            "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+            ('spd_scrape', 'pending')
+        )
+
+        if not USE_DB_WORKER:
+            def run_spd_scrape():
+                try:
+                    resolved_urls = post_urls
+                    if (not resolved_urls) and seed_tags:
+                        discover_result = tasks.discover_posts_by_tags(
+                            seed_tags=seed_tags,
+                            platforms=platforms,
+                            days_back=days_back,
+                            max_posts=discover_max_posts
+                        )
+                        if discover_result.get('status') != 'success':
+                            raise RuntimeError(discover_result.get('message') or 'discover failed')
+                        resolved_urls = discover_result.get('post_urls') or []
+                        if not resolved_urls:
+                            raise RuntimeError('discover 未找到可抓取帖子')
+
+                    tasks.scrape_fb_comments(
+                        post_urls=resolved_urls,
+                        days_back=days_back,
+                        task_id=task_id,
+                        results_limit=results_limit,
+                        enable_ai_analysis=enable_ai_analysis,
+                        max_ai_comments=max_ai_comments,
+                        allow_fallback_to_config=False
+                    )
+                except Exception as e:
+                    logger.error(f"❌ SPD 抓取失败(task_id={task_id}): {e}")
+                    try:
+                        db.execute(
+                            "UPDATE scrape_tasks SET status = 'failed', completed_at = NOW(), error_message = %s WHERE id = %s",
+                            (str(e)[:500], task_id)
+                        )
+                    except Exception:
+                        pass
+
+            threading.Thread(target=run_spd_scrape, daemon=True).start()
+        else:
+            queue_task_id = str(uuid.uuid4())
+            create_task(
+                queue_task_id,
+                session.get('user_id'),
+                session.get('session_id', 'default'),
+                function_type='fb_scrape'
+            )
+            task_params = {
+                'source': 'spd_schedule',
+                'scrape_task_id': task_id,
+                'post_urls': post_urls,
+                'seed_tags': seed_tags,
+                'platforms': platforms,
+                'discover_max_posts': discover_max_posts,
+                'days_back': days_back,
+                'results_limit': results_limit,
+                'enable_ai_analysis': enable_ai_analysis,
+                'max_ai_comments': max_ai_comments
+            }
+            db.execute(
+                "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                (json.dumps(task_params, ensure_ascii=False), queue_task_id)
+            )
+
+        return jsonify({
+            'status': 'success',
+            'message': 'SPD 抓取任务已启动',
+            'task_id': task_id,
+            'config': {
+                'days_back': days_back,
+                'results_limit': results_limit,
+                'enable_ai_analysis': enable_ai_analysis,
+                'max_ai_comments': max_ai_comments,
+                'discover_max_posts': discover_max_posts,
+                'seed_tag_count': len(seed_tags),
+                'custom_post_count': len(post_urls) if post_urls else 0
+            }
+        })
+    except Exception as e:
+        logger.error(f"❌ SPD 抓取任务启动失败: {e}")
+        return jsonify({'status': 'error', 'message': '内部错误，请稍后重试'}), 500
 
 
 @app.route('/fb_task_status/<int:task_id>', methods=['GET'])

@@ -183,9 +183,43 @@ def _handle_competitor(task_id, params):
 def _handle_fb_scrape(task_id, params):
     """FB 舆情看板抓取"""
     scrape_task_id = params.get('scrape_task_id')
+    post_urls = params.get('post_urls')
+    seed_tags = params.get('seed_tags')
+    platforms = params.get('platforms')
+    discover_max_posts = params.get('discover_max_posts', 300)
+    days_back = params.get('days_back', 7)
+    results_limit = params.get('results_limit', 2500)
+    enable_ai_analysis = params.get('enable_ai_analysis', True)
+    max_ai_comments = params.get('max_ai_comments', 1200)
 
     try:
-        result = tasks.scrape_fb_comments(task_id=scrape_task_id)
+        if (not post_urls) and seed_tags:
+            update_task(task_id, progress='按标签发现帖子中')
+            discover_result = tasks.discover_posts_by_tags(
+                seed_tags=seed_tags,
+                platforms=platforms,
+                days_back=days_back,
+                max_posts=discover_max_posts
+            )
+            if discover_result.get('status') != 'success':
+                raise RuntimeError(discover_result.get('message') or 'discover failed')
+            post_urls = discover_result.get('post_urls') or []
+            if not post_urls:
+                raise RuntimeError('discover 未找到可抓取帖子')
+            logger.info(f"✅ Discover URLs: {len(post_urls)}")
+
+        update_task(task_id, progress='抓取评论与分析中')
+        result = tasks.scrape_fb_comments(
+            post_urls=post_urls,
+            days_back=days_back,
+            task_id=scrape_task_id,
+            results_limit=results_limit,
+            enable_ai_analysis=enable_ai_analysis,
+            max_ai_comments=max_ai_comments,
+            allow_fallback_to_config=False
+        )
+        if result.get('status') != 'success':
+            raise RuntimeError(result.get('message') or 'fb scrape failed')
         logger.info(f"✅ FB 抓取完成: {result}")
         update_task(task_id, status='completed', progress='抓取完成')
     except Exception as e:
