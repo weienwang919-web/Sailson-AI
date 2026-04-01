@@ -65,8 +65,20 @@
         </div>
         <div id="advancedPanel" class="advanced-panel" style="display:none;">
             <div style="margin-bottom:8px;">
-                <label>种子标签（逗号或换行分隔）</label>
-                <textarea id="seedTagsInput" placeholder="#MLBBxNARUTO, #MLBBNewSkin, naruto, 火影"></textarea>
+                <label>抓取范围</label>
+                <select id="crawlScopeInput">
+                    <option value="both" selected>MLBB + SPD（分开抓取后合并）</option>
+                    <option value="mlbb">仅 MLBB</option>
+                    <option value="spd">仅 SPD</option>
+                </select>
+            </div>
+            <div style="margin-bottom:8px;">
+                <label>MLBB 种子标签（逗号或换行分隔，可留空走默认）</label>
+                <textarea id="mlbbSeedTagsInput" placeholder="#mlbb, #mobilelegends, mobile legends"></textarea>
+            </div>
+            <div style="margin-bottom:8px;">
+                <label>SPD 种子标签（逗号或换行分隔，可留空走默认）</label>
+                <textarea id="spdSeedTagsInput" placeholder="#MLBBxNARUTO, #MLBBNewSkin, naruto, 火影"></textarea>
             </div>
             <div class="advanced-grid">
                 <div>
@@ -192,8 +204,8 @@ function clampNumber(value, min, max, fallback) {
     return n;
 }
 
-function parseSeedTags() {
-    const raw = (document.getElementById('seedTagsInput').value || '').trim();
+function parseTagTextarea(id) {
+    const raw = (document.getElementById(id).value || '').trim();
     if (!raw) return [];
     const parts = raw.split(/[\n,，、]+/).map(s => s.trim()).filter(Boolean);
     const seen = new Set();
@@ -376,11 +388,14 @@ async function startSpdCrawl() {
         const discoverMaxPosts = clampNumber(document.getElementById('discoverMaxPostsInput').value, 20, 5000, 200);
         const resultsLimit = clampNumber(document.getElementById('resultsLimitInput').value, 100, 10000, 800);
         const maxAiComments = clampNumber(document.getElementById('maxAiCommentsInput').value, 0, 5000, 500);
-        const seedTags = parseSeedTags();
+        const crawlScope = document.getElementById('crawlScopeInput').value || 'both';
+        const mlbbSeedTags = parseTagTextarea('mlbbSeedTagsInput');
+        const spdSeedTags = parseTagTextarea('spdSeedTagsInput');
         const platforms = collectPlatforms();
         const enableAi = document.getElementById('enableAiInput').checked;
 
         const payload = {
+            crawl_scope: crawlScope,
             days_back: daysBack,
             discover_max_posts: discoverMaxPosts,
             results_limit: resultsLimit,
@@ -388,7 +403,8 @@ async function startSpdCrawl() {
             max_ai_comments: maxAiComments,
             platforms: platforms
         };
-        if (seedTags.length) payload.seed_tags = seedTags;
+        if (mlbbSeedTags.length) payload.mlbb_seed_tags = mlbbSeedTags;
+        if (spdSeedTags.length) payload.spd_seed_tags = spdSeedTags;
 
         const response = await fetch('/api/spd_schedule', {
             method: 'POST',

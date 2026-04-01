@@ -184,16 +184,60 @@ def _handle_fb_scrape(task_id, params):
     """FB 舆情看板抓取"""
     scrape_task_id = params.get('scrape_task_id')
     post_urls = params.get('post_urls')
+    task_queries = params.get('task_queries') or []
     seed_tags = params.get('seed_tags')
     platforms = params.get('platforms')
+    crawl_scope = params.get('crawl_scope', 'both')
     discover_max_posts = params.get('discover_max_posts', 300)
     days_back = params.get('days_back', 7)
     results_limit = params.get('results_limit', 2500)
     enable_ai_analysis = params.get('enable_ai_analysis', True)
     max_ai_comments = params.get('max_ai_comments', 1200)
 
+    def _set_scrape_summary(message):
+        """将阶段进度写入 scrape_tasks，供前端状态轮询展示。"""
+        if not scrape_task_id:
+            return
+        try:
+            db.execute(
+                "UPDATE scrape_tasks SET status = 'running', result_summary = %s WHERE id = %s",
+                (str(message)[:500], scrape_task_id)
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 更新 scrape_tasks 进度失败: {e}")
+
     try:
-        if (not post_urls) and seed_tags:
+        if (not post_urls) and task_queries:
+            merged_urls = []
+            seen = set()
+            discover_stats = []
+            for query in task_queries:
+                task_name = query.get('task_name', 'unknown')
+                update_task(task_id, progress=f'按标签发现帖子中（{task_name}）')
+                discover_result = tasks.discover_posts_by_tags(
+                    seed_tags=query.get('seed_tags') or [],
+                    platforms=platforms,
+                    days_back=days_back,
+                    max_posts=discover_max_posts
+                )
+                if discover_result.get('status') != 'success':
+                    raise RuntimeError(f"{task_name} discover failed: {discover_result.get('message') or 'unknown'}")
+                task_urls = discover_result.get('post_urls') or []
+                discover_stats.append((task_name, len(task_urls)))
+                _set_scrape_summary(f"发现帖子中：{task_name} {len(task_urls)} 条")
+                for url in task_urls:
+                    key = str(url).strip().lower()
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    merged_urls.append(url)
+            post_urls = merged_urls
+            if not post_urls:
+                raise RuntimeError(f'{crawl_scope} 分任务 discover 未找到可抓取帖子')
+            stats_text = " | ".join([f"{name}:{count}" for name, count in discover_stats]) if discover_stats else "无"
+            _set_scrape_summary(f"发现完成：{stats_text} | 合并去重后 {len(post_urls)} 条")
+            logger.info(f"✅ Discover URLs (merged): {len(post_urls)}")
+        elif (not post_urls) and seed_tags:
             update_task(task_id, progress='按标签发现帖子中')
             discover_result = tasks.discover_posts_by_tags(
                 seed_tags=seed_tags,
@@ -206,9 +250,11 @@ def _handle_fb_scrape(task_id, params):
             post_urls = discover_result.get('post_urls') or []
             if not post_urls:
                 raise RuntimeError('discover 未找到可抓取帖子')
+            _set_scrape_summary(f"发现完成：SPD {len(post_urls)} 条")
             logger.info(f"✅ Discover URLs: {len(post_urls)}")
 
         update_task(task_id, progress='抓取评论与分析中')
+        _set_scrape_summary(f"抓取评论中：共 {len(post_urls or [])} 条帖子")
         result = tasks.scrape_fb_comments(
             post_urls=post_urls,
             days_back=days_back,
@@ -220,6 +266,19 @@ def _handle_fb_scrape(task_id, params):
         )
         if result.get('status') != 'success':
             raise RuntimeError(result.get('message') or 'fb scrape failed')
+        if scrape_task_id:
+            try:
+                final_summary = (
+                    f"完成 | 新增 {result.get('new_comments', 0)}，"
+                    f"已存在 {result.get('existing_comments', 0)}，"
+                    f"跳过不支持URL {result.get('skipped_unsupported_urls', 0)}"
+                )
+                db.execute(
+                    "UPDATE scrape_tasks SET result_summary = %s WHERE id = %s",
+                    (final_summary[:500], scrape_task_id)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ 写入完成摘要失败: {e}")
         logger.info(f"✅ FB 抓取完成: {result}")
         update_task(task_id, status='completed', progress='抓取完成')
     except Exception as e:

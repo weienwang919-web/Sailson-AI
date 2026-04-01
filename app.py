@@ -1241,6 +1241,11 @@ SPD_KEYWORDS = [
     "#mlbbxnaruto", "#mlbbnewskin", "uchiha", "晓组织"
 ]
 
+MLBB_DISCOVER_KEYWORDS = [
+    "#mlbb", "mlbb", "#mobilelegends", "mobile legends", "mobilelegendsbangbang",
+    "#mobilelegendsbangbang", "#moba55", "#mobilelegendsbangbang", "#mobalegends"
+]
+
 
 TASK_BOOLEAN_RULES = {
     # MVP 版：先覆盖 brief 中最核心关键词与排除词
@@ -3226,10 +3231,29 @@ def spd_schedule():
         else:
             enable_ai_analysis = bool(enable_ai_raw)
         post_urls = _normalize_string_list(data.get('post_urls')) or None
+        # 兼容旧字段 seed_tags（默认视为 SPD 任务标签）
         seed_tags = _normalize_string_list(data.get('seed_tags'))
+        mlbb_seed_tags = _normalize_string_list(data.get('mlbb_seed_tags'))
+        spd_seed_tags = _normalize_string_list(data.get('spd_seed_tags'))
+        if seed_tags and not spd_seed_tags:
+            spd_seed_tags = list(seed_tags)
         platforms = _normalize_string_list(data.get('platforms')) or ['facebook', 'instagram']
-        if (not post_urls) and (not seed_tags):
-            seed_tags = list(SPD_KEYWORDS)
+        crawl_scope = str(data.get('crawl_scope', 'both')).strip().lower()
+        if crawl_scope not in ('both', 'mlbb', 'spd'):
+            return jsonify({'status': 'error', 'message': 'crawl_scope 仅支持 both/mlbb/spd'}), 400
+
+        task_queries = []
+        if not post_urls:
+            if crawl_scope in ('both', 'mlbb'):
+                task_queries.append({
+                    'task_name': 'MLBB',
+                    'seed_tags': mlbb_seed_tags or list(MLBB_DISCOVER_KEYWORDS)
+                })
+            if crawl_scope in ('both', 'spd'):
+                task_queries.append({
+                    'task_name': 'SPD',
+                    'seed_tags': spd_seed_tags or list(SPD_KEYWORDS)
+                })
 
         if days_back < 1 or days_back > 60:
             return jsonify({'status': 'error', 'message': 'days_back 需在 1~60 之间'}), 400
@@ -3249,18 +3273,27 @@ def spd_schedule():
             def run_spd_scrape():
                 try:
                     resolved_urls = post_urls
-                    if (not resolved_urls) and seed_tags:
-                        discover_result = tasks.discover_posts_by_tags(
-                            seed_tags=seed_tags,
-                            platforms=platforms,
-                            days_back=days_back,
-                            max_posts=discover_max_posts
-                        )
-                        if discover_result.get('status') != 'success':
-                            raise RuntimeError(discover_result.get('message') or 'discover failed')
-                        resolved_urls = discover_result.get('post_urls') or []
+                    if (not resolved_urls) and task_queries:
+                        merged = []
+                        seen = set()
+                        for query in task_queries:
+                            discover_result = tasks.discover_posts_by_tags(
+                                seed_tags=query.get('seed_tags') or [],
+                                platforms=platforms,
+                                days_back=days_back,
+                                max_posts=discover_max_posts
+                            )
+                            if discover_result.get('status') != 'success':
+                                raise RuntimeError(f"{query.get('task_name')} discover failed: {discover_result.get('message')}")
+                            for url in (discover_result.get('post_urls') or []):
+                                key = str(url).strip().lower()
+                                if not key or key in seen:
+                                    continue
+                                seen.add(key)
+                                merged.append(url)
+                        resolved_urls = merged
                         if not resolved_urls:
-                            raise RuntimeError('discover 未找到可抓取帖子')
+                            raise RuntimeError('MLBB/SPD 分任务 discover 均未找到可抓取帖子')
 
                     tasks.scrape_fb_comments(
                         post_urls=resolved_urls,
@@ -3295,7 +3328,9 @@ def spd_schedule():
                 'scrape_task_id': task_id,
                 'post_urls': post_urls,
                 'seed_tags': seed_tags,
+                'task_queries': task_queries,
                 'platforms': platforms,
+                'crawl_scope': crawl_scope,
                 'discover_max_posts': discover_max_posts,
                 'days_back': days_back,
                 'results_limit': results_limit,
@@ -3312,12 +3347,15 @@ def spd_schedule():
             'message': 'SPD 抓取任务已启动',
             'task_id': task_id,
             'config': {
+                'crawl_scope': crawl_scope,
                 'days_back': days_back,
                 'results_limit': results_limit,
                 'enable_ai_analysis': enable_ai_analysis,
                 'max_ai_comments': max_ai_comments,
                 'discover_max_posts': discover_max_posts,
-                'seed_tag_count': len(seed_tags),
+                'mlbb_seed_tag_count': len(mlbb_seed_tags),
+                'spd_seed_tag_count': len(spd_seed_tags or seed_tags),
+                'task_query_count': len(task_queries),
                 'custom_post_count': len(post_urls) if post_urls else 0
             }
         })
