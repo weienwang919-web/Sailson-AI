@@ -57,6 +57,158 @@ def _normalize_list_input(values):
     return result
 
 
+def _expand_seed_terms(raw_values):
+    """支持把布尔表达式原文展开为 discover 可用词项。"""
+    operators = {"AND", "OR", "NOT"}
+    expanded = []
+    seen = set()
+
+    token_pattern = re.compile(r'"([^"]+)"|([^\s()]+)')
+
+    for raw in _normalize_list_input(raw_values):
+        # 允许直接输入布尔规则原文
+        for match in token_pattern.finditer(raw):
+            token = (match.group(1) or match.group(2) or "").strip()
+            if not token:
+                continue
+            upper = token.upper()
+            if upper in operators:
+                continue
+            if token in ("(", ")"):
+                continue
+
+            # 清理布尔规则中常见修饰
+            cleaned = token.strip().strip('"').strip("'")
+            cleaned = cleaned.replace("*", "")
+            cleaned = cleaned.lstrip("#")
+            cleaned = cleaned.strip()
+            if not cleaned:
+                continue
+
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            expanded.append(cleaned)
+
+    return expanded
+
+
+def _tokenize_boolean_expr(expr):
+    token_re = re.compile(r'"[^"]*"|\(|\)|\bAND\b|\bOR\b|\bNOT\b|[^\s()]+', flags=re.IGNORECASE)
+    return token_re.findall(expr or "")
+
+
+def _boolean_to_rpn(tokens):
+    precedence = {"NOT": 3, "AND": 2, "OR": 1}
+    output = []
+    ops = []
+    for token in tokens:
+        upper = token.upper()
+        if upper in precedence:
+            while ops and ops[-1] != "(" and precedence.get(ops[-1], 0) >= precedence[upper]:
+                output.append(ops.pop())
+            ops.append(upper)
+        elif token == "(":
+            ops.append(token)
+        elif token == ")":
+            while ops and ops[-1] != "(":
+                output.append(ops.pop())
+            if ops and ops[-1] == "(":
+                ops.pop()
+        else:
+            output.append(token)
+    while ops:
+        output.append(ops.pop())
+    return output
+
+
+def _normalize_rule_term(term):
+    value = (term or "").strip()
+    if not value:
+        return ""
+    if value.startswith('"') and value.endswith('"'):
+        value = value[1:-1].strip()
+    return value.lower().strip()
+
+
+def _match_boolean_term(text, raw_term):
+    term = _normalize_rule_term(raw_term)
+    if not term:
+        return False
+    if term.endswith('*'):
+        prefix = term[:-1]
+        return bool(prefix) and (prefix in text)
+    return term in text
+
+
+def _eval_boolean_expr(text, expr):
+    tokens = _tokenize_boolean_expr(expr)
+    if not tokens:
+        return False
+    rpn = _boolean_to_rpn(tokens)
+    stack = []
+    for token in rpn:
+        if token in {"AND", "OR", "NOT"}:
+            if token == "NOT":
+                value = stack.pop() if stack else False
+                stack.append(not value)
+            else:
+                right = stack.pop() if stack else False
+                left = stack.pop() if stack else False
+                stack.append(left and right if token == "AND" else left or right)
+        else:
+            stack.append(_match_boolean_term(text, token))
+    return bool(stack[-1]) if stack else False
+
+
+def _extract_include_terms_from_rule(expr):
+    """从布尔规则中提取正向词项（忽略 NOT 分支词项）。"""
+    tokens = _tokenize_boolean_expr(expr)
+    includes = []
+    seen = set()
+    negate_depth = 0
+    pending_not = False
+    depth = 0
+
+    for token in tokens:
+        upper = token.upper()
+        if upper == "NOT":
+            pending_not = True
+            continue
+        if token == "(":
+            depth += 1
+            if pending_not:
+                negate_depth = max(negate_depth, depth)
+                pending_not = False
+            continue
+        if token == ")":
+            if negate_depth and depth <= negate_depth:
+                negate_depth = 0
+            depth = max(0, depth - 1)
+            continue
+        if upper in {"AND", "OR"}:
+            pending_not = False
+            continue
+
+        is_negated = pending_not or (negate_depth > 0 and depth >= negate_depth)
+        pending_not = False
+        if is_negated:
+            continue
+
+        term = _normalize_rule_term(token).replace("*", "")
+        term = term.lstrip("#").strip()
+        if not term:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        includes.append(term)
+
+    return includes
+
+
 def _is_facebook_url(url):
     if not isinstance(url, str):
         return False
@@ -115,6 +267,24 @@ def _extract_post_url(item):
             if cleaned.startswith("http://") or cleaned.startswith("https://"):
                 return cleaned
     return None
+
+
+def _extract_discover_text(item):
+    if not isinstance(item, dict):
+        return ""
+    parts = []
+    candidate_keys = [
+        "text", "caption", "description", "title", "content",
+        "message", "postText", "post_text", "postCaption"
+    ]
+    for key in candidate_keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    hashtags = item.get("hashtags")
+    if isinstance(hashtags, list):
+        parts.extend([str(x).strip() for x in hashtags if str(x).strip()])
+    return " ".join(parts).lower().strip()
 
 
 def _parse_created_at(value):
@@ -200,14 +370,24 @@ def _run_actor_with_inputs(actor_id, inputs, timeout_secs=600):
     raise RuntimeError(last_error or "actor call failed")
 
 
-def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200):
+def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200, boolean_rule=None):
     """按标签/关键词发现帖子 URL（按平台调用 hashtag actors）。"""
     if not apify_client:
         return {"status": "error", "message": "Apify not configured", "post_urls": []}
 
-    tags = _normalize_list_input(seed_tags)
+    include_terms = _extract_include_terms_from_rule(boolean_rule) if boolean_rule else []
+    merged_raw_terms = []
+    seen_term = set()
+    for term in include_terms + _expand_seed_terms(seed_tags):
+        key = term.lower()
+        if key in seen_term:
+            continue
+        seen_term.add(key)
+        merged_raw_terms.append(term)
+
+    tags = merged_raw_terms
     if not tags:
-        return {"status": "error", "message": "seed_tags is empty", "post_urls": []}
+        return {"status": "error", "message": "seed_tags is empty after boolean parsing", "post_urls": []}
 
     target_platforms = [p.lower() for p in _normalize_list_input(platforms)] or ["facebook", "instagram"]
     max_posts = max(20, min(int(max_posts), 5000))
@@ -221,17 +401,53 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
     end_dt = datetime.datetime.now(datetime.timezone.utc)
     start_dt = end_dt - datetime.timedelta(days=days_back)
     per_platform_limit = max(20, int(max_posts / max(len(target_platforms), 1)))
-    hashtags_raw = [t.lstrip("#").strip() for t in tags if t.strip()]
+    raw_terms = [str(t).strip() for t in tags if str(t).strip()]
+    if not raw_terms:
+        return {"status": "error", "message": "seed_tags is empty", "post_urls": []}
+
+    # FB actor: keywordList 仅允许字母数字/Unicode/下划线（不允许 #、空格、标点）
+    fb_keyword_pattern = re.compile(r"^[a-zA-Z0-9\u0080-\uFFFF_]+$")
+    cleaned_terms = []
+    invalid_terms = []
+    for term in raw_terms:
+        cleaned = re.sub(r"[^a-zA-Z0-9\u0080-\uFFFF_]+", "", term.lstrip("#"))
+        if cleaned and fb_keyword_pattern.match(cleaned):
+            cleaned_terms.append(cleaned)
+        else:
+            invalid_terms.append(term)
+    if invalid_terms:
+        return {
+            "status": "error",
+            "message": f"invalid seed_tags: {', '.join(invalid_terms[:10])}",
+            "post_urls": []
+        }
+
+    # 保持顺序去重：所有输入都必须可转换且有效
+    fb_keyword_list = []
+    seen_cleaned = set()
+    for term in cleaned_terms:
+        key = term.lower()
+        if key in seen_cleaned:
+            continue
+        seen_cleaned.add(key)
+        fb_keyword_list.append(term)
+    if not fb_keyword_list:
+        return {"status": "error", "message": "seed_tags sanitized to empty", "post_urls": []}
+
+    # IG actor: hashtags 至少 1 个，且每项不能包含空格或常见标点
     ig_hashtag_pattern = re.compile(r"^[^!?.,:;\-+=*&%$#@/\~^|<>()\[\]{}\"'`\s]+$")
     ig_hashtags = []
-    for tag in hashtags_raw:
-        if ig_hashtag_pattern.match(tag):
-            ig_hashtags.append(tag)
-    # 兜底：若全部被过滤，则仅保留无空格词（尽量避免输入为空）
+    for term in fb_keyword_list:
+        if ig_hashtag_pattern.match(term):
+            ig_hashtags.append(term)
+        else:
+            return {
+                "status": "error",
+                "message": f"invalid instagram hashtag after sanitize: {term}",
+                "post_urls": []
+            }
     if not ig_hashtags:
-        ig_hashtags = [t for t in hashtags_raw if t and (" " not in t)]
-
-    fb_keyword_list = hashtags_raw or tags
+        return {"status": "error", "message": "instagram hashtags is empty after sanitize", "post_urls": []}
 
     urls = []
     seen = set()
@@ -280,6 +496,10 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
             items, used_input = _run_actor_with_inputs(actor_id, candidate_inputs, timeout_secs=600)
             actor_runs.append({"platform": platform, "actor_id": actor_id, "items": len(items)})
             for item in items:
+                if boolean_rule:
+                    text = _extract_discover_text(item)
+                    if text and (not _eval_boolean_expr(text, boolean_rule)):
+                        continue
                 url = _extract_post_url(item)
                 if not url:
                     continue

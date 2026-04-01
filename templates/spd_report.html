@@ -77,8 +77,16 @@
                 <textarea id="mlbbSeedTagsInput" placeholder="#mlbb, #mobilelegends, mobile legends"></textarea>
             </div>
             <div style="margin-bottom:8px;">
+                <label>MLBB 布尔规则（可直接粘贴 brief 原文）</label>
+                <textarea id="mlbbRuleInput" placeholder='("#mlbb" OR #mlbb* OR "mlbb" ...) AND NOT ("FREEFIRE" ... )'></textarea>
+            </div>
+            <div style="margin-bottom:8px;">
                 <label>SPD 种子标签（逗号或换行分隔，可留空走默认）</label>
                 <textarea id="spdSeedTagsInput" placeholder="#MLBBxNARUTO, #MLBBNewSkin, naruto, 火影"></textarea>
+            </div>
+            <div style="margin-bottom:8px;">
+                <label>SPD 布尔规则（可直接粘贴 brief 原文）</label>
+                <textarea id="spdRuleInput" placeholder='((MLBB关键词...) AND (NARUTO关键词...)) OR ("MLBBxNARUTO" ...)'></textarea>
             </div>
             <div class="advanced-grid">
                 <div>
@@ -391,6 +399,8 @@ async function startSpdCrawl() {
         const crawlScope = document.getElementById('crawlScopeInput').value || 'both';
         const mlbbSeedTags = parseTagTextarea('mlbbSeedTagsInput');
         const spdSeedTags = parseTagTextarea('spdSeedTagsInput');
+        const mlbbRule = (document.getElementById('mlbbRuleInput').value || '').trim();
+        const spdRule = (document.getElementById('spdRuleInput').value || '').trim();
         const platforms = collectPlatforms();
         const enableAi = document.getElementById('enableAiInput').checked;
 
@@ -405,6 +415,8 @@ async function startSpdCrawl() {
         };
         if (mlbbSeedTags.length) payload.mlbb_seed_tags = mlbbSeedTags;
         if (spdSeedTags.length) payload.spd_seed_tags = spdSeedTags;
+        if (mlbbRule) payload.mlbb_rule = mlbbRule;
+        if (spdRule) payload.spd_rule = spdRule;
 
         const response = await fetch('/api/spd_schedule', {
             method: 'POST',

@@ -3235,6 +3235,8 @@ def spd_schedule():
         seed_tags = _normalize_string_list(data.get('seed_tags'))
         mlbb_seed_tags = _normalize_string_list(data.get('mlbb_seed_tags'))
         spd_seed_tags = _normalize_string_list(data.get('spd_seed_tags'))
+        mlbb_rule = (data.get('mlbb_rule') or '').strip()
+        spd_rule = (data.get('spd_rule') or '').strip()
         if seed_tags and not spd_seed_tags:
             spd_seed_tags = list(seed_tags)
         platforms = _normalize_string_list(data.get('platforms')) or ['facebook', 'instagram']
@@ -3247,12 +3249,14 @@ def spd_schedule():
             if crawl_scope in ('both', 'mlbb'):
                 task_queries.append({
                     'task_name': 'MLBB',
-                    'seed_tags': mlbb_seed_tags or list(MLBB_DISCOVER_KEYWORDS)
+                    'seed_tags': mlbb_seed_tags or list(MLBB_DISCOVER_KEYWORDS),
+                    'boolean_rule': mlbb_rule or TASK_BOOLEAN_RULES.get('MLBB', '')
                 })
             if crawl_scope in ('both', 'spd'):
                 task_queries.append({
                     'task_name': 'SPD',
-                    'seed_tags': spd_seed_tags or list(SPD_KEYWORDS)
+                    'seed_tags': spd_seed_tags or list(SPD_KEYWORDS),
+                    'boolean_rule': spd_rule or TASK_BOOLEAN_RULES.get('SPD', '')
                 })
 
         if days_back < 1 or days_back > 60:
@@ -3281,7 +3285,8 @@ def spd_schedule():
                                 seed_tags=query.get('seed_tags') or [],
                                 platforms=platforms,
                                 days_back=days_back,
-                                max_posts=discover_max_posts
+                                max_posts=discover_max_posts,
+                                boolean_rule=query.get('boolean_rule')
                             )
                             if discover_result.get('status') != 'success':
                                 raise RuntimeError(f"{query.get('task_name')} discover failed: {discover_result.get('message')}")
@@ -3355,6 +3360,8 @@ def spd_schedule():
                 'discover_max_posts': discover_max_posts,
                 'mlbb_seed_tag_count': len(mlbb_seed_tags),
                 'spd_seed_tag_count': len(spd_seed_tags or seed_tags),
+                'mlbb_rule_set': bool(mlbb_rule),
+                'spd_rule_set': bool(spd_rule),
                 'task_query_count': len(task_queries),
                 'custom_post_count': len(post_urls) if post_urls else 0
             }

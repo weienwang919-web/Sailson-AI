@@ -218,7 +218,8 @@ def _handle_fb_scrape(task_id, params):
                     seed_tags=query.get('seed_tags') or [],
                     platforms=platforms,
                     days_back=days_back,
-                    max_posts=discover_max_posts
+                    max_posts=discover_max_posts,
+                    boolean_rule=query.get('boolean_rule')
                 )
                 if discover_result.get('status') != 'success':
                     raise RuntimeError(f"{task_name} discover failed: {discover_result.get('message') or 'unknown'}")
