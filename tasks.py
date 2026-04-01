@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import datetime
+import re
 from urllib.parse import urlparse
 from apify_client import ApifyClient
 from openai import OpenAI
