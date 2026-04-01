@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}SPD 舆情报告 | Sailson AI{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { background: #f7f8fa; font-family: 'Inter', sans-serif; }
+    .page-wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .card { background: #fff; border: 1px solid #eceff3; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+    .filters { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; }
+    .filters label { font-size: 12px; color: #666; margin-bottom: 4px; }
+    .filters input, .filters select { width: 100%; border: 1px solid #dfe3ea; border-radius: 8px; padding: 10px; }
+    .btn-run { background: #2962ff; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 600; }
+    .section-title { font-weight: 700; margin-bottom: 10px; font-size: 18px; }
+    .muted { color: #70757a; font-size: 13px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+    .summary-item { background: #f9fbff; border: 1px solid #edf2ff; border-radius: 10px; padding: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid #eef1f5; padding: 10px; vertical-align: top; }
+    th { background: #fafbfd; text-align: left; color: #4d5562; }
+    .op-list { margin: 0; padding-left: 16px; }
+    .chip { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 999px; margin-right: 6px; background: #eef3ff; color: #2952cc; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-wrap">
+    <div class="topbar">
+        <h2 style="margin:0;">SPD 舆情监控报告（MVP）</h2>
+        <a href="/" class="muted" style="text-decoration:none;">← 返回首页</a>
+    </div>
+
+    <div class="card">
+        <div class="filters">
+            <div>
+                <label>任务名称</label>
+                <input value="SPD（MLBB x 火影忍者联动）" disabled>
+            </div>
+            <div>
+                <label>开始日期</label>
+                <input type="date" id="startDate">
+            </div>
+            <div>
+                <label>结束日期</label>
+                <input type="date" id="endDate">
+            </div>
+            <div>
+                <label>区域视角</label>
+                <select id="region">
+                    <option value="global">GLOBAL</option>
+                    <option value="th">TH</option>
+                </select>
+            </div>
+            <button class="btn-run" onclick="runReport()">试跑报告</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="section-title">一、MLBB vs SPD 互动量变化趋势</div>
+        <canvas id="trendChart" height="95"></canvas>
+    </div>
+
+    <div class="card">
+        <div class="section-title">二、峰值下钻分析</div>
+        <div id="peakContainer" class="muted">暂无数据</div>
+    </div>
+
+    <div class="card">
+        <div class="section-title">三、TOP5 帖文舆情概况（仅 SPD 相关）</div>
+        <div class="summary-grid">
+            <div class="summary-item"><div class="muted">总评论量</div><div id="sumTotal" style="font-size:20px;font-weight:700;">0</div></div>
+            <div class="summary-item"><div class="muted">情感占比</div><div id="sumRatio">正面 0% / 中性 0% / 负面 0%</div></div>
+            <div class="summary-item"><div class="muted">关键观点数</div><div id="sumOpinions" style="font-size:20px;font-weight:700;">0</div></div>
+        </div>
+        <div id="opinionsContainer"></div>
+    </div>
+
+    <div class="card">
+        <div class="section-title">四、TOP5 帖文详情</div>
+        <div style="overflow:auto;">
+            <table id="top5Table">
+                <thead>
+                    <tr>
+                        <th style="width:70px;">排名</th>
+                        <th style="width:220px;">帖文主题</th>
+                        <th style="width:220px;">情感占比</th>
+                        <th>主要观点（Top Sentiments）</th>
+                        <th style="width:110px;">评论量</th>
+                        <th style="width:120px;">链接</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td colspan="6" class="muted">暂无数据</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let trendChart = null;
+
+function escapeHtml(input) {
+    const value = String(input || '');
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function safeUrl(url) {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+            return parsed.toString();
+        }
+    } catch (e) {}
+    return '#';
+}
+
+function setDefaultDateRange() {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 13);
+    document.getElementById('startDate').value = start.toISOString().slice(0, 10);
+    document.getElementById('endDate').value = end.toISOString().slice(0, 10);
+}
+
+function renderTrend(trend) {
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    if (trendChart) trendChart.destroy();
+    trendChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: trend.labels || [],
+            datasets: [
+                { label: 'MLBB', data: trend.mlbb || [], borderColor: '#2962ff', tension: 0.35, fill: false },
+                { label: 'SPD', data: trend.spd || [], borderColor: '#f4b400', tension: 0.35, fill: false },
+                { label: 'ML 月均值', data: (trend.labels || []).map(() => trend.mlbb_month_avg || 0), borderColor: '#2962ff88', borderDash: [6, 6], pointRadius: 0 },
+                { label: 'SPD 月均值', data: (trend.labels || []).map(() => trend.spd_month_avg || 0), borderColor: '#f4b40088', borderDash: [6, 6], pointRadius: 0 },
+            ]
+        },
+        options: { responsive: true, maintainAspectRatio: true }
+    });
+}
+
+function renderPeaks(items) {
+    const container = document.getElementById('peakContainer');
+    if (!items || !items.length) {
+        container.innerHTML = '<div class="muted">暂无峰值数据</div>';
+        return;
+    }
+    container.innerHTML = items.map(block => `
+        <div style="margin-bottom:10px;">
+            <div><span class="chip">${escapeHtml(block.task)}</span><strong>${escapeHtml(block.date)}</strong>（${escapeHtml(block.region)}）</div>
+            <ul class="op-list">
+                ${(block.top_posts || []).map(p => `<li>${escapeHtml(p.author)}（${escapeHtml(p.author_region)}）发布${escapeHtml(p.post_topic)}，获得 ${escapeHtml(p.engagement)} 互动量。</li>`).join('')}
+            </ul>
+        </div>
+    `).join('');
+}
+
+function renderSummary(summary) {
+    document.getElementById('sumTotal').textContent = summary.total_comments || 0;
+    const ratio = summary.sentiment_ratio || {};
+    document.getElementById('sumRatio').textContent = `正面 ${ratio.positive || 0}% / 中性 ${ratio.neutral || 0}% / 负面 ${ratio.negative || 0}%`;
+    document.getElementById('sumOpinions').textContent = (summary.key_opinions || []).length;
+    document.getElementById('opinionsContainer').innerHTML = (summary.key_opinions || []).map(op => `
+        <div style="margin-bottom:6px;">
+            <span class="chip">${escapeHtml(op.sentiment)}</span><span class="chip">${escapeHtml(op.region)}</span>
+            ${escapeHtml(op.opinion)}（${escapeHtml(op.percentage)}%）
+        </div>
+    `).join('') || '<div class="muted">暂无观点</div>';
+}
+
+function renderTop5(items) {
+    const tbody = document.querySelector('#top5Table tbody');
+    if (!items || !items.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="muted">暂无数据</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map(post => {
+        const ratio = post.sentiment_ratio || {};
+        const positive = Number(ratio.positive);
+        const neutral = Number(ratio.neutral);
+        const negative = Number(ratio.negative);
+        const positiveText = Number.isFinite(positive) ? positive.toFixed(1) : '0.0';
+        const neutralText = Number.isFinite(neutral) ? neutral.toFixed(1) : '0.0';
+        const negativeText = Number.isFinite(negative) ? negative.toFixed(1) : '0.0';
+        const topOps = (post.top_sentiments || [])
+            .slice(0, 5)
+            .map(op => `<li>[${escapeHtml(op.sentiment)}] ${escapeHtml(op.opinion)}（${escapeHtml(op.count)}）</li>`)
+            .join('');
+        const link = safeUrl(post.post_url);
+        return `
+            <tr>
+                <td>${escapeHtml(post.rank)}</td>
+                <td><div><strong>${escapeHtml(post.post_content.topic || '-')}</strong></div><div class="muted">${escapeHtml(post.post_content.text || '')}</div></td>
+                <td>Positive: ${escapeHtml(positiveText)}%<br>Neutral: ${escapeHtml(neutralText)}%<br>Negative: ${escapeHtml(negativeText)}%</td>
+                <td><ul class="op-list">${topOps || '<li>暂无</li>'}</ul></td>
+                <td>${escapeHtml(post.comments || 0)}</td>
+                <td><a href="${link}" target="_blank" rel="noopener noreferrer">查看</a></td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function resetViewWithMessage(message) {
+    renderTrend({ labels: [], mlbb: [], spd: [], mlbb_month_avg: 0, spd_month_avg: 0 });
+    document.getElementById('peakContainer').innerHTML = `<div class="muted">${escapeHtml(message)}</div>`;
+    renderSummary({ total_comments: 0, sentiment_ratio: {}, key_opinions: [] });
+    renderTop5([]);
+}
+
+async function runReport() {
+    try {
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+        const region = document.getElementById('region').value;
+        const params = new URLSearchParams({ start_date: startDate, end_date: endDate, region });
+        const response = await fetch('/api/spd_report_data?' + params.toString());
+        if (!response.ok) {
+            resetViewWithMessage('报告加载失败，请重试');
+            return;
+        }
+        const data = await response.json();
+        if (data.status !== 'success') {
+            resetViewWithMessage(data.message || '报告生成失败');
+            return;
+        }
+        renderTrend(data.trend || {});
+        renderPeaks(data.peak_drilldown || []);
+        renderSummary(data.summary || {});
+        renderTop5(data.top5_posts || []);
+    } catch (error) {
+        console.error('runReport error:', error);
+        resetViewWithMessage('网络异常，请稍后重试');
+    }
+}
+
+window.onload = function () {
+    setDefaultDateRange();
+    runReport();
+};
+</script>
+{% endblock %}

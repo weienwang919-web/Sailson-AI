@@ -6,7 +6,7 @@ import logging
 import re
 import smtplib
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from email.mime.text import MIMEText
 import pandas as pd
 import uuid
@@ -1234,6 +1234,275 @@ def sentiment_tool():
             logger.error(f"❌ 检查舆情历史记录失败: {e}")
 
     return render_template('analysis.html', has_used_sentiment=has_used_sentiment)
+
+
+SPD_KEYWORDS = [
+    "naruto", "火影", "疾风传", "itachi", "julian", "valir", "ember gaze", "mlbbxnaruto",
+    "#mlbbxnaruto", "#mlbbnewskin", "uchiha", "晓组织"
+]
+
+
+def _is_spd_related(content, brief_analysis):
+    merged = f"{content or ''} {brief_analysis or ''}".lower()
+    return any(keyword in merged for keyword in SPD_KEYWORDS)
+
+
+def _sentiment_bucket(score):
+    if score is None:
+        return 'neutral'
+    if score > 0.3:
+        return 'positive'
+    if score < -0.2:
+        return 'negative'
+    return 'neutral'
+
+
+def _region_by_language(language_code):
+    code = (language_code or '').lower()
+    if code.startswith('th'):
+        return 'TH'
+    if code.startswith('id'):
+        return 'ID'
+    if code.startswith('pt'):
+        return 'PT'
+    return 'EN'
+
+
+def _to_percentage(value, total):
+    if total <= 0:
+        return 0.0
+    return round((value / total) * 100, 1)
+
+
+@app.route('/spd-report-tool')
+@login_required
+def spd_report_tool():
+    """SPD 专题报告页面"""
+    return render_template('spd_report.html')
+
+
+@app.route('/api/spd_report_data', methods=['GET'])
+@login_required
+def spd_report_data():
+    """SPD 报告数据（MVP）"""
+    try:
+        start_date = (request.args.get('start_date') or '').strip()
+        end_date = (request.args.get('end_date') or '').strip()
+        region = (request.args.get('region') or 'global').strip().lower()
+        allowed_regions = {'global', 'th', 'id', 'en', 'pt'}
+        if region not in allowed_regions:
+            return jsonify({'status': 'error', 'message': 'region 参数非法'}), 400
+
+        if not end_date:
+            end_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        try:
+            end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'status': 'error', 'message': 'end_date 格式错误，应为 YYYY-MM-DD'}), 400
+
+        if not start_date:
+            start_dt = end_dt - datetime.timedelta(days=13)
+            start_date = start_dt.strftime('%Y-%m-%d')
+        else:
+            try:
+                start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({'status': 'error', 'message': 'start_date 格式错误，应为 YYYY-MM-DD'}), 400
+
+        if start_dt > end_dt:
+            return jsonify({'status': 'error', 'message': 'start_date 不能晚于 end_date'}), 400
+
+        rows = db.query_all("""
+            SELECT post_url, post_link, author, created_at, content, brief_analysis,
+                   sentiment_score, language, category
+            FROM fb_comments
+            WHERE created_at >= %s
+              AND created_at <= %s
+            ORDER BY created_at ASC
+        """, (start_date, f"{end_date} 23:59:59"))
+
+        filtered_rows = []
+        for row in rows:
+            row_dict = dict(row)
+            row_region = _region_by_language(row_dict.get('language'))
+            if region != 'global' and row_region != region.upper():
+                continue
+            row_dict['region'] = row_region
+            row_dict['is_spd'] = _is_spd_related(row_dict.get('content', ''), row_dict.get('brief_analysis', ''))
+            row_dict['sentiment'] = _sentiment_bucket(row_dict.get('sentiment_score'))
+            filtered_rows.append(row_dict)
+
+        daily_counter = defaultdict(lambda: {'mlbb': 0, 'spd': 0})
+        daily_post_counter = {
+            'mlbb': defaultdict(lambda: defaultdict(int)),
+            'spd': defaultdict(lambda: defaultdict(int))
+        }
+        post_comments = defaultdict(list)
+        spd_post_counts = Counter()
+
+        for row in filtered_rows:
+            date_key = row['created_at'].strftime('%Y-%m-%d') if row.get('created_at') else start_date
+            post_key = row.get('post_url') or row.get('post_link') or 'unknown'
+
+            daily_counter[date_key]['mlbb'] += 1
+            daily_post_counter['mlbb'][date_key][post_key] += 1
+            post_comments[post_key].append(row)
+
+            if row['is_spd']:
+                daily_counter[date_key]['spd'] += 1
+                daily_post_counter['spd'][date_key][post_key] += 1
+                spd_post_counts[post_key] += 1
+
+        labels = sorted(daily_counter.keys())
+        mlbb_series = [daily_counter[d]['mlbb'] for d in labels]
+        spd_series = [daily_counter[d]['spd'] for d in labels]
+
+        mlbb_month_avg = round(sum(mlbb_series) / len(mlbb_series), 1) if mlbb_series else 0
+        spd_month_avg = round(sum(spd_series) / len(spd_series), 1) if spd_series else 0
+        period_days = 7 if len(labels) >= 7 else len(labels)
+        mlbb_period_avg = round(sum(mlbb_series[-period_days:]) / period_days, 1) if period_days else 0
+        spd_period_avg = round(sum(spd_series[-period_days:]) / period_days, 1) if period_days else 0
+
+        peak_drilldown = []
+        for task_key, task_name in [('mlbb', 'MLBB'), ('spd', 'SPD')]:
+            top_dates = sorted(labels, key=lambda d: daily_counter[d][task_key], reverse=True)[:2]
+            for peak_date in top_dates:
+                top_posts = []
+                post_counts_on_date = daily_post_counter[task_key][peak_date]
+                for post_key, count in sorted(post_counts_on_date.items(), key=lambda x: x[1], reverse=True)[:2]:
+                    comments = [
+                        c for c in post_comments.get(post_key, [])
+                        if (
+                            c.get('created_at')
+                            and c['created_at'].strftime('%Y-%m-%d') == peak_date
+                            and (task_key != 'spd' or c.get('is_spd'))
+                        )
+                    ]
+                    first = comments[0] if comments else {}
+                    topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+                    topic = (topic or '帖子讨论')[:48]
+                    top_posts.append({
+                        'author': first.get('author') or 'unknown',
+                        'author_region': first.get('region') or 'EN',
+                        'post_topic': topic,
+                        'post_url': post_key,
+                        'engagement': count
+                    })
+                if top_posts:
+                    peak_drilldown.append({
+                        'date': peak_date,
+                        'task': task_name,
+                        'region': region.upper() if region != 'global' else 'GLOBAL',
+                        'top_posts': top_posts
+                    })
+
+        spd_comments = [row for row in filtered_rows if row['is_spd']]
+        total_spd_comments = len(spd_comments)
+        sentiment_counter = Counter([row['sentiment'] for row in spd_comments])
+
+        opinion_counter = Counter()
+        for row in spd_comments:
+            opinion = row.get('category') if row.get('category') and row.get('category') != 'unknown' else (row.get('brief_analysis') or '其他反馈')
+            opinion = (opinion or '其他反馈')[:42]
+            opinion_counter[(row['sentiment'], row['region'], opinion)] += 1
+
+        key_opinions = []
+        for (sentiment, op_region, opinion), count in opinion_counter.most_common(6):
+            key_opinions.append({
+                'sentiment': sentiment,
+                'region': op_region,
+                'opinion': opinion,
+                'percentage': _to_percentage(count, total_spd_comments)
+            })
+
+        top5_posts = []
+        for idx, (post_key, _) in enumerate(spd_post_counts.most_common(5), start=1):
+            comments = [row for row in post_comments.get(post_key, []) if row['is_spd']]
+            if not comments:
+                continue
+            total = len(comments)
+            sent_count = Counter([row['sentiment'] for row in comments])
+
+            top_sentiments = []
+            for sentiment in ['positive', 'neutral', 'negative']:
+                sentiment_rows = [row for row in comments if row['sentiment'] == sentiment]
+                local_counter = Counter()
+                grouped_rows = defaultdict(list)
+                for row in sentiment_rows:
+                    opinion = row.get('category') if row.get('category') and row.get('category') != 'unknown' else (row.get('brief_analysis') or '其他反馈')
+                    opinion_key = (opinion or '其他反馈')[:42]
+                    local_counter[opinion_key] += 1
+                    grouped_rows[opinion_key].append(row)
+                sentiment_items = []
+                for opinion, count in local_counter.most_common(3):
+                    examples = []
+                    for row in grouped_rows[opinion][:2]:
+                        original = (row.get('content') or '')[:120]
+                        translation = (row.get('brief_analysis') or original)[:120]
+                        examples.append({'original': original, 'translation': translation})
+                    sentiment_items.append({
+                        'sentiment': sentiment,
+                        'opinion': opinion,
+                        'count': f"{count}+",
+                        'examples': examples
+                    })
+                top_sentiments.extend(sentiment_items)
+
+            first = comments[0]
+            topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+            top5_posts.append({
+                'rank': idx,
+                'region': first.get('region', 'EN'),
+                'platform': 'FB',
+                'post_content': {
+                    'topic': (topic or '帖子讨论')[:60],
+                    'text': (first.get('content') or '')[:160],
+                    'thumbnail_url': '',
+                },
+                'sentiment_ratio': {
+                    'positive': _to_percentage(sent_count.get('positive', 0), total),
+                    'neutral': _to_percentage(sent_count.get('neutral', 0), total),
+                    'negative': _to_percentage(sent_count.get('negative', 0), total),
+                },
+                'top_sentiments': top_sentiments,
+                'views': 0,
+                'likes': 0,
+                'comments': total,
+                'post_url': post_key
+            })
+
+        return jsonify({
+            'status': 'success',
+            'meta': {
+                'task_name': 'SPD',
+                'start_date': start_date,
+                'end_date': end_date,
+                'region': region
+            },
+            'trend': {
+                'labels': labels,
+                'mlbb': mlbb_series,
+                'spd': spd_series,
+                'mlbb_month_avg': mlbb_month_avg,
+                'spd_month_avg': spd_month_avg,
+                'mlbb_period_avg': mlbb_period_avg,
+                'spd_period_avg': spd_period_avg
+            },
+            'peak_drilldown': peak_drilldown,
+            'summary': {
+                'total_comments': total_spd_comments,
+                'sentiment_ratio': {
+                    'positive': _to_percentage(sentiment_counter.get('positive', 0), total_spd_comments),
+                    'neutral': _to_percentage(sentiment_counter.get('neutral', 0), total_spd_comments),
+                    'negative': _to_percentage(sentiment_counter.get('negative', 0), total_spd_comments),
+                },
+                'key_opinions': key_opinions
+            },
+            'top5_posts': top5_posts
+        })
+    except Exception as e:
+        logger.error(f"❌ 生成 SPD 报告数据失败: {e}")
+        return jsonify({'status': 'error', 'message': '内部错误，请稍后重试'}), 500
 
 
 @app.route('/analyze', methods=['POST'])
