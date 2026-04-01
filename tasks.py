@@ -220,7 +220,17 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
     end_dt = datetime.datetime.now(datetime.timezone.utc)
     start_dt = end_dt - datetime.timedelta(days=days_back)
     per_platform_limit = max(20, int(max_posts / max(len(target_platforms), 1)))
-    hashtags = [t.lstrip("#") for t in tags if t.strip()]
+    hashtags_raw = [t.lstrip("#").strip() for t in tags if t.strip()]
+    ig_hashtag_pattern = re.compile(r"^[^!?.,:;\-+=*&%$#@/\~^|<>()\[\]{}\"'`\s]+$")
+    ig_hashtags = []
+    for tag in hashtags_raw:
+        if ig_hashtag_pattern.match(tag):
+            ig_hashtags.append(tag)
+    # 兜底：若全部被过滤，则仅保留无空格词（尽量避免输入为空）
+    if not ig_hashtags:
+        ig_hashtags = [t for t in hashtags_raw if t and (" " not in t)]
+
+    fb_keyword_list = hashtags_raw or tags
 
     urls = []
     seen = set()
@@ -233,26 +243,36 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
             continue
 
         # 不同 actor 的输入 schema 不同，按候选输入依次尝试
-        candidate_inputs = [
-            {
-                "hashtags": hashtags,
-                "resultsLimit": per_platform_limit,
-                "startDate": start_dt.date().isoformat(),
-                "endDate": end_dt.date().isoformat()
-            },
-            {
-                "searchQueries": tags,
-                "resultsLimit": per_platform_limit,
-                "startDate": start_dt.date().isoformat(),
-                "endDate": end_dt.date().isoformat()
-            },
-            {
-                "searchTerms": tags,
-                "maxItems": per_platform_limit,
-                "startDate": start_dt.date().isoformat(),
-                "endDate": end_dt.date().isoformat()
-            }
-        ]
+        if platform == "facebook":
+            candidate_inputs = [
+                {
+                    "keywordList": fb_keyword_list,
+                    "resultsLimit": per_platform_limit,
+                    "startDate": start_dt.date().isoformat(),
+                    "endDate": end_dt.date().isoformat()
+                },
+                {
+                    "keywordList": fb_keyword_list,
+                    "maxItems": per_platform_limit,
+                    "startDate": start_dt.date().isoformat(),
+                    "endDate": end_dt.date().isoformat()
+                }
+            ]
+        else:
+            candidate_inputs = [
+                {
+                    "hashtags": ig_hashtags,
+                    "resultsLimit": per_platform_limit,
+                    "startDate": start_dt.date().isoformat(),
+                    "endDate": end_dt.date().isoformat()
+                },
+                {
+                    "hashtags": ig_hashtags,
+                    "maxItems": per_platform_limit,
+                    "startDate": start_dt.date().isoformat(),
+                    "endDate": end_dt.date().isoformat()
+                }
+            ]
 
         try:
             logger.info(f"🔎 Discover {platform} posts via actor: {actor_id}")
