@@ -1242,9 +1242,94 @@ SPD_KEYWORDS = [
 ]
 
 
-def _is_spd_related(content, brief_analysis):
+TASK_BOOLEAN_RULES = {
+    # MVP 版：先覆盖 brief 中最核心关键词与排除词
+    "MLBB": '(#mlbb OR "mlbb" OR #mobilelegends OR "mobile legends" OR "mobilelegendsbangbang") AND NOT ("freefire" OR #mlb OR #mlbbaseball OR #mlbbets)',
+    "SPD": '((#mlbb OR "mlbb" OR #mobilelegends OR "mobile legends") AND ("naruto" OR "火影" OR "疾风传" OR "itachi" OR "julian" OR "valir" OR "ember gaze" OR #mlbbxnaruto OR #mlbbnewskin OR "uchiha" OR "晓组织"))'
+}
+
+
+def _normalize_monitor_text(content, brief_analysis):
     merged = f"{content or ''} {brief_analysis or ''}".lower()
-    return any(keyword in merged for keyword in SPD_KEYWORDS)
+    merged = re.sub(r'\s+', ' ', merged).strip()
+    return merged
+
+
+def _tokenize_boolean_expr(expr):
+    # 支持括号、引号短语、AND/OR/NOT、普通词
+    token_re = re.compile(r'"[^"]*"|\(|\)|\bAND\b|\bOR\b|\bNOT\b|[^\s()]+', flags=re.IGNORECASE)
+    return token_re.findall(expr or "")
+
+
+def _boolean_to_rpn(tokens):
+    precedence = {"NOT": 3, "AND": 2, "OR": 1}
+    output = []
+    ops = []
+    for token in tokens:
+        upper = token.upper()
+        if upper in precedence:
+            while ops and ops[-1] != "(" and precedence.get(ops[-1], 0) >= precedence[upper]:
+                output.append(ops.pop())
+            ops.append(upper)
+        elif token == "(":
+            ops.append(token)
+        elif token == ")":
+            while ops and ops[-1] != "(":
+                output.append(ops.pop())
+            if ops and ops[-1] == "(":
+                ops.pop()
+        else:
+            output.append(token)
+    while ops:
+        output.append(ops.pop())
+    return output
+
+
+def _match_boolean_term(text, raw_term):
+    term = (raw_term or "").strip()
+    if not term:
+        return False
+    if term.startswith('"') and term.endswith('"'):
+        term = term[1:-1].strip()
+    term = term.lower()
+    if not term:
+        return False
+
+    # 通配后缀：mlbb* / #mlbb*
+    if term.endswith('*'):
+        prefix = term[:-1]
+        if not prefix:
+            return False
+        return prefix in text
+    return term in text
+
+
+def _eval_boolean_expr(text, expr):
+    tokens = _tokenize_boolean_expr(expr)
+    if not tokens:
+        return False
+    rpn = _boolean_to_rpn(tokens)
+    stack = []
+    for token in rpn:
+        if token in {"AND", "OR", "NOT"}:
+            if token == "NOT":
+                value = stack.pop() if stack else False
+                stack.append(not value)
+            else:
+                right = stack.pop() if stack else False
+                left = stack.pop() if stack else False
+                stack.append(left and right if token == "AND" else left or right)
+        else:
+            stack.append(_match_boolean_term(text, token))
+    return bool(stack[-1]) if stack else False
+
+
+def _match_task(task_name, content, brief_analysis):
+    rule = TASK_BOOLEAN_RULES.get(task_name)
+    if not rule:
+        return False
+    text = _normalize_monitor_text(content, brief_analysis)
+    return _eval_boolean_expr(text, rule)
 
 
 def _sentiment_bucket(score):
@@ -1328,7 +1413,8 @@ def spd_report_data():
             if region != 'global' and row_region != region.upper():
                 continue
             row_dict['region'] = row_region
-            row_dict['is_spd'] = _is_spd_related(row_dict.get('content', ''), row_dict.get('brief_analysis', ''))
+            row_dict['is_mlbb'] = _match_task('MLBB', row_dict.get('content', ''), row_dict.get('brief_analysis', ''))
+            row_dict['is_spd'] = _match_task('SPD', row_dict.get('content', ''), row_dict.get('brief_analysis', ''))
             row_dict['sentiment'] = _sentiment_bucket(row_dict.get('sentiment_score'))
             filtered_rows.append(row_dict)
 
@@ -1344,8 +1430,9 @@ def spd_report_data():
             date_key = row['created_at'].strftime('%Y-%m-%d') if row.get('created_at') else start_date
             post_key = row.get('post_url') or row.get('post_link') or 'unknown'
 
-            daily_counter[date_key]['mlbb'] += 1
-            daily_post_counter['mlbb'][date_key][post_key] += 1
+            if row['is_mlbb']:
+                daily_counter[date_key]['mlbb'] += 1
+                daily_post_counter['mlbb'][date_key][post_key] += 1
             post_comments[post_key].append(row)
 
             if row['is_spd']:
