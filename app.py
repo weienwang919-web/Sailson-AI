@@ -1390,6 +1390,69 @@ def _to_percentage(value, total):
     return round((value / total) * 100, 1)
 
 
+def _extract_opinion_text(row):
+    """从单条评论中提炼观点文本（不依赖旧 category 枚举）。"""
+    text = (row.get('brief_analysis') or '').strip()
+    if not text:
+        text = (row.get('content') or '').strip()
+    text = re.sub(r'\s+', ' ', text).strip()
+    if not text:
+        return "其他反馈"
+    return text[:80]
+
+
+def _opinion_signature(text):
+    normalized = (text or "").lower()
+    normalized = re.sub(r'[^\w\u4e00-\u9fff]+', ' ', normalized)
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    if not normalized:
+        return set()
+
+    tokens = set()
+    for token in normalized.split(' '):
+        if len(token) >= 2:
+            tokens.add(token)
+
+    # 增加中文二元组，提升“语义相近短句”聚类命中
+    zh = ''.join(ch for ch in normalized if '\u4e00' <= ch <= '\u9fff')
+    for i in range(len(zh) - 1):
+        tokens.add(zh[i:i + 2])
+    return tokens
+
+
+def _cluster_opinions(rows, top_k=3):
+    """对同一情感下评论做轻量聚类，返回 top 观点簇。"""
+    clusters = []
+    for row in rows:
+        opinion_text = _extract_opinion_text(row)
+        sig = _opinion_signature(opinion_text)
+        best_idx = -1
+        best_score = 0.0
+        for i, cluster in enumerate(clusters):
+            inter = len(sig & cluster['signature'])
+            union = len(sig | cluster['signature']) or 1
+            score = inter / union
+            if score > best_score:
+                best_score = score
+                best_idx = i
+
+        if best_idx >= 0 and best_score >= 0.32:
+            c = clusters[best_idx]
+            c['rows'].append(row)
+            c['signature'] = c['signature'] | sig
+            if len(opinion_text) < len(c['opinion']):
+                c['opinion'] = opinion_text
+        else:
+            clusters.append({
+                'opinion': opinion_text,
+                'signature': sig,
+                'rows': [row]
+            })
+
+    clusters.sort(key=lambda x: len(x['rows']), reverse=True)
+    return clusters[:top_k]
+
+
 def _is_spd_relaxed_text(content, brief_analysis):
     text = _normalize_monitor_text(content, brief_analysis)
     if not text:
@@ -1602,8 +1665,7 @@ def spd_report_data():
 
         opinion_counter = Counter()
         for row in spd_comments:
-            opinion = row.get('category') if row.get('category') and row.get('category') != 'unknown' else (row.get('brief_analysis') or '其他反馈')
-            opinion = (opinion or '其他反馈')[:42]
+            opinion = _extract_opinion_text(row)[:42]
             opinion_counter[(row['sentiment'], row['region'], opinion)] += 1
 
         key_opinions = []
@@ -1653,24 +1715,19 @@ def spd_report_data():
             top_sentiments = []
             for sentiment in ['positive', 'neutral', 'negative']:
                 sentiment_rows = [row for row in comments if row['sentiment'] == sentiment]
-                local_counter = Counter()
-                grouped_rows = defaultdict(list)
-                for row in sentiment_rows:
-                    opinion = row.get('category') if row.get('category') and row.get('category') != 'unknown' else (row.get('brief_analysis') or '其他反馈')
-                    opinion_key = (opinion or '其他反馈')[:42]
-                    local_counter[opinion_key] += 1
-                    grouped_rows[opinion_key].append(row)
+                clusters = _cluster_opinions(sentiment_rows, top_k=3)
                 sentiment_items = []
-                for opinion, count in local_counter.most_common(3):
+                for cluster in clusters:
+                    cluster_rows = cluster['rows']
                     examples = []
-                    for row in grouped_rows[opinion][:2]:
+                    for row in cluster_rows[:2]:
                         original = (row.get('content') or '')[:120]
                         translation = (row.get('brief_analysis') or original)[:120]
                         examples.append({'original': original, 'translation': translation})
                     sentiment_items.append({
                         'sentiment': sentiment,
-                        'opinion': opinion,
-                        'count': f"{count}+",
+                        'opinion': (cluster.get('opinion') or '其他反馈')[:42],
+                        'count': f"{len(cluster_rows)}+",
                         'examples': examples
                     })
                 top_sentiments.extend(sentiment_items)
@@ -1678,7 +1735,7 @@ def spd_report_data():
             first = comments[0] if comments else {}
             topic = (post.get('post_content') or '')[:60]
             if not topic:
-                topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+                topic = _extract_opinion_text(first or {}) or '帖子讨论'
 
             top5_posts.append({
                 'rank': idx,
