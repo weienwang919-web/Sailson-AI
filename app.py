@@ -1540,25 +1540,43 @@ def _reanalyze_comments_for_template(rows):
     """仅用于 SPD 报告：对 Top5 评论池做定向重分析。"""
     if not rows:
         return []
+    # 避免报告接口因逐条重分析超时：限制重分析条数，其余复用历史分析结果
+    try:
+        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "120"))
+    except Exception:
+        reanalyze_limit = 120
+    if reanalyze_limit < 0:
+        reanalyze_limit = 0
+
     result = []
+    reanalyzed = 0
     for row in rows:
         new_row = dict(row)
         content = (new_row.get('content') or '').strip()
+        # 默认先复用历史结果，确保任何情况下都能返回报告
+        new_row['_rt_sentiment'] = new_row.get('sentiment') or 'neutral'
+        new_row['_rt_brief'] = new_row.get('brief_analysis') or ''
+
         if not content:
-            new_row['_rt_sentiment'] = new_row.get('sentiment') or 'neutral'
-            new_row['_rt_brief'] = new_row.get('brief_analysis') or ''
             result.append(new_row)
             continue
+
+        if reanalyzed >= reanalyze_limit:
+            result.append(new_row)
+            continue
+
         try:
             score, _, language, brief = tasks.analyze_comment_sentiment(content)
             new_row['_rt_sentiment'] = _sentiment_bucket(score)
             new_row['_rt_language'] = (language or new_row.get('language') or '').lower()
             brief_text = (brief or '').strip()
             new_row['_rt_brief'] = brief_text if brief_text else (new_row.get('brief_analysis') or '')
+            reanalyzed += 1
         except Exception:
-            new_row['_rt_sentiment'] = new_row.get('sentiment') or 'neutral'
-            new_row['_rt_brief'] = new_row.get('brief_analysis') or ''
+            pass
         result.append(new_row)
+    if len(rows) > reanalyze_limit:
+        logger.info(f"ℹ️ SPD report reanalyze capped: {reanalyzed}/{len(rows)}")
     return result
 
 
