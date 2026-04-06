@@ -209,6 +209,7 @@ def _handle_fb_scrape(task_id, params):
     try:
         if (not post_urls) and task_queries:
             merged_urls = []
+            merged_posts = []
             seen = set()
             discover_stats = []
             for query in task_queries:
@@ -224,6 +225,7 @@ def _handle_fb_scrape(task_id, params):
                 if discover_result.get('status') != 'success':
                     raise RuntimeError(f"{task_name} discover failed: {discover_result.get('message') or 'unknown'}")
                 task_urls = discover_result.get('post_urls') or []
+                task_posts = discover_result.get('posts') or []
                 discover_stats.append((task_name, len(task_urls)))
                 _set_scrape_summary(f"发现帖子中：{task_name} {len(task_urls)} 条")
                 for url in task_urls:
@@ -232,6 +234,7 @@ def _handle_fb_scrape(task_id, params):
                         continue
                     seen.add(key)
                     merged_urls.append(url)
+                merged_posts.extend(task_posts)
             post_urls = merged_urls
             if not post_urls:
                 raise RuntimeError(f'{crawl_scope} 分任务 discover 未找到可抓取帖子')
@@ -249,15 +252,19 @@ def _handle_fb_scrape(task_id, params):
             if discover_result.get('status') != 'success':
                 raise RuntimeError(discover_result.get('message') or 'discover failed')
             post_urls = discover_result.get('post_urls') or []
+            merged_posts = discover_result.get('posts') or []
             if not post_urls:
                 raise RuntimeError('discover 未找到可抓取帖子')
             _set_scrape_summary(f"发现完成：SPD {len(post_urls)} 条")
             logger.info(f"✅ Discover URLs: {len(post_urls)}")
+        else:
+            merged_posts = []
 
         update_task(task_id, progress='抓取评论与分析中')
         _set_scrape_summary(f"抓取评论中：共 {len(post_urls or [])} 条帖子")
         result = tasks.scrape_fb_comments(
             post_urls=post_urls,
+            discovered_posts=merged_posts,
             days_back=days_back,
             task_id=scrape_task_id,
             results_limit=results_limit,
@@ -272,7 +279,9 @@ def _handle_fb_scrape(task_id, params):
                 final_summary = (
                     f"完成 | 新增 {result.get('new_comments', 0)}，"
                     f"已存在 {result.get('existing_comments', 0)}，"
-                    f"跳过不支持URL {result.get('skipped_unsupported_urls', 0)}"
+                    f"跳过不支持URL {result.get('skipped_unsupported_urls', 0)}，"
+                    f"超时URL {result.get('timed_out_urls', 0)}，"
+                    f"AI分析 {result.get('ai_processed_total', 0)}"
                 )
                 db.execute(
                     "UPDATE scrape_tasks SET result_summary = %s WHERE id = %s",

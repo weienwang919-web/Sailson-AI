@@ -32,6 +32,8 @@ DEFAULT_FB_HASHTAG_ACTOR = "apify/facebook-hashtag-scraper"
 DEFAULT_IG_HASHTAG_ACTOR = "apify/instagram-hashtag-scraper"
 DEFAULT_FB_COMMENTS_ACTOR = "apify/facebook-comments-scraper"
 DEFAULT_IG_COMMENTS_ACTOR = "apify/instagram-comment-scraper"
+FB_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("FB_COMMENTS_ACTOR_TIMEOUT_SECS", "420"))
+IG_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("IG_COMMENTS_ACTOR_TIMEOUT_SECS", "180"))
 
 
 def _normalize_list_input(values):
@@ -269,6 +271,125 @@ def _extract_post_url(item):
     return None
 
 
+def _safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, str):
+            cleaned = re.sub(r"[^\d-]", "", value)
+            if not cleaned:
+                return default
+            return int(cleaned)
+        return int(value)
+    except Exception:
+        return default
+
+
+def _extract_post_metrics(item, platform, fallback_url=None):
+    if not isinstance(item, dict):
+        return None
+    post_url = _extract_post_url(item) or fallback_url
+    if not post_url:
+        return None
+
+    author = ""
+    raw_author = item.get("author")
+    if isinstance(raw_author, dict):
+        author = raw_author.get("name") or raw_author.get("username") or ""
+    elif isinstance(raw_author, str):
+        author = raw_author.strip()
+    if not author:
+        author = (item.get("ownerUsername") or item.get("username") or item.get("userName") or "").strip()
+
+    text_fields = [
+        item.get("text"), item.get("caption"), item.get("description"),
+        item.get("message"), item.get("title"), item.get("content")
+    ]
+    post_content = ""
+    for text in text_fields:
+        if isinstance(text, str) and text.strip():
+            post_content = text.strip()
+            break
+
+    created_raw = (
+        item.get("createdTime") or item.get("created_at") or item.get("createdAt")
+        or item.get("timestamp") or item.get("time") or item.get("postDate")
+    )
+    post_date = _parse_created_at(created_raw).strftime("%Y-%m-%d")
+
+    likes = _safe_int(
+        item.get("likes") or item.get("likeCount") or item.get("likesCount")
+        or item.get("reactionCount") or item.get("edge_liked_by", {}).get("count")
+    )
+    comments_count = _safe_int(
+        item.get("commentsCount") or item.get("commentCount") or item.get("comments")
+        or item.get("edge_media_to_comment", {}).get("count")
+    )
+    shares = _safe_int(item.get("shares") or item.get("shareCount") or item.get("sharesCount"))
+    views = _safe_int(item.get("views") or item.get("viewCount") or item.get("videoViewCount"))
+    engagement = likes + comments_count + shares
+
+    thumbnail_url = ""
+    for key in ("thumbnailUrl", "thumbnail_url", "displayUrl", "imageUrl", "image_url"):
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            thumbnail_url = val.strip()
+            break
+
+    return {
+        "post_url": post_url,
+        "platform": platform.upper()[:16],
+        "author": author[:256],
+        "post_date": post_date,
+        "post_content": post_content[:2000],
+        "thumbnail_url": thumbnail_url[:1024],
+        "views": views,
+        "shares": shares,
+        "likes": likes,
+        "comments_count": comments_count,
+        "engagement": engagement
+    }
+
+
+def upsert_post_metrics(rows):
+    if not rows:
+        return 0
+    upserted = 0
+    for row in rows:
+        try:
+            db.execute(
+                """
+                INSERT INTO fb_post_metrics (
+                    post_url, platform, author, post_date, post_content, thumbnail_url,
+                    views, shares, likes, comments_count, engagement, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (post_url) DO UPDATE SET
+                    platform = EXCLUDED.platform,
+                    author = COALESCE(NULLIF(EXCLUDED.author, ''), fb_post_metrics.author),
+                    post_date = COALESCE(EXCLUDED.post_date, fb_post_metrics.post_date),
+                    post_content = COALESCE(NULLIF(EXCLUDED.post_content, ''), fb_post_metrics.post_content),
+                    thumbnail_url = COALESCE(NULLIF(EXCLUDED.thumbnail_url, ''), fb_post_metrics.thumbnail_url),
+                    views = GREATEST(COALESCE(fb_post_metrics.views, 0), COALESCE(EXCLUDED.views, 0)),
+                    shares = GREATEST(COALESCE(fb_post_metrics.shares, 0), COALESCE(EXCLUDED.shares, 0)),
+                    likes = GREATEST(COALESCE(fb_post_metrics.likes, 0), COALESCE(EXCLUDED.likes, 0)),
+                    comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count, 0), COALESCE(EXCLUDED.comments_count, 0)),
+                    engagement = GREATEST(COALESCE(fb_post_metrics.engagement, 0), COALESCE(EXCLUDED.engagement, 0)),
+                    updated_at = NOW()
+                """,
+                (
+                    row.get("post_url"), row.get("platform"), row.get("author"), row.get("post_date"),
+                    row.get("post_content"), row.get("thumbnail_url"), row.get("views"), row.get("shares"),
+                    row.get("likes"), row.get("comments_count"), row.get("engagement")
+                )
+            )
+            upserted += 1
+        except Exception as e:
+            logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
+    return upserted
+
+
 def _extract_discover_text(item):
     if not isinstance(item, dict):
         return ""
@@ -450,6 +571,7 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
         return {"status": "error", "message": "instagram hashtags is empty after sanitize", "post_urls": []}
 
     urls = []
+    posts = []
     seen = set()
     actor_runs = []
     errors = []
@@ -508,6 +630,9 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
                     continue
                 seen.add(key)
                 urls.append(url)
+                post_metrics = _extract_post_metrics(item, platform, fallback_url=url)
+                if post_metrics:
+                    posts.append(post_metrics)
                 if len(urls) >= max_posts:
                     break
             logger.info(f"✅ Discover {platform} done: {len(items)} items")
@@ -531,12 +656,14 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
         "status": "success",
         "actor_runs": actor_runs,
         "total_urls": len(urls),
-        "post_urls": urls
+        "post_urls": urls,
+        "posts": posts
     }
 
 
 def scrape_fb_comments(
     post_urls=None,
+    discovered_posts=None,
     days_back=7,
     task_id=None,
     results_limit=2500,
@@ -608,7 +735,12 @@ def scrape_fb_comments(
     total_new = 0
     total_updated = 0
     total_skipped_unsupported = 0
+    total_timeout_urls = 0
+    ai_processed_total = 0
     cutoff_date = datetime.datetime.now(BEIJING_TZ) - datetime.timedelta(days=days_back)
+
+    # 先落 discover 阶段的帖子级指标，供报告口径使用
+    discovered_count = upsert_post_metrics(discovered_posts or [])
 
     for post_url in post_urls:
         try:
@@ -622,14 +754,16 @@ def scrape_fb_comments(
 
             if platform == "facebook":
                 actor_id = os.environ.get("APIFY_FB_COMMENTS_ACTOR_ID", DEFAULT_FB_COMMENTS_ACTOR).strip()
+                actor_timeout_secs = FB_COMMENTS_ACTOR_TIMEOUT_SECS
                 candidate_inputs = [{
-                    "includeNestedComments": True,
+                "includeNestedComments": True,
                     "resultsLimit": int(results_limit),
-                    "startUrls": [{"url": post_url}],
-                    "viewOption": "RANKED_UNFILTERED"
+                "startUrls": [{"url": post_url}],
+                "viewOption": "RANKED_UNFILTERED"
                 }]
             else:
                 actor_id = os.environ.get("APIFY_IG_COMMENTS_ACTOR_ID", DEFAULT_IG_COMMENTS_ACTOR).strip()
+                actor_timeout_secs = IG_COMMENTS_ACTOR_TIMEOUT_SECS
                 candidate_inputs = [
                     {"directUrls": [post_url], "resultsLimit": int(results_limit)},
                     {"postUrls": [post_url], "resultsLimit": int(results_limit)},
@@ -641,7 +775,7 @@ def scrape_fb_comments(
                 continue
 
             logger.info(f"🚀 Starting comments actor ({platform}): {actor_id}")
-            items, _ = _run_actor_with_inputs(actor_id, candidate_inputs, timeout_secs=600)
+            items, _ = _run_actor_with_inputs(actor_id, candidate_inputs, timeout_secs=actor_timeout_secs)
             logger.info(f"✅ Apify returned {len(items)} items")
 
             # Check for unusually low item count
@@ -666,7 +800,6 @@ def scrape_fb_comments(
                 existing_ids = {row['comment_id'] for row in rows}
                 logger.info(f"📊 Found {len(existing_ids)} existing comments out of {len(comment_ids)}")
 
-            ai_processed = 0
             # Process each comment
             for row in normalized_rows:
                 comment_id = row["comment_id"]
@@ -685,9 +818,9 @@ def scrape_fb_comments(
                     continue
 
                 # Analyze sentiment using Qwen (with cap to control latency/cost)
-                if enable_ai_analysis and ai_processed < max_ai_comments:
+                if enable_ai_analysis and ai_processed_total < max_ai_comments:
                     sentiment_score, category, language, brief_analysis = analyze_comment_sentiment(content)
-                    ai_processed += 1
+                    ai_processed_total += 1
                 else:
                     sentiment_score, category, language, brief_analysis = 0.0, "unknown", "unknown", ""
 
@@ -708,8 +841,44 @@ def scrape_fb_comments(
                 )
                 total_new += 1
 
+            # 每处理完一个帖子，尽量补齐帖子级 comments_count/engagement（基于本次 actor 返回）
+            try:
+                post_comments_count = len(normalized_rows)
+                post_likes = max([_safe_int((it or {}).get("likes") or (it or {}).get("likeCount")) for it in items] + [0])
+                post_shares = max([_safe_int((it or {}).get("shares") or (it or {}).get("shareCount")) for it in items] + [0])
+                db.execute(
+                    """
+                    INSERT INTO fb_post_metrics (post_url, platform, comments_count, likes, shares, engagement, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (post_url) DO UPDATE SET
+                        comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count, 0), COALESCE(EXCLUDED.comments_count, 0)),
+                        likes = GREATEST(COALESCE(fb_post_metrics.likes, 0), COALESCE(EXCLUDED.likes, 0)),
+                        shares = GREATEST(COALESCE(fb_post_metrics.shares, 0), COALESCE(EXCLUDED.shares, 0)),
+                        engagement = GREATEST(
+                            COALESCE(fb_post_metrics.engagement, 0),
+                            COALESCE(EXCLUDED.likes, 0) + COALESCE(EXCLUDED.comments_count, 0) + COALESCE(EXCLUDED.shares, 0)
+                        ),
+                        updated_at = NOW()
+                    """,
+                    (
+                        post_url,
+                        platform.upper()[:16],
+                        post_comments_count,
+                        post_likes,
+                        post_shares,
+                        post_likes + post_comments_count + post_shares
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ 更新帖子级 metrics 失败: {e}")
+
         except Exception as e:
-            logger.error(f"❌ Error scraping {post_url}: {e}")
+            err = str(e)
+            if "timed out" in err.lower():
+                total_timeout_urls += 1
+                logger.warning(f"⏱️ Skip timeout URL: {post_url} | {err[:220]}")
+            else:
+                logger.error(f"❌ Error scraping {post_url}: {err}")
             continue
 
     # Update last_scraped_at for all processed URLs
@@ -730,6 +899,9 @@ def scrape_fb_comments(
         "existing_comments": total_updated,
         "skipped_non_facebook": total_skipped_unsupported,  # backward compatibility
         "skipped_unsupported_urls": total_skipped_unsupported,
+        "timed_out_urls": total_timeout_urls,
+        "discovered_posts_upserted": discovered_count,
+        "ai_processed_total": ai_processed_total,
         "enable_ai_analysis": enable_ai_analysis,
         "max_ai_comments": max_ai_comments
     }

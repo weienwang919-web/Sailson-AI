@@ -142,7 +142,7 @@
                         <th style="width:220px;">帖文主题</th>
                         <th style="width:220px;">情感占比</th>
                         <th>主要观点（Top Sentiments）</th>
-                        <th style="width:110px;">评论量</th>
+                        <th style="width:180px;">互动指标</th>
                         <th style="width:120px;">链接</th>
                     </tr>
                 </thead>
@@ -264,7 +264,7 @@ function renderTop5(items) {
         tbody.innerHTML = '<tr><td colspan="6" class="muted">暂无数据</td></tr>';
         return;
     }
-    tbody.innerHTML = items.map(post => {
+        tbody.innerHTML = items.map(post => {
         const ratio = post.sentiment_ratio || {};
         const positive = Number(ratio.positive);
         const neutral = Number(ratio.neutral);
@@ -283,7 +283,13 @@ function renderTop5(items) {
                 <td><div><strong>${escapeHtml(post.post_content.topic || '-')}</strong></div><div class="muted">${escapeHtml(post.post_content.text || '')}</div></td>
                 <td>Positive: ${escapeHtml(positiveText)}%<br>Neutral: ${escapeHtml(neutralText)}%<br>Negative: ${escapeHtml(negativeText)}%</td>
                 <td><ul class="op-list">${topOps || '<li>暂无</li>'}</ul></td>
-                <td>${escapeHtml(post.comments || 0)}</td>
+                <td>
+                    <div>Engagement: ${escapeHtml(post.engagement || 0)}</div>
+                    <div>Views: ${escapeHtml(post.views || 0)}</div>
+                    <div>Shares: ${escapeHtml(post.shares || 0)}</div>
+                    <div>Likes: ${escapeHtml(post.likes || 0)}</div>
+                    <div>Comments: ${escapeHtml(post.comments || 0)}</div>
+                </td>
                 <td><a href="${link}" target="_blank" rel="noopener noreferrer">查看</a></td>
             </tr>
         `;

@@ -350,6 +350,31 @@ def ensure_analysis_results_schema():
         ANALYSIS_RESULTS_HAS_JSON = False
         logger.warning(f"⚠️ 无法自动为 analysis_results 添加 result_json 列，将暂不支持按任意历史记录导出: {e}")
 
+
+def ensure_fb_post_metrics_schema():
+    """确保帖子级指标表存在（用于SPD报告按engagement口径计算）。"""
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS fb_post_metrics (
+                id SERIAL PRIMARY KEY,
+                post_url VARCHAR(1024) UNIQUE NOT NULL,
+                platform VARCHAR(16),
+                author VARCHAR(256),
+                post_date DATE,
+                post_content TEXT,
+                thumbnail_url VARCHAR(1024),
+                views BIGINT DEFAULT 0,
+                shares BIGINT DEFAULT 0,
+                likes BIGINT DEFAULT 0,
+                comments_count BIGINT DEFAULT 0,
+                engagement BIGINT DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        logger.info("✅ 已确认 fb_post_metrics 表存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法创建 fb_post_metrics 表: {e}")
+
 def send_feedback_email(project_name: str, feedback: str) -> bool:
     """发送用户反馈邮件到运维邮箱（可选功能）
 
@@ -392,6 +417,7 @@ USD_TO_CNY = 7.2
 # 启动时尽早检查相关表结构
 ensure_task_queue_schema()
 ensure_analysis_results_schema()
+ensure_fb_post_metrics_schema()
 rag.ensure_tables()
 
 
@@ -1402,7 +1428,7 @@ def spd_report_data():
         if start_dt > end_dt:
             return jsonify({'status': 'error', 'message': 'start_date 不能晚于 end_date'}), 400
 
-        rows = db.query_all("""
+        comment_rows = db.query_all("""
             SELECT post_url, post_link, author, created_at, content, brief_analysis,
                    sentiment_score, language, category
             FROM fb_comments
@@ -1411,39 +1437,75 @@ def spd_report_data():
             ORDER BY created_at ASC
         """, (start_date, f"{end_date} 23:59:59"))
 
+        post_rows = db.query_all("""
+            SELECT post_url, platform, author, post_date, post_content, thumbnail_url,
+                   views, shares, likes, comments_count, engagement
+            FROM fb_post_metrics
+            WHERE post_date >= %s
+              AND post_date <= %s
+            ORDER BY post_date ASC
+        """, (start_date, end_date))
+
+        # 评论侧：用于情感与观点
         filtered_rows = []
-        for row in rows:
+        post_comments = defaultdict(list)
+        post_region_votes = defaultdict(Counter)
+        for row in comment_rows:
             row_dict = dict(row)
             row_region = _region_by_language(row_dict.get('language'))
-            if region != 'global' and row_region != region.upper():
-                continue
             row_dict['region'] = row_region
             row_dict['is_mlbb'] = _match_task('MLBB', row_dict.get('content', ''), row_dict.get('brief_analysis', ''))
             row_dict['is_spd'] = _match_task('SPD', row_dict.get('content', ''), row_dict.get('brief_analysis', ''))
             row_dict['sentiment'] = _sentiment_bucket(row_dict.get('sentiment_score'))
+            post_key = row_dict.get('post_url') or row_dict.get('post_link') or 'unknown'
+            post_comments[post_key].append(row_dict)
+            post_region_votes[post_key][row_region] += 1
+            if region != 'global' and row_region != region.upper():
+                continue
             filtered_rows.append(row_dict)
+
+        def _post_region(post_key):
+            votes = post_region_votes.get(post_key)
+            if not votes:
+                return 'EN'
+            return votes.most_common(1)[0][0]
+
+        # 帖子侧：用于趋势、峰值、Top5按 engagement 排序
+        filtered_posts = []
+        for prow in post_rows:
+            p = dict(prow)
+            post_key = p.get('post_url') or 'unknown'
+            p_region = _post_region(post_key)
+            if region != 'global' and p_region != region.upper():
+                continue
+            p['region'] = p_region
+            p['is_mlbb'] = _match_task('MLBB', p.get('post_content', ''), '')
+            p['is_spd'] = _match_task('SPD', p.get('post_content', ''), '')
+            p['engagement'] = int(p.get('engagement') or 0)
+            p['likes'] = int(p.get('likes') or 0)
+            p['shares'] = int(p.get('shares') or 0)
+            p['views'] = int(p.get('views') or 0)
+            p['comments_count'] = int(p.get('comments_count') or 0)
+            filtered_posts.append(p)
 
         daily_counter = defaultdict(lambda: {'mlbb': 0, 'spd': 0})
         daily_post_counter = {
             'mlbb': defaultdict(lambda: defaultdict(int)),
             'spd': defaultdict(lambda: defaultdict(int))
         }
-        post_comments = defaultdict(list)
-        spd_post_counts = Counter()
 
-        for row in filtered_rows:
-            date_key = row['created_at'].strftime('%Y-%m-%d') if row.get('created_at') else start_date
-            post_key = row.get('post_url') or row.get('post_link') or 'unknown'
-
-            if row['is_mlbb']:
-                daily_counter[date_key]['mlbb'] += 1
-                daily_post_counter['mlbb'][date_key][post_key] += 1
-            post_comments[post_key].append(row)
-
-            if row['is_spd']:
-                daily_counter[date_key]['spd'] += 1
-                daily_post_counter['spd'][date_key][post_key] += 1
-                spd_post_counts[post_key] += 1
+        for post in filtered_posts:
+            date_key = (post.get('post_date').strftime('%Y-%m-%d')
+                        if hasattr(post.get('post_date'), 'strftime')
+                        else str(post.get('post_date') or start_date))
+            post_key = post.get('post_url') or 'unknown'
+            engagement_val = int(post.get('engagement') or 0)
+            if post['is_mlbb']:
+                daily_counter[date_key]['mlbb'] += engagement_val
+                daily_post_counter['mlbb'][date_key][post_key] += engagement_val
+            if post['is_spd']:
+                daily_counter[date_key]['spd'] += engagement_val
+                daily_post_counter['spd'][date_key][post_key] += engagement_val
 
         labels = sorted(daily_counter.keys())
         mlbb_series = [daily_counter[d]['mlbb'] for d in labels]
@@ -1462,20 +1524,16 @@ def spd_report_data():
                 top_posts = []
                 post_counts_on_date = daily_post_counter[task_key][peak_date]
                 for post_key, count in sorted(post_counts_on_date.items(), key=lambda x: x[1], reverse=True)[:2]:
-                    comments = [
-                        c for c in post_comments.get(post_key, [])
-                        if (
-                            c.get('created_at')
-                            and c['created_at'].strftime('%Y-%m-%d') == peak_date
-                            and (task_key != 'spd' or c.get('is_spd'))
-                        )
-                    ]
+                    matched_post = next((p for p in filtered_posts if (p.get('post_url') or '') == post_key), {})
+                    comments = [c for c in post_comments.get(post_key, []) if (task_key != 'spd' or c.get('is_spd'))]
                     first = comments[0] if comments else {}
-                    topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+                    topic = (matched_post.get('post_content') or '')[:48]
+                    if not topic:
+                        topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
                     topic = (topic or '帖子讨论')[:48]
                     top_posts.append({
-                        'author': first.get('author') or 'unknown',
-                        'author_region': first.get('region') or 'EN',
+                        'author': matched_post.get('author') or first.get('author') or 'unknown',
+                        'author_region': matched_post.get('region') or first.get('region') or 'EN',
                         'post_topic': topic,
                         'post_url': post_key,
                         'engagement': count
@@ -1507,11 +1565,38 @@ def spd_report_data():
                 'percentage': _to_percentage(count, total_spd_comments)
             })
 
+        # Top5：仅 SPD 相关帖子，按 engagement 排序
+        spd_posts_sorted = sorted(
+            [p for p in filtered_posts if p.get('is_spd')],
+            key=lambda x: int(x.get('engagement') or 0),
+            reverse=True
+        )[:5]
+        if not spd_posts_sorted:
+            fallback_counts = Counter()
+            for row in filtered_rows:
+                if row.get('is_spd'):
+                    pkey = row.get('post_url') or row.get('post_link') or 'unknown'
+                    fallback_counts[pkey] += 1
+            for post_key, count in fallback_counts.most_common(5):
+                sample = (post_comments.get(post_key) or [{}])[0]
+                spd_posts_sorted.append({
+                    'post_url': post_key,
+                    'platform': 'FB',
+                    'author': sample.get('author') or 'unknown',
+                    'region': sample.get('region') or 'EN',
+                    'post_content': sample.get('content') or '',
+                    'thumbnail_url': '',
+                    'views': 0,
+                    'shares': 0,
+                    'likes': 0,
+                    'comments_count': count,
+                    'engagement': count,
+                })
+
         top5_posts = []
-        for idx, (post_key, _) in enumerate(spd_post_counts.most_common(5), start=1):
+        for idx, post in enumerate(spd_posts_sorted, start=1):
+            post_key = post.get('post_url') or 'unknown'
             comments = [row for row in post_comments.get(post_key, []) if row['is_spd']]
-            if not comments:
-                continue
             total = len(comments)
             sent_count = Counter([row['sentiment'] for row in comments])
 
@@ -1540,16 +1625,19 @@ def spd_report_data():
                     })
                 top_sentiments.extend(sentiment_items)
 
-            first = comments[0]
-            topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+            first = comments[0] if comments else {}
+            topic = (post.get('post_content') or '')[:60]
+            if not topic:
+                topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+
             top5_posts.append({
                 'rank': idx,
-                'region': first.get('region', 'EN'),
-                'platform': 'FB',
+                'region': post.get('region') or first.get('region', 'EN'),
+                'platform': post.get('platform') or 'FB',
                 'post_content': {
                     'topic': (topic or '帖子讨论')[:60],
-                    'text': (first.get('content') or '')[:160],
-                    'thumbnail_url': '',
+                    'text': ((post.get('post_content') or first.get('content') or '')[:220]),
+                    'thumbnail_url': post.get('thumbnail_url') or '',
                 },
                 'sentiment_ratio': {
                     'positive': _to_percentage(sent_count.get('positive', 0), total),
@@ -1557,9 +1645,11 @@ def spd_report_data():
                     'negative': _to_percentage(sent_count.get('negative', 0), total),
                 },
                 'top_sentiments': top_sentiments,
-                'views': 0,
-                'likes': 0,
-                'comments': total,
+                'views': int(post.get('views') or 0),
+                'shares': int(post.get('shares') or 0),
+                'likes': int(post.get('likes') or 0),
+                'comments': int(post.get('comments_count') or total),
+                'engagement': int(post.get('engagement') or 0),
                 'post_url': post_key
             })
 
@@ -3277,8 +3367,10 @@ def spd_schedule():
             def run_spd_scrape():
                 try:
                     resolved_urls = post_urls
+                    resolved_posts = []
                     if (not resolved_urls) and task_queries:
                         merged = []
+                        merged_posts = []
                         seen = set()
                         for query in task_queries:
                             discover_result = tasks.discover_posts_by_tags(
@@ -3290,6 +3382,7 @@ def spd_schedule():
                             )
                             if discover_result.get('status') != 'success':
                                 raise RuntimeError(f"{query.get('task_name')} discover failed: {discover_result.get('message')}")
+                            merged_posts.extend(discover_result.get('posts') or [])
                             for url in (discover_result.get('post_urls') or []):
                                 key = str(url).strip().lower()
                                 if not key or key in seen:
@@ -3297,11 +3390,13 @@ def spd_schedule():
                                 seen.add(key)
                                 merged.append(url)
                         resolved_urls = merged
+                        resolved_posts = merged_posts
                         if not resolved_urls:
                             raise RuntimeError('MLBB/SPD 分任务 discover 均未找到可抓取帖子')
 
                     tasks.scrape_fb_comments(
                         post_urls=resolved_urls,
+                        discovered_posts=resolved_posts,
                         days_back=days_back,
                         task_id=task_id,
                         results_limit=results_limit,
