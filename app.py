@@ -1543,13 +1543,12 @@ def _reanalyze_comments_for_template(rows, force_full=False):
     """仅用于 SPD 报告：对 Top5 评论池做重分析。"""
     if not rows:
         return []
-    # 默认全量；可通过环境变量显式限额
     try:
-        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "-1"))
+        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "0"))
     except Exception:
-        reanalyze_limit = -1
+        reanalyze_limit = 0
     if reanalyze_limit < 0:
-        reanalyze_limit = len(rows)
+        reanalyze_limit = 0
 
     result = []
     reanalyzed = 0
@@ -2126,8 +2125,7 @@ def spd_report_data():
         if not top5_comment_pool:
             top5_comment_pool = [row for row in filtered_rows if row.get('is_spd')]
 
-        # 对 Top5 评论池做全量重分析（按需求：Top5 全部评论全量分析）
-        top5_comment_pool = _reanalyze_comments_for_template(top5_comment_pool, force_full=True)
+        top5_comment_pool = _reanalyze_comments_for_template(top5_comment_pool)
         top5_pool_by_post = defaultdict(list)
         for row in top5_comment_pool:
             pkey = row.get('post_url') or row.get('post_link') or 'unknown'
