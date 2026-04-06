@@ -1421,7 +1421,7 @@ def _extract_opinion_text(row):
         return len(compact) < 4
 
     # 优先 brief_analysis；若被判低价值则回退原文
-    brief_text = _clean(row.get('brief_analysis'))
+    brief_text = _clean(row.get('_rt_brief') or row.get('brief_analysis'))
     if brief_text and not _is_low_value(brief_text):
         return brief_text[:80]
 
@@ -1497,6 +1497,71 @@ def _is_spd_relaxed_text(content, brief_analysis):
     return any(term in text for term in relaxed_terms)
 
 
+def _is_mlbb_relaxed_text(content, brief_analysis):
+    text = _normalize_monitor_text(content, brief_analysis)
+    if not text:
+        return False
+    mlbb_terms = [
+        "mlbb", "#mlbb", "mobile legends", "mobilelegends",
+        "mobilelegendsbangbang", "#mobilelegends", "#mobilelegendsbangbang", "#moba55"
+    ]
+    return any(term in text for term in mlbb_terms)
+
+
+def _contains_zh(text):
+    return bool(re.search(r'[\u4e00-\u9fff]', (text or '')))
+
+
+def _translate_text_to_zh(text):
+    source = (text or '').strip()
+    if not source:
+        return ''
+    if _contains_zh(source):
+        return source
+    if not qwen_client:
+        return source
+    try:
+        prompt = (
+            "把下面这句社媒评论翻译成简体中文，只返回翻译结果，不要解释：\n"
+            f"{source}"
+        )
+        response = qwen_client.chat.completions.create(
+            model="qwen-plus",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        translated = (response.choices[0].message.content or '').strip()
+        return translated or source
+    except Exception:
+        return source
+
+
+def _reanalyze_comments_for_template(rows):
+    """仅用于 SPD 报告：对 Top5 评论池做定向重分析。"""
+    if not rows:
+        return []
+    result = []
+    for row in rows:
+        new_row = dict(row)
+        content = (new_row.get('content') or '').strip()
+        if not content:
+            new_row['_rt_sentiment'] = new_row.get('sentiment') or 'neutral'
+            new_row['_rt_brief'] = new_row.get('brief_analysis') or ''
+            result.append(new_row)
+            continue
+        try:
+            score, _, language, brief = tasks.analyze_comment_sentiment(content)
+            new_row['_rt_sentiment'] = _sentiment_bucket(score)
+            new_row['_rt_language'] = (language or new_row.get('language') or '').lower()
+            brief_text = (brief or '').strip()
+            new_row['_rt_brief'] = brief_text if brief_text else (new_row.get('brief_analysis') or '')
+        except Exception:
+            new_row['_rt_sentiment'] = new_row.get('sentiment') or 'neutral'
+            new_row['_rt_brief'] = new_row.get('brief_analysis') or ''
+        result.append(new_row)
+    return result
+
+
 @app.route('/spd-report-tool')
 @login_required
 def spd_report_tool():
@@ -1536,7 +1601,7 @@ def spd_report_data():
             return jsonify({'status': 'error', 'message': 'start_date 不能晚于 end_date'}), 400
 
         comment_rows = db.query_all("""
-            SELECT post_url, post_link, author, created_at, content, brief_analysis,
+            SELECT post_url, comment_id, post_link, author, created_at, content, brief_analysis,
                    sentiment_score, language, category
             FROM fb_comments
             WHERE created_at >= %s
@@ -1586,8 +1651,8 @@ def spd_report_data():
             if region != 'global' and p_region != region.upper():
                 continue
             p['region'] = p_region
-            p['is_mlbb'] = _match_task('MLBB', p.get('post_content', ''), '')
-            p['is_spd'] = _match_task('SPD', p.get('post_content', ''), '')
+            p['is_mlbb'] = _match_task('MLBB', p.get('post_content', ''), '') or _is_mlbb_relaxed_text(p.get('post_content', ''), '')
+            p['is_spd'] = _match_task('SPD', p.get('post_content', ''), '') or _is_spd_relaxed_text(p.get('post_content', ''), '')
             p['engagement'] = int(p.get('engagement') or 0)
             p['likes'] = int(p.get('likes') or 0)
             p['shares'] = int(p.get('shares') or 0)
@@ -1646,20 +1711,15 @@ def spd_report_data():
             'spd': defaultdict(lambda: defaultdict(int))
         }
 
-        comment_count_by_post = Counter()
-        for row in filtered_rows:
-            pkey = row.get('post_url') or row.get('post_link') or 'unknown'
-            comment_count_by_post[pkey] += 1
-
         for post in filtered_posts:
             date_key = (post.get('post_date').strftime('%Y-%m-%d')
                         if hasattr(post.get('post_date'), 'strftime')
                         else str(post.get('post_date') or start_date))
             post_key = post.get('post_url') or 'unknown'
+            raw_interaction = int(post.get('likes') or 0) + int(post.get('shares') or 0) + int(post.get('comments_count') or 0)
             engagement_val = max(
                 int(post.get('engagement') or 0),
-                int(post.get('comments_count') or 0),
-                int(comment_count_by_post.get(post_key) or 0)
+                raw_interaction
             )
             post['effective_engagement'] = engagement_val
             if post['is_mlbb']:
@@ -1731,29 +1791,6 @@ def spd_report_data():
                         'top_posts': top_posts
                     })
 
-        spd_comments = [row for row in filtered_rows if row['is_spd']]
-        total_spd_comments = len(spd_comments)
-        sentiment_counter = Counter([row['sentiment'] for row in spd_comments])
-
-        opinion_counter = Counter()
-        for row in spd_comments:
-            opinion = _extract_opinion_text(row)[:42]
-            if not opinion:
-                continue
-            opinion_counter[(row['sentiment'], row['region'], opinion)] += 1
-
-        key_opinions = []
-        for sentiment in ['positive', 'neutral', 'negative']:
-            bucket = [((s, r, o), c) for (s, r, o), c in opinion_counter.items() if s == sentiment]
-            bucket.sort(key=lambda x: x[1], reverse=True)
-            for (s, op_region, opinion), count in bucket[:3]:
-                key_opinions.append({
-                    'sentiment': s,
-                    'region': op_region,
-                    'opinion': opinion,
-                    'percentage': _to_percentage(count, total_spd_comments)
-                })
-
         # Top5：仅 SPD 相关帖子，按 engagement 排序
         spd_posts_sorted = sorted(
             [p for p in filtered_posts if p.get('is_spd')],
@@ -1780,18 +1817,59 @@ def spd_report_data():
                     'likes': 0,
                     'comments_count': count,
                     'engagement': count,
+                    'effective_engagement': count,
+                })
+
+        top5_post_urls = {(p.get('post_url') or 'unknown') for p in spd_posts_sorted[:5]}
+        top5_comment_pool = [
+            row for row in filtered_rows
+            if (row.get('post_url') or row.get('post_link') or 'unknown') in top5_post_urls
+        ]
+        if not top5_comment_pool:
+            top5_comment_pool = [row for row in filtered_rows if row.get('is_spd')]
+
+        # 对 Top5 评论池做定向重分析（不重抓数据，只重算舆情结论）
+        top5_comment_pool = _reanalyze_comments_for_template(top5_comment_pool)
+        top5_pool_by_post = defaultdict(list)
+        for row in top5_comment_pool:
+            pkey = row.get('post_url') or row.get('post_link') or 'unknown'
+            top5_pool_by_post[pkey].append(row)
+
+        total_spd_comments = len(top5_comment_pool)
+        sentiment_counter = Counter([row.get('_rt_sentiment') or row.get('sentiment') for row in top5_comment_pool])
+        opinion_counter = Counter()
+        for row in top5_comment_pool:
+            opinion = _extract_opinion_text(row)[:42]
+            if not opinion:
+                continue
+            s_label = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
+            opinion_counter[(s_label, row['region'], opinion)] += 1
+
+        key_opinions = []
+        for sentiment in ['positive', 'neutral', 'negative']:
+            bucket = [((s, r, o), c) for (s, r, o), c in opinion_counter.items() if s == sentiment]
+            bucket.sort(key=lambda x: x[1], reverse=True)
+            for (s, op_region, opinion), count in bucket[:3]:
+                key_opinions.append({
+                    'sentiment': s,
+                    'region': op_region,
+                    'opinion': opinion,
+                    'percentage': _to_percentage(count, total_spd_comments)
                 })
 
         top5_posts = []
+        translation_cache = {}
         for idx, post in enumerate(spd_posts_sorted, start=1):
             post_key = post.get('post_url') or 'unknown'
-            comments = [row for row in post_comments.get(post_key, []) if row['is_spd']]
+            comments = list(top5_pool_by_post.get(post_key, []))
+            if not comments:
+                comments = [row for row in filtered_rows if (row.get('post_url') or row.get('post_link') or 'unknown') == post_key]
             total = len(comments)
-            sent_count = Counter([row['sentiment'] for row in comments])
+            sent_count = Counter([(row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') for row in comments])
 
             top_sentiments = []
             for sentiment in ['positive', 'neutral', 'negative']:
-                sentiment_rows = [row for row in comments if row['sentiment'] == sentiment]
+                sentiment_rows = [row for row in comments if (row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') == sentiment]
                 clusters = _cluster_opinions(sentiment_rows, top_k=3)
                 sentiment_items = []
                 for cluster in clusters:
@@ -1799,7 +1877,15 @@ def spd_report_data():
                     examples = []
                     for row in cluster_rows[:2]:
                         original = (row.get('content') or '')[:120]
-                        translation = (row.get('brief_analysis') or original)[:120]
+                        translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
+                        if not translation:
+                            translation = original
+                        if not _contains_zh(translation):
+                            key = translation.lower()
+                            if key not in translation_cache:
+                                translation_cache[key] = _translate_text_to_zh(translation)
+                            translation = translation_cache[key]
+                        translation = translation[:120]
                         examples.append({'original': original, 'translation': translation})
                     sentiment_items.append({
                         'sentiment': sentiment,
