@@ -128,10 +128,9 @@
 
     <div class="card">
         <div class="section-title">三、TOP5 帖文舆情概况（仅 SPD 相关）</div>
-        <div class="summary-grid">
-            <div class="summary-item"><div class="muted">总评论量</div><div id="sumTotal" style="font-size:20px;font-weight:700;">0</div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+            <div class="summary-item"><div class="muted">TOP5 总评论量</div><div id="sumTotal" style="font-size:20px;font-weight:700;">0</div></div>
             <div class="summary-item"><div class="muted">情感占比</div><div id="sumRatio">正面 0% / 中性 0% / 负面 0%</div></div>
-            <div class="summary-item"><div class="muted">关键观点数</div><div id="sumOpinions" style="font-size:20px;font-weight:700;">0</div></div>
         </div>
         <div id="opinionsContainer"></div>
     </div>
@@ -142,13 +141,13 @@
             <table id="top5Table">
                 <thead>
                     <tr>
-                        <th style="width:300px;">帖文内容（Post Topic+Content）</th>
-                        <th style="width:200px;">Positive : Neutral : Negative</th>
-                        <th>主要观点 Top Sentiments TOP3</th>
-                        <th style="width:130px;">View/Share</th>
-                        <th style="width:90px;">likes</th>
-                        <th style="width:90px;">comment</th>
-                        <th style="width:120px;">link</th>
+                        <th style="width:70px;">平台</th>
+                        <th style="width:60px;">地区</th>
+                        <th style="width:280px;">帖子主要内容</th>
+                        <th style="width:160px;">舆情情绪占比</th>
+                        <th>正面/中性/负面 舆情提炼</th>
+                        <th style="width:140px;">赞/转/评</th>
+                        <th style="width:80px;">链接</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -247,17 +246,13 @@ function renderTrend(trend) {
     const ctx = document.getElementById('trendChart').getContext('2d');
     if (trendChart) trendChart.destroy();
     const labels = trend.labels || [];
-    const periodLabel = trend.period_label || '近7天';
     trendChart = new Chart(ctx, {
         type: 'line',
         data: {
             labels,
             datasets: [
                 { label: 'MLBB全球', data: trend.mlbb || [], borderColor: '#2962ff', tension: 0.35, fill: false, pointRadius: 1 },
-                { label: 'GM', data: trend.spd || [], borderColor: '#f4b400', tension: 0.35, fill: false, pointRadius: 1 },
-                { label: 'ML1月均值', data: labels.map(() => trend.mlbb_month_avg || 0), borderColor: '#e45b5b', borderDash: [6, 6], pointRadius: 0 },
-                { label: `ML均值（${periodLabel}）`, data: labels.map(() => trend.mlbb_period_avg || 0), borderColor: '#2962ffaa', borderDash: [3, 3], pointRadius: 0 },
-                { label: `GM均值（${periodLabel}）`, data: labels.map(() => trend.spd_period_avg || 0), borderColor: '#f4b400aa', borderDash: [3, 3], pointRadius: 0 },
+                { label: 'SPD', data: trend.spd || [], borderColor: '#f4b400', tension: 0.35, fill: false, pointRadius: 1 },
             ]
         },
         options: {
@@ -308,11 +303,10 @@ function renderPeaks(items) {
 }
 
 function renderSummary(summary) {
-    document.getElementById('sumTotal').textContent = summary.total_comments || 0;
+    document.getElementById('sumTotal').textContent = formatNumber(summary.total_comments || 0);
     const ratio = summary.sentiment_ratio || {};
     document.getElementById('sumRatio').textContent = `正面 ${ratio.positive || 0}% / 中性 ${ratio.neutral || 0}% / 负面 ${ratio.negative || 0}%`;
     const allOpinions = summary.key_opinions || [];
-    document.getElementById('sumOpinions').textContent = allOpinions.length;
     const buckets = {
         positive: allOpinions.filter(x => x.sentiment === 'positive'),
         neutral: allOpinions.filter(x => x.sentiment === 'neutral'),
@@ -322,7 +316,10 @@ function renderSummary(summary) {
         <div class="summary-block">
             <div class="summary-title">• ${title}</div>
             <ul class="op-list">
-                ${(items || []).slice(0, 3).map(op => `<li>${escapeHtml(op.region)}：${escapeHtml(op.opinion)}（${escapeHtml(formatPercent(op.percentage))}%）</li>`).join('') || '<li>暂无</li>'}
+                ${(items || []).slice(0, 5).map(op => {
+                    const pct = op.percentage > 0 ? `（${escapeHtml(formatPercent(op.percentage))}%）` : '';
+                    return `<li>${escapeHtml(op.region)}：${escapeHtml(op.opinion)}${pct}</li>`;
+                }).join('') || '<li>暂无</li>'}
             </ul>
         </div>
     `;
@@ -351,14 +348,16 @@ function renderTop5(items) {
         });
         const renderSentimentGroup = (label, items2) => {
             const top3 = (items2 || []).slice(0, 3);
+            if (!top3.length) return '';
             return `
-                <div style="margin-bottom:8px;">
+                <div style="margin-bottom:6px;">
                     <strong>${label}</strong>
                     <ul class="op-list">
                         ${top3.map(op => {
-                            const ex = (op.examples || []).slice(0, 2).map(one => `<li>示例：“${escapeHtml(one.original || '')}” → “${escapeHtml(one.translation || '')}”</li>`).join('');
-                            return `<li>${escapeHtml(op.opinion)}（${escapeHtml(op.count)}）${ex ? `<ul class="op-list">${ex}</ul>` : ''}</li>`;
-                        }).join('') || '<li>暂无</li>'}
+                            const regionPrefix = op.region ? `${escapeHtml(op.region)}：` : '';
+                            const countSuffix = op.count ? `（${escapeHtml(op.count)}）` : '';
+                            return `<li>${regionPrefix}${escapeHtml(op.opinion)}${countSuffix}</li>`;
+                        }).join('')}
                     </ul>
                 </div>
             `;
@@ -366,21 +365,27 @@ function renderTop5(items) {
         const link = safeUrl(post.post_url);
         return `
             <tr>
+                <td>${escapeHtml(post.platform || 'FB')}</td>
+                <td>${escapeHtml(post.region || '-')}</td>
                 <td>
                     <div><strong>${escapeHtml(post.post_content.topic || '-')}</strong></div>
                     <div class="muted">${escapeHtml(post.post_content.text || '')}</div>
                 </td>
-                <td>Positive: ${escapeHtml(positiveText)}%<br>Neutral: ${escapeHtml(neutralText)}%<br>Negative: ${escapeHtml(negativeText)}%</td>
                 <td>
-                    ${renderSentimentGroup('正面评论', grouped.positive)}
-                    ${renderSentimentGroup('中性评论', grouped.neutral)}
-                    ${renderSentimentGroup('负面评论', grouped.negative)}
+                    <span style="color:#0f9d58;">正 ${escapeHtml(positiveText)}%</span><br>
+                    <span style="color:#666;">中 ${escapeHtml(neutralText)}%</span><br>
+                    <span style="color:#e45b5b;">负 ${escapeHtml(negativeText)}%</span>
                 </td>
                 <td>
-                    ${escapeHtml(formatNumber(post.views || 0))}/${escapeHtml(formatNumber(post.shares || 0))}
+                    ${renderSentimentGroup('正面', grouped.positive)}
+                    ${renderSentimentGroup('中性', grouped.neutral)}
+                    ${renderSentimentGroup('负面', grouped.negative)}
                 </td>
-                <td>${escapeHtml(formatNumber(post.likes || 0))}</td>
-                <td>${escapeHtml(formatNumber(post.comments || 0))}</td>
+                <td>
+                    <div>赞 ${escapeHtml(formatK(post.likes || 0))}</div>
+                    <div>转 ${escapeHtml(formatK(post.shares || 0))}</div>
+                    <div>评 ${escapeHtml(formatK(post.comments || 0))}</div>
+                </td>
                 <td><a href="${link}" target="_blank" rel="noopener noreferrer">查看</a></td>
             </tr>
         `;
@@ -388,7 +393,7 @@ function renderTop5(items) {
 }
 
 function resetViewWithMessage(message) {
-    renderTrend({ labels: [], mlbb: [], spd: [], mlbb_month_avg: 0, spd_month_avg: 0 });
+    renderTrend({ labels: [], mlbb: [], spd: [] });
     document.getElementById('peakContainer').innerHTML = `<div class="muted">${escapeHtml(message)}</div>`;
     renderSummary({ total_comments: 0, sentiment_ratio: {}, key_opinions: [] });
     renderTop5([]);

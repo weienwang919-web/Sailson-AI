@@ -1539,17 +1539,17 @@ def _translate_text_to_zh(text):
         return source
 
 
-def _reanalyze_comments_for_template(rows):
-    """仅用于 SPD 报告：对 Top5 评论池做定向重分析。"""
+def _reanalyze_comments_for_template(rows, force_full=False):
+    """仅用于 SPD 报告：对 Top5 评论池做重分析。"""
     if not rows:
         return []
-    # 避免报告接口因逐条重分析超时：限制重分析条数，其余复用历史分析结果
+    # 默认全量；可通过环境变量显式限额
     try:
-        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "0"))
+        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "-1"))
     except Exception:
-        reanalyze_limit = 120
+        reanalyze_limit = -1
     if reanalyze_limit < 0:
-        reanalyze_limit = 0
+        reanalyze_limit = len(rows)
 
     result = []
     reanalyzed = 0
@@ -1568,6 +1568,11 @@ def _reanalyze_comments_for_template(rows):
             result.append(new_row)
             continue
 
+        # 非强制全量模式下，若已有分析结果则直接复用
+        if (not force_full) and new_row.get('brief_analysis') and (new_row.get('sentiment') in {'positive', 'neutral', 'negative'}):
+            result.append(new_row)
+            continue
+
         try:
             score, _, language, brief = tasks.analyze_comment_sentiment(content)
             new_row['_rt_sentiment'] = _sentiment_bucket(score)
@@ -1579,7 +1584,7 @@ def _reanalyze_comments_for_template(rows):
             pass
         result.append(new_row)
     if len(rows) > reanalyze_limit:
-        logger.info(f"ℹ️ SPD report reanalyze capped: {reanalyzed}/{len(rows)}")
+        logger.info(f"ℹ️ SPD report reanalyze capped: {reanalyzed}/{len(rows)} | force_full={force_full}")
     return result
 
 
@@ -1623,6 +1628,179 @@ def _rewrite_opinion_for_template(sentiment, region, raw_opinion, examples=None)
         return text[:42]
     except Exception:
         return opinion[:42]
+
+
+def _ai_aggregate_opinions(comment_pool, total_comments):
+    """
+    用 LLM 对 Top5 评论池做聚合舆情提炼。
+    返回 key_opinions 列表，结构：[{sentiment, region, opinion, percentage}]
+    """
+    if not comment_pool:
+        return []
+    if not qwen_client:
+        return None
+
+    valid_sentiments = {'positive', 'neutral', 'negative'}
+    buckets = {'positive': defaultdict(list), 'neutral': defaultdict(list), 'negative': defaultdict(list)}
+    for row in comment_pool:
+        s = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
+        if s not in valid_sentiments:
+            s = 'neutral'
+        region = row.get('region') or 'EN'
+        brief = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
+        content = (row.get('content') or '').strip()
+        text = brief if brief else content[:150]
+        if text:
+            buckets[s][region].append(text)
+
+    lines = []
+    for sentiment in ['positive', 'neutral', 'negative']:
+        label = {'positive': '正面', 'neutral': '中性', 'negative': '负面'}[sentiment]
+        for region, texts in buckets[sentiment].items():
+            sampled = texts[:80]
+            lines.append(f"【{label} - {region}】共{len(texts)}条")
+            for t in sampled:
+                lines.append(f"  - {t[:120]}")
+
+    if not lines:
+        return None
+
+    prompt = f"""你是资深手游舆情分析师。以下是某游戏联动活动 TOP5 热门帖子的全部评论（已按正面/中性/负面和地区分组）。
+
+请对每种情绪（正面、中性、负面）分别提炼 3-5 条最核心的舆情观点。每条观点必须标注主要来源地区。
+
+评论数据：
+{chr(10).join(lines[:600])}
+
+总评论量：{total_comments}
+
+严格按以下 JSON 格式输出，不要输出任何其他文字：
+{{
+  "positive": [
+    {{"region": "地区代码如EN/TH/ID/PT", "opinion": "一句话中文观点（不超过40字）", "count_estimate": 估计提到该观点的评论数}}
+  ],
+  "neutral": [...],
+  "negative": [...]
+}}
+
+要求：
+1. 观点必须具体，包含明确的游戏元素（角色/皮肤/活动/机制等）
+2. 禁止空泛描述如"玩家讨论了游戏"
+3. 每种情绪 3-5 条，按讨论热度排序
+4. count_estimate 是你估算该观点涉及的评论条数"""
+
+    try:
+        resp = qwen_client.chat.completions.create(
+            model="qwen-plus",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.15,
+            timeout=30
+        )
+        raw = (resp.choices[0].message.content or '').strip()
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if not match:
+            return None
+        data = json.loads(match.group())
+        result = []
+        for sentiment in ['positive', 'neutral', 'negative']:
+            items = data.get(sentiment, [])
+            for item in items[:5]:
+                try:
+                    count_est = int(re.sub(r'[^\d]', '', str(item.get('count_estimate', 0))) or 0)
+                except (ValueError, TypeError):
+                    count_est = 0
+                result.append({
+                    'sentiment': sentiment,
+                    'region': item.get('region', 'EN'),
+                    'opinion': (item.get('opinion', '') or '')[:60],
+                    'percentage': _to_percentage(count_est, total_comments) if count_est > 0 else 0.0
+                })
+        if result:
+            return result
+        return None
+    except Exception as e:
+        logger.warning(f"⚠️ AI aggregate opinions failed, falling back to heuristic: {e}")
+        return None
+
+
+def _ai_analyze_single_post(comments, total_post_comments):
+    """
+    用 LLM 对单帖评论做正面/中性/负面观点提炼。
+    返回 top_sentiments 列表，结构：[{sentiment, region, opinion, count, examples}]
+    """
+    if not comments or not qwen_client:
+        return None
+
+    lines = []
+    for row in comments:
+        s = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
+        region = row.get('region') or 'EN'
+        brief = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
+        content = (row.get('content') or '').strip()
+        text = brief if brief else content[:150]
+        if text:
+            label = {'positive': '正面', 'neutral': '中性', 'negative': '负面'}.get(s, '中性')
+            lines.append(f"[{label}/{region}] {text[:120]}")
+
+    if not lines:
+        return None
+
+    prompt = f"""你是资深手游舆情分析师。以下是某帖子的全部评论（标注了情感和地区）。
+
+请对正面、中性、负面各提炼 Top3 主要观点，每条标注来源地区。
+
+评论数据：
+{chr(10).join(lines[:400])}
+
+总评论数：{total_post_comments}
+
+严格按以下 JSON 格式输出，不要输出任何其他文字：
+{{
+  "positive": [
+    {{"region": "地区代码", "opinion": "一句话中文观点（不超过35字）", "count_estimate": 估计数}}
+  ],
+  "neutral": [...],
+  "negative": [...]
+}}
+
+要求：
+1. 每种情绪最多3条，按热度排序
+2. 观点要具体，含游戏元素
+3. 禁止空泛描述"""
+
+    try:
+        resp = qwen_client.chat.completions.create(
+            model="qwen-plus",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.15,
+            timeout=25
+        )
+        raw = (resp.choices[0].message.content or '').strip()
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if not match:
+            return None
+        data = json.loads(match.group())
+        result = []
+        for sentiment in ['positive', 'neutral', 'negative']:
+            items = data.get(sentiment, [])
+            for item in items[:3]:
+                try:
+                    count_val = int(re.sub(r'[^\d]', '', str(item.get('count_estimate', 0))) or 0)
+                except (ValueError, TypeError):
+                    count_val = 0
+                result.append({
+                    'sentiment': sentiment,
+                    'region': item.get('region', 'EN'),
+                    'opinion': (item.get('opinion', '') or '')[:50],
+                    'count': f"{count_val}+",
+                    'examples': []
+                })
+        if result:
+            return result
+        return None
+    except Exception as e:
+        logger.warning(f"⚠️ AI single post analysis failed, falling back to heuristic: {e}")
+        return None
 
 
 def _extract_entity_from_text(text):
@@ -1854,11 +2032,8 @@ def spd_report_data():
                         if hasattr(post.get('post_date'), 'strftime')
                         else str(post.get('post_date') or start_date))
             post_key = post.get('post_url') or 'unknown'
-            raw_interaction = int(post.get('likes') or 0) + int(post.get('shares') or 0) + int(post.get('comments_count') or 0)
-            engagement_val = max(
-                int(post.get('engagement') or 0),
-                raw_interaction
-            )
+            # 折线图口径：按 hashtag 抓取到的帖子，按日汇总“赞+评+转”
+            engagement_val = int(post.get('likes') or 0) + int(post.get('shares') or 0) + int(post.get('comments_count') or 0)
             post['effective_engagement'] = engagement_val
             if post['is_mlbb']:
                 daily_counter[date_key]['mlbb'] += engagement_val
@@ -1885,20 +2060,6 @@ def spd_report_data():
 
         mlbb_series = [daily_counter[d]['mlbb'] for d in labels]
         spd_series = [daily_counter[d]['spd'] for d in labels]
-
-        mlbb_month_avg = round(sum(mlbb_series) / len(mlbb_series), 1) if mlbb_series else 0
-        spd_month_avg = round(sum(spd_series) / len(spd_series), 1) if spd_series else 0
-        period_days = 7 if len(labels) >= 7 else len(labels)
-        mlbb_period_avg = round(sum(mlbb_series[-period_days:]) / period_days, 1) if period_days else 0
-        spd_period_avg = round(sum(spd_series[-period_days:]) / period_days, 1) if period_days else 0
-        period_label = ""
-        if period_days and labels:
-            try:
-                p_start = datetime.datetime.strptime(labels[-period_days], '%Y-%m-%d')
-                p_end = datetime.datetime.strptime(labels[-1], '%Y-%m-%d')
-                period_label = f"{p_start.month}/{p_start.day}-{p_end.month}/{p_end.day}"
-            except Exception:
-                period_label = "近7天"
 
         peak_drilldown = []
         for task_key, task_name in [('mlbb', 'MLBB'), ('spd', 'SPD')]:
@@ -1965,8 +2126,8 @@ def spd_report_data():
         if not top5_comment_pool:
             top5_comment_pool = [row for row in filtered_rows if row.get('is_spd')]
 
-        # 对 Top5 评论池做定向重分析（不重抓数据，只重算舆情结论）
-        top5_comment_pool = _reanalyze_comments_for_template(top5_comment_pool)
+        # 对 Top5 评论池做全量重分析（按需求：Top5 全部评论全量分析）
+        top5_comment_pool = _reanalyze_comments_for_template(top5_comment_pool, force_full=True)
         top5_pool_by_post = defaultdict(list)
         for row in top5_comment_pool:
             pkey = row.get('post_url') or row.get('post_link') or 'unknown'
@@ -1974,45 +2135,52 @@ def spd_report_data():
 
         total_spd_comments = len(top5_comment_pool)
         sentiment_counter = Counter([row.get('_rt_sentiment') or row.get('sentiment') for row in top5_comment_pool])
-        signal_counter = Counter()
-        signal_examples = defaultdict(list)
-        min_support = 2
-        for row in top5_comment_pool:
-            s_label, region_label, entity, intent = _comment_signal(row)
-            key = (s_label, region_label, entity, intent)
-            signal_counter[key] += 1
-            if len(signal_examples[key]) < 2:
-                original = (row.get('content') or '')[:120]
-                translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip() or original
-                if not _contains_zh(translation):
-                    translation = _translate_text_to_zh(translation)
-                signal_examples[key].append({'original': original, 'translation': translation[:120]})
 
-        key_opinions = []
-        for sentiment in ['positive', 'neutral', 'negative']:
-            bucket = [((s, r, e, i), c) for (s, r, e, i), c in signal_counter.items() if s == sentiment]
-            bucket.sort(key=lambda x: x[1], reverse=True)
-            # 硬限制：只取可执行信号（实体+问题），不足时宁缺毋滥
-            selected = []
-            used_ei = set()
-            candidates = [item for item in bucket if item[1] >= min_support and _is_actionable_signal(item[0][2], item[0][3])]
-            for item in candidates:
-                ei = (item[0][2], item[0][3])
-                if ei in used_ei:
-                    continue
-                selected.append(item)
-                used_ei.add(ei)
-                if len(selected) >= 3:
-                    break
-            for (s, op_region, entity, intent), count in selected:
-                key_opinions.append({
-                    'sentiment': s,
-                    'region': op_region,
-                    'opinion': _build_actionable_opinion(s, entity, intent),
-                    'percentage': _to_percentage(count, total_spd_comments)
-                })
+        ai_opinions = _ai_aggregate_opinions(top5_comment_pool, total_spd_comments)
+        if ai_opinions:
+            key_opinions = ai_opinions
+            logger.info(f"✅ SPD report: AI aggregate produced {len(key_opinions)} opinions")
+        else:
+            signal_counter = Counter()
+            signal_examples = defaultdict(list)
+            min_support = 2
+            for row in top5_comment_pool:
+                s_label, region_label, entity, intent = _comment_signal(row)
+                key = (s_label, region_label, entity, intent)
+                signal_counter[key] += 1
+                if len(signal_examples[key]) < 2:
+                    original = (row.get('content') or '')[:120]
+                    translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip() or original
+                    if not _contains_zh(translation):
+                        translation = _translate_text_to_zh(translation)
+                    signal_examples[key].append({'original': original, 'translation': translation[:120]})
+
+            key_opinions = []
+            for sentiment in ['positive', 'neutral', 'negative']:
+                bucket = [((s, r, e, i), c) for (s, r, e, i), c in signal_counter.items() if s == sentiment]
+                bucket.sort(key=lambda x: x[1], reverse=True)
+                selected = []
+                used_ei = set()
+                candidates = [item for item in bucket if item[1] >= min_support and _is_actionable_signal(item[0][2], item[0][3])]
+                for item in candidates:
+                    ei = (item[0][2], item[0][3])
+                    if ei in used_ei:
+                        continue
+                    selected.append(item)
+                    used_ei.add(ei)
+                    if len(selected) >= 3:
+                        break
+                for (s, op_region, entity, intent), count in selected:
+                    key_opinions.append({
+                        'sentiment': s,
+                        'region': op_region,
+                        'opinion': _build_actionable_opinion(s, entity, intent),
+                        'percentage': _to_percentage(count, total_spd_comments)
+                    })
+            logger.info(f"ℹ️ SPD report: heuristic fallback produced {len(key_opinions)} opinions")
 
         top5_posts = []
+        min_support = 2
         translation_cache = {}
         for idx, post in enumerate(spd_posts_sorted, start=1):
             post_key = post.get('post_url') or 'unknown'
@@ -2022,46 +2190,49 @@ def spd_report_data():
             total = len(comments)
             sent_count = Counter([(row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') for row in comments])
 
-            top_sentiments = []
-            for sentiment in ['positive', 'neutral', 'negative']:
-                sentiment_rows = [row for row in comments if (row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') == sentiment]
-                local_counter = Counter()
-                local_examples = defaultdict(list)
-                for row in sentiment_rows:
-                    _, region_label, entity, intent = _comment_signal(row)
-                    lk = (region_label, entity, intent)
-                    local_counter[lk] += 1
-                    if len(local_examples[lk]) < 2:
-                        original = (row.get('content') or '')[:120]
-                        translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip() or original
-                        if not _contains_zh(translation):
-                            key = translation.lower()
-                            if key not in translation_cache:
-                                translation_cache[key] = _translate_text_to_zh(translation)
-                            translation = translation_cache[key]
-                        local_examples[lk].append({'original': original, 'translation': translation[:120]})
-                sentiment_items = []
-                ranked = sorted(local_counter.items(), key=lambda x: x[1], reverse=True)
-                picked = []
-                used_ei = set()
-                candidates = [item for item in ranked if item[1] >= min_support and _is_actionable_signal(item[0][1], item[0][2])]
-                for item in candidates:
-                    ei = (item[0][1], item[0][2])
-                    if ei in used_ei:
-                        continue
-                    picked.append(item)
-                    used_ei.add(ei)
-                    if len(picked) >= 3:
-                        break
-                for (region_label, entity, intent), c_count in picked:
-                    examples = local_examples.get((region_label, entity, intent), [])
-                    sentiment_items.append({
-                        'sentiment': sentiment,
-                        'opinion': _build_actionable_opinion(sentiment, entity, intent),
-                        'count': f"{c_count}+",
-                        'examples': examples
-                    })
-                top_sentiments.extend(sentiment_items)
+            ai_sentiments = _ai_analyze_single_post(comments, total)
+            if ai_sentiments:
+                top_sentiments = ai_sentiments
+            else:
+                top_sentiments = []
+                for sentiment in ['positive', 'neutral', 'negative']:
+                    sentiment_rows = [row for row in comments if (row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') == sentiment]
+                    local_counter = Counter()
+                    local_examples = defaultdict(list)
+                    for row in sentiment_rows:
+                        _, region_label, entity, intent = _comment_signal(row)
+                        lk = (region_label, entity, intent)
+                        local_counter[lk] += 1
+                        if len(local_examples[lk]) < 2:
+                            original = (row.get('content') or '')[:120]
+                            translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip() or original
+                            if not _contains_zh(translation):
+                                cache_key = translation.lower()
+                                if cache_key not in translation_cache:
+                                    translation_cache[cache_key] = _translate_text_to_zh(translation)
+                                translation = translation_cache[cache_key]
+                            local_examples[lk].append({'original': original, 'translation': translation[:120]})
+                    ranked = sorted(local_counter.items(), key=lambda x: x[1], reverse=True)
+                    picked = []
+                    used_ei = set()
+                    candidates = [item for item in ranked if item[1] >= min_support and _is_actionable_signal(item[0][1], item[0][2])]
+                    for item in candidates:
+                        ei = (item[0][1], item[0][2])
+                        if ei in used_ei:
+                            continue
+                        picked.append(item)
+                        used_ei.add(ei)
+                        if len(picked) >= 3:
+                            break
+                    for (region_label, entity, intent), c_count in picked:
+                        examples = local_examples.get((region_label, entity, intent), [])
+                        top_sentiments.append({
+                            'sentiment': sentiment,
+                            'region': region_label,
+                            'opinion': _build_actionable_opinion(sentiment, entity, intent),
+                            'count': f"{c_count}+",
+                            'examples': examples
+                        })
 
             first = comments[0] if comments else {}
             topic_source = (post.get('post_content') or first.get('content') or first.get('brief_analysis') or '')
@@ -2082,12 +2253,10 @@ def spd_report_data():
                     'negative': _to_percentage(sent_count.get('negative', 0), total),
                 },
                 'top_sentiments': top_sentiments,
-                'views': int(post.get('views') or 0),
                 'shares': int(post.get('shares') or 0),
                 'likes': int(post.get('likes') or 0),
                 'comments': int(post.get('comments_count') or total),
                 'engagement': int(post.get('effective_engagement') or post.get('engagement') or 0),
-                'view_share': f"{int(post.get('views') or 0):,}/{int(post.get('shares') or 0):,}",
                 'post_url': post_key
             })
 
@@ -2103,11 +2272,6 @@ def spd_report_data():
                 'labels': labels,
                 'mlbb': mlbb_series,
                 'spd': spd_series,
-                'mlbb_month_avg': mlbb_month_avg,
-                'spd_month_avg': spd_month_avg,
-                'mlbb_period_avg': mlbb_period_avg,
-                'spd_period_avg': spd_period_avg,
-                'period_label': period_label
             },
             'peak_drilldown': peak_drilldown,
             'summary': {
