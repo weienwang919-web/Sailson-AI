@@ -1628,7 +1628,7 @@ def _rewrite_opinion_for_template(sentiment, region, raw_opinion, examples=None)
 def _extract_entity_from_text(text):
     t = (text or '').lower()
     if not t:
-        return '联动活动'
+        return ''
     entity_patterns = [
         ('Valir「Ember Gaze」皮肤', ['valir', 'ember gaze', '瓦里尔', 'valir skin']),
         ('Julian×Itachi 角色联动', ['julian', 'itachi', '朱利安', '鼬', 'uchiha itachi']),
@@ -1640,13 +1640,13 @@ def _extract_entity_from_text(text):
     for entity, kws in entity_patterns:
         if any(k in t for k in kws):
             return entity
-    return '联动活动'
+    return ''
 
 
 def _extract_intent_from_text(text):
     t = (text or '').lower()
     if not t:
-        return '泛讨论反馈'
+        return ''
     rules = [
         ('福利与获取门槛', ['free', '福利', '免费', '送', '抽卡', '钻石', 'diamond']),
         ('角色机制与平衡', ['skill', '技能', '机制', '平衡', 'buff', 'nerf', '强度', '太强', '太弱']),
@@ -1659,7 +1659,7 @@ def _extract_intent_from_text(text):
     for intent, kws in rules:
         if any(k in t for k in kws):
             return intent
-    return '泛讨论反馈'
+    return ''
 
 
 def _build_actionable_opinion(sentiment, entity, intent):
@@ -1682,9 +1682,22 @@ def _comment_signal(row):
 
 
 def _is_generic_signal(entity, intent):
-    generic_entities = {'联动活动', 'MLBB联动活动'}
-    generic_intents = {'泛讨论反馈'}
+    generic_entities = {'', '联动活动', 'MLBB联动活动'}
+    generic_intents = {'', '泛讨论反馈'}
     return entity in generic_entities or intent in generic_intents
+
+
+def _is_actionable_signal(entity, intent):
+    return (not _is_generic_signal(entity, intent))
+
+
+def _extract_post_topic_from_text(text):
+    entity = _extract_entity_from_text(text)
+    if entity:
+        return entity
+    if _extract_intent_from_text(text):
+        return "联动活动讨论"
+    return "官方活动帖"
 
 
 @app.route('/spd-report-tool')
@@ -1897,10 +1910,9 @@ def spd_report_data():
                     matched_post = next((p for p in filtered_posts if (p.get('post_url') or '') == post_key), {})
                     comments = [c for c in post_comments.get(post_key, []) if (task_key != 'spd' or c.get('is_spd'))]
                     first = comments[0] if comments else {}
-                    topic = (matched_post.get('post_content') or '')[:48]
-                    if not topic:
-                        topic = _extract_opinion_text(first or {}) or '帖子讨论'
-                    topic = (topic or '帖子讨论')[:48]
+                    topic_source = (matched_post.get('post_content') or first.get('content') or first.get('brief_analysis') or '')
+                    topic = _extract_post_topic_from_text(topic_source)
+                    topic = (topic or '官方活动帖')[:48]
                     top_posts.append({
                         'author': matched_post.get('author') or first.get('author') or 'unknown',
                         'author_region': matched_post.get('region') or first.get('region') or 'EN',
@@ -1980,21 +1992,16 @@ def spd_report_data():
         for sentiment in ['positive', 'neutral', 'negative']:
             bucket = [((s, r, e, i), c) for (s, r, e, i), c in signal_counter.items() if s == sentiment]
             bucket.sort(key=lambda x: x[1], reverse=True)
-            # 先取非泛类 + 达阈值；不足再补非泛类；最后才补泛类
+            # 硬限制：只取可执行信号（实体+问题），不足时宁缺毋滥
             selected = []
             used_ei = set()
-            candidates_a = [item for item in bucket if item[1] >= min_support and not _is_generic_signal(item[0][2], item[0][3])]
-            candidates_b = [item for item in bucket if not _is_generic_signal(item[0][2], item[0][3])]
-            candidates_c = bucket
-            for candidates in (candidates_a, candidates_b, candidates_c):
-                for item in candidates:
-                    ei = (item[0][2], item[0][3])
-                    if ei in used_ei:
-                        continue
-                    selected.append(item)
-                    used_ei.add(ei)
-                    if len(selected) >= 3:
-                        break
+            candidates = [item for item in bucket if item[1] >= min_support and _is_actionable_signal(item[0][2], item[0][3])]
+            for item in candidates:
+                ei = (item[0][2], item[0][3])
+                if ei in used_ei:
+                    continue
+                selected.append(item)
+                used_ei.add(ei)
                 if len(selected) >= 3:
                     break
             for (s, op_region, entity, intent), count in selected:
@@ -2037,18 +2044,13 @@ def spd_report_data():
                 ranked = sorted(local_counter.items(), key=lambda x: x[1], reverse=True)
                 picked = []
                 used_ei = set()
-                candidates_a = [item for item in ranked if item[1] >= min_support and not _is_generic_signal(item[0][1], item[0][2])]
-                candidates_b = [item for item in ranked if not _is_generic_signal(item[0][1], item[0][2])]
-                candidates_c = ranked
-                for candidates in (candidates_a, candidates_b, candidates_c):
-                    for item in candidates:
-                        ei = (item[0][1], item[0][2])
-                        if ei in used_ei:
-                            continue
-                        picked.append(item)
-                        used_ei.add(ei)
-                        if len(picked) >= 3:
-                            break
+                candidates = [item for item in ranked if item[1] >= min_support and _is_actionable_signal(item[0][1], item[0][2])]
+                for item in candidates:
+                    ei = (item[0][1], item[0][2])
+                    if ei in used_ei:
+                        continue
+                    picked.append(item)
+                    used_ei.add(ei)
                     if len(picked) >= 3:
                         break
                 for (region_label, entity, intent), c_count in picked:
@@ -2062,9 +2064,8 @@ def spd_report_data():
                 top_sentiments.extend(sentiment_items)
 
             first = comments[0] if comments else {}
-            topic = (post.get('post_content') or '')[:60]
-            if not topic:
-                topic = _extract_opinion_text(first or {}) or '帖子讨论'
+            topic_source = (post.get('post_content') or first.get('content') or first.get('brief_analysis') or '')
+            topic = _extract_post_topic_from_text(topic_source)
 
             top5_posts.append({
                 'rank': idx,
