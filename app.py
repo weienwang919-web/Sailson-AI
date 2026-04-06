@@ -1562,6 +1562,45 @@ def _reanalyze_comments_for_template(rows):
     return result
 
 
+def _rewrite_opinion_for_template(sentiment, region, raw_opinion, examples=None):
+    """
+    将聚类观点改写为模板风格一句话：
+    {区域}：{一句话可执行观点}（不在此函数内加百分比）
+    """
+    opinion = (raw_opinion or '').strip()
+    if not opinion:
+        return ''
+    if not qwen_client:
+        return opinion[:42]
+    sample_text = "；".join([((x or {}).get('translation') or (x or {}).get('original') or '')[:80] for x in (examples or [])[:2]])
+    try:
+        prompt = f"""你是手游舆情分析师。请把下面观点改写成“可交付给品牌方”的一句话中文结论。
+
+情感：{sentiment}
+区域：{region}
+原始观点：{opinion}
+示例评论：{sample_text or '无'}
+
+要求：
+1) 只输出一句中文，不超过38个字；
+2) 必须包含具体对象（如角色/皮肤/机制/福利/活动规则之一）；
+3) 禁止出现“该评论仅为话题标签/无实义”这类空话；
+4) 不要输出百分比、不要解释、不要编号。
+"""
+        resp = qwen_client.chat.completions.create(
+            model="qwen-plus",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        text = (resp.choices[0].message.content or '').strip()
+        text = re.sub(r'\s+', ' ', text).strip()
+        if not text:
+            return opinion[:42]
+        return text[:42]
+    except Exception:
+        return opinion[:42]
+
+
 @app.route('/spd-report-tool')
 @login_required
 def spd_report_tool():
@@ -1838,22 +1877,42 @@ def spd_report_data():
         total_spd_comments = len(top5_comment_pool)
         sentiment_counter = Counter([row.get('_rt_sentiment') or row.get('sentiment') for row in top5_comment_pool])
         opinion_counter = Counter()
+        opinion_examples = defaultdict(list)
         for row in top5_comment_pool:
             opinion = _extract_opinion_text(row)[:42]
             if not opinion:
                 continue
             s_label = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
-            opinion_counter[(s_label, row['region'], opinion)] += 1
+            region_label = row.get('region') or 'EN'
+            key = (s_label, region_label, opinion)
+            opinion_counter[key] += 1
+            if len(opinion_examples[key]) < 2:
+                original = (row.get('content') or '')[:120]
+                translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
+                if not translation:
+                    translation = original
+                if not _contains_zh(translation):
+                    translation = _translate_text_to_zh(translation)
+                opinion_examples[key].append({'original': original, 'translation': translation[:120]})
 
         key_opinions = []
+        rewrite_cache = {}
+        rewrite_budget = 60
         for sentiment in ['positive', 'neutral', 'negative']:
             bucket = [((s, r, o), c) for (s, r, o), c in opinion_counter.items() if s == sentiment]
             bucket.sort(key=lambda x: x[1], reverse=True)
             for (s, op_region, opinion), count in bucket[:3]:
+                r_key = f"{s}|{op_region}|{opinion}"
+                if r_key not in rewrite_cache:
+                    if rewrite_budget > 0:
+                        rewrite_cache[r_key] = _rewrite_opinion_for_template(s, op_region, opinion, opinion_examples.get((s, op_region, opinion), []))
+                        rewrite_budget -= 1
+                    else:
+                        rewrite_cache[r_key] = opinion
                 key_opinions.append({
                     'sentiment': s,
                     'region': op_region,
-                    'opinion': opinion,
+                    'opinion': rewrite_cache[r_key],
                     'percentage': _to_percentage(count, total_spd_comments)
                 })
 
@@ -1887,9 +1946,17 @@ def spd_report_data():
                             translation = translation_cache[key]
                         translation = translation[:120]
                         examples.append({'original': original, 'translation': translation})
+                    raw_opinion = (cluster.get('opinion') or '其他反馈')[:42]
+                    r_key = f"{sentiment}|{post.get('region') or 'EN'}|{raw_opinion}"
+                    if r_key not in rewrite_cache:
+                        if rewrite_budget > 0:
+                            rewrite_cache[r_key] = _rewrite_opinion_for_template(sentiment, post.get('region') or 'EN', raw_opinion, examples)
+                            rewrite_budget -= 1
+                        else:
+                            rewrite_cache[r_key] = raw_opinion
                     sentiment_items.append({
                         'sentiment': sentiment,
-                        'opinion': (cluster.get('opinion') or '其他反馈')[:42],
+                        'opinion': rewrite_cache[r_key],
                         'count': f"{len(cluster_rows)}+",
                         'examples': examples
                     })
