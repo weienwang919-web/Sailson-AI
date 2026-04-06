@@ -1518,6 +1518,9 @@ def _translate_text_to_zh(text):
         return ''
     if _contains_zh(source):
         return source
+    # 报告接口默认不做在线翻译，避免超时导致整页空白
+    if os.environ.get("SPD_REPORT_ENABLE_TRANSLATE", "false").lower() != "true":
+        return source
     if not qwen_client:
         return source
     try:
@@ -1542,7 +1545,7 @@ def _reanalyze_comments_for_template(rows):
         return []
     # 避免报告接口因逐条重分析超时：限制重分析条数，其余复用历史分析结果
     try:
-        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "120"))
+        reanalyze_limit = int(os.environ.get("SPD_REPORT_REANALYZE_LIMIT", "0"))
     except Exception:
         reanalyze_limit = 120
     if reanalyze_limit < 0:
@@ -1588,6 +1591,9 @@ def _rewrite_opinion_for_template(sentiment, region, raw_opinion, examples=None)
     opinion = (raw_opinion or '').strip()
     if not opinion:
         return ''
+    # 报告接口默认不做在线改写，避免超时导致整页空白
+    if os.environ.get("SPD_REPORT_ENABLE_REWRITE", "false").lower() != "true":
+        return opinion[:42]
     if not qwen_client:
         return opinion[:42]
     sample_text = "；".join([((x or {}).get('translation') or (x or {}).get('original') or '')[:80] for x in (examples or [])[:2]])
