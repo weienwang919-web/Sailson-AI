@@ -1630,10 +1630,12 @@ def _extract_entity_from_text(text):
     if not t:
         return '联动活动'
     entity_patterns = [
-        ('Valir「Ember Gaze」皮肤', ['valir', 'ember gaze', '瓦里尔']),
-        ('Julian×Itachi 角色联动', ['julian', 'itachi', '朱利安', '鼬']),
-        ('Naruto联动皮肤', ['naruto', '火影', '疾风传', '晓组织', 'uchiha']),
-        ('MLBB联动活动', ['mlbbxnaruto', '#mlbbnewskin', 'new skin', '联动']),
+        ('Valir「Ember Gaze」皮肤', ['valir', 'ember gaze', '瓦里尔', 'valir skin']),
+        ('Julian×Itachi 角色联动', ['julian', 'itachi', '朱利安', '鼬', 'uchiha itachi']),
+        ('Tigreal×Marcel 角色玩法', ['tigreal', 'marcel', 'kiba', 'combo', '连招']),
+        ('Naruto联动皮肤', ['naruto', '火影', '疾风传', '晓组织', 'uchiha', 'naruto skin']),
+        ('免费联动皮肤活动', ['free skin', 'new skin', '#mlbbnewskin', 'free epic', '免费皮肤', '送皮肤']),
+        ('MLBB联动活动', ['mlbbxnaruto', 'mlbb x naruto', '#mlbbxnaruto', '联动活动']),
     ]
     for entity, kws in entity_patterns:
         if any(k in t for k in kws):
@@ -1652,6 +1654,7 @@ def _extract_intent_from_text(text):
         ('活动规则与参与路径', ['how', 'where', 'when', '怎么', '哪里', '什么时候', '?', '规则']),
         ('性能与稳定性问题', ['bug', 'lag', 'crash', '卡顿', '闪退', '延迟', '崩溃']),
         ('购买与价格意愿', ['buy', '购买', '充值', '价格', '贵', 'too expensive']),
+        ('辱骂与情绪宣泄', ['anjing', 'lonte', 'maling', 'kontol', 'bangsat', 'wtf', 'fuck', '垃圾', '傻逼']),
     ]
     for intent, kws in rules:
         if any(k in t for k in kws):
@@ -1661,19 +1664,27 @@ def _extract_intent_from_text(text):
 
 def _build_actionable_opinion(sentiment, entity, intent):
     if sentiment == 'positive':
-        return f"玩家对{entity}反馈积极，核心集中在{intent}"
+        return f"玩家认可{entity}，正向反馈集中在{intent}"
     if sentiment == 'negative':
-        return f"玩家对{entity}提出负面反馈，问题集中在{intent}"
-    return f"玩家围绕{entity}进行信息型讨论，焦点在{intent}"
+        return f"玩家质疑{entity}，负面反馈集中在{intent}"
+    return f"玩家围绕{entity}进行信息讨论，主要关注{intent}"
 
 
 def _comment_signal(row):
-    text = (row.get('_rt_brief') or row.get('brief_analysis') or row.get('content') or '')
+    brief = (row.get('_rt_brief') or row.get('brief_analysis') or '')
+    content = (row.get('content') or '')
+    text = f"{brief} {content}".strip()
     sentiment = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
     region = row.get('region') or 'EN'
     entity = _extract_entity_from_text(text)
     intent = _extract_intent_from_text(text)
     return sentiment, region, entity, intent
+
+
+def _is_generic_signal(entity, intent):
+    generic_entities = {'联动活动', 'MLBB联动活动'}
+    generic_intents = {'泛讨论反馈'}
+    return entity in generic_entities or intent in generic_intents
 
 
 @app.route('/spd-report-tool')
@@ -1969,9 +1980,23 @@ def spd_report_data():
         for sentiment in ['positive', 'neutral', 'negative']:
             bucket = [((s, r, e, i), c) for (s, r, e, i), c in signal_counter.items() if s == sentiment]
             bucket.sort(key=lambda x: x[1], reverse=True)
-            selected = [item for item in bucket if item[1] >= min_support][:3]
-            if len(selected) < 3:
-                selected = bucket[:3]
+            # 先取非泛类 + 达阈值；不足再补非泛类；最后才补泛类
+            selected = []
+            used_ei = set()
+            candidates_a = [item for item in bucket if item[1] >= min_support and not _is_generic_signal(item[0][2], item[0][3])]
+            candidates_b = [item for item in bucket if not _is_generic_signal(item[0][2], item[0][3])]
+            candidates_c = bucket
+            for candidates in (candidates_a, candidates_b, candidates_c):
+                for item in candidates:
+                    ei = (item[0][2], item[0][3])
+                    if ei in used_ei:
+                        continue
+                    selected.append(item)
+                    used_ei.add(ei)
+                    if len(selected) >= 3:
+                        break
+                if len(selected) >= 3:
+                    break
             for (s, op_region, entity, intent), count in selected:
                 key_opinions.append({
                     'sentiment': s,
@@ -2010,9 +2035,22 @@ def spd_report_data():
                         local_examples[lk].append({'original': original, 'translation': translation[:120]})
                 sentiment_items = []
                 ranked = sorted(local_counter.items(), key=lambda x: x[1], reverse=True)
-                picked = [item for item in ranked if item[1] >= min_support][:3]
-                if len(picked) < 3:
-                    picked = ranked[:3]
+                picked = []
+                used_ei = set()
+                candidates_a = [item for item in ranked if item[1] >= min_support and not _is_generic_signal(item[0][1], item[0][2])]
+                candidates_b = [item for item in ranked if not _is_generic_signal(item[0][1], item[0][2])]
+                candidates_c = ranked
+                for candidates in (candidates_a, candidates_b, candidates_c):
+                    for item in candidates:
+                        ei = (item[0][1], item[0][2])
+                        if ei in used_ei:
+                            continue
+                        picked.append(item)
+                        used_ei.add(ei)
+                        if len(picked) >= 3:
+                            break
+                    if len(picked) >= 3:
+                        break
                 for (region_label, entity, intent), c_count in picked:
                     examples = local_examples.get((region_label, entity, intent), [])
                     sentiment_items.append({
