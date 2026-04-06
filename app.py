@@ -1392,13 +1392,44 @@ def _to_percentage(value, total):
 
 def _extract_opinion_text(row):
     """从单条评论中提炼观点文本（不依赖旧 category 枚举）。"""
-    text = (row.get('brief_analysis') or '').strip()
-    if not text:
-        text = (row.get('content') or '').strip()
-    text = re.sub(r'\s+', ' ', text).strip()
-    if not text:
-        return "其他反馈"
-    return text[:80]
+    def _clean(raw):
+        text = re.sub(r'\s+', ' ', (raw or '')).strip()
+        if not text:
+            return ''
+        # 去掉纯 hashtag/@mention/emoji/活动口令类噪声
+        if re.fullmatch(r'[#@\w\W]{0,3}', text):
+            return ''
+        if re.fullmatch(r'(#\w+\s*){1,6}', text, flags=re.IGNORECASE):
+            return ''
+        if re.fullmatch(r'([@#]\w+\s*){1,8}', text):
+            return ''
+        return text
+
+    def _is_low_value(text):
+        t = (text or '').lower()
+        if not t:
+            return True
+        low_value_patterns = [
+            '该评论仅为话题标签', '仅为话题标签', '仅为标签', '无实质内容',
+            '无明确情感倾向', '属于中性宣传', '联动期待类文本', '参与活动',
+            'tag friends', 'comment done', 'done ✅'
+        ]
+        if any(p in t for p in low_value_patterns):
+            return True
+        # 纯短词/标点内容
+        compact = re.sub(r'[\W_]+', '', t)
+        return len(compact) < 4
+
+    # 优先 brief_analysis；若被判低价值则回退原文
+    brief_text = _clean(row.get('brief_analysis'))
+    if brief_text and not _is_low_value(brief_text):
+        return brief_text[:80]
+
+    content_text = _clean(row.get('content'))
+    if content_text and not _is_low_value(content_text):
+        return content_text[:80]
+
+    return ""
 
 
 def _opinion_signature(text):
@@ -1425,6 +1456,8 @@ def _cluster_opinions(rows, top_k=3):
     clusters = []
     for row in rows:
         opinion_text = _extract_opinion_text(row)
+        if not opinion_text:
+            continue
         sig = _opinion_signature(opinion_text)
         best_idx = -1
         best_score = 0.0
@@ -1629,6 +1662,14 @@ def spd_report_data():
         period_days = 7 if len(labels) >= 7 else len(labels)
         mlbb_period_avg = round(sum(mlbb_series[-period_days:]) / period_days, 1) if period_days else 0
         spd_period_avg = round(sum(spd_series[-period_days:]) / period_days, 1) if period_days else 0
+        period_label = ""
+        if period_days and labels:
+            try:
+                p_start = datetime.datetime.strptime(labels[-period_days], '%Y-%m-%d')
+                p_end = datetime.datetime.strptime(labels[-1], '%Y-%m-%d')
+                period_label = f"{p_start.month}/{p_start.day}-{p_end.month}/{p_end.day}"
+            except Exception:
+                period_label = "近7天"
 
         peak_drilldown = []
         for task_key, task_name in [('mlbb', 'MLBB'), ('spd', 'SPD')]:
@@ -1642,7 +1683,7 @@ def spd_report_data():
                     first = comments[0] if comments else {}
                     topic = (matched_post.get('post_content') or '')[:48]
                     if not topic:
-                        topic = first.get('category') if first.get('category') and first.get('category') != 'unknown' else (first.get('brief_analysis') or '帖子讨论')
+                        topic = _extract_opinion_text(first or {}) or '帖子讨论'
                     topic = (topic or '帖子讨论')[:48]
                     top_posts.append({
                         'author': matched_post.get('author') or first.get('author') or 'unknown',
@@ -1666,16 +1707,21 @@ def spd_report_data():
         opinion_counter = Counter()
         for row in spd_comments:
             opinion = _extract_opinion_text(row)[:42]
+            if not opinion:
+                continue
             opinion_counter[(row['sentiment'], row['region'], opinion)] += 1
 
         key_opinions = []
-        for (sentiment, op_region, opinion), count in opinion_counter.most_common(6):
-            key_opinions.append({
-                'sentiment': sentiment,
-                'region': op_region,
-                'opinion': opinion,
-                'percentage': _to_percentage(count, total_spd_comments)
-            })
+        for sentiment in ['positive', 'neutral', 'negative']:
+            bucket = [((s, r, o), c) for (s, r, o), c in opinion_counter.items() if s == sentiment]
+            bucket.sort(key=lambda x: x[1], reverse=True)
+            for (s, op_region, opinion), count in bucket[:3]:
+                key_opinions.append({
+                    'sentiment': s,
+                    'region': op_region,
+                    'opinion': opinion,
+                    'percentage': _to_percentage(count, total_spd_comments)
+                })
 
         # Top5：仅 SPD 相关帖子，按 engagement 排序
         spd_posts_sorted = sorted(
@@ -1757,6 +1803,7 @@ def spd_report_data():
                 'likes': int(post.get('likes') or 0),
                 'comments': int(post.get('comments_count') or total),
                 'engagement': int(post.get('engagement') or 0),
+                'view_share': f"{int(post.get('views') or 0):,}/{int(post.get('shares') or 0):,}",
                 'post_url': post_key
             })
 
@@ -1775,7 +1822,8 @@ def spd_report_data():
                 'mlbb_month_avg': mlbb_month_avg,
                 'spd_month_avg': spd_month_avg,
                 'mlbb_period_avg': mlbb_period_avg,
-                'spd_period_avg': spd_period_avg
+                'spd_period_avg': spd_period_avg,
+                'period_label': period_label
             },
             'peak_drilldown': peak_drilldown,
             'summary': {

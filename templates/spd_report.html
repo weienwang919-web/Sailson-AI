@@ -26,6 +26,10 @@
     th, td { border-bottom: 1px solid #eef1f5; padding: 10px; vertical-align: top; }
     th { background: #fafbfd; text-align: left; color: #4d5562; }
     .op-list { margin: 0; padding-left: 16px; }
+    .summary-block { margin-bottom: 10px; }
+    .summary-title { font-weight: 700; margin-bottom: 4px; }
+    .peak-task-title { font-weight: 700; margin: 8px 0 4px; }
+    .peak-date-title { font-weight: 600; margin: 4px 0; }
     .chip { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 999px; margin-right: 6px; background: #eef3ff; color: #2952cc; }
 </style>
 {% endblock %}
@@ -138,16 +142,17 @@
             <table id="top5Table">
                 <thead>
                     <tr>
-                        <th style="width:70px;">排名</th>
-                        <th style="width:220px;">帖文主题</th>
-                        <th style="width:220px;">情感占比</th>
-                        <th>主要观点（Top Sentiments）</th>
-                        <th style="width:180px;">互动指标</th>
-                        <th style="width:120px;">链接</th>
+                        <th style="width:300px;">帖文内容（Post Topic+Content）</th>
+                        <th style="width:200px;">Positive : Neutral : Negative</th>
+                        <th>主要观点 Top Sentiments TOP3</th>
+                        <th style="width:130px;">View/Share</th>
+                        <th style="width:90px;">likes</th>
+                        <th style="width:90px;">comment</th>
+                        <th style="width:120px;">link</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td colspan="6" class="muted">暂无数据</td></tr>
+                    <tr><td colspan="7" class="muted">暂无数据</td></tr>
                 </tbody>
             </table>
         </div>
@@ -211,21 +216,61 @@ function collectPlatforms() {
     return vals.length ? vals : ['facebook', 'instagram'];
 }
 
+function formatNumber(n) {
+    const num = Number(n || 0);
+    if (!Number.isFinite(num)) return '0';
+    return num.toLocaleString('en-US');
+}
+
+function formatPercent(n) {
+    const num = Number(n || 0);
+    if (!Number.isFinite(num)) return '0.0';
+    return num.toFixed(1);
+}
+
+function formatShortAxis(value) {
+    const n = Number(value || 0);
+    const abs = Math.abs(n);
+    if (abs >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (abs >= 1000) return `${(n / 1000).toFixed(0)}K`;
+    return `${n}`;
+}
+
+function formatK(n) {
+    const num = Number(n || 0);
+    if (!Number.isFinite(num)) return '0';
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+    return `${num}`;
+}
+
 function renderTrend(trend) {
     const ctx = document.getElementById('trendChart').getContext('2d');
     if (trendChart) trendChart.destroy();
+    const labels = trend.labels || [];
+    const periodLabel = trend.period_label || '近7天';
     trendChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: trend.labels || [],
+            labels,
             datasets: [
-                { label: 'MLBB', data: trend.mlbb || [], borderColor: '#2962ff', tension: 0.35, fill: false },
-                { label: 'SPD', data: trend.spd || [], borderColor: '#f4b400', tension: 0.35, fill: false },
-                { label: 'ML 月均值', data: (trend.labels || []).map(() => trend.mlbb_month_avg || 0), borderColor: '#2962ff88', borderDash: [6, 6], pointRadius: 0 },
-                { label: 'SPD 月均值', data: (trend.labels || []).map(() => trend.spd_month_avg || 0), borderColor: '#f4b40088', borderDash: [6, 6], pointRadius: 0 },
+                { label: 'MLBB全球', data: trend.mlbb || [], borderColor: '#2962ff', tension: 0.35, fill: false, pointRadius: 1 },
+                { label: 'GM', data: trend.spd || [], borderColor: '#f4b400', tension: 0.35, fill: false, pointRadius: 1 },
+                { label: 'ML1月均值', data: labels.map(() => trend.mlbb_month_avg || 0), borderColor: '#e45b5b', borderDash: [6, 6], pointRadius: 0 },
+                { label: `ML均值（${periodLabel}）`, data: labels.map(() => trend.mlbb_period_avg || 0), borderColor: '#2962ffaa', borderDash: [3, 3], pointRadius: 0 },
+                { label: `GM均值（${periodLabel}）`, data: labels.map(() => trend.spd_period_avg || 0), borderColor: '#f4b400aa', borderDash: [3, 3], pointRadius: 0 },
             ]
         },
-        options: { responsive: true, maintainAspectRatio: true }
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                y: {
+                    ticks: {
+                        callback: function(value) { return formatShortAxis(value); }
+                    }
+                }
+            }
+        }
     });
 }
 
@@ -235,61 +280,107 @@ function renderPeaks(items) {
         container.innerHTML = '<div class="muted">暂无峰值数据</div>';
         return;
     }
-    container.innerHTML = items.map(block => `
-        <div style="margin-bottom:10px;">
-            <div><span class="chip">${escapeHtml(block.task)}</span><strong>${escapeHtml(block.date)}</strong>（${escapeHtml(block.region)}）</div>
+    const grouped = { MLBB: [], SPD: [] };
+    items.forEach(block => {
+        const key = String(block.task || '').toUpperCase();
+        if (key === 'MLBB' || key === 'SPD') grouped[key].push(block);
+    });
+
+    const renderTask = (taskKey, title) => {
+        const blocks = grouped[taskKey] || [];
+        if (!blocks.length) return '';
+        return `
+            <div class="peak-task-title">${title}：</div>
             <ul class="op-list">
-                ${(block.top_posts || []).map(p => `<li>${escapeHtml(p.author)}（${escapeHtml(p.author_region)}）发布${escapeHtml(p.post_topic)}，获得 ${escapeHtml(p.engagement)} 互动量。</li>`).join('')}
+                ${blocks.map(block => `
+                    <li>
+                        <div class="peak-date-title">${escapeHtml(block.date)}</div>
+                        <ul class="op-list">
+                            ${(block.top_posts || []).map(p => `<li>${escapeHtml(p.author)}（${escapeHtml(p.author_region)}）发布${escapeHtml(p.post_topic)}，获得${escapeHtml(formatK(p.engagement))}互动量。</li>`).join('')}
+                        </ul>
+                    </li>
+                `).join('')}
             </ul>
-        </div>
-    `).join('');
+        `;
+    };
+
+    container.innerHTML = `${renderTask('MLBB', 'ML声量峰值分析')}${renderTask('SPD', 'SPD声量峰值分析')}` || '<div class="muted">暂无峰值数据</div>';
 }
 
 function renderSummary(summary) {
     document.getElementById('sumTotal').textContent = summary.total_comments || 0;
     const ratio = summary.sentiment_ratio || {};
     document.getElementById('sumRatio').textContent = `正面 ${ratio.positive || 0}% / 中性 ${ratio.neutral || 0}% / 负面 ${ratio.negative || 0}%`;
-    document.getElementById('sumOpinions').textContent = (summary.key_opinions || []).length;
-    document.getElementById('opinionsContainer').innerHTML = (summary.key_opinions || []).map(op => `
-        <div style="margin-bottom:6px;">
-            <span class="chip">${escapeHtml(op.sentiment)}</span><span class="chip">${escapeHtml(op.region)}</span>
-            ${escapeHtml(op.opinion)}（${escapeHtml(op.percentage)}%）
+    const allOpinions = summary.key_opinions || [];
+    document.getElementById('sumOpinions').textContent = allOpinions.length;
+    const buckets = {
+        positive: allOpinions.filter(x => x.sentiment === 'positive'),
+        neutral: allOpinions.filter(x => x.sentiment === 'neutral'),
+        negative: allOpinions.filter(x => x.sentiment === 'negative'),
+    };
+    const renderBucket = (title, items) => `
+        <div class="summary-block">
+            <div class="summary-title">• ${title}</div>
+            <ul class="op-list">
+                ${(items || []).slice(0, 3).map(op => `<li>${escapeHtml(op.region)}：${escapeHtml(op.opinion)}（${escapeHtml(formatPercent(op.percentage))}%）</li>`).join('') || '<li>暂无</li>'}
+            </ul>
         </div>
-    `).join('') || '<div class="muted">暂无观点</div>';
+    `;
+    document.getElementById('opinionsContainer').innerHTML = [
+        renderBucket('正面舆情', buckets.positive),
+        renderBucket('中性舆情', buckets.neutral),
+        renderBucket('负面舆情', buckets.negative),
+    ].join('');
 }
 
 function renderTop5(items) {
     const tbody = document.querySelector('#top5Table tbody');
     if (!items || !items.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="muted">暂无数据</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="muted">暂无数据</td></tr>';
         return;
     }
-        tbody.innerHTML = items.map(post => {
+    tbody.innerHTML = items.map(post => {
         const ratio = post.sentiment_ratio || {};
-        const positive = Number(ratio.positive);
-        const neutral = Number(ratio.neutral);
-        const negative = Number(ratio.negative);
-        const positiveText = Number.isFinite(positive) ? positive.toFixed(1) : '0.0';
-        const neutralText = Number.isFinite(neutral) ? neutral.toFixed(1) : '0.0';
-        const negativeText = Number.isFinite(negative) ? negative.toFixed(1) : '0.0';
-        const topOps = (post.top_sentiments || [])
-            .slice(0, 5)
-            .map(op => `<li>[${escapeHtml(op.sentiment)}] ${escapeHtml(op.opinion)}（${escapeHtml(op.count)}）</li>`)
-            .join('');
+        const positiveText = formatPercent(ratio.positive);
+        const neutralText = formatPercent(ratio.neutral);
+        const negativeText = formatPercent(ratio.negative);
+        const grouped = { positive: [], neutral: [], negative: [] };
+        (post.top_sentiments || []).forEach(op => {
+            const k = String(op.sentiment || '').toLowerCase();
+            if (grouped[k]) grouped[k].push(op);
+        });
+        const renderSentimentGroup = (label, items2) => {
+            const top3 = (items2 || []).slice(0, 3);
+            return `
+                <div style="margin-bottom:8px;">
+                    <strong>${label}</strong>
+                    <ul class="op-list">
+                        ${top3.map(op => {
+                            const ex = (op.examples || []).slice(0, 2).map(one => `<li>示例：“${escapeHtml(one.original || '')}” → “${escapeHtml(one.translation || '')}”</li>`).join('');
+                            return `<li>${escapeHtml(op.opinion)}（${escapeHtml(op.count)}）${ex ? `<ul class="op-list">${ex}</ul>` : ''}</li>`;
+                        }).join('') || '<li>暂无</li>'}
+                    </ul>
+                </div>
+            `;
+        };
         const link = safeUrl(post.post_url);
         return `
             <tr>
-                <td>${escapeHtml(post.rank)}</td>
-                <td><div><strong>${escapeHtml(post.post_content.topic || '-')}</strong></div><div class="muted">${escapeHtml(post.post_content.text || '')}</div></td>
-                <td>Positive: ${escapeHtml(positiveText)}%<br>Neutral: ${escapeHtml(neutralText)}%<br>Negative: ${escapeHtml(negativeText)}%</td>
-                <td><ul class="op-list">${topOps || '<li>暂无</li>'}</ul></td>
                 <td>
-                    <div>Engagement: ${escapeHtml(post.engagement || 0)}</div>
-                    <div>Views: ${escapeHtml(post.views || 0)}</div>
-                    <div>Shares: ${escapeHtml(post.shares || 0)}</div>
-                    <div>Likes: ${escapeHtml(post.likes || 0)}</div>
-                    <div>Comments: ${escapeHtml(post.comments || 0)}</div>
+                    <div><strong>${escapeHtml(post.post_content.topic || '-')}</strong></div>
+                    <div class="muted">${escapeHtml(post.post_content.text || '')}</div>
                 </td>
+                <td>Positive: ${escapeHtml(positiveText)}%<br>Neutral: ${escapeHtml(neutralText)}%<br>Negative: ${escapeHtml(negativeText)}%</td>
+                <td>
+                    ${renderSentimentGroup('正面评论', grouped.positive)}
+                    ${renderSentimentGroup('中性评论', grouped.neutral)}
+                    ${renderSentimentGroup('负面评论', grouped.negative)}
+                </td>
+                <td>
+                    ${escapeHtml(formatNumber(post.views || 0))}/${escapeHtml(formatNumber(post.shares || 0))}
+                </td>
+                <td>${escapeHtml(formatNumber(post.likes || 0))}</td>
+                <td>${escapeHtml(formatNumber(post.comments || 0))}</td>
                 <td><a href="${link}" target="_blank" rel="noopener noreferrer">查看</a></td>
             </tr>
         `;
