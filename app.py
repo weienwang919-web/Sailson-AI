@@ -1595,7 +1595,7 @@ def spd_report_data():
             p['comments_count'] = int(p.get('comments_count') or 0)
             filtered_posts.append(p)
 
-        # 历史数据兼容：严格规则命中为 0 时降级宽松匹配，避免旧数据“看起来没数据”
+        # 历史数据兼容：评论文本严格命中通常偏少，先做宽松匹配
         strict_spd_comments = [r for r in filtered_rows if r.get('is_spd')]
         if not strict_spd_comments and filtered_rows:
             relaxed_rows = []
@@ -1609,6 +1609,27 @@ def spd_report_data():
                 for row in filtered_rows:
                     row['is_spd'] = True
                 logger.info(f"ℹ️ SPD report fallback: use all filtered comments as SPD ({len(filtered_rows)} rows)")
+
+        # 关键修正：一旦某帖子被识别为 SPD，整帖评论都应纳入（否则会出现“帖子几千评，报告仅百条”）
+        spd_post_urls = set()
+        for row in filtered_rows:
+            if row.get('is_spd'):
+                pkey = row.get('post_url') or row.get('post_link')
+                if pkey:
+                    spd_post_urls.add(pkey)
+        for post in filtered_posts:
+            if post.get('is_spd') and post.get('post_url'):
+                spd_post_urls.add(post.get('post_url'))
+
+        if spd_post_urls:
+            expanded = 0
+            for row in filtered_rows:
+                pkey = row.get('post_url') or row.get('post_link')
+                if pkey in spd_post_urls and not row.get('is_spd'):
+                    row['is_spd'] = True
+                    expanded += 1
+            if expanded:
+                logger.info(f"ℹ️ SPD report expanded by post_url membership: +{expanded} comments")
 
         if filtered_posts and (not any(p.get('is_spd') for p in filtered_posts)):
             relaxed_post_hits = 0
@@ -1625,12 +1646,22 @@ def spd_report_data():
             'spd': defaultdict(lambda: defaultdict(int))
         }
 
+        comment_count_by_post = Counter()
+        for row in filtered_rows:
+            pkey = row.get('post_url') or row.get('post_link') or 'unknown'
+            comment_count_by_post[pkey] += 1
+
         for post in filtered_posts:
             date_key = (post.get('post_date').strftime('%Y-%m-%d')
                         if hasattr(post.get('post_date'), 'strftime')
                         else str(post.get('post_date') or start_date))
             post_key = post.get('post_url') or 'unknown'
-            engagement_val = int(post.get('engagement') or 0)
+            engagement_val = max(
+                int(post.get('engagement') or 0),
+                int(post.get('comments_count') or 0),
+                int(comment_count_by_post.get(post_key) or 0)
+            )
+            post['effective_engagement'] = engagement_val
             if post['is_mlbb']:
                 daily_counter[date_key]['mlbb'] += engagement_val
                 daily_post_counter['mlbb'][date_key][post_key] += engagement_val
@@ -1726,7 +1757,7 @@ def spd_report_data():
         # Top5：仅 SPD 相关帖子，按 engagement 排序
         spd_posts_sorted = sorted(
             [p for p in filtered_posts if p.get('is_spd')],
-            key=lambda x: int(x.get('engagement') or 0),
+            key=lambda x: int(x.get('effective_engagement') or x.get('engagement') or 0),
             reverse=True
         )[:5]
         if not spd_posts_sorted:
@@ -1802,7 +1833,7 @@ def spd_report_data():
                 'shares': int(post.get('shares') or 0),
                 'likes': int(post.get('likes') or 0),
                 'comments': int(post.get('comments_count') or total),
-                'engagement': int(post.get('engagement') or 0),
+                'engagement': int(post.get('effective_engagement') or post.get('engagement') or 0),
                 'view_share': f"{int(post.get('views') or 0):,}/{int(post.get('shares') or 0):,}",
                 'post_url': post_key
             })
