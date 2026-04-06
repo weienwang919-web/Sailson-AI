@@ -1625,6 +1625,57 @@ def _rewrite_opinion_for_template(sentiment, region, raw_opinion, examples=None)
         return opinion[:42]
 
 
+def _extract_entity_from_text(text):
+    t = (text or '').lower()
+    if not t:
+        return '联动活动'
+    entity_patterns = [
+        ('Valir「Ember Gaze」皮肤', ['valir', 'ember gaze', '瓦里尔']),
+        ('Julian×Itachi 角色联动', ['julian', 'itachi', '朱利安', '鼬']),
+        ('Naruto联动皮肤', ['naruto', '火影', '疾风传', '晓组织', 'uchiha']),
+        ('MLBB联动活动', ['mlbbxnaruto', '#mlbbnewskin', 'new skin', '联动']),
+    ]
+    for entity, kws in entity_patterns:
+        if any(k in t for k in kws):
+            return entity
+    return '联动活动'
+
+
+def _extract_intent_from_text(text):
+    t = (text or '').lower()
+    if not t:
+        return '泛讨论反馈'
+    rules = [
+        ('福利与获取门槛', ['free', '福利', '免费', '送', '抽卡', '钻石', 'diamond']),
+        ('角色机制与平衡', ['skill', '技能', '机制', '平衡', 'buff', 'nerf', '强度', '太强', '太弱']),
+        ('皮肤设计与还原度', ['skin', '皮肤', '特效', '设计', '还原', '同质化', '像不像']),
+        ('活动规则与参与路径', ['how', 'where', 'when', '怎么', '哪里', '什么时候', '?', '规则']),
+        ('性能与稳定性问题', ['bug', 'lag', 'crash', '卡顿', '闪退', '延迟', '崩溃']),
+        ('购买与价格意愿', ['buy', '购买', '充值', '价格', '贵', 'too expensive']),
+    ]
+    for intent, kws in rules:
+        if any(k in t for k in kws):
+            return intent
+    return '泛讨论反馈'
+
+
+def _build_actionable_opinion(sentiment, entity, intent):
+    if sentiment == 'positive':
+        return f"玩家对{entity}反馈积极，核心集中在{intent}"
+    if sentiment == 'negative':
+        return f"玩家对{entity}提出负面反馈，问题集中在{intent}"
+    return f"玩家围绕{entity}进行信息型讨论，焦点在{intent}"
+
+
+def _comment_signal(row):
+    text = (row.get('_rt_brief') or row.get('brief_analysis') or row.get('content') or '')
+    sentiment = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
+    region = row.get('region') or 'EN'
+    entity = _extract_entity_from_text(text)
+    intent = _extract_intent_from_text(text)
+    return sentiment, region, entity, intent
+
+
 @app.route('/spd-report-tool')
 @login_required
 def spd_report_tool():
@@ -1900,43 +1951,32 @@ def spd_report_data():
 
         total_spd_comments = len(top5_comment_pool)
         sentiment_counter = Counter([row.get('_rt_sentiment') or row.get('sentiment') for row in top5_comment_pool])
-        opinion_counter = Counter()
-        opinion_examples = defaultdict(list)
+        signal_counter = Counter()
+        signal_examples = defaultdict(list)
+        min_support = 2
         for row in top5_comment_pool:
-            opinion = _extract_opinion_text(row)[:42]
-            if not opinion:
-                continue
-            s_label = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
-            region_label = row.get('region') or 'EN'
-            key = (s_label, region_label, opinion)
-            opinion_counter[key] += 1
-            if len(opinion_examples[key]) < 2:
+            s_label, region_label, entity, intent = _comment_signal(row)
+            key = (s_label, region_label, entity, intent)
+            signal_counter[key] += 1
+            if len(signal_examples[key]) < 2:
                 original = (row.get('content') or '')[:120]
-                translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
-                if not translation:
-                    translation = original
+                translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip() or original
                 if not _contains_zh(translation):
                     translation = _translate_text_to_zh(translation)
-                opinion_examples[key].append({'original': original, 'translation': translation[:120]})
+                signal_examples[key].append({'original': original, 'translation': translation[:120]})
 
         key_opinions = []
-        rewrite_cache = {}
-        rewrite_budget = 60
         for sentiment in ['positive', 'neutral', 'negative']:
-            bucket = [((s, r, o), c) for (s, r, o), c in opinion_counter.items() if s == sentiment]
+            bucket = [((s, r, e, i), c) for (s, r, e, i), c in signal_counter.items() if s == sentiment]
             bucket.sort(key=lambda x: x[1], reverse=True)
-            for (s, op_region, opinion), count in bucket[:3]:
-                r_key = f"{s}|{op_region}|{opinion}"
-                if r_key not in rewrite_cache:
-                    if rewrite_budget > 0:
-                        rewrite_cache[r_key] = _rewrite_opinion_for_template(s, op_region, opinion, opinion_examples.get((s, op_region, opinion), []))
-                        rewrite_budget -= 1
-                    else:
-                        rewrite_cache[r_key] = opinion
+            selected = [item for item in bucket if item[1] >= min_support][:3]
+            if len(selected) < 3:
+                selected = bucket[:3]
+            for (s, op_region, entity, intent), count in selected:
                 key_opinions.append({
                     'sentiment': s,
                     'region': op_region,
-                    'opinion': rewrite_cache[r_key],
+                    'opinion': _build_actionable_opinion(s, entity, intent),
                     'percentage': _to_percentage(count, total_spd_comments)
                 })
 
@@ -1953,35 +1993,32 @@ def spd_report_data():
             top_sentiments = []
             for sentiment in ['positive', 'neutral', 'negative']:
                 sentiment_rows = [row for row in comments if (row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') == sentiment]
-                clusters = _cluster_opinions(sentiment_rows, top_k=3)
-                sentiment_items = []
-                for cluster in clusters:
-                    cluster_rows = cluster['rows']
-                    examples = []
-                    for row in cluster_rows[:2]:
+                local_counter = Counter()
+                local_examples = defaultdict(list)
+                for row in sentiment_rows:
+                    _, region_label, entity, intent = _comment_signal(row)
+                    lk = (region_label, entity, intent)
+                    local_counter[lk] += 1
+                    if len(local_examples[lk]) < 2:
                         original = (row.get('content') or '')[:120]
-                        translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
-                        if not translation:
-                            translation = original
+                        translation = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip() or original
                         if not _contains_zh(translation):
                             key = translation.lower()
                             if key not in translation_cache:
                                 translation_cache[key] = _translate_text_to_zh(translation)
                             translation = translation_cache[key]
-                        translation = translation[:120]
-                        examples.append({'original': original, 'translation': translation})
-                    raw_opinion = (cluster.get('opinion') or '其他反馈')[:42]
-                    r_key = f"{sentiment}|{post.get('region') or 'EN'}|{raw_opinion}"
-                    if r_key not in rewrite_cache:
-                        if rewrite_budget > 0:
-                            rewrite_cache[r_key] = _rewrite_opinion_for_template(sentiment, post.get('region') or 'EN', raw_opinion, examples)
-                            rewrite_budget -= 1
-                        else:
-                            rewrite_cache[r_key] = raw_opinion
+                        local_examples[lk].append({'original': original, 'translation': translation[:120]})
+                sentiment_items = []
+                ranked = sorted(local_counter.items(), key=lambda x: x[1], reverse=True)
+                picked = [item for item in ranked if item[1] >= min_support][:3]
+                if len(picked) < 3:
+                    picked = ranked[:3]
+                for (region_label, entity, intent), c_count in picked:
+                    examples = local_examples.get((region_label, entity, intent), [])
                     sentiment_items.append({
                         'sentiment': sentiment,
-                        'opinion': rewrite_cache[r_key],
-                        'count': f"{len(cluster_rows)}+",
+                        'opinion': _build_actionable_opinion(sentiment, entity, intent),
+                        'count': f"{c_count}+",
                         'examples': examples
                     })
                 top_sentiments.extend(sentiment_items)
