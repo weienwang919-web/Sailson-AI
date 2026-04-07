@@ -193,9 +193,10 @@ def _handle_fb_scrape(task_id, params):
     results_limit = params.get('results_limit', 2500)
     enable_ai_analysis = params.get('enable_ai_analysis', True)
     max_ai_comments = params.get('max_ai_comments', 1200)
+    skip_discover = params.get('skip_discover', False)
+    top_n = max(1, min(int(params.get('top_n', 5)), 20))
 
     def _set_scrape_summary(message):
-        """将阶段进度写入 scrape_tasks，供前端状态轮询展示。"""
         if not scrape_task_id:
             return
         try:
@@ -207,9 +208,29 @@ def _handle_fb_scrape(task_id, params):
             logger.warning(f"⚠️ 更新 scrape_tasks 进度失败: {e}")
 
     try:
-        if (not post_urls) and task_queries:
+        merged_posts = []
+
+        if skip_discover and not post_urls:
+            import datetime as _dt
+            end_dt = _dt.datetime.now()
+            start_dt = end_dt - _dt.timedelta(days=days_back)
+            update_task(task_id, progress=f'从 DB 读取 Top{top_n} 帖子...')
+            top_rows = db.query_all("""
+                SELECT post_url, engagement, comments_count
+                FROM fb_post_metrics
+                WHERE post_date >= %s AND post_date <= %s
+                  AND COALESCE(comments_count, 0) > 0
+                ORDER BY comments_count DESC
+                LIMIT %s
+            """, (start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'), top_n))
+            if not top_rows:
+                raise RuntimeError(f'fb_post_metrics 中无 {start_dt.date()}~{end_dt.date()} 有评论的帖子')
+            post_urls = [r['post_url'] for r in top_rows]
+            _set_scrape_summary(f"skip_discover: Top{top_n} 帖子（评论数: {[r.get('comments_count',0) for r in top_rows]}）")
+            logger.info(f"📊 skip_discover: Top{top_n} by comments_count: {[(r.get('post_url','')[-30:], r.get('comments_count')) for r in top_rows]}")
+
+        elif (not post_urls) and task_queries:
             merged_urls = []
-            merged_posts = []
             seen = set()
             discover_stats = []
             for query in task_queries:
@@ -257,10 +278,8 @@ def _handle_fb_scrape(task_id, params):
                 raise RuntimeError('discover 未找到可抓取帖子')
             _set_scrape_summary(f"发现完成：SPD {len(post_urls)} 条")
             logger.info(f"✅ Discover URLs: {len(post_urls)}")
-        else:
-            merged_posts = []
 
-        update_task(task_id, progress='抓取评论与分析中')
+        update_task(task_id, progress=f'抓取评论中（{len(post_urls or [])} 条帖子）')
         _set_scrape_summary(f"抓取评论中：共 {len(post_urls or [])} 条帖子")
         result = tasks.scrape_fb_comments(
             post_urls=post_urls,

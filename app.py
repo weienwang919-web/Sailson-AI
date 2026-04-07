@@ -4085,7 +4085,9 @@ def spd_schedule():
                 'days_back': days_back,
                 'results_limit': results_limit,
                 'enable_ai_analysis': enable_ai_analysis,
-                'max_ai_comments': max_ai_comments
+                'max_ai_comments': max_ai_comments,
+                'skip_discover': skip_discover,
+                'top_n': top_n
             }
             db.execute(
                 "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
