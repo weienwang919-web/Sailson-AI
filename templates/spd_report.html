@@ -86,18 +86,6 @@
             </div>
             <div class="advanced-grid">
                 <div>
-                    <label>Discover 帖子上限</label>
-                    <input id="discoverMaxPostsInput" type="number" min="20" max="5000" value="200">
-                </div>
-                <div>
-                    <label>单帖评论抓取上限</label>
-                    <input id="resultsLimitInput" type="number" min="100" max="10000" value="800">
-                </div>
-                <div>
-                    <label>AI 分析评论上限</label>
-                    <input id="maxAiCommentsInput" type="number" min="0" max="5000" value="500">
-                </div>
-                <div>
                     <label>days_back（留空自动）</label>
                     <input id="daysBackInput" type="number" min="1" max="60" placeholder="自动按日期计算">
                 </div>
@@ -108,9 +96,6 @@
                         <label><input id="platformIg" type="checkbox" checked> Instagram</label>
                     </div>
                 </div>
-            </div>
-            <div style="margin-top:8px;" class="platform-inline">
-                <label><input id="enableAiInput" type="checkbox" checked> 启用 AI 情感分析</label>
             </div>
         </div>
         <div id="taskStatus" class="muted" style="margin-top:10px;">任务状态：未启动</div>
@@ -472,22 +457,18 @@ async function startSpdCrawl() {
         const autoDaysBack = Math.min(Math.max(Math.floor(ms / (24 * 3600 * 1000)) + 1, 1), 60);
         const customDaysBack = document.getElementById('daysBackInput').value;
         const daysBack = clampNumber(customDaysBack, 1, 60, autoDaysBack);
-        const discoverMaxPosts = clampNumber(document.getElementById('discoverMaxPostsInput').value, 20, 5000, 200);
-        const resultsLimit = clampNumber(document.getElementById('resultsLimitInput').value, 100, 10000, 800);
-        const maxAiComments = clampNumber(document.getElementById('maxAiCommentsInput').value, 0, 5000, 500);
         const crawlScope = document.getElementById('crawlScopeInput').value || 'both';
         const mlbbRule = (document.getElementById('mlbbRuleInput').value || '').trim();
         const spdRule = (document.getElementById('spdRuleInput').value || '').trim();
         const platforms = collectPlatforms();
-        const enableAi = document.getElementById('enableAiInput').checked;
 
         const payload = {
             crawl_scope: crawlScope,
             days_back: daysBack,
-            discover_max_posts: discoverMaxPosts,
-            results_limit: resultsLimit,
-            enable_ai_analysis: enableAi,
-            max_ai_comments: maxAiComments,
+            discover_max_posts: 5000,
+            results_limit: 10000,
+            enable_ai_analysis: true,
+            max_ai_comments: 5000,
             platforms: platforms
         };
         if (mlbbRule) payload.mlbb_rule = mlbbRule;

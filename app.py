@@ -3910,10 +3910,10 @@ def spd_schedule():
 
         data = request.get_json(silent=True) or {}
         try:
-            days_back = int(data.get('days_back', 7))
-            results_limit = int(data.get('results_limit', 1500))
-            max_ai_comments = int(data.get('max_ai_comments', 800))
-            discover_max_posts = int(data.get('discover_max_posts', 300))
+            days_back = int(data.get('days_back', 14))
+            results_limit = int(data.get('results_limit', 10000))
+            max_ai_comments = int(data.get('max_ai_comments', 5000))
+            discover_max_posts = int(data.get('discover_max_posts', 5000))
         except (TypeError, ValueError):
             return jsonify({'status': 'error', 'message': '数值参数格式错误'}), 400
         enable_ai_raw = data.get('enable_ai_analysis', True)
