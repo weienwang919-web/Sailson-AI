@@ -61,7 +61,7 @@
                     <option value="th">TH</option>
                 </select>
             </div>
-            <button id="crawlBtn" class="btn-crawl" onclick="startSpdCrawl()">开始采集</button>
+            <button id="crawlBtn" class="btn-crawl" onclick="startSpdCrawl()">抓取Top5评论</button>
             <button class="btn-run" onclick="runReport()">试跑报告</button>
         </div>
         <div class="advanced-toggle" onclick="toggleAdvancedPanel()">
@@ -469,7 +469,9 @@ async function startSpdCrawl() {
             results_limit: 10000,
             enable_ai_analysis: false,
             max_ai_comments: 0,
-            platforms: platforms
+            platforms: platforms,
+            skip_discover: true,
+            top_n: 5
         };
         if (mlbbRule) payload.mlbb_rule = mlbbRule;
         if (spdRule) payload.spd_rule = spdRule;

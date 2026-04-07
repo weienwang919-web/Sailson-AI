@@ -3993,12 +3993,31 @@ def spd_schedule():
             ('spd_scrape', 'pending')
         )
 
+        skip_discover = bool(data.get('skip_discover', False))
+        top_n = max(1, min(int(data.get('top_n', 5)), 20))
+
         if not USE_DB_WORKER:
             def run_spd_scrape():
                 try:
                     resolved_urls = post_urls
                     resolved_posts = []
-                    if (not resolved_urls) and task_queries:
+
+                    if skip_discover and not resolved_urls:
+                        end_dt = datetime.datetime.now()
+                        start_dt = end_dt - datetime.timedelta(days=days_back)
+                        top_rows = db.query_all("""
+                            SELECT post_url, engagement, comments_count
+                            FROM fb_post_metrics
+                            WHERE post_date >= %s AND post_date <= %s
+                            ORDER BY engagement DESC
+                            LIMIT %s
+                        """, (start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'), top_n))
+                        if not top_rows:
+                            raise RuntimeError(f'fb_post_metrics 中无 {start_dt.date()}~{end_dt.date()} 的帖子，请先运行 discover')
+                        resolved_urls = [r['post_url'] for r in top_rows]
+                        logger.info(f"📊 skip_discover: 从 DB 取 Top{top_n} 帖子: {[r.get('engagement') for r in top_rows]}")
+
+                    elif (not resolved_urls) and task_queries:
                         merged = []
                         merged_posts = []
                         seen = set()
