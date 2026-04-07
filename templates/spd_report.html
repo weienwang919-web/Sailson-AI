@@ -2,6 +2,7 @@
 {% block title %}SPD 舆情报告 | Sailson AI{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
     body { background: #f7f8fa; font-family: 'Inter', sans-serif; }
     .page-wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
@@ -63,6 +64,7 @@
             </div>
             <button id="crawlBtn" class="btn-crawl" onclick="startSpdCrawl()">抓取Top5评论</button>
             <button class="btn-run" onclick="runReport()">试跑报告</button>
+            <button class="btn-run" style="background:#ff6d00;" onclick="exportExcel()">导出Excel</button>
         </div>
         <div class="advanced-toggle" onclick="toggleAdvancedPanel()">
             <span id="advancedArrow">▶</span> 高级参数（可选）
@@ -148,6 +150,7 @@
 let trendChart = null;
 let activeTaskId = null;
 let pollTimer = null;
+let lastReportData = null;
 
 function escapeHtml(input) {
     const value = String(input || '');
@@ -514,6 +517,7 @@ async function runReport() {
             resetViewWithMessage(data.message || '报告生成失败');
             return;
         }
+        lastReportData = data;
         renderTrend(data.trend || {});
         renderPeaks(data.peak_drilldown || []);
         renderSummary(data.summary || {});
@@ -522,6 +526,82 @@ async function runReport() {
         console.error('runReport error:', error);
         resetViewWithMessage('网络异常，请稍后重试');
     }
+}
+
+function exportExcel() {
+    if (!lastReportData) { alert('请先试跑报告'); return; }
+    const wb = XLSX.utils.book_new();
+    const d = lastReportData;
+    const meta = d.meta || {};
+    const summary = d.summary || {};
+    const ratio = summary.sentiment_ratio || {};
+    const opinions = summary.key_opinions || [];
+
+    const s1 = [];
+    s1.push(['SPD 舆情报告']);
+    s1.push(['日期范围', `${meta.start_date || ''} ~ ${meta.end_date || ''}`]);
+    s1.push(['区域', (meta.region || 'global').toUpperCase()]);
+    s1.push([]);
+    s1.push(['TOP5 总评论量', summary.total_comments || 0]);
+    s1.push(['正面占比', `${ratio.positive || 0}%`]);
+    s1.push(['中性占比', `${ratio.neutral || 0}%`]);
+    s1.push(['负面占比', `${ratio.negative || 0}%`]);
+    s1.push([]);
+    s1.push(['情感', '地区', '观点', '占比']);
+    opinions.forEach(op => {
+        s1.push([op.sentiment || '', op.region || '', op.opinion || '', op.percentage ? `${op.percentage}%` : '']);
+    });
+    const ws1 = XLSX.utils.aoa_to_sheet(s1);
+    ws1['!cols'] = [{wch:14},{wch:10},{wch:50},{wch:10}];
+    XLSX.utils.book_append_sheet(wb, ws1, '概况');
+
+    const s2 = [];
+    s2.push(['排名', '平台', '地区', '帖子主题', '帖子内容', '正面%', '中性%', '负面%',
+             '正面舆情', '中性舆情', '负面舆情', '赞', '转发', '评论', '链接']);
+    (d.top5_posts || []).forEach(post => {
+        const r = post.sentiment_ratio || {};
+        const pc = post.post_content || {};
+        const grouped = {positive: [], neutral: [], negative: []};
+        (post.top_sentiments || []).forEach(op => {
+            const k = String(op.sentiment || '').toLowerCase();
+            if (grouped[k]) grouped[k].push(`${op.region || ''}：${op.opinion || ''}${op.count ? '（' + op.count + '）' : ''}`);
+        });
+        s2.push([
+            post.rank || '',
+            post.platform || 'FB',
+            post.region || '',
+            pc.topic || '',
+            pc.text || '',
+            `${r.positive || 0}%`,
+            `${r.neutral || 0}%`,
+            `${r.negative || 0}%`,
+            grouped.positive.join('\n') || '-',
+            grouped.neutral.join('\n') || '-',
+            grouped.negative.join('\n') || '-',
+            post.likes || 0,
+            post.shares || 0,
+            post.comments || 0,
+            post.post_url || ''
+        ]);
+    });
+    const ws2 = XLSX.utils.aoa_to_sheet(s2);
+    ws2['!cols'] = [{wch:6},{wch:10},{wch:8},{wch:24},{wch:40},{wch:8},{wch:8},{wch:8},
+                    {wch:36},{wch:36},{wch:36},{wch:8},{wch:8},{wch:8},{wch:40}];
+    XLSX.utils.book_append_sheet(wb, ws2, 'TOP5详情');
+
+    const trend = d.trend || {};
+    if (trend.labels && trend.labels.length) {
+        const s3 = [['日期', 'MLBB互动量', 'SPD互动量']];
+        trend.labels.forEach((lbl, i) => {
+            s3.push([lbl, (trend.mlbb || [])[i] || 0, (trend.spd || [])[i] || 0]);
+        });
+        const ws3 = XLSX.utils.aoa_to_sheet(s3);
+        ws3['!cols'] = [{wch:14},{wch:14},{wch:14}];
+        XLSX.utils.book_append_sheet(wb, ws3, '趋势数据');
+    }
+
+    const fileName = `SPD报告_${meta.start_date || 'report'}_${meta.end_date || ''}.xlsx`;
+    XLSX.writeFile(wb, fileName);
 }
 
 window.onload = function () {
