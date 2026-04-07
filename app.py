@@ -4009,13 +4009,14 @@ def spd_schedule():
                             SELECT post_url, engagement, comments_count
                             FROM fb_post_metrics
                             WHERE post_date >= %s AND post_date <= %s
-                            ORDER BY engagement DESC
+                              AND COALESCE(comments_count, 0) > 0
+                            ORDER BY comments_count DESC
                             LIMIT %s
                         """, (start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'), top_n))
                         if not top_rows:
                             raise RuntimeError(f'fb_post_metrics 中无 {start_dt.date()}~{end_dt.date()} 的帖子，请先运行 discover')
                         resolved_urls = [r['post_url'] for r in top_rows]
-                        logger.info(f"📊 skip_discover: 从 DB 取 Top{top_n} 帖子: {[r.get('engagement') for r in top_rows]}")
+                        logger.info(f"📊 skip_discover: Top{top_n} by comments_count: {[(r.get('post_url','')[-30:], r.get('comments_count'), r.get('engagement')) for r in top_rows]}")
 
                     elif (not resolved_urls) and task_queries:
                         merged = []
