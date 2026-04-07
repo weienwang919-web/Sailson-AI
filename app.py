@@ -2156,7 +2156,7 @@ def spd_report_data():
             pkey = row.get('post_url') or row.get('post_link') or 'unknown'
             top5_pool_by_post[pkey].append(row)
 
-        total_spd_comments = len(top5_comment_pool)
+        total_spd_comments = sum(int(p.get('comments_count') or 0) for p in spd_posts_sorted[:5]) or len(top5_comment_pool)
         sentiment_counter = Counter([row.get('_rt_sentiment') or row.get('sentiment') for row in top5_comment_pool])
 
         ai_result = _ai_aggregate_opinions(top5_comment_pool, total_spd_comments)

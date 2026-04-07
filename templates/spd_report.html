@@ -2,7 +2,7 @@
 {% block title %}SPD 舆情报告 | Sailson AI{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
     body { background: #f7f8fa; font-family: 'Inter', sans-serif; }
     .page-wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
@@ -528,51 +528,115 @@ async function runReport() {
     }
 }
 
-function exportExcel() {
+async function exportExcel() {
     if (!lastReportData) { alert('请先试跑报告'); return; }
-    const wb = XLSX.utils.book_new();
     const d = lastReportData;
     const meta = d.meta || {};
     const summary = d.summary || {};
     const sRatio = summary.sentiment_ratio || {};
-    const opinions = summary.key_opinions || {};
 
-    const rows = [];
-    rows.push(['SPD 舆情监控报告']);
-    rows.push(['日期范围', `${meta.start_date || ''} ~ ${meta.end_date || ''}`]);
-    rows.push(['区域', (meta.region || 'global').toUpperCase()]);
-    rows.push([]);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('SPD报告');
+    ws.properties.defaultRowHeight = 18;
 
-    rows.push(['一、MLBB vs SPD 互动量变化趋势']);
+    const titleFont = {bold: true, size: 14};
+    const sectionFont = {bold: true, size: 12};
+    const headerFont = {bold: true, size: 10, color: {argb: 'FF4D5562'}};
+    const headerFill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FFFAFBFD'}};
+    const thinBorder = {style: 'thin', color: {argb: 'FFEEF1F5'}};
+    const allBorders = {top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder};
+    const wrapAlign = {vertical: 'top', wrapText: true};
+
+    ws.columns = [
+        {width: 12}, {width: 10}, {width: 44}, {width: 20},
+        {width: 52}, {width: 16}, {width: 40}
+    ];
+
+    let r = 1;
+    const titleRow = ws.getRow(r);
+    titleRow.getCell(1).value = 'SPD 舆情监控报告';
+    titleRow.getCell(1).font = titleFont;
+    ws.mergeCells(r, 1, r, 7);
+    r++;
+    ws.getRow(r).getCell(1).value = `日期范围：${meta.start_date || ''} ~ ${meta.end_date || ''}`;
+    ws.getRow(r).getCell(4).value = `区域：${(meta.region || 'global').toUpperCase()}`;
+    r += 2;
+
+    const secRow1 = ws.getRow(r);
+    secRow1.getCell(1).value = '一、MLBB vs SPD 互动量变化趋势';
+    secRow1.getCell(1).font = sectionFont;
+    ws.mergeCells(r, 1, r, 7);
+    r++;
+
+    const chartCanvas = document.getElementById('trendChart');
+    if (chartCanvas && trendChart) {
+        try {
+            const imgData = chartCanvas.toDataURL('image/png');
+            const imgId = wb.addImage({base64: imgData.split(',')[1], extension: 'png'});
+            ws.addImage(imgId, {
+                tl: {col: 0, row: r - 1},
+                ext: {width: 780, height: 260}
+            });
+            r += 15;
+        } catch(e) { console.warn('chart export failed', e); }
+    }
+
     const trend = d.trend || {};
     if (trend.labels && trend.labels.length) {
-        rows.push(['日期', 'MLBB全球', 'SPD']);
-        trend.labels.forEach((lbl, i) => {
-            rows.push([lbl, (trend.mlbb || [])[i] || 0, (trend.spd || [])[i] || 0]);
+        ['日期', 'MLBB全球', 'SPD'].forEach((h, i) => {
+            const c = ws.getRow(r).getCell(i + 1);
+            c.value = h; c.font = headerFont; c.fill = headerFill; c.border = allBorders;
         });
-    } else {
-        rows.push(['暂无数据']);
+        r++;
+        trend.labels.forEach((lbl, i) => {
+            const row = ws.getRow(r);
+            row.getCell(1).value = lbl;
+            row.getCell(2).value = (trend.mlbb || [])[i] || 0;
+            row.getCell(3).value = (trend.spd || [])[i] || 0;
+            [1,2,3].forEach(c => { row.getCell(c).border = allBorders; });
+            r++;
+        });
     }
-    rows.push([]);
+    r++;
 
-    rows.push(['二、峰值下钻分析']);
+    ws.getRow(r).getCell(1).value = '二、峰值下钻分析';
+    ws.getRow(r).getCell(1).font = sectionFont;
+    ws.mergeCells(r, 1, r, 7);
+    r++;
     const peaks = d.peak_drilldown || [];
     if (peaks.length) {
         peaks.forEach(section => {
-            rows.push([section.region || '']);
+            ws.getRow(r).getCell(1).value = section.region || '';
+            ws.getRow(r).getCell(1).font = {bold: true};
+            r++;
             (section.top_posts || []).forEach(tp => {
-                rows.push([`  ${tp.date || ''}`, tp.platform || '', tp.title || '', `互动: ${tp.engagement || 0}`]);
+                const row = ws.getRow(r);
+                row.getCell(1).value = tp.date || '';
+                row.getCell(2).value = tp.platform || '';
+                row.getCell(3).value = tp.title || '';
+                row.getCell(4).value = `互动: ${tp.engagement || 0}`;
+                r++;
             });
         });
     } else {
-        rows.push(['暂无数据']);
+        ws.getRow(r).getCell(1).value = '暂无数据';
+        r++;
     }
-    rows.push([]);
+    r++;
 
-    rows.push(['三、TOP5 帖文舆情概况（仅 SPD 相关）']);
-    rows.push(['TOP5 总评论量', summary.total_comments || 0]);
-    rows.push(['情感占比', `正面 ${sRatio.positive || 0}% / 中性 ${sRatio.neutral || 0}% / 负面 ${sRatio.negative || 0}%`]);
-    rows.push([]);
+    ws.getRow(r).getCell(1).value = '三、TOP5 帖文舆情概况（仅 SPD 相关）';
+    ws.getRow(r).getCell(1).font = sectionFont;
+    ws.mergeCells(r, 1, r, 7);
+    r++;
+    ws.getRow(r).getCell(1).value = 'TOP5 总评论量';
+    ws.getRow(r).getCell(1).font = {bold: true};
+    ws.getRow(r).getCell(2).value = summary.total_comments || 0;
+    r++;
+    ws.getRow(r).getCell(1).value = '情感占比';
+    ws.getRow(r).getCell(1).font = {bold: true};
+    ws.getRow(r).getCell(2).value = `正面 ${sRatio.positive || 0}% / 中性 ${sRatio.neutral || 0}% / 负面 ${sRatio.negative || 0}%`;
+    r++;
+
     const buckets = {positive: [], neutral: [], negative: []};
     (summary.key_opinions || []).forEach(op => {
         const k = String(op.sentiment || '').toLowerCase();
@@ -580,49 +644,68 @@ function exportExcel() {
     });
     const bucketLabels = {positive: '• 正面舆情', neutral: '• 中性舆情', negative: '• 负面舆情'};
     ['positive', 'neutral', 'negative'].forEach(key => {
-        rows.push([bucketLabels[key]]);
+        ws.getRow(r).getCell(1).value = bucketLabels[key];
+        ws.getRow(r).getCell(1).font = {bold: true, color: {argb: key === 'positive' ? 'FF0F9D58' : key === 'negative' ? 'FFE45B5B' : 'FF666666'}};
+        r++;
         (buckets[key] || []).slice(0, 5).forEach(op => {
             const pct = op.percentage > 0 ? `（${op.percentage}%）` : '';
-            rows.push(['', `${op.region || ''}：${op.opinion || ''}${pct}`]);
+            ws.getRow(r).getCell(2).value = `${op.region || ''}：${op.opinion || ''}${pct}`;
+            r++;
         });
     });
-    rows.push([]);
+    r++;
 
-    rows.push(['四、TOP5 帖文详情']);
-    rows.push(['平台', '地区', '帖子主要内容', '舆情情绪占比', '正面/中性/负面 舆情提炼', '赞/转/评', '链接']);
+    ws.getRow(r).getCell(1).value = '四、TOP5 帖文详情';
+    ws.getRow(r).getCell(1).font = sectionFont;
+    ws.mergeCells(r, 1, r, 7);
+    r++;
+    const headers = ['平台', '地区', '帖子主要内容', '舆情情绪占比', '正面/中性/负面 舆情提炼', '赞/转/评', '链接'];
+    const hRow = ws.getRow(r);
+    headers.forEach((h, i) => {
+        const c = hRow.getCell(i + 1);
+        c.value = h; c.font = headerFont; c.fill = headerFill; c.border = allBorders;
+        c.alignment = {vertical: 'middle', wrapText: true};
+    });
+    hRow.height = 24;
+    r++;
+
     (d.top5_posts || []).forEach(post => {
-        const r = post.sentiment_ratio || {};
+        const pr = post.sentiment_ratio || {};
         const pc = post.post_content || {};
         const grouped = {positive: [], neutral: [], negative: []};
         (post.top_sentiments || []).forEach(op => {
             const k = String(op.sentiment || '').toLowerCase();
             if (grouped[k]) grouped[k].push(`${op.region || ''}：${op.opinion || ''}${op.count ? '（' + op.count + '）' : ''}`);
         });
-        const contentCell = pc.topic ? `【${pc.topic}】${pc.text || ''}` : (pc.text || '');
-        const ratioCell = `正 ${r.positive || 0}%\n中 ${r.neutral || 0}%\n负 ${r.negative || 0}%`;
+        const contentCell = pc.topic ? `【${pc.topic}】\n${pc.text || ''}` : (pc.text || '');
+        const ratioCell = `正 ${pr.positive || 0}%\n中 ${pr.neutral || 0}%\n负 ${pr.negative || 0}%`;
         const opinionParts = [];
         if (grouped.positive.length) opinionParts.push(`【正面】\n${grouped.positive.join('\n')}`);
         if (grouped.neutral.length) opinionParts.push(`【中性】\n${grouped.neutral.join('\n')}`);
         if (grouped.negative.length) opinionParts.push(`【负面】\n${grouped.negative.join('\n')}`);
         const opinionCell = opinionParts.join('\n') || '-';
         const statCell = `赞 ${post.likes || 0}\n转 ${post.shares || 0}\n评 ${post.comments || 0}`;
-        rows.push([
-            post.platform || 'FB',
-            post.region || '-',
-            contentCell,
-            ratioCell,
-            opinionCell,
-            statCell,
-            post.post_url || ''
-        ]);
+
+        const dataRow = ws.getRow(r);
+        [post.platform || 'FB', post.region || '-', contentCell, ratioCell, opinionCell, statCell, post.post_url || ''].forEach((v, i) => {
+            const c = dataRow.getCell(i + 1);
+            c.value = v;
+            c.border = allBorders;
+            c.alignment = wrapAlign;
+            c.font = {size: 10};
+        });
+        dataRow.height = 80;
+        r++;
     });
 
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws['!cols'] = [{wch:12},{wch:10},{wch:50},{wch:20},{wch:60},{wch:16},{wch:44}];
-    XLSX.utils.book_append_sheet(wb, ws, 'SPD报告');
-
-    const fileName = `SPD报告_${meta.start_date || 'report'}_${meta.end_date || ''}.xlsx`;
-    XLSX.writeFile(wb, fileName);
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SPD报告_${meta.start_date || 'report'}_${meta.end_date || ''}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 window.onload = function () {
