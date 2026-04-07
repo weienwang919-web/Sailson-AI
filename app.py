@@ -1631,42 +1631,39 @@ def _rewrite_opinion_for_template(sentiment, region, raw_opinion, examples=None)
 
 def _ai_aggregate_opinions(comment_pool, total_comments):
     """
-    用 LLM 对 Top5 评论池做聚合舆情提炼。
-    返回 key_opinions 列表，结构：[{sentiment, region, opinion, percentage}]
+    用 LLM 对 Top5 评论池做聚合舆情提炼 + 情感占比估算。
+    返回 dict: {'opinions': [{sentiment, region, opinion, percentage}], 'sentiment_ratio': {positive, neutral, negative}}
+    返回 None 表示失败（触发降级）；返回空 dict 的 opinions 为 [] 时同理。
     """
     if not comment_pool:
-        return []
+        return {'opinions': [], 'sentiment_ratio': {'positive': 0, 'neutral': 0, 'negative': 0}}
     if not qwen_client:
         return None
 
-    valid_sentiments = {'positive', 'neutral', 'negative'}
-    buckets = {'positive': defaultdict(list), 'neutral': defaultdict(list), 'negative': defaultdict(list)}
+    region_comments = defaultdict(list)
     for row in comment_pool:
-        s = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
-        if s not in valid_sentiments:
-            s = 'neutral'
         region = row.get('region') or 'EN'
         brief = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
         content = (row.get('content') or '').strip()
         text = brief if brief else content[:150]
         if text:
-            buckets[s][region].append(text)
+            region_comments[region].append(text)
 
     lines = []
-    for sentiment in ['positive', 'neutral', 'negative']:
-        label = {'positive': '正面', 'neutral': '中性', 'negative': '负面'}[sentiment]
-        for region, texts in buckets[sentiment].items():
-            sampled = texts[:80]
-            lines.append(f"【{label} - {region}】共{len(texts)}条")
-            for t in sampled:
-                lines.append(f"  - {t[:120]}")
+    for region, texts in region_comments.items():
+        sampled = texts[:100]
+        lines.append(f"【{region}】共{len(texts)}条")
+        for t in sampled:
+            lines.append(f"  - {t[:120]}")
 
     if not lines:
         return None
 
-    prompt = f"""你是资深手游舆情分析师。以下是某游戏联动活动 TOP5 热门帖子的全部评论（已按正面/中性/负面和地区分组）。
+    prompt = f"""你是资深手游舆情分析师。以下是某游戏联动活动 TOP5 热门帖子的全部评论（按地区分组）。
 
-请对每种情绪（正面、中性、负面）分别提炼 3-5 条最核心的舆情观点。每条观点必须标注主要来源地区。
+请完成两项任务：
+1. 估算整体情感分布（正面/中性/负面各占百分比，三者之和=100）
+2. 对正面、中性、负面各提炼 3-5 条最核心的舆情观点，标注来源地区
 
 评论数据：
 {chr(10).join(lines[:600])}
@@ -1675,6 +1672,7 @@ def _ai_aggregate_opinions(comment_pool, total_comments):
 
 严格按以下 JSON 格式输出，不要输出任何其他文字：
 {{
+  "sentiment_ratio": {{"positive": 正面百分比数字, "neutral": 中性百分比数字, "negative": 负面百分比数字}},
   "positive": [
     {{"region": "地区代码如EN/TH/ID/PT", "opinion": "一句话中文观点（不超过40字）", "count_estimate": 估计提到该观点的评论数}}
   ],
@@ -1686,7 +1684,8 @@ def _ai_aggregate_opinions(comment_pool, total_comments):
 1. 观点必须具体，包含明确的游戏元素（角色/皮肤/活动/机制等）
 2. 禁止空泛描述如"玩家讨论了游戏"
 3. 每种情绪 3-5 条，按讨论热度排序
-4. count_estimate 是你估算该观点涉及的评论条数"""
+4. count_estimate 是你估算该观点涉及的评论条数
+5. sentiment_ratio 三项之和必须等于100"""
 
     try:
         resp = qwen_client.chat.completions.create(
@@ -1700,7 +1699,8 @@ def _ai_aggregate_opinions(comment_pool, total_comments):
         if not match:
             return None
         data = json.loads(match.group())
-        result = []
+
+        opinions = []
         for sentiment in ['positive', 'neutral', 'negative']:
             items = data.get(sentiment, [])
             for item in items[:5]:
@@ -1708,14 +1708,25 @@ def _ai_aggregate_opinions(comment_pool, total_comments):
                     count_est = int(re.sub(r'[^\d]', '', str(item.get('count_estimate', 0))) or 0)
                 except (ValueError, TypeError):
                     count_est = 0
-                result.append({
+                opinions.append({
                     'sentiment': sentiment,
                     'region': item.get('region', 'EN'),
                     'opinion': (item.get('opinion', '') or '')[:60],
                     'percentage': _to_percentage(count_est, total_comments) if count_est > 0 else 0.0
                 })
-        if result:
-            return result
+
+        raw_ratio = data.get('sentiment_ratio', {})
+        try:
+            ratio = {
+                'positive': round(float(raw_ratio.get('positive', 0)), 1),
+                'neutral': round(float(raw_ratio.get('neutral', 0)), 1),
+                'negative': round(float(raw_ratio.get('negative', 0)), 1),
+            }
+        except (ValueError, TypeError):
+            ratio = None
+
+        if opinions:
+            return {'opinions': opinions, 'sentiment_ratio': ratio}
         return None
     except Exception as e:
         logger.warning(f"⚠️ AI aggregate opinions failed, falling back to heuristic: {e}")
@@ -1724,29 +1735,29 @@ def _ai_aggregate_opinions(comment_pool, total_comments):
 
 def _ai_analyze_single_post(comments, total_post_comments):
     """
-    用 LLM 对单帖评论做正面/中性/负面观点提炼。
-    返回 top_sentiments 列表，结构：[{sentiment, region, opinion, count, examples}]
+    用 LLM 对单帖评论做正面/中性/负面观点提炼 + 情感占比估算。
+    返回 dict: {'sentiments': [...], 'sentiment_ratio': {...}} 或 None。
     """
     if not comments or not qwen_client:
         return None
 
     lines = []
     for row in comments:
-        s = row.get('_rt_sentiment') or row.get('sentiment') or 'neutral'
         region = row.get('region') or 'EN'
         brief = (row.get('_rt_brief') or row.get('brief_analysis') or '').strip()
         content = (row.get('content') or '').strip()
         text = brief if brief else content[:150]
         if text:
-            label = {'positive': '正面', 'neutral': '中性', 'negative': '负面'}.get(s, '中性')
-            lines.append(f"[{label}/{region}] {text[:120]}")
+            lines.append(f"[{region}] {text[:120]}")
 
     if not lines:
         return None
 
-    prompt = f"""你是资深手游舆情分析师。以下是某帖子的全部评论（标注了情感和地区）。
+    prompt = f"""你是资深手游舆情分析师。以下是某帖子的全部评论（标注了地区）。
 
-请对正面、中性、负面各提炼 Top3 主要观点，每条标注来源地区。
+请完成两项任务：
+1. 估算该帖评论的情感分布（正面/中性/负面各占百分比，之和=100）
+2. 对正面、中性、负面各提炼 Top3 主要观点，标注来源地区
 
 评论数据：
 {chr(10).join(lines[:400])}
@@ -1755,6 +1766,7 @@ def _ai_analyze_single_post(comments, total_post_comments):
 
 严格按以下 JSON 格式输出，不要输出任何其他文字：
 {{
+  "sentiment_ratio": {{"positive": 正面百分比, "neutral": 中性百分比, "negative": 负面百分比}},
   "positive": [
     {{"region": "地区代码", "opinion": "一句话中文观点（不超过35字）", "count_estimate": 估计数}}
   ],
@@ -1765,7 +1777,8 @@ def _ai_analyze_single_post(comments, total_post_comments):
 要求：
 1. 每种情绪最多3条，按热度排序
 2. 观点要具体，含游戏元素
-3. 禁止空泛描述"""
+3. 禁止空泛描述
+4. sentiment_ratio 三项之和=100"""
 
     try:
         resp = qwen_client.chat.completions.create(
@@ -1779,7 +1792,8 @@ def _ai_analyze_single_post(comments, total_post_comments):
         if not match:
             return None
         data = json.loads(match.group())
-        result = []
+
+        sentiments = []
         for sentiment in ['positive', 'neutral', 'negative']:
             items = data.get(sentiment, [])
             for item in items[:3]:
@@ -1787,15 +1801,26 @@ def _ai_analyze_single_post(comments, total_post_comments):
                     count_val = int(re.sub(r'[^\d]', '', str(item.get('count_estimate', 0))) or 0)
                 except (ValueError, TypeError):
                     count_val = 0
-                result.append({
+                sentiments.append({
                     'sentiment': sentiment,
                     'region': item.get('region', 'EN'),
                     'opinion': (item.get('opinion', '') or '')[:50],
                     'count': f"{count_val}+",
                     'examples': []
                 })
-        if result:
-            return result
+
+        raw_ratio = data.get('sentiment_ratio', {})
+        try:
+            ratio = {
+                'positive': round(float(raw_ratio.get('positive', 0)), 1),
+                'neutral': round(float(raw_ratio.get('neutral', 0)), 1),
+                'negative': round(float(raw_ratio.get('negative', 0)), 1),
+            }
+        except (ValueError, TypeError):
+            ratio = None
+
+        if sentiments:
+            return {'sentiments': sentiments, 'sentiment_ratio': ratio}
         return None
     except Exception as e:
         logger.warning(f"⚠️ AI single post analysis failed, falling back to heuristic: {e}")
@@ -2134,9 +2159,11 @@ def spd_report_data():
         total_spd_comments = len(top5_comment_pool)
         sentiment_counter = Counter([row.get('_rt_sentiment') or row.get('sentiment') for row in top5_comment_pool])
 
-        ai_opinions = _ai_aggregate_opinions(top5_comment_pool, total_spd_comments)
-        if ai_opinions:
-            key_opinions = ai_opinions
+        ai_result = _ai_aggregate_opinions(top5_comment_pool, total_spd_comments)
+        ai_sentiment_ratio = None
+        if ai_result and ai_result.get('opinions'):
+            key_opinions = ai_result['opinions']
+            ai_sentiment_ratio = ai_result.get('sentiment_ratio')
             logger.info(f"✅ SPD report: AI aggregate produced {len(key_opinions)} opinions")
         else:
             signal_counter = Counter()
@@ -2188,9 +2215,11 @@ def spd_report_data():
             total = len(comments)
             sent_count = Counter([(row.get('_rt_sentiment') or row.get('sentiment') or 'neutral') for row in comments])
 
-            ai_sentiments = _ai_analyze_single_post(comments, total)
-            if ai_sentiments:
-                top_sentiments = ai_sentiments
+            ai_post_result = _ai_analyze_single_post(comments, total)
+            post_ai_ratio = None
+            if ai_post_result and ai_post_result.get('sentiments'):
+                top_sentiments = ai_post_result['sentiments']
+                post_ai_ratio = ai_post_result.get('sentiment_ratio')
             else:
                 top_sentiments = []
                 for sentiment in ['positive', 'neutral', 'negative']:
@@ -2245,7 +2274,7 @@ def spd_report_data():
                     'text': ((post.get('post_content') or first.get('content') or '')[:220]),
                     'thumbnail_url': post.get('thumbnail_url') or '',
                 },
-                'sentiment_ratio': {
+                'sentiment_ratio': post_ai_ratio if post_ai_ratio else {
                     'positive': _to_percentage(sent_count.get('positive', 0), total),
                     'neutral': _to_percentage(sent_count.get('neutral', 0), total),
                     'negative': _to_percentage(sent_count.get('negative', 0), total),
@@ -2274,7 +2303,7 @@ def spd_report_data():
             'peak_drilldown': peak_drilldown,
             'summary': {
                 'total_comments': total_spd_comments,
-                'sentiment_ratio': {
+                'sentiment_ratio': ai_sentiment_ratio if ai_sentiment_ratio else {
                     'positive': _to_percentage(sentiment_counter.get('positive', 0), total_spd_comments),
                     'neutral': _to_percentage(sentiment_counter.get('neutral', 0), total_spd_comments),
                     'negative': _to_percentage(sentiment_counter.get('negative', 0), total_spd_comments),

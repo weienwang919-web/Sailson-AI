@@ -467,8 +467,8 @@ async function startSpdCrawl() {
             days_back: daysBack,
             discover_max_posts: 5000,
             results_limit: 10000,
-            enable_ai_analysis: true,
-            max_ai_comments: 5000,
+            enable_ai_analysis: false,
+            max_ai_comments: 0,
             platforms: platforms
         };
         if (mlbbRule) payload.mlbb_rule = mlbbRule;
