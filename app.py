@@ -5071,6 +5071,131 @@ def cleanup_orphan_comments():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/import_manual_comments', methods=['POST'])
+@login_required
+def import_manual_comments():
+    """一次性导入手动复制的评论（用完即删）"""
+    try:
+        MANUAL_COMMENTS = {
+            "https://www.instagram.com/p/DWli1ACClRg/": [
+                "Glowing min glowing",
+                "udah beliii min, lucu bgttt zetiannya wkwk",
+                "Trinity maksudnya apa? 🙏🏻",
+                "Abis 100 dm ga dapet",
+                "Aduh min, item Trinity nya sih oke , tapi tambahin glowing wand lah , bnyak player yang mikir mage ga perlu glowing, karena langsung dari moonton nya😢",
+                "Sesat, gk pakek glowing kwkwk",
+                "Egk pake glowing gpp kah?",
+                "build nya @rrq_clayyy",
+                "HAMA YG PAKE NGGA BELI GLOWING",
+                "gmn bang lgsg dr muntunnya ini wkwk",
+                "Minn, itu pharsa bukannya justru bisa d counter Zetian yakk??",
+                "by one ga min kalah post ig wkwkwk",
+                "Benerin darksytem lo min buat solo player parag banget masa prosentase nya 200 pertandingan cuma 40% WR nya",
+                "Min buat starlight lebih effort dan bervariasi napa kayak starlight yang dulu2. Ini Zetian menurut gue parah asli gk tau temannya apa, plek ketiplek kayak skin basic beda warna dan ditambah aksesoris tipis2 buat pantes2an doang.",
+                "MAKIN BORING SKIN STARLIGHT!",
+                "build versiku, talent insipire, sepatu sungai, impure rage. magic boots, enchanted, glowing, fleeting time, concentrad, terakhir kadang blood wings, kadang divine glave",
+                "Bootnya aja aku ngga pake itu apalagi yg lainnya, aku yg penting Holy cristal sama Glowing aja sama fleeting time biar cpt gunain Ulti",
+                "inspire, sepatu sungai, impure rage. magic/tough/arcane boots, liat musuhnya, lalu glowing, trinity item, tengah\"nya taro fleeting time. cadangan imortal sm winter. done.",
+                "Kalo gua ttep pake glowing sih",
+                "Atmin darksistem gamau bikin glowing",
+                "zetian tuh kan kalo erly , susah di lawan sama herly soal nya sheeld nya tebel, kalo late game enak",
+                "Dah beli Gweh skin sl Zetian, bagus min tinggal matchnya aja jngn kek tai",
+                "Enak ny Cetian Ulti ny kyk maphack 😂 .. Counter utama ny Teman Buta Map 😤",
+            ],
+            "https://www.instagram.com/p/DWV4cqlILcH/": [
+                "Aku nak 🔥🙌",
+                "😍😍 I'm ready for both Minato & Itachi 🔥",
+                "Koleb jjk kapan abangkuh",
+                "Delete Sky Piercer item >>>>",
+                "What's the Valir skin doin on the Naruto Banner??",
+                "Day 85 asking for Xavier Gojo skin",
+                "What about a guide on how you guys plan to fix your flawed reporting system next? :D Fix your reporting system. I'm going to write what somebody else commented previously which I think best summarises it: You can get muted for 14 matches for simply saying \"noob\" but someone can intentionally throw the game and be 0-13-2 and have no clear violation while trolling. But when you express your anger you get reported for inappropriate chatting while the person intentionally throwing the game gets away completely scot free. @mobilelegendsgame, you guys don't have any idea what actually goes on during gameplays, do you? Talk about \"ensuring fair gameplay\" that you guys just love to shove at our faces. Your OWN reporting system isn't even supporting fair gameplay.",
+                "Stùpid, usèless developers! Solo Ranked matchmaking is atrocious! I wish your families would diè! Narrow-eyed animals.",
+                "_!_ for admins !!!",
+                "I got itachi sasuke and naruto",
+                "Only 3 free beeds exchange tokens this time?",
+                "Stop deleting comments and listen to your community! Where is JJK?",
+                "Ml tau lose streak terus",
+                "The closest we can get of Valir and Vale coupley skin HAHAHAHAHA",
+                "im getting that sasuke back 😍",
+                "Когда выйдет",
+                "berapa cras oi",
+                "So do yall just look at the seasons ban list and decide to stick it up your ass?",
+            ],
+            "https://www.instagram.com/p/DWs8m3eiBfE/": [
+                "tgl 10 udah pasti punya itachi😍",
+                "valir itu dapet dri mna?",
+                "41 draw cm 400an crest🗿",
+                "Udh kebeli alhmdulillah",
+                "Lagi mode hemat buat minato 🫠🫠",
+                "one piece kapan keluar, dan plis gosah yg aneh dan maksa kek Julian Itachi😂 beda di anime beda di skill hero",
+                "Modal Pase 1 langsung dapet Itachi di 20× draw😍 thank bgt❤️❤️❤️❤️",
+                "Modal kouta udah cukup",
+                "Klo ambil 2 skin, Itachi sama apa ya enaknya... Sasuke udah punya",
+                "Kenapa gratis? Karna efeknya tipis 😂",
+                "Udh nabung 450 lumayan dikit-dikit tembus 1.200 demi julian 😆",
+                "Udh gacha 49 kali gk dapat dapat itu skin,, kayak nya emang sama monton,, udh diseting gk bakalan muncul di gacha,, harus ditukar pake chris baru bisa dapat itu skin😢",
+                "Kapan colleb ama one Piece min, keburu balek pondok gw min😢😢",
+                "jangan ngejek min,makanya gratisin semua skin",
+                "@realmobilelegendsid tolong ya skin Julian di perbaiki efeknya radak kurang gak sesuai animenya",
+                "Ya ampun sinyal masih lag gak di perbaikin bnerin servernya min",
+                "Skill 2 itachi kureng",
+                "Ngasih skin gratis nya yg agak bagusan kek,biar yg gak mampu beli ngerasa puas juga",
+            ],
+            "https://www.instagram.com/p/DWn7KGJEweD/": [
+                "Aku Vale, kamu Estes, gas bang?",
+                "Maaf ini siapa ? Muncul di timeline saya 🙏salam interaksi",
+                "Super cecep ready terus 🙌",
+                "guru alis tebal❌ guru alis empat ✅",
+                "suganteh @ae.ninoo",
+                "mandi ga sih mas",
+                "jangan terlalu di anime animekan mas",
+                "Jan dianime\"in banget mas 🙂\u200d↔️",
+                "ibarat rambo",
+                "el mrangkak",
+                "cctv lantai3 rumah inara ada distory😱",
+                "Misi menyelamatkan murid yg star syndrome , nyelamatin diri sendiri dari bola dan angin aja ga bisa",
+                "stress",
+                "awasnya bijinya kena😂",
+            ],
+        }
+
+        import hashlib
+        now = datetime.datetime.now(tasks.BEIJING_TZ)
+        total_inserted = 0
+        skipped = 0
+
+        for post_url, comments in MANUAL_COMMENTS.items():
+            for i, content in enumerate(comments):
+                cid = hashlib.md5(f"{post_url}:{content}:{i}".encode()).hexdigest()
+                existing = db.query_one(
+                    "SELECT 1 FROM fb_comments WHERE comment_id = %s", (cid,)
+                )
+                if existing:
+                    skipped += 1
+                    continue
+                db.execute(
+                    """INSERT INTO fb_comments
+                       (post_url, comment_id, author, created_at, content,
+                        sentiment_score, category, language, post_link)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (post_url, cid, 'ig_user', now, content,
+                     None, None, None, post_url)
+                )
+                total_inserted += 1
+
+        logger.info(f"✅ 手动评论导入完成: 插入 {total_inserted}, 跳过 {skipped}")
+        return jsonify({
+            'status': 'success',
+            'message': f'导入完成: 新增 {total_inserted} 条, 跳过 {skipped} 条重复',
+            'total_inserted': total_inserted,
+            'skipped': skipped
+        })
+    except Exception as e:
+        logger.error(f"❌ 手动评论导入失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/fb_get_recent_datasets', methods=['GET'])
 @login_required
 def get_recent_datasets():
