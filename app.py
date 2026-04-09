@@ -5566,6 +5566,47 @@ def _is_instagram_hashtag_export_row(item):
     return bool((item.get('url') or '').strip() and (item.get('timestamp') or ''))
 
 
+def _is_facebook_hashtag_export_row(item):
+    """Apify Facebook hashtag 导出：视频/Reel 条目，有 permalink，通常无发帖时间字段。"""
+    if not isinstance(item, dict):
+        return False
+    if not (item.get('permalink_url') or '').strip():
+        return False
+    return item.get('__typename') == 'Video' or item.get('hashtag') is not None
+
+
+def _extract_date_from_dataset_filename(fpath):
+    """从 dataset_*_2026-04-07_* 这类文件名提取抓取日，用作 FB 无时间戳时的近似发帖日。"""
+    m = re.search(r'(20\d{2}-\d{2}-\d{2})', os.path.basename(fpath or ''))
+    return m.group(1) if m else datetime.date.today().isoformat()
+
+
+def _parse_facebook_hashtag_item(item, proxy_post_date):
+    """将 FB hashtag 导出行转为与 IG 一致的字段。proxy_post_date：文件名中的日期。"""
+    url = (item.get('permalink_url') or '').strip()
+    if not url:
+        return None
+    ht = item.get('hashtag')
+    hashtags = [str(ht).strip()] if ht else []
+    cap = (item.get('animated_image_caption') or '') or ''
+    vo = item.get('video_owner') or {}
+    if isinstance(vo, dict):
+        author = (vo.get('name') or '')[:256]
+    else:
+        author = ''
+    play = int(item.get('play_count') or 0)
+    return {
+        'url': url,
+        'caption': cap.strip(),
+        'hashtags': hashtags,
+        'post_date': proxy_post_date,
+        'author': author,
+        'likes': play,
+        'comments_cnt': 0,
+        'platform': 'FACEBOOK',
+    }
+
+
 @app.route('/thai-report-tool')
 @login_required
 def thai_report_tool():
@@ -5575,10 +5616,12 @@ def thai_report_tool():
 @app.route('/api/import_thai_json', methods=['POST'])
 @login_required
 def import_thai_json():
-    """把项目目录下的 dataset_*.json（Instagram 导出）导入数据库并打 thai_report_datasets 标签。
+    """把项目目录下的 dataset_*.json 导入数据库并打 thai_report_datasets 标签。
 
     两种模式：
-    - full_clean=true：扫描文件夹内全部 dataset_*.json，按日期窗口 + MLBB/SPD/ROV 布尔规则自动归入 6 个数据集（无需区分文件对应哪个 tag）。
+    - full_clean=true：扫描全部 dataset_*.json。支持 Instagram hashtag 导出（有 timestamp）与
+      Facebook hashtag 导出（有 permalink_url；发帖日用文件名中的 YYYY-MM-DD 近似）。
+      按日期窗口 + MLBB/SPD/ROV 布尔规则自动归入 6 个数据集，无需区分文件对应哪个 tag。
     - 默认：按 dataset_name + game_type + 日期范围 单数据集导入（兼容旧流程）。
     """
     import glob as _glob
@@ -5643,24 +5686,52 @@ def import_thai_json():
                 logger.warning(f"⚠️ 跳过空或非列表 JSON: {fpath}")
                 errors += 1
                 continue
-            if not _is_instagram_hashtag_export_row(rows[0]):
-                logger.info(f"⏭️ 跳过非 Instagram hashtag 导出格式: {os.path.basename(fpath)}")
+            file_kind = None
+            for probe in rows[:300]:
+                if _is_instagram_hashtag_export_row(probe):
+                    file_kind = 'instagram'
+                    break
+                if _is_facebook_hashtag_export_row(probe):
+                    file_kind = 'facebook'
+                    break
+            if not file_kind:
+                logger.info(f"⏭️ 跳过无法识别的导出格式（需 Instagram 或 Facebook hashtag 导出）: {os.path.basename(fpath)}")
                 continue
             files_used += 1
+            is_ig = file_kind == 'instagram'
+            fb_proxy_date = _extract_date_from_dataset_filename(fpath) if not is_ig else None
 
             for item in rows:
                 try:
-                    if not _is_instagram_hashtag_export_row(item):
-                        skipped_bad_row += 1
-                        continue
-                    caption = (item.get('caption') or '').strip()
-                    url = (item.get('url') or '').strip()
-                    author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
-                    likes = int(item.get('likesCount') or 0)
-                    comments_cnt = int(item.get('commentsCount') or 0)
-                    timestamp = item.get('timestamp') or ''
-                    hashtags = item.get('hashtags') or []
-                    post_date = timestamp[:10]
+                    if is_ig:
+                        if not _is_instagram_hashtag_export_row(item):
+                            skipped_bad_row += 1
+                            continue
+                        caption = (item.get('caption') or '').strip()
+                        url = (item.get('url') or '').strip()
+                        author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
+                        likes = int(item.get('likesCount') or 0)
+                        comments_cnt = int(item.get('commentsCount') or 0)
+                        timestamp = item.get('timestamp') or ''
+                        hashtags = item.get('hashtags') or []
+                        post_date = timestamp[:10]
+                        platform_code = 'INSTAGRAM'
+                        engagement_val = likes + comments_cnt
+                    else:
+                        parsed = _parse_facebook_hashtag_item(item, fb_proxy_date)
+                        if not parsed:
+                            skipped_bad_row += 1
+                            continue
+                        caption = parsed['caption']
+                        url = parsed['url']
+                        author = parsed['author']
+                        likes = parsed['likes']
+                        comments_cnt = parsed['comments_cnt']
+                        post_date = parsed['post_date']
+                        hashtags = parsed['hashtags']
+                        platform_code = parsed['platform']
+                        # 无赞评字段时用 play_count 作为互动近似值
+                        engagement_val = likes + comments_cnt
 
                     matching = _thai_matching_datasets(post_date, caption, hashtags)
                     if not matching:
@@ -5679,8 +5750,8 @@ def import_thai_json():
                                 post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
                                 updated_at = NOW()
                         """, (
-                            url, 'INSTAGRAM', author, post_date, caption,
-                            likes, comments_cnt, likes + comments_cnt
+                            url, platform_code[:16], author, post_date, caption,
+                            likes, comments_cnt, engagement_val
                         ))
                     except Exception as e:
                         logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
