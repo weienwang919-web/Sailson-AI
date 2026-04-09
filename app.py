@@ -387,9 +387,18 @@ def ensure_fb_post_metrics_schema():
             )
         """)
         db.execute("CREATE INDEX IF NOT EXISTS idx_thai_datasets_name ON thai_report_datasets (dataset_name)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_thai_datasets_url ON thai_report_datasets (post_url)")
         logger.info("✅ 已确认 thai_report_datasets 表存在")
     except Exception as e:
         logger.warning(f"⚠️ 无法创建 thai_report_datasets 表: {e}")
+
+    # fb_comments 索引（加速泰国报告查询）
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fb_comments_post_url ON fb_comments (post_url)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fb_comments_created_at ON fb_comments (created_at)")
+        logger.info("✅ 已确认 fb_comments 索引存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法创建 fb_comments 索引（表可能不存在）: {e}")
 
 def send_feedback_email(project_name: str, feedback: str) -> bool:
     """发送用户反馈邮件到运维邮箱（可选功能）
@@ -6077,6 +6086,11 @@ def thai_report_data():
     """
     try:
         from datetime import date as _date, timedelta
+        # 防止查询超时导致 Render 代理 502：单次查询最长 25 秒
+        try:
+            db.execute("SET LOCAL statement_timeout = '25s'")
+        except Exception:
+            pass
 
         def _fetch_daily_engagement(dataset_name, start, end):
             rows = db.query_all("""
