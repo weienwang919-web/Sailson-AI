@@ -6433,6 +6433,7 @@ def thai_report_data():
             }
 
         def _top5_posts(dataset_name, start, end):
+            # 优先取“有评论”的真实帖子，避免 Top5 出现大量 0 评论占位
             rows = db.query_all_with_timeout("""
                 SELECT m.author, m.post_content, m.post_url, m.platform,
                        COALESCE(m.likes,0) AS likes, COALESCE(m.shares,0) AS shares, COALESCE(m.comments_count,0) AS comments_count,
@@ -6441,11 +6442,13 @@ def thai_report_data():
                 JOIN thai_report_datasets d ON d.post_url = m.post_url
                 WHERE d.dataset_name = %s
                   AND m.post_date >= %s AND m.post_date <= %s
-                ORDER BY engagement DESC
-                LIMIT 5
+                ORDER BY COALESCE(m.comments_count,0) DESC, engagement DESC
+                LIMIT 20
             """, (dataset_name, start, end))
+            preferred = [r for r in rows if int(r.get('comments_count') or 0) > 0]
+            chosen_rows = (preferred[:5] if len(preferred) >= 5 else (preferred + rows)[:5])
             result = []
-            for r in rows:
+            for r in chosen_rows:
                 eng = int(r.get('engagement') or 0)
                 post_url = r.get('post_url') or ''
                 raw_content = r.get('post_content') or ''
