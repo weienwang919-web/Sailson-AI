@@ -891,14 +891,6 @@ def scrape_fb_comments(
 
             logger.info(f"📥 Scraping comments from: {post_url}")
 
-            # Pre-Apify Thai language check (saves $$$)
-            if language_filter == 'th':
-                pre_content = _discovered_content.get(post_url, '')
-                if pre_content and not _is_thai_content(pre_content):
-                    total_skipped_language += 1
-                    logger.info(f"⏭️ 预检非泰语帖子，跳过 Apify 调用: {post_url[:60]}")
-                    continue
-
             if min_cm:
                 known = url_comment_counts.get(post_url)
                 if known is not None and known < min_cm:
@@ -1189,7 +1181,6 @@ def run_thai_scrape_job(
             post_urls = []
             discovered_posts = []
             filter_terms = _normalize_list_input(seed_tags)
-            skipped_non_thai = 0
             for r in rows:
                 u = r.get('post_url')
                 if not u or u in seen_urls:
@@ -1204,10 +1195,6 @@ def run_thai_scrape_job(
                     post_hashtags = re.findall(r'#([^\s#]+)', post_text.lower())
                     if not _contains_any_tag_or_term(post_text, filter_terms, hashtags=post_hashtags):
                         continue
-                caption = str(r.get('post_content') or '')
-                if not _is_thai_content(caption):
-                    skipped_non_thai += 1
-                    continue
                 seen_urls.add(u)
                 post_urls.append(u)
                 discovered_posts.append({
@@ -1228,7 +1215,7 @@ def run_thai_scrape_job(
                 discovered_posts = discovered_posts[:discover_max_posts]
             db.execute(
                 "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                (f"已加载 {len(post_urls)} 条泰语帖子（跳过 {skipped_non_thai} 条非泰语），开始抓取评论...", scrape_task_id),
+                (f"已加载 {len(post_urls)} 条帖子，开始抓取评论...", scrape_task_id),
             )
         else:
             db.execute(
