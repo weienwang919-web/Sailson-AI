@@ -164,9 +164,14 @@ MissRoVTournament</textarea>
   <div class="import-section">
     <h3>📂 导入本地 Apify JSON 数据</h3>
     <p style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.5;">
-      推荐：把 Instagram / Facebook 的 Apify 导出（<code>dataset_instagram-*.json</code>、<code>dataset_facebook-*.json</code>）全部放进项目根目录后，点<strong>全量清洗导入</strong>。系统会按规则自动归入六个数据集。Facebook 导出无精确发帖时间时，使用<strong>文件名里的日期</strong>作为近似日参与时间窗口判断。
+      <strong>线上（Render）</strong>：仓库里没有你本机的 JSON，请先<strong>选择文件</strong>（可多选，文件名须为 <code>dataset_*.json</code>），再点全量导入。<br>
+      <strong>本地开发</strong>：也可把 Apify 导出放到项目根目录后，不选文件直接全量导入。Facebook 无精确发帖日时，用<strong>文件名里的日期</strong>作近似。
     </p>
-    <button type="button" class="btn-start" style="width:100%;max-width:420px;margin-bottom:14px;" onclick="importFullClean()">全量清洗导入（扫描全部 dataset_*.json）</button>
+    <div style="margin-bottom:10px;">
+      <label style="font-size:12px;color:#555;">选择 dataset_*.json（可选，多选）：</label><br>
+      <input type="file" id="fullCleanFiles" multiple accept=".json,application/json" style="margin-top:6px;font-size:12px;max-width:100%;" />
+    </div>
+    <button type="button" class="btn-start" style="width:100%;max-width:420px;margin-bottom:14px;" onclick="importFullClean()">全量清洗导入（上传文件或扫描服务器上 dataset_*.json）</button>
     <div style="font-size:12px;color:#888;margin-bottom:10px;">或按单数据集手动导入（高级）：</div>
     <div class="import-grid" id="import-grid">
       <!-- 六个数据集按钮动态渲染 -->
@@ -270,14 +275,28 @@ function renderImportButtons() {
 
 async function importFullClean() {
   const st = document.getElementById('import-status');
-  st.textContent = '正在全量扫描并清洗 dataset_*.json（可能需几分钟）...';
+  const fileEl = document.getElementById('fullCleanFiles');
+  const picked = fileEl && fileEl.files && fileEl.files.length;
+  st.textContent = picked
+    ? `正在上传并全量清洗 ${picked} 个文件（可能需几分钟）...`
+    : '正在全量扫描并清洗 dataset_*.json（可能需几分钟）...';
   st.style.color = '#666';
   try {
-    const res = await fetch('/api/import_thai_json', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ full_clean: true })
-    });
+    let res;
+    if (picked) {
+      const fd = new FormData();
+      fd.append('full_clean', 'true');
+      for (let i = 0; i < fileEl.files.length; i++) {
+        fd.append('json_files', fileEl.files[i]);
+      }
+      res = await fetch('/api/import_thai_json', { method: 'POST', body: fd });
+    } else {
+      res = await fetch('/api/import_thai_json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_clean: true })
+      });
+    }
     const d = await res.json();
     if (d.status === 'success') {
       const parts = Object.entries(d.dataset_tag_counts || {}).map(([k, v]) => `${k}:${v}`).join(' · ');

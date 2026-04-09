@@ -5623,9 +5623,40 @@ def import_thai_json():
       Facebook hashtag 导出（有 permalink_url；发帖日用文件名中的 YYYY-MM-DD 近似）。
       按日期窗口 + MLBB/SPD/ROV 布尔规则自动归入 6 个数据集，无需区分文件对应哪个 tag。
     - 默认：按 dataset_name + game_type + 日期范围 单数据集导入（兼容旧流程）。
+
+    支持 multipart/form-data：字段 json_files 可上传多个文件（文件名须匹配 dataset_*.json），
+    用于 Render 等云端环境（仓库内无本地 Apify 导出文件时）。
     """
     import glob as _glob
+    import tempfile
+    import uuid as _uuid
+
+    upload_temp_paths = []
     data = request.get_json(silent=True) or {}
+    if request.content_type and 'multipart/form-data' in (request.content_type or '').lower():
+        merged_form = {k: request.form.get(k) for k in request.form}
+        data = {**merged_form, **data}
+        for uf in request.files.getlist('json_files'):
+            if not uf or not uf.filename:
+                continue
+            fname = os.path.basename(uf.filename)
+            if not re.match(r'^dataset_[\w\-\.]+\.json$', fname):
+                for p in upload_temp_paths:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+                return jsonify({
+                    'status': 'error',
+                    'message': f'文件名须匹配 dataset_*.json（当前: {fname}）',
+                }), 400
+            tpath = os.path.join(
+                tempfile.gettempdir(),
+                f"thai_upload_{_uuid.uuid4().hex[:12]}_{fname}",
+            )
+            uf.save(tpath)
+            upload_temp_paths.append(tpath)
+
     full_raw = data.get('full_clean', data.get('full'))
     if isinstance(full_raw, str):
         full_clean = full_raw.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
@@ -5643,8 +5674,10 @@ def import_thai_json():
         json_files_raw = []
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    if json_files_raw:
-        files = []
+    files = []
+    if upload_temp_paths:
+        files = list(upload_temp_paths)
+    elif json_files_raw:
         for f in json_files_raw:
             if not isinstance(f, str):
                 continue
@@ -5664,17 +5697,150 @@ def import_thai_json():
         ))
 
     if not files:
-        return jsonify({'status': 'error', 'message': '未找到 dataset_*.json 文件'}), 404
+        return jsonify({
+            'status': 'error',
+            'message': (
+                '未找到 dataset_*.json。云端没有本机项目目录里的文件；'
+                '请在下方选择 Apify 导出的 JSON 上传（文件名须以 dataset_ 开头），'
+                '或把文件放进仓库根目录并重新部署。'
+            ),
+        }), 404
 
-    if full_clean:
-        dataset_tag_counts = {name: 0 for name in _thai_datasets_config().keys()}
-        posts_with_tags = 0
-        skipped_no_dataset = 0
+    try:
+        if full_clean:
+            dataset_tag_counts = {name: 0 for name in _thai_datasets_config().keys()}
+            posts_with_tags = 0
+            skipped_no_dataset = 0
+            skipped_non_thai = 0
+            skipped_bad_row = 0
+            errors = 0
+            files_used = 0
+    
+            for fpath in files:
+                try:
+                    with open(fpath, encoding='utf-8') as fp:
+                        rows = json.load(fp)
+                except Exception as e:
+                    logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
+                    errors += 1
+                    continue
+                if not isinstance(rows, list) or not rows:
+                    logger.warning(f"⚠️ 跳过空或非列表 JSON: {fpath}")
+                    errors += 1
+                    continue
+                file_kind = None
+                for probe in rows[:300]:
+                    if _is_instagram_hashtag_export_row(probe):
+                        file_kind = 'instagram'
+                        break
+                    if _is_facebook_hashtag_export_row(probe):
+                        file_kind = 'facebook'
+                        break
+                if not file_kind:
+                    logger.info(f"⏭️ 跳过无法识别的导出格式（需 Instagram 或 Facebook hashtag 导出）: {os.path.basename(fpath)}")
+                    continue
+                files_used += 1
+                is_ig = file_kind == 'instagram'
+                fb_proxy_date = _extract_date_from_dataset_filename(fpath) if not is_ig else None
+    
+                for item in rows:
+                    try:
+                        if is_ig:
+                            if not _is_instagram_hashtag_export_row(item):
+                                skipped_bad_row += 1
+                                continue
+                            caption = (item.get('caption') or '').strip()
+                            url = (item.get('url') or '').strip()
+                            author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
+                            likes = int(item.get('likesCount') or 0)
+                            comments_cnt = int(item.get('commentsCount') or 0)
+                            timestamp = item.get('timestamp') or ''
+                            hashtags = item.get('hashtags') or []
+                            post_date = timestamp[:10]
+                            platform_code = 'INSTAGRAM'
+                            engagement_val = likes + comments_cnt
+                        else:
+                            parsed = _parse_facebook_hashtag_item(item, fb_proxy_date)
+                            if not parsed:
+                                skipped_bad_row += 1
+                                continue
+                            caption = parsed['caption']
+                            url = parsed['url']
+                            author = parsed['author']
+                            likes = parsed['likes']
+                            comments_cnt = parsed['comments_cnt']
+                            post_date = parsed['post_date']
+                            hashtags = parsed['hashtags']
+                            platform_code = parsed['platform']
+                            # 无赞评字段时用 play_count 作为互动近似值
+                            engagement_val = likes + comments_cnt
+    
+                        if caption and not tasks._is_thai_content(caption):
+                            skipped_non_thai += 1
+                            continue
+    
+                        matching = _thai_matching_datasets(post_date, caption, hashtags)
+                        if not matching:
+                            skipped_no_dataset += 1
+                            continue
+    
+                        try:
+                            db.execute("""
+                                INSERT INTO fb_post_metrics
+                                    (post_url, platform, author, post_date, post_content, likes, comments_count, engagement, updated_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                                ON CONFLICT (post_url) DO UPDATE SET
+                                    likes = GREATEST(COALESCE(fb_post_metrics.likes,0), EXCLUDED.likes),
+                                    comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
+                                    engagement = GREATEST(COALESCE(fb_post_metrics.engagement,0), EXCLUDED.engagement),
+                                    post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
+                                    updated_at = NOW()
+                            """, (
+                                url, platform_code[:16], author, post_date, caption,
+                                likes, comments_cnt, engagement_val
+                            ))
+                        except Exception as e:
+                            logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
+    
+                        for ds in matching:
+                            try:
+                                db.execute("""
+                                    INSERT INTO thai_report_datasets (dataset_name, post_url)
+                                    VALUES (%s, %s)
+                                    ON CONFLICT (dataset_name, post_url) DO NOTHING
+                                """, (ds, url))
+                                dataset_tag_counts[ds] = dataset_tag_counts.get(ds, 0) + 1
+                            except Exception as e:
+                                logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
+                        posts_with_tags += 1
+                    except Exception as e:
+                        logger.warning(f"⚠️ 处理记录失败: {e}")
+                        errors += 1
+    
+            total_tags = sum(dataset_tag_counts.values())
+            return jsonify({
+                'status': 'success',
+                'mode': 'full_clean',
+                'posts_with_tags': posts_with_tags,
+                'dataset_tag_counts': dataset_tag_counts,
+                'total_dataset_tags': total_tags,
+                'skipped_no_dataset': skipped_no_dataset,
+                'skipped_non_thai': skipped_non_thai,
+                'skipped_bad_row': skipped_bad_row,
+                'errors': errors,
+                'files_processed': files_used,
+                'files_seen': len(files),
+            })
+    
+        if not dataset_name:
+            return jsonify({'status': 'error', 'message': '单数据集导入需要 dataset_name；或传 full_clean=true 做全量清洗'}), 400
+    
+        imported = 0
+        skipped_lang = 0
         skipped_non_thai = 0
-        skipped_bad_row = 0
+        skipped_date = 0
         errors = 0
-        files_used = 0
-
+    
         for fpath in files:
             try:
                 with open(fpath, encoding='utf-8') as fp:
@@ -5683,66 +5849,43 @@ def import_thai_json():
                 logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
                 errors += 1
                 continue
-            if not isinstance(rows, list) or not rows:
-                logger.warning(f"⚠️ 跳过空或非列表 JSON: {fpath}")
-                errors += 1
-                continue
-            file_kind = None
-            for probe in rows[:300]:
-                if _is_instagram_hashtag_export_row(probe):
-                    file_kind = 'instagram'
-                    break
-                if _is_facebook_hashtag_export_row(probe):
-                    file_kind = 'facebook'
-                    break
-            if not file_kind:
-                logger.info(f"⏭️ 跳过无法识别的导出格式（需 Instagram 或 Facebook hashtag 导出）: {os.path.basename(fpath)}")
-                continue
-            files_used += 1
-            is_ig = file_kind == 'instagram'
-            fb_proxy_date = _extract_date_from_dataset_filename(fpath) if not is_ig else None
-
+    
             for item in rows:
                 try:
-                    if is_ig:
-                        if not _is_instagram_hashtag_export_row(item):
-                            skipped_bad_row += 1
+                    caption = (item.get('caption') or '').strip()
+                    url = (item.get('url') or '').strip()
+                    author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
+                    likes = int(item.get('likesCount') or 0)
+                    comments_cnt = int(item.get('commentsCount') or 0)
+                    timestamp = item.get('timestamp') or ''
+                    hashtags = item.get('hashtags') or []
+    
+                    if not url or not timestamp:
+                        continue
+    
+                    # 日期过滤
+                    post_date = timestamp[:10]
+                    if start_date and post_date < start_date:
+                        skipped_date += 1
+                        continue
+                    if end_date and post_date > end_date:
+                        skipped_date += 1
+                        continue
+    
+                    # 游戏类型布尔规则过滤
+                    rule = TASK_BOOLEAN_RULES.get(game_type, '')
+                    if rule:
+                        hashtag_text = ' '.join(f'#{h}' for h in hashtags)
+                        full_text = re.sub(r'\s+', ' ', f"{caption} {hashtag_text}".lower()).strip()
+                        if not _eval_boolean_expr(full_text, rule):
+                            skipped_lang += 1
                             continue
-                        caption = (item.get('caption') or '').strip()
-                        url = (item.get('url') or '').strip()
-                        author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
-                        likes = int(item.get('likesCount') or 0)
-                        comments_cnt = int(item.get('commentsCount') or 0)
-                        timestamp = item.get('timestamp') or ''
-                        hashtags = item.get('hashtags') or []
-                        post_date = timestamp[:10]
-                        platform_code = 'INSTAGRAM'
-                        engagement_val = likes + comments_cnt
-                    else:
-                        parsed = _parse_facebook_hashtag_item(item, fb_proxy_date)
-                        if not parsed:
-                            skipped_bad_row += 1
-                            continue
-                        caption = parsed['caption']
-                        url = parsed['url']
-                        author = parsed['author']
-                        likes = parsed['likes']
-                        comments_cnt = parsed['comments_cnt']
-                        post_date = parsed['post_date']
-                        hashtags = parsed['hashtags']
-                        platform_code = parsed['platform']
-                        # 无赞评字段时用 play_count 作为互动近似值
-                        engagement_val = likes + comments_cnt
-
+    
                     if caption and not tasks._is_thai_content(caption):
                         skipped_non_thai += 1
                         continue
-
-                    matching = _thai_matching_datasets(post_date, caption, hashtags)
-                    if not matching:
-                        skipped_no_dataset += 1
-                        continue
-
+    
+                    # 写入 fb_post_metrics
                     try:
                         db.execute("""
                             INSERT INTO fb_post_metrics
@@ -5755,139 +5898,43 @@ def import_thai_json():
                                 post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
                                 updated_at = NOW()
                         """, (
-                            url, platform_code[:16], author, post_date, caption,
-                            likes, comments_cnt, engagement_val
+                            url, 'INSTAGRAM', author, post_date, caption,
+                            likes, comments_cnt, likes + comments_cnt
                         ))
                     except Exception as e:
                         logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
-
-                    for ds in matching:
-                        try:
-                            db.execute("""
-                                INSERT INTO thai_report_datasets (dataset_name, post_url)
-                                VALUES (%s, %s)
-                                ON CONFLICT (dataset_name, post_url) DO NOTHING
-                            """, (ds, url))
-                            dataset_tag_counts[ds] = dataset_tag_counts.get(ds, 0) + 1
-                        except Exception as e:
-                            logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
-                    posts_with_tags += 1
+    
+                    # 写 thai_report_datasets 标签
+                    try:
+                        db.execute("""
+                            INSERT INTO thai_report_datasets (dataset_name, post_url)
+                            VALUES (%s, %s)
+                            ON CONFLICT (dataset_name, post_url) DO NOTHING
+                        """, (dataset_name, url))
+                    except Exception as e:
+                        logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
+    
+                    imported += 1
                 except Exception as e:
                     logger.warning(f"⚠️ 处理记录失败: {e}")
                     errors += 1
-
-        total_tags = sum(dataset_tag_counts.values())
+    
         return jsonify({
             'status': 'success',
-            'mode': 'full_clean',
-            'posts_with_tags': posts_with_tags,
-            'dataset_tag_counts': dataset_tag_counts,
-            'total_dataset_tags': total_tags,
-            'skipped_no_dataset': skipped_no_dataset,
+            'mode': 'single',
+            'imported': imported,
+            'skipped_not_match_rule': skipped_lang,
             'skipped_non_thai': skipped_non_thai,
-            'skipped_bad_row': skipped_bad_row,
+            'skipped_out_of_range': skipped_date,
             'errors': errors,
-            'files_processed': files_used,
-            'files_seen': len(files),
+            'files_processed': len(files),
         })
-
-    if not dataset_name:
-        return jsonify({'status': 'error', 'message': '单数据集导入需要 dataset_name；或传 full_clean=true 做全量清洗'}), 400
-
-    imported = 0
-    skipped_lang = 0
-    skipped_non_thai = 0
-    skipped_date = 0
-    errors = 0
-
-    for fpath in files:
-        try:
-            with open(fpath, encoding='utf-8') as fp:
-                rows = json.load(fp)
-        except Exception as e:
-            logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
-            errors += 1
-            continue
-
-        for item in rows:
+    finally:
+        for _p in upload_temp_paths:
             try:
-                caption = (item.get('caption') or '').strip()
-                url = (item.get('url') or '').strip()
-                author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
-                likes = int(item.get('likesCount') or 0)
-                comments_cnt = int(item.get('commentsCount') or 0)
-                timestamp = item.get('timestamp') or ''
-                hashtags = item.get('hashtags') or []
-
-                if not url or not timestamp:
-                    continue
-
-                # 日期过滤
-                post_date = timestamp[:10]
-                if start_date and post_date < start_date:
-                    skipped_date += 1
-                    continue
-                if end_date and post_date > end_date:
-                    skipped_date += 1
-                    continue
-
-                # 游戏类型布尔规则过滤
-                rule = TASK_BOOLEAN_RULES.get(game_type, '')
-                if rule:
-                    hashtag_text = ' '.join(f'#{h}' for h in hashtags)
-                    full_text = re.sub(r'\s+', ' ', f"{caption} {hashtag_text}".lower()).strip()
-                    if not _eval_boolean_expr(full_text, rule):
-                        skipped_lang += 1
-                        continue
-
-                if caption and not tasks._is_thai_content(caption):
-                    skipped_non_thai += 1
-                    continue
-
-                # 写入 fb_post_metrics
-                try:
-                    db.execute("""
-                        INSERT INTO fb_post_metrics
-                            (post_url, platform, author, post_date, post_content, likes, comments_count, engagement, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON CONFLICT (post_url) DO UPDATE SET
-                            likes = GREATEST(COALESCE(fb_post_metrics.likes,0), EXCLUDED.likes),
-                            comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                            engagement = GREATEST(COALESCE(fb_post_metrics.engagement,0), EXCLUDED.engagement),
-                            post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
-                            updated_at = NOW()
-                    """, (
-                        url, 'INSTAGRAM', author, post_date, caption,
-                        likes, comments_cnt, likes + comments_cnt
-                    ))
-                except Exception as e:
-                    logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
-
-                # 写 thai_report_datasets 标签
-                try:
-                    db.execute("""
-                        INSERT INTO thai_report_datasets (dataset_name, post_url)
-                        VALUES (%s, %s)
-                        ON CONFLICT (dataset_name, post_url) DO NOTHING
-                    """, (dataset_name, url))
-                except Exception as e:
-                    logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
-
-                imported += 1
-            except Exception as e:
-                logger.warning(f"⚠️ 处理记录失败: {e}")
-                errors += 1
-
-    return jsonify({
-        'status': 'success',
-        'mode': 'single',
-        'imported': imported,
-        'skipped_not_match_rule': skipped_lang,
-        'skipped_non_thai': skipped_non_thai,
-        'skipped_out_of_range': skipped_date,
-        'errors': errors,
-        'files_processed': len(files),
-    })
+                os.unlink(_p)
+            except OSError:
+                pass
 
 
 @app.route('/api/thai_schedule', methods=['POST'])
