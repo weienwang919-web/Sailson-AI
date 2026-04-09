@@ -243,6 +243,7 @@ function esc(s) {
 // 全局状态
 // ──────────────────────────────────────
 const taskPollers = {}; // game_type -> intervalId
+let importTaskPoller = null;
 
 const COLORS = {
   'MLBB': '#1a7fd4',
@@ -277,6 +278,10 @@ async function importFullClean() {
   const st = document.getElementById('import-status');
   const fileEl = document.getElementById('fullCleanFiles');
   const picked = fileEl && fileEl.files && fileEl.files.length;
+  if (importTaskPoller) {
+    clearInterval(importTaskPoller);
+    importTaskPoller = null;
+  }
   st.textContent = picked
     ? `正在上传并全量清洗 ${picked} 个文件（可能需几分钟）...`
     : '正在全量扫描并清洗 dataset_*.json（可能需几分钟）...';
@@ -297,11 +302,22 @@ async function importFullClean() {
         body: JSON.stringify({ full_clean: true })
       });
     }
-    const d = await res.json();
-    if (d.status === 'success') {
+    let d = null;
+    try {
+      d = await res.json();
+    } catch (_) {
+      throw new Error(`服务返回非 JSON（HTTP ${res.status}）`);
+    }
+
+    if (d.status === 'queued' && d.task_id) {
+      st.textContent = `任务已入队（ID: ${d.task_id}），后台处理中...`;
+      st.style.color = '#666';
+      pollImportTaskStatus(d.task_id, st);
+    } else if (d.status === 'success') {
       const parts = Object.entries(d.dataset_tag_counts || {}).map(([k, v]) => `${k}:${v}`).join(' · ');
       st.textContent = `✅ 全量完成：命中数据集的帖子 ${d.posts_with_tags} 条；各集标签数 ${parts}；未命中任何数据集 ${d.skipped_no_dataset} 条；处理文件 ${d.files_processed}/${d.files_seen} 个`;
       st.style.color = '#2d7a2d';
+      loadReport();
     } else {
       st.textContent = `❌ ${d.message}`;
       st.style.color = '#c0392b';
@@ -310,6 +326,73 @@ async function importFullClean() {
     st.textContent = `❌ 请求失败：${e.message}`;
     st.style.color = '#c0392b';
   }
+}
+
+function pollImportTaskStatus(taskId, stEl) {
+  if (importTaskPoller) clearInterval(importTaskPoller);
+  let pollCount = 0;
+  let errorCount = 0;
+  const maxPolls = 400; // ~20分钟
+  importTaskPoller = setInterval(async () => {
+    pollCount += 1;
+    if (pollCount > maxPolls) {
+      clearInterval(importTaskPoller);
+      importTaskPoller = null;
+      stEl.textContent = '❌ 全量清洗超时，请稍后点击刷新或重试';
+      stEl.style.color = '#c0392b';
+      return;
+    }
+    try {
+      const res = await fetch(`/fb_task_status/${taskId}`);
+      if (!res.ok) {
+        errorCount += 1;
+        if (errorCount >= 5) {
+          clearInterval(importTaskPoller);
+          importTaskPoller = null;
+          stEl.textContent = `❌ 任务状态查询失败（HTTP ${res.status}）`;
+          stEl.style.color = '#c0392b';
+        }
+        return;
+      }
+      let d = null;
+      try {
+        d = await res.json();
+      } catch (_) {
+        errorCount += 1;
+        return;
+      }
+      if (d.status === 'completed') {
+        clearInterval(importTaskPoller);
+        importTaskPoller = null;
+        stEl.textContent = `✅ 全量完成：${d.result_summary || '任务完成'}`;
+        stEl.style.color = '#2d7a2d';
+        loadReport();
+      } else if (d.status === 'failed') {
+        clearInterval(importTaskPoller);
+        importTaskPoller = null;
+        stEl.textContent = `❌ 全量清洗失败：${d.error_message || '未知错误'}`;
+        stEl.style.color = '#c0392b';
+      } else if (d.status === 'running' || d.status === 'pending') {
+        errorCount = 0;
+        stEl.textContent = d.result_summary || `后台处理中 (${d.status})...`;
+        stEl.style.color = '#666';
+      } else {
+        clearInterval(importTaskPoller);
+        importTaskPoller = null;
+        stEl.textContent = `❌ 未知任务状态：${d.status || 'unknown'}`;
+        stEl.style.color = '#c0392b';
+      }
+    } catch (_) {
+      errorCount += 1;
+      if (errorCount >= 5) {
+        clearInterval(importTaskPoller);
+        importTaskPoller = null;
+        stEl.textContent = '❌ 任务状态查询网络异常，请稍后重试';
+        stEl.style.color = '#c0392b';
+      }
+      // 轮询抖动时保持静默，等待下次轮询
+    }
+  }, 3000);
 }
 
 async function importDataset(name, game, start, end) {
