@@ -15,6 +15,16 @@ from openai import OpenAI
 import database as db
 import rag
 
+try:
+    from langdetect import detect, DetectorFactory
+    from langdetect.lang_detect_exception import LangDetectException
+    DetectorFactory.seed = 0  # 线程安全，保证结果稳定
+    _LANGDETECT_AVAILABLE = True
+except ImportError:
+    _LANGDETECT_AVAILABLE = False
+
+_THAI_UNICODE_RE = re.compile(r'[\u0E00-\u0E7F]')
+
 # 北京时区
 BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
 
@@ -34,6 +44,28 @@ DEFAULT_FB_COMMENTS_ACTOR = "apify/facebook-comments-scraper"
 DEFAULT_IG_COMMENTS_ACTOR = "apify/instagram-comment-scraper"
 FB_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("FB_COMMENTS_ACTOR_TIMEOUT_SECS", "420"))
 IG_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("IG_COMMENTS_ACTOR_TIMEOUT_SECS", "180"))
+
+
+def _is_thai_content(text):
+    """判断文本是否为泰语内容。
+    优先用 langdetect，对短文本或检测失败时降级用 Unicode 范围判断。
+    """
+    if not text:
+        return False
+    # 短文本（<15字符）直接靠泰文字符比例判断
+    if len(text.strip()) < 15:
+        thai_chars = len(_THAI_UNICODE_RE.findall(text))
+        return thai_chars >= 2
+    # 优先用 langdetect
+    if _LANGDETECT_AVAILABLE:
+        try:
+            lang = detect(text)
+            return lang == 'th'
+        except LangDetectException:
+            pass
+    # 降级：泰文字符占比 > 15%
+    thai_chars = len(_THAI_UNICODE_RE.findall(text))
+    return thai_chars / max(len(text), 1) > 0.15
 
 
 def _normalize_list_input(values):
@@ -669,7 +701,9 @@ def scrape_fb_comments(
     results_limit=2500,
     enable_ai_analysis=True,
     max_ai_comments=1200,
-    allow_fallback_to_config=True
+    allow_fallback_to_config=True,
+    language_filter=None,
+    dataset_name=None
 ):
     """
     Scrape FB/IG comments from post URLs
@@ -682,11 +716,13 @@ def scrape_fb_comments(
         enable_ai_analysis: Whether to run sentiment/topic AI analysis
         max_ai_comments: Safety cap for number of comments to run AI analysis
         allow_fallback_to_config: If True, fallback to fb_monitor_config when post_urls is None
+        language_filter: 语言过滤，'th' 表示只入库泰语内容（基于帖子正文）
+        dataset_name: 数据集名称，入库时写入 thai_report_datasets 表
 
     Returns:
         dict with status and stats
     """
-    logger.info(f"🔄 Starting social comment scraping task (days_back={days_back}, task_id={task_id})")
+    logger.info(f"🔄 Starting social comment scraping task (days_back={days_back}, task_id={task_id}, language_filter={language_filter})")
 
     # Update task status to running
     if task_id:
@@ -736,13 +772,31 @@ def scrape_fb_comments(
     total_updated = 0
     total_skipped_unsupported = 0
     total_timeout_urls = 0
+    total_skipped_language = 0
     ai_processed_total = 0
+    fb_posts_count = 0
+    ins_posts_count = 0
     cutoff_date = datetime.datetime.now(BEIJING_TZ) - datetime.timedelta(days=days_back)
 
     # 先落 discover 阶段的帖子级指标，供报告口径使用
     discovered_count = upsert_post_metrics(discovered_posts or [])
 
-    for post_url in post_urls:
+    def _update_progress(msg):
+        if task_id:
+            try:
+                db.execute(
+                    "UPDATE scrape_tasks SET result_summary = %s WHERE id = %s",
+                    (msg, task_id)
+                )
+            except Exception as _e:
+                logger.debug(f"进度更新失败(task_id={task_id}): {_e}")
+
+    total_posts = len(post_urls)
+    for post_idx, post_url in enumerate(post_urls):
+        # 每5条帖子更新一次进度
+        if post_idx % 5 == 0 or post_idx == total_posts - 1:
+            _update_progress(f"正在处理第 {post_idx + 1}/{total_posts} 条帖子，已入库评论 {total_new} 条...")
+
         try:
             platform = _detect_social_platform(post_url)
             if platform not in ("facebook", "instagram"):
@@ -799,6 +853,30 @@ def scrape_fb_comments(
                 rows = db.query_all(sql, tuple(comment_ids))
                 existing_ids = {row['comment_id'] for row in rows}
                 logger.info(f"📊 Found {len(existing_ids)} existing comments out of {len(comment_ids)}")
+
+            # 语言过滤：在帖子级别过滤（用 discover 阶段存储的 post_content 或 items 第一条内容判断）
+            if language_filter == 'th':
+                # 尝试从 items 里取帖子正文
+                post_text = ''
+                for it in items[:3]:
+                    t = (it or {}).get('text') or (it or {}).get('caption') or (it or {}).get('description') or ''
+                    if t:
+                        post_text = t
+                        break
+                if not post_text:
+                    # 降级：用评论正文的语言多数投票
+                    sample_texts = [r['content'] for r in normalized_rows[:10] if r.get('content')]
+                    post_text = ' '.join(sample_texts)
+                if not _is_thai_content(post_text):
+                    total_skipped_language += 1
+                    logger.info(f"⏭️ 非泰语帖子跳过: {post_url[:60]}")
+                    continue
+
+            # 通过语言过滤后才计入平台统计（摘要数字准确）
+            if platform == "facebook":
+                fb_posts_count += 1
+            else:
+                ins_posts_count += 1
 
             # Process each comment
             for row in normalized_rows:
@@ -872,6 +950,20 @@ def scrape_fb_comments(
             except Exception as e:
                 logger.warning(f"⚠️ 更新帖子级 metrics 失败: {e}")
 
+            # 写入 thai_report_datasets 打标签
+            if dataset_name:
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO thai_report_datasets (dataset_name, post_url)
+                        VALUES (%s, %s)
+                        ON CONFLICT (dataset_name, post_url) DO NOTHING
+                        """,
+                        (dataset_name, post_url)
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
+
         except Exception as e:
             err = str(e)
             if "timed out" in err.lower():
@@ -893,23 +985,33 @@ def scrape_fb_comments(
 
     logger.info(f"✅ Social scraping complete: {total_new} new, {total_updated} existing")
 
+    total_posts_scraped = fb_posts_count + ins_posts_count
     result = {
         "status": "success",
         "new_comments": total_new,
         "existing_comments": total_updated,
         "skipped_non_facebook": total_skipped_unsupported,  # backward compatibility
         "skipped_unsupported_urls": total_skipped_unsupported,
+        "skipped_language": total_skipped_language,
         "timed_out_urls": total_timeout_urls,
         "discovered_posts_upserted": discovered_count,
         "ai_processed_total": ai_processed_total,
         "enable_ai_analysis": enable_ai_analysis,
-        "max_ai_comments": max_ai_comments
+        "max_ai_comments": max_ai_comments,
+        "fb_posts": fb_posts_count,
+        "ins_posts": ins_posts_count,
     }
 
     # Update task status to completed
     if task_id:
         try:
-            summary = f"New: {total_new}, Existing: {total_updated}"
+            summary = (
+                f"共抓取 {total_posts_scraped} 条帖子"
+                f"（FB: {fb_posts_count}，INS: {ins_posts_count}），"
+                f"入库评论 {total_new} 条，共分析 {ai_processed_total} 条评论"
+            )
+            if total_skipped_language:
+                summary += f"，跳过非目标语言 {total_skipped_language} 条帖子"
             db.execute(
                 "UPDATE scrape_tasks SET status = 'completed', completed_at = NOW(), result_summary = %s WHERE id = %s",
                 (summary, task_id)

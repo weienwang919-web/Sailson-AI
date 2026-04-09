@@ -62,7 +62,7 @@
                     <option value="th">TH</option>
                 </select>
             </div>
-            <button id="crawlBtn" class="btn-crawl" onclick="startSpdCrawl()">抓取Top5评论</button>
+            <button id="crawlBtn" class="btn-crawl" onclick="startSpdCrawl()">开始采集</button>
             <button class="btn-run" onclick="runReport()">试跑报告</button>
             <button class="btn-run" style="background:#ff6d00;" onclick="exportExcel()">导出Excel</button>
         </div>
@@ -387,9 +387,11 @@ function resetViewWithMessage(message) {
     renderTop5([]);
 }
 
-function setTaskStatus(message) {
+function setTaskStatus(message, type) {
     const el = document.getElementById('taskStatus');
     el.textContent = `任务状态：${message}`;
+    el.style.color = type === 'success' ? '#2d7a2d' : type === 'error' ? '#c0392b' : type === 'running' ? '#e06c00' : '';
+    el.style.fontWeight = type === 'success' ? '600' : '';
 }
 
 function setCrawlButtonState(disabled) {
@@ -425,17 +427,22 @@ async function pollTaskStatus(taskId) {
             const data = await response.json();
             const statusText = normalizeTaskStatus(data.status);
             let message = statusText;
-            if (data.result_summary) message += ` | ${data.result_summary}`;
+            if (data.result_summary) message += `：${data.result_summary}`;
             if (data.error_message) message += ` | ${data.error_message}`;
-            setTaskStatus(message);
 
-            if (data.status === 'completed' || data.status === 'failed') {
+            if (data.status === 'completed') {
+                setTaskStatus(message, 'success');
                 clearInterval(pollTimer);
                 pollTimer = null;
                 setCrawlButtonState(false);
-                if (data.status === 'completed') {
-                    await runReport();
-                }
+                await runReport();
+            } else if (data.status === 'failed') {
+                setTaskStatus(message, 'error');
+                clearInterval(pollTimer);
+                pollTimer = null;
+                setCrawlButtonState(false);
+            } else {
+                setTaskStatus(message, 'running');
             }
         } catch (error) {
             console.error('pollTaskStatus error:', error);
@@ -470,11 +477,10 @@ async function startSpdCrawl() {
             days_back: daysBack,
             discover_max_posts: 5000,
             results_limit: 10000,
-            enable_ai_analysis: false,
-            max_ai_comments: 0,
+            enable_ai_analysis: true,
+            max_ai_comments: 5000,
             platforms: platforms,
-            skip_discover: true,
-            top_n: 5
+            skip_discover: false,
         };
         if (mlbbRule) payload.mlbb_rule = mlbbRule;
         if (spdRule) payload.spd_rule = spdRule;

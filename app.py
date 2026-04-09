@@ -375,6 +375,22 @@ def ensure_fb_post_metrics_schema():
     except Exception as e:
         logger.warning(f"⚠️ 无法创建 fb_post_metrics 表: {e}")
 
+    # 泰国专题数据集标签表
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS thai_report_datasets (
+                id SERIAL PRIMARY KEY,
+                dataset_name VARCHAR(128) NOT NULL,
+                post_url VARCHAR(1024) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE (dataset_name, post_url)
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_thai_datasets_name ON thai_report_datasets (dataset_name)")
+        logger.info("✅ 已确认 thai_report_datasets 表存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法创建 thai_report_datasets 表: {e}")
+
 def send_feedback_email(project_name: str, feedback: str) -> bool:
     """发送用户反馈邮件到运维邮箱（可选功能）
 
@@ -1264,19 +1280,48 @@ def sentiment_tool():
 
 SPD_KEYWORDS = [
     "naruto", "火影", "疾风传", "itachi", "julian", "valir", "ember gaze", "mlbbxnaruto",
-    "#mlbbxnaruto", "#mlbbnewskin", "uchiha", "晓组织"
+    "#mlbbxnaruto", "#mlbbnewskin", "uchiha", "晓组织",
+    "minato", "gusion", "sasuke", "sakura", "kakashi", "gaara", "madara", "lukas", "kalea",
+    "suyou", "hayabusa", "vale",
+    "#goldsongkran", "#goldhunt",
 ]
 
 MLBB_DISCOVER_KEYWORDS = [
     "#mlbb", "mlbb", "#mobilelegends", "mobile legends", "mobilelegendsbangbang",
-    "#mobilelegendsbangbang", "#moba55", "#mobilelegendsbangbang", "#mobalegends"
+    "#MobileLegendsBangBang", "#MOBAlegends", "#moba55", "#mobalegends",
 ]
 
 
+ROV_DISCOVER_KEYWORDS = [
+    "ROV",     "ROVThailand", "ROVVietnam", "GarenaROV", "RealmOfValor", "GarenaRealmOfValor",
+    "GarenaRoVThailand", "AmbassadorOfValor",
+    "MissRoV2026", "MissRoVTournament", "RoVxTOURBILLION",
+    "อาโอวี", "RoVLnWสาด",
+]
+
+# 布尔规则：后端 _eval_boolean_expr 匹配（小写归一），非 AI。
 TASK_BOOLEAN_RULES = {
-    # MVP 版：先覆盖 brief 中最核心关键词与排除词
-    "MLBB": '(#mlbb OR "mlbb" OR #mobilelegends OR "mobile legends" OR "mobilelegendsbangbang") AND NOT ("freefire" OR #mlb OR #mlbbaseball OR #mlbbets)',
-    "SPD": '((#mlbb OR "mlbb" OR #mobilelegends OR "mobile legends") AND ("naruto" OR "火影" OR "疾风传" OR "itachi" OR "julian" OR "valir" OR "ember gaze" OR #mlbbxnaruto OR #mlbbnewskin OR "uchiha" OR "晓组织"))'
+    "MLBB": (
+        '(#mlbb OR #mlbb* OR "mlbb" OR #mobilelegends OR "mobile legends" OR "mobilelegendsbangbang" '
+        'OR #mobilelegendsbangbang OR #mobalegends OR #moba55) '
+        'AND NOT ("freefire" OR #freefire OR #garenafreefire OR #freefirebgid OR #mlb OR #mlbbaseball OR #mlbbets)'
+    ),
+    "SPD": (
+        '((#mlbb OR #mlbb* OR "mlbb" OR #mobilelegends OR "mobile legends" OR "mobilelegendsbangbang" '
+        'OR #mobilelegendsbangbang OR #mobalegends OR #moba55) '
+        'AND NOT ("freefire" OR #freefire OR #garenafreefire OR #freefirebgid OR #mlb OR #mlbbaseball OR #mlbbets) '
+        'AND ("naruto" OR "itachi" OR "minato" OR "gusion" OR "julian" OR "valir" OR "sasuke" OR "sakura" OR "kakashi" '
+        'OR "gaara" OR "madara" OR "lukas" OR "kalea" OR "suyou" OR "hayabusa" OR "vale" OR "uchiha" OR "火影" OR "疾风传" OR #naruto)) '
+        'OR (#mlbbxnaruto OR "mlbb naruto" OR #mlbbnewskin OR #mlbbfreegaaraskin OR #valirfreeskin OR #goldsongkran OR #goldhunt)'
+    ),
+    "ROV": (
+        '("rov" OR #rov OR "realm of valor" OR "garena rov" OR "garena realm of valor" OR "อาโอวี" OR '
+        '#realmofvalor OR #garenarov OR #rovthailand OR #rovvietnam OR "#อาโอวี" OR '
+        '"garena rov thailand" OR #garenarovthailand OR #ambassadorofvalor OR '
+        '"#อยากตีป้อมโว้ย" OR "#rovlnwสาด" OR "#4เมษาlnwมาตีป้อม" OR #missrov2026 OR #missrovtournament OR #rovtourbillion) '
+        'AND NOT ("freefire" OR #freefire OR #garenafreefire OR #freefirebgid OR #hok OR "hok" OR #mlbb OR "mlbb" '
+        'OR #mobilelegends OR "mobilelegends" OR "mobilelegendsbangbang" OR #mobilelegendsbangbang)'
+    ),
 }
 
 
@@ -5475,6 +5520,624 @@ def fb_scheduler_status():
     except Exception as e:
         logger.error(f"❌ 查询调度器状态失败: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================
+# 泰国专题报告
+# ============================================
+
+# 六个数据集配置
+def _thai_datasets_config():
+    """动态生成数据集配置，进行中的数据集 end 使用今天日期"""
+    _today = datetime.date.today().isoformat()
+    return {
+        "泰国区域":     {"game": "MLBB", "start": "2026-04-03", "end": _today},
+        "26Y SPD泰国1": {"game": "SPD",  "start": "2026-04-03", "end": _today},
+        "ROV泰国":      {"game": "ROV",  "start": "2026-04-03", "end": _today},
+        "26Y SPD泰国2": {"game": "SPD",  "start": "2026-03-27", "end": "2026-03-29"},
+        "115泰国热点":  {"game": "MLBB", "start": "2026-01-15", "end": "2026-01-17"},
+        "25Y SPD泰国":  {"game": "SPD",  "start": "2025-05-02", "end": "2025-05-04"},
+    }
+
+THAI_DATASETS_CONFIG = _thai_datasets_config()
+
+
+def _thai_matching_datasets(post_date_str, caption, hashtags):
+    """根据发帖日期 + 正文/hashtag 判定帖子属于哪些泰国专题数据集（可命中多个）。"""
+    cfg = _thai_datasets_config()
+    hashtag_text = ' '.join(f'#{h}' for h in (hashtags or []) if h is not None and str(h).strip())
+    full_text = re.sub(r'\s+', ' ', f'{caption or ""} {hashtag_text}'.lower()).strip()
+    matched = []
+    for ds_name, meta in cfg.items():
+        start, end = meta['start'], meta['end']
+        if post_date_str < start or post_date_str > end:
+            continue
+        game = meta.get('game') or 'MLBB'
+        rule = TASK_BOOLEAN_RULES.get(game, '')
+        if rule and _eval_boolean_expr(full_text, rule):
+            matched.append(ds_name)
+    return matched
+
+
+def _is_instagram_hashtag_export_row(item):
+    """Apify Instagram hashtag 导出：至少要有 url 与时间戳。"""
+    if not isinstance(item, dict):
+        return False
+    return bool((item.get('url') or '').strip() and (item.get('timestamp') or ''))
+
+
+@app.route('/thai-report-tool')
+@login_required
+def thai_report_tool():
+    return render_template('thai_report.html')
+
+
+@app.route('/api/import_thai_json', methods=['POST'])
+@login_required
+def import_thai_json():
+    """把项目目录下的 dataset_*.json（Instagram 导出）导入数据库并打 thai_report_datasets 标签。
+
+    两种模式：
+    - full_clean=true：扫描文件夹内全部 dataset_*.json，按日期窗口 + MLBB/SPD/ROV 布尔规则自动归入 6 个数据集（无需区分文件对应哪个 tag）。
+    - 默认：按 dataset_name + game_type + 日期范围 单数据集导入（兼容旧流程）。
+    """
+    import glob as _glob
+    data = request.get_json(silent=True) or {}
+    full_raw = data.get('full_clean', data.get('full'))
+    if isinstance(full_raw, str):
+        full_clean = full_raw.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+    else:
+        full_clean = bool(full_raw)
+
+    dataset_name = (data.get('dataset_name') or '').strip()
+    game_type = (data.get('game_type') or 'MLBB').strip().upper()
+    start_date = (data.get('start_date') or '').strip()
+    end_date = (data.get('end_date') or '').strip()
+    json_files_raw = data.get('json_files') or []
+    if isinstance(json_files_raw, str):
+        json_files_raw = [json_files_raw]
+    if not isinstance(json_files_raw, list):
+        json_files_raw = []
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if json_files_raw:
+        files = []
+        for f in json_files_raw:
+            if not isinstance(f, str):
+                continue
+            fname = os.path.basename(f)
+            if not re.match(r'^dataset_[\w\-\.]+\.json$', fname):
+                logger.warning(f"⚠️ 拒绝非法文件名: {fname}")
+                continue
+            files.append(os.path.join(base_dir, fname))
+    elif full_clean:
+        files = sorted(set(_glob.glob(os.path.join(base_dir, 'dataset_*.json'))))
+    else:
+        files = sorted(set(
+            _glob.glob(os.path.join(base_dir, 'dataset_instagram-hashtag-scraper_*.json'))
+            + _glob.glob(os.path.join(base_dir, 'dataset_*goldsongkran*.json'))
+            + _glob.glob(os.path.join(base_dir, 'dataset_*GOLDHUNT*.json'))
+            + _glob.glob(os.path.join(base_dir, 'dataset_*goldhunt*.json'))
+        ))
+
+    if not files:
+        return jsonify({'status': 'error', 'message': '未找到 dataset_*.json 文件'}), 404
+
+    if full_clean:
+        dataset_tag_counts = {name: 0 for name in _thai_datasets_config().keys()}
+        posts_with_tags = 0
+        skipped_no_dataset = 0
+        skipped_bad_row = 0
+        errors = 0
+        files_used = 0
+
+        for fpath in files:
+            try:
+                with open(fpath, encoding='utf-8') as fp:
+                    rows = json.load(fp)
+            except Exception as e:
+                logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
+                errors += 1
+                continue
+            if not isinstance(rows, list) or not rows:
+                logger.warning(f"⚠️ 跳过空或非列表 JSON: {fpath}")
+                errors += 1
+                continue
+            if not _is_instagram_hashtag_export_row(rows[0]):
+                logger.info(f"⏭️ 跳过非 Instagram hashtag 导出格式: {os.path.basename(fpath)}")
+                continue
+            files_used += 1
+
+            for item in rows:
+                try:
+                    if not _is_instagram_hashtag_export_row(item):
+                        skipped_bad_row += 1
+                        continue
+                    caption = (item.get('caption') or '').strip()
+                    url = (item.get('url') or '').strip()
+                    author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
+                    likes = int(item.get('likesCount') or 0)
+                    comments_cnt = int(item.get('commentsCount') or 0)
+                    timestamp = item.get('timestamp') or ''
+                    hashtags = item.get('hashtags') or []
+                    post_date = timestamp[:10]
+
+                    matching = _thai_matching_datasets(post_date, caption, hashtags)
+                    if not matching:
+                        skipped_no_dataset += 1
+                        continue
+
+                    try:
+                        db.execute("""
+                            INSERT INTO fb_post_metrics
+                                (post_url, platform, author, post_date, post_content, likes, comments_count, engagement, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                            ON CONFLICT (post_url) DO UPDATE SET
+                                likes = GREATEST(COALESCE(fb_post_metrics.likes,0), EXCLUDED.likes),
+                                comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
+                                engagement = GREATEST(COALESCE(fb_post_metrics.engagement,0), EXCLUDED.engagement),
+                                post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
+                                updated_at = NOW()
+                        """, (
+                            url, 'INSTAGRAM', author, post_date, caption,
+                            likes, comments_cnt, likes + comments_cnt
+                        ))
+                    except Exception as e:
+                        logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
+
+                    for ds in matching:
+                        try:
+                            db.execute("""
+                                INSERT INTO thai_report_datasets (dataset_name, post_url)
+                                VALUES (%s, %s)
+                                ON CONFLICT (dataset_name, post_url) DO NOTHING
+                            """, (ds, url))
+                            dataset_tag_counts[ds] = dataset_tag_counts.get(ds, 0) + 1
+                        except Exception as e:
+                            logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
+                    posts_with_tags += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ 处理记录失败: {e}")
+                    errors += 1
+
+        total_tags = sum(dataset_tag_counts.values())
+        return jsonify({
+            'status': 'success',
+            'mode': 'full_clean',
+            'posts_with_tags': posts_with_tags,
+            'dataset_tag_counts': dataset_tag_counts,
+            'total_dataset_tags': total_tags,
+            'skipped_no_dataset': skipped_no_dataset,
+            'skipped_bad_row': skipped_bad_row,
+            'errors': errors,
+            'files_processed': files_used,
+            'files_seen': len(files),
+        })
+
+    if not dataset_name:
+        return jsonify({'status': 'error', 'message': '单数据集导入需要 dataset_name；或传 full_clean=true 做全量清洗'}), 400
+
+    imported = 0
+    skipped_lang = 0
+    skipped_date = 0
+    errors = 0
+
+    for fpath in files:
+        try:
+            with open(fpath, encoding='utf-8') as fp:
+                rows = json.load(fp)
+        except Exception as e:
+            logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
+            errors += 1
+            continue
+
+        for item in rows:
+            try:
+                caption = (item.get('caption') or '').strip()
+                url = (item.get('url') or '').strip()
+                author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
+                likes = int(item.get('likesCount') or 0)
+                comments_cnt = int(item.get('commentsCount') or 0)
+                timestamp = item.get('timestamp') or ''
+                hashtags = item.get('hashtags') or []
+
+                if not url or not timestamp:
+                    continue
+
+                # 日期过滤
+                post_date = timestamp[:10]
+                if start_date and post_date < start_date:
+                    skipped_date += 1
+                    continue
+                if end_date and post_date > end_date:
+                    skipped_date += 1
+                    continue
+
+                # 游戏类型布尔规则过滤
+                rule = TASK_BOOLEAN_RULES.get(game_type, '')
+                if rule:
+                    hashtag_text = ' '.join(f'#{h}' for h in hashtags)
+                    full_text = re.sub(r'\s+', ' ', f"{caption} {hashtag_text}".lower()).strip()
+                    if not _eval_boolean_expr(full_text, rule):
+                        skipped_lang += 1
+                        continue
+
+                # 写入 fb_post_metrics
+                try:
+                    db.execute("""
+                        INSERT INTO fb_post_metrics
+                            (post_url, platform, author, post_date, post_content, likes, comments_count, engagement, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (post_url) DO UPDATE SET
+                            likes = GREATEST(COALESCE(fb_post_metrics.likes,0), EXCLUDED.likes),
+                            comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
+                            engagement = GREATEST(COALESCE(fb_post_metrics.engagement,0), EXCLUDED.engagement),
+                            post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
+                            updated_at = NOW()
+                    """, (
+                        url, 'INSTAGRAM', author, post_date, caption,
+                        likes, comments_cnt, likes + comments_cnt
+                    ))
+                except Exception as e:
+                    logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
+
+                # 写 thai_report_datasets 标签
+                try:
+                    db.execute("""
+                        INSERT INTO thai_report_datasets (dataset_name, post_url)
+                        VALUES (%s, %s)
+                        ON CONFLICT (dataset_name, post_url) DO NOTHING
+                    """, (dataset_name, url))
+                except Exception as e:
+                    logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
+
+                imported += 1
+            except Exception as e:
+                logger.warning(f"⚠️ 处理记录失败: {e}")
+                errors += 1
+
+    return jsonify({
+        'status': 'success',
+        'mode': 'single',
+        'imported': imported,
+        'skipped_not_match_rule': skipped_lang,
+        'skipped_out_of_range': skipped_date,
+        'errors': errors,
+        'files_processed': len(files),
+    })
+
+
+@app.route('/api/thai_schedule', methods=['POST'])
+@login_required
+def thai_schedule():
+    """触发泰国专题抓取任务（MLBB / SPD / ROV）"""
+    try:
+        def _norm_list(v):
+            if v is None: return []
+            if isinstance(v, str): v = [v]
+            return [x.strip() for x in v if isinstance(x, str) and x.strip()]
+
+        data = request.get_json(silent=True) or {}
+        game_type = (data.get('game_type') or 'MLBB').strip().upper()
+        dataset_name = (data.get('dataset_name') or '').strip()
+        skip_discover_raw = data.get('skip_discover', False)
+        if isinstance(skip_discover_raw, str):
+            skip_discover = skip_discover_raw.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+        else:
+            skip_discover = bool(skip_discover_raw)
+        if game_type not in ('MLBB', 'SPD', 'ROV'):
+            return jsonify({'status': 'error', 'message': 'game_type 仅支持 MLBB/SPD/ROV'}), 400
+        if not dataset_name:
+            return jsonify({'status': 'error', 'message': 'dataset_name 必填'}), 400
+
+        try:
+            days_back = int(data.get('days_back', 7))
+            results_limit = int(data.get('results_limit', 5000))
+            max_ai_comments = int(data.get('max_ai_comments', 5000))
+            discover_max_posts = int(data.get('discover_max_posts', 3000))
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': '数值参数格式错误'}), 400
+
+        seed_tags = _norm_list(data.get('seed_tags'))
+        platforms = _norm_list(data.get('platforms')) or ['facebook', 'instagram']
+
+        # 默认 seed_tags（仅在未跳过 discover 时使用）
+        if not skip_discover and not seed_tags:
+            if game_type == 'MLBB':
+                seed_tags = list(MLBB_DISCOVER_KEYWORDS)
+            elif game_type == 'SPD':
+                seed_tags = list(SPD_KEYWORDS)
+            else:
+                seed_tags = list(ROV_DISCOVER_KEYWORDS)
+
+        boolean_rule = (data.get('boolean_rule') or TASK_BOOLEAN_RULES.get(game_type, '')).strip()
+
+        task_id = db.execute_and_fetch_id(
+            "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+            (f'thai_{game_type.lower()}_scrape', 'pending')
+        )
+
+        def run_thai_scrape():
+            try:
+                db.execute("UPDATE scrape_tasks SET status='running' WHERE id=%s", (task_id,))
+                if skip_discover:
+                    # 仅从已导入数据集的帖子抓评论，不调用 Apify hashtag 发现
+                    db.execute(
+                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                        (f"正在加载数据集「{dataset_name}」中的帖子（跳过 Hashtag 发现）...", task_id)
+                    )
+                    rows = db.query_all("""
+                        SELECT m.post_url, m.platform, m.author, m.post_date, m.post_content,
+                               m.thumbnail_url, m.views, m.shares, m.likes, m.comments_count, m.engagement
+                        FROM fb_post_metrics m
+                        INNER JOIN thai_report_datasets d
+                          ON d.post_url = m.post_url AND d.dataset_name = %s
+                        ORDER BY m.engagement DESC NULLS LAST
+                    """, (dataset_name,))
+                    if not rows:
+                        raise RuntimeError(
+                            f'数据集「{dataset_name}」中暂无帖子。请先在本页导入 JSON，'
+                            f'或取消勾选「仅抓评论」以运行 Hashtag 发现（会产生 Apify 费用）。'
+                        )
+                    seen_urls = set()
+                    post_urls = []
+                    discovered_posts = []
+                    for r in rows:
+                        u = r.get('post_url')
+                        if not u or u in seen_urls:
+                            continue
+                        seen_urls.add(u)
+                        post_urls.append(u)
+                        discovered_posts.append({
+                            'post_url': u,
+                            'platform': r.get('platform'),
+                            'author': r.get('author'),
+                            'post_date': r.get('post_date'),
+                            'post_content': r.get('post_content'),
+                            'thumbnail_url': r.get('thumbnail_url'),
+                            'views': r.get('views') or 0,
+                            'shares': r.get('shares') or 0,
+                            'likes': r.get('likes') or 0,
+                            'comments_count': r.get('comments_count') or 0,
+                            'engagement': r.get('engagement') or 0,
+                        })
+                    if len(post_urls) > discover_max_posts:
+                        post_urls = post_urls[:discover_max_posts]
+                        discovered_posts = discovered_posts[:discover_max_posts]
+                    db.execute(
+                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                        (f"已加载 {len(post_urls)} 条本地帖子（未跑 Hashtag），开始抓取评论...", task_id)
+                    )
+                else:
+                    db.execute(
+                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                        (f"正在通过 Hashtag 发现 {game_type} 帖子...", task_id)
+                    )
+                    discover_result = tasks.discover_posts_by_tags(
+                        seed_tags=seed_tags,
+                        platforms=platforms,
+                        days_back=days_back,
+                        max_posts=discover_max_posts,
+                        boolean_rule=boolean_rule
+                    )
+                    if discover_result.get('status') != 'success':
+                        raise RuntimeError(f"discover 失败: {discover_result.get('message')}")
+
+                    post_urls = discover_result.get('post_urls') or []
+                    discovered_posts = discover_result.get('posts') or []
+                    db.execute(
+                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                        (f"Hashtag 发现完成，共 {len(post_urls)} 条帖子，开始抓取评论...", task_id)
+                    )
+
+                tasks.scrape_fb_comments(
+                    post_urls=post_urls,
+                    discovered_posts=discovered_posts,
+                    days_back=days_back,
+                    task_id=task_id,
+                    results_limit=results_limit,
+                    enable_ai_analysis=True,
+                    max_ai_comments=max_ai_comments,
+                    allow_fallback_to_config=False,
+                    language_filter='th',
+                    dataset_name=dataset_name,
+                )
+            except Exception as e:
+                logger.error(f"❌ 泰国专题抓取失败(task_id={task_id}): {e}")
+                try:
+                    db.execute(
+                        "UPDATE scrape_tasks SET status='failed', completed_at=NOW(), error_message=%s WHERE id=%s",
+                        (str(e)[:500], task_id)
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=run_thai_scrape, daemon=True).start()
+
+        return jsonify({
+            'status': 'success',
+            'message': f'{game_type} 泰国抓取任务已启动',
+            'task_id': task_id,
+            'dataset_name': dataset_name,
+            'seed_tag_count': len(seed_tags),
+            'skip_discover': skip_discover,
+        })
+    except Exception as e:
+        logger.error(f"❌ 泰国专题任务启动失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/thai_report_data', methods=['GET'])
+@login_required
+def thai_report_data():
+    """
+    返回泰国专题六个数据集的聚合数据：
+    - 分日互动量（likes+shares+comments）
+    - 分日新增评论量（按 fb_comments.created_at）
+    - 各数据集峰值评论日 + 峰值帖子信息
+    - 26Y SPD泰国1 的 Top5 帖子
+    """
+    try:
+        from datetime import date as _date, timedelta
+
+        def _fetch_daily_engagement(dataset_name, start, end):
+            rows = db.query_all("""
+                SELECT m.post_date::text AS day,
+                       COALESCE(SUM(m.likes),0) + COALESCE(SUM(m.shares),0) + COALESCE(SUM(m.comments_count),0) AS total
+                FROM fb_post_metrics m
+                JOIN thai_report_datasets d ON d.post_url = m.post_url
+                WHERE d.dataset_name = %s
+                  AND m.post_date >= %s AND m.post_date <= %s
+                GROUP BY m.post_date
+                ORDER BY m.post_date
+            """, (dataset_name, start, end))
+            return {r['day']: int(r['total']) for r in rows}
+
+        def _fetch_daily_new_comments(dataset_name, start, end):
+            rows = db.query_all("""
+                SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
+                       COUNT(*) AS cnt
+                FROM fb_comments c
+                JOIN thai_report_datasets d ON d.post_url = c.post_url
+                WHERE d.dataset_name = %s
+                  AND DATE(c.created_at AT TIME ZONE 'Asia/Shanghai') >= %s
+                  AND DATE(c.created_at AT TIME ZONE 'Asia/Shanghai') <= %s
+                GROUP BY 1
+                ORDER BY 1
+            """, (dataset_name, start, end))
+            return {r['day']: int(r['cnt']) for r in rows}
+
+        def _peak_post(dataset_name, peak_day):
+            """返回峰值日评论最多的帖子信息"""
+            row = db.query_one("""
+                SELECT m.author, m.post_content,
+                       COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement,
+                       COUNT(c.id) AS comment_cnt
+                FROM fb_comments c
+                JOIN fb_post_metrics m ON m.post_url = c.post_url
+                JOIN thai_report_datasets d ON d.post_url = c.post_url
+                WHERE d.dataset_name = %s
+                  AND DATE(c.created_at AT TIME ZONE 'Asia/Shanghai') = %s
+                GROUP BY m.post_url, m.author, m.post_content, m.likes, m.shares, m.comments_count
+                ORDER BY comment_cnt DESC
+                LIMIT 1
+            """, (dataset_name, peak_day))
+            if not row:
+                return None
+            eng = int(row.get('engagement') or 0)
+            eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
+            content = (row.get('post_content') or '')[:60]
+            return {
+                'author': row.get('author') or '',
+                'summary': content,
+                'engagement': eng,
+                'engagement_label': eng_k,
+            }
+
+        def _top5_posts(dataset_name, start, end):
+            rows = db.query_all("""
+                SELECT m.author, m.post_content, m.post_url,
+                       COALESCE(m.likes,0) AS likes, COALESCE(m.shares,0) AS shares, COALESCE(m.comments_count,0) AS comments_count,
+                       COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement
+                FROM fb_post_metrics m
+                JOIN thai_report_datasets d ON d.post_url = m.post_url
+                WHERE d.dataset_name = %s
+                  AND m.post_date >= %s AND m.post_date <= %s
+                ORDER BY engagement DESC
+                LIMIT 5
+            """, (dataset_name, start, end))
+            result = []
+            for r in rows:
+                eng = int(r.get('engagement') or 0)
+                result.append({
+                    'author': r.get('author') or '',
+                    'content': (r.get('post_content') or '')[:120],
+                    'url': r.get('post_url') or '',
+                    'likes': int(r.get('likes') or 0),
+                    'shares': int(r.get('shares') or 0),
+                    'comments': int(r.get('comments_count') or 0),
+                    'engagement': eng,
+                    'engagement_label': f"{eng/1000:.1f}k" if eng >= 1000 else str(eng),
+                })
+            return result
+
+        # 构建每个数据集的日期范围 -> 日期列表
+        def _date_range(start, end):
+            s = _date.fromisoformat(start)
+            e = _date.fromisoformat(end)
+            days = []
+            cur = s
+            while cur <= e:
+                days.append(cur.isoformat())
+                cur += timedelta(days=1)
+            return days
+
+        datasets_out = {}
+        for ds_name, cfg in _thai_datasets_config().items():
+            s, e = cfg['start'], cfg['end']
+            days = _date_range(s, e)
+            eng_map = _fetch_daily_engagement(ds_name, s, e)
+            cmt_map = _fetch_daily_new_comments(ds_name, s, e)
+            datasets_out[ds_name] = {
+                'game': cfg['game'],
+                'start': s,
+                'end': e,
+                'days': days,
+                'engagement': [eng_map.get(d, 0) for d in days],
+                'new_comments': [cmt_map.get(d, 0) for d in days],
+            }
+
+        # 图 C 的三个数据集用相对 day_index（D1/D2/D3）
+        chart_c_datasets = ["26Y SPD泰国2", "115泰国热点", "25Y SPD泰国"]
+        chart_c_labels = []
+        chart_c_max_days = max(
+            len(datasets_out[n]['days']) for n in chart_c_datasets if n in datasets_out
+        ) if any(n in datasets_out for n in chart_c_datasets) else 0
+        chart_c_labels = [f"D{i+1}" for i in range(chart_c_max_days)]
+
+        # 峰值下钻（三张评论折线图各自的峰值帖）
+        peak_chart_groups = [
+            ("泰国区域", "26Y SPD泰国1"),   # 图 a
+            ("泰国区域", "ROV泰国"),         # 图 b
+            ("26Y SPD泰国2", "115泰国热点", "25Y SPD泰国"),  # 图 c
+        ]
+        peak_data = []
+        for group in peak_chart_groups:
+            group_peaks = {}
+            for ds_name in group:
+                if ds_name not in datasets_out:
+                    continue
+                cmt_list = datasets_out[ds_name]['new_comments']
+                days_list = datasets_out[ds_name]['days']
+                if not cmt_list or max(cmt_list) == 0:
+                    group_peaks[ds_name] = None
+                    continue
+                peak_idx = cmt_list.index(max(cmt_list))
+                peak_day = days_list[peak_idx]
+                post = _peak_post(ds_name, peak_day)
+                group_peaks[ds_name] = {
+                    'peak_day': peak_day,
+                    'peak_count': cmt_list[peak_idx],
+                    'post': post,
+                }
+            peak_data.append(group_peaks)
+
+        # Top5（仅 26Y SPD泰国1）
+        spd1_cfg = _thai_datasets_config().get("26Y SPD泰国1", {})
+        top5 = _top5_posts("26Y SPD泰国1", spd1_cfg.get('start', ''), spd1_cfg.get('end', ''))
+
+        return jsonify({
+            'status': 'success',
+            'datasets': datasets_out,
+            'chart_c_labels': chart_c_labels,
+            'chart_c_datasets': chart_c_datasets,
+            'peak_data': peak_data,
+            'top5': top5,
+        })
+
+    except Exception as e:
+        logger.error(f"❌ thai_report_data 失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 # ============================================

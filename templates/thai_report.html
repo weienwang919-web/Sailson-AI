@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>泰国专题报告</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
+    .page-header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: #fff; padding: 24px 32px; display: flex; align-items: center; gap: 16px; }
+    .page-header h1 { font-size: 22px; font-weight: 700; }
+    .page-header .subtitle { font-size: 13px; color: rgba(255,255,255,0.6); margin-top: 4px; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 24px 20px; }
+
+    /* 采集区 */
+    .scrape-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 32px; }
+    .scrape-card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .scrape-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+    .scrape-card .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .badge-mlbb { background: #e8f4fd; color: #1a7fd4; }
+    .badge-spd  { background: #fff3e8; color: #e06c00; }
+    .badge-rov  { background: #f0f8f0; color: #2d7a2d; }
+    .scrape-card textarea {
+      width: 100%; height: 72px; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 8px 10px; font-size: 12px; resize: vertical; outline: none;
+      font-family: monospace; line-height: 1.5;
+    }
+    .scrape-card textarea:focus { border-color: #4a90d9; }
+    .scrape-card .label { font-size: 11px; color: #888; margin-bottom: 4px; margin-top: 10px; }
+    .btn-start { width: 100%; margin-top: 12px; padding: 9px; background: #1a7fd4; color: #fff;
+      border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .2s; }
+    .btn-start:hover { background: #1565b8; }
+    .btn-start:disabled { background: #aaa; cursor: not-allowed; }
+    .status-bar { margin-top: 8px; font-size: 12px; color: #666; min-height: 18px; line-height: 1.4; word-break: break-all; }
+    .status-bar.running { color: #e06c00; }
+    .status-bar.success { color: #2d7a2d; }
+    .status-bar.error   { color: #c0392b; }
+
+    /* 导入按钮区 */
+    .import-section { background: #fff; border-radius: 12px; padding: 16px 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 32px; }
+    .import-section h3 { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+    .import-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .btn-import { padding: 8px 12px; border: 1px solid #d0d0d0; background: #f8f9fa; border-radius: 8px;
+      font-size: 12px; cursor: pointer; text-align: left; transition: background .15s; }
+    .btn-import:hover { background: #e8f4fd; border-color: #4a90d9; }
+    .btn-import .ds-name { font-weight: 600; color: #1a1a2e; }
+    .btn-import .ds-meta { color: #888; font-size: 11px; margin-top: 2px; }
+    .import-status { margin-top: 8px; font-size: 12px; color: #666; min-height: 16px; }
+
+    /* 分隔标题 */
+    .section-title { font-size: 16px; font-weight: 700; color: #1a1a2e; margin: 32px 0 14px; padding-left: 10px;
+      border-left: 4px solid #1a7fd4; }
+
+    /* 图表网格 */
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    .chart-grid.single { grid-template-columns: 1fr; }
+    .chart-card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .chart-card h4 { font-size: 13px; font-weight: 700; color: #444; margin-bottom: 14px; }
+    .chart-wrap { position: relative; height: 220px; }
+    .refresh-btn { float: right; font-size: 11px; color: #1a7fd4; cursor: pointer; border: none; background: none; }
+    .refresh-btn:hover { text-decoration: underline; }
+
+    /* 峰值下钻 */
+    .peak-section { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 20px; }
+    .peak-section h4 { font-size: 13px; font-weight: 700; margin-bottom: 14px; color: #444; }
+    .peak-group { display: flex; flex-wrap: wrap; gap: 12px; }
+    .peak-item { flex: 1; min-width: 200px; background: #f8f9fa; border-radius: 8px; padding: 12px 14px; }
+    .peak-item .ds-label { font-size: 11px; font-weight: 700; color: #888; margin-bottom: 4px; }
+    .peak-item .peak-day { font-size: 12px; color: #1a7fd4; margin-bottom: 6px; }
+    .peak-item .peak-post { font-size: 12px; color: #333; line-height: 1.5; }
+    .peak-item .peak-post strong { color: #1a1a2e; }
+
+    /* Top5 */
+    .top5-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .top5-table th { background: #f0f4f8; padding: 8px 12px; text-align: left; font-weight: 600; color: #555; border-bottom: 2px solid #e0e0e0; }
+    .top5-table td { padding: 9px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+    .top5-table tr:hover td { background: #fafbfc; }
+    .top5-rank { width: 32px; text-align: center; font-weight: 700; color: #aaa; }
+    .top5-rank.gold   { color: #e6a817; }
+    .top5-rank.silver { color: #888; }
+    .top5-rank.bronze { color: #b87333; }
+    .engagement-badge { display: inline-block; background: #e8f4fd; color: #1a7fd4; border-radius: 10px;
+      padding: 2px 8px; font-size: 11px; font-weight: 600; }
+    .no-data { color: #bbb; font-size: 12px; text-align: center; padding: 20px; }
+
+    @media (max-width: 900px) {
+      .scrape-grid, .chart-grid, .import-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="page-header">
+  <div>
+    <h1>🇹🇭 泰国专题报告</h1>
+    <div class="subtitle">MLBB · SPD · ROV 泰国区域舆情分析</div>
+  </div>
+  <button onclick="loadReport()" style="margin-left:auto;padding:8px 18px;background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:8px;cursor:pointer;font-size:13px;">
+    刷新数据
+  </button>
+</div>
+
+<div class="container">
+
+  <!-- ① 监听任务采集区 -->
+  <div class="section-title">监听任务采集</div>
+  <div style="background:#fff;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.06);line-height:1.5;">
+    <label style="cursor:pointer;display:flex;align-items:flex-start;gap:8px;">
+      <input type="checkbox" id="skipDiscoverInput" checked style="margin-top:3px;">
+      <span><strong>仅抓评论</strong>：使用当前「数据集名称」下已导入的帖子，<strong>不调用 Apify Hashtag 发现</strong>（省费用）。若该数据集还没有帖子，请先在上面的「导入本地 JSON」里导入，或取消勾选此项以走全量 Hashtag 发现。</span>
+    </label>
+  </div>
+  <div class="scrape-grid">
+    <!-- MLBB -->
+    <div class="scrape-card">
+      <h3><span class="badge badge-mlbb">MLBB</span> 泰国区域 / 115泰国热点</h3>
+      <div class="label">Hashtags（每行一个，不含#）</div>
+      <textarea id="mlbb-tags" placeholder="mlbb&#10;mobilelegends&#10;mlbbth&#10;mobilelegendsbangbang">mlbb
+mobilelegends
+mlbbth
+mobilelegendsbangbang
+moba55</textarea>
+      <div class="label">数据集名称</div>
+      <input id="mlbb-dataset" type="text" value="泰国区域" style="width:100%;padding:6px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;outline:none;" />
+      <button class="btn-start" onclick="startScrape('MLBB')">开始采集</button>
+      <div class="status-bar" id="mlbb-status"></div>
+    </div>
+
+    <!-- SPD -->
+    <div class="scrape-card">
+      <h3><span class="badge badge-spd">SPD</span> 26Y SPD泰国1 / 26Y SPD泰国2 / 25Y SPD泰国</h3>
+      <div class="label">Hashtags（每行一个）</div>
+      <textarea id="spd-tags" placeholder="mlbbxnaruto&#10;naruto&#10;mlbbnewskin&#10;ember">mlbbxnaruto
+naruto
+mlbbnewskin
+ember
+itachiuchiha
+uchiha</textarea>
+      <div class="label">数据集名称</div>
+      <input id="spd-dataset" type="text" value="26Y SPD泰国1" style="width:100%;padding:6px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;outline:none;" />
+      <button class="btn-start" onclick="startScrape('SPD')">开始采集</button>
+      <div class="status-bar" id="spd-status"></div>
+    </div>
+
+    <!-- ROV -->
+    <div class="scrape-card">
+      <h3><span class="badge badge-rov">ROV</span> ROV泰国</h3>
+      <div class="label">Hashtags（每行一个）</div>
+      <textarea id="rov-tags" placeholder="ROVThailand&#10;GarenaROV&#10;RealmOfValor">ROVThailand
+GarenaROV
+RealmOfValor
+GarenaRoVThailand
+AmbassadorOfValor
+MissRoV2026
+MissRoVTournament</textarea>
+      <div class="label">数据集名称</div>
+      <input id="rov-dataset" type="text" value="ROV泰国" style="width:100%;padding:6px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;outline:none;" />
+      <button class="btn-start" onclick="startScrape('ROV')">开始采集</button>
+      <div class="status-bar" id="rov-status"></div>
+    </div>
+  </div>
+
+  <!-- ② 本地 JSON 导入区 -->
+  <div class="import-section">
+    <h3>📂 导入本地 Apify JSON 数据</h3>
+    <p style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.5;">
+      推荐：把所有 <code>dataset_*.json</code> 放进项目根目录后，点下面<strong>全量清洗导入</strong>，系统会按发帖日期 + MLBB/SPD/ROV 布尔规则自动归入六个数据集，无需区分文件对应哪个 hashtag。
+    </p>
+    <button type="button" class="btn-start" style="width:100%;max-width:420px;margin-bottom:14px;" onclick="importFullClean()">全量清洗导入（扫描全部 dataset_*.json）</button>
+    <div style="font-size:12px;color:#888;margin-bottom:10px;">或按单数据集手动导入（高级）：</div>
+    <div class="import-grid" id="import-grid">
+      <!-- 六个数据集按钮动态渲染 -->
+    </div>
+    <div class="import-status" id="import-status"></div>
+  </div>
+
+  <!-- ③ 互动量折线图 -->
+  <div class="section-title">分日互动量趋势（likes + shares + comments）</div>
+  <div class="chart-grid">
+    <div class="chart-card">
+      <h4>图A &nbsp;泰国区域(MLBB) vs 26Y SPD泰国1 &nbsp;<small style="color:#aaa">4/3-4/8</small>
+        <button class="refresh-btn" onclick="loadReport()">↻ 刷新</button>
+      </h4>
+      <div class="chart-wrap"><canvas id="chartEngA"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h4>图B &nbsp;泰国区域(MLBB) vs ROV泰国 &nbsp;<small style="color:#aaa">4/3-4/8</small></h4>
+      <div class="chart-wrap"><canvas id="chartEngB"></canvas></div>
+    </div>
+  </div>
+  <div class="chart-grid single">
+    <div class="chart-card">
+      <h4>图C &nbsp;26Y SPD泰国2 vs 115泰国热点 vs 25Y SPD泰国 &nbsp;<small style="color:#aaa">相对天数 D1/D2/D3</small></h4>
+      <div class="chart-wrap"><canvas id="chartEngC"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ④ 新增评论量折线图 -->
+  <div class="section-title">分日新增评论量趋势</div>
+  <div class="chart-grid">
+    <div class="chart-card">
+      <h4>图A &nbsp;泰国区域 vs 26Y SPD泰国1</h4>
+      <div class="chart-wrap"><canvas id="chartCmtA"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h4>图B &nbsp;泰国区域 vs ROV泰国</h4>
+      <div class="chart-wrap"><canvas id="chartCmtB"></canvas></div>
+    </div>
+  </div>
+  <div class="chart-grid single">
+    <div class="chart-card">
+      <h4>图C &nbsp;26Y SPD泰国2 vs 115泰国热点 vs 25Y SPD泰国 &nbsp;<small style="color:#aaa">相对天数</small></h4>
+      <div class="chart-wrap"><canvas id="chartCmtC"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ⑤ 峰值下钻 -->
+  <div class="section-title">峰值评论下钻分析</div>
+  <div id="peak-container"></div>
+
+  <!-- ⑥ Top5 帖子 -->
+  <div class="section-title">Top5 帖子分析 &nbsp;<small style="font-size:12px;font-weight:400;color:#999">26Y SPD泰国1（4/3-4/8）</small></div>
+  <div class="chart-card" style="margin-bottom:40px;">
+    <div id="top5-container"><div class="no-data">加载中...</div></div>
+  </div>
+
+</div>
+
+<script>
+// ──────────────────────────────────────
+// 工具函数
+// ──────────────────────────────────────
+function esc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ──────────────────────────────────────
+// 全局状态
+// ──────────────────────────────────────
+const taskPollers = {}; // game_type -> intervalId
+
+const COLORS = {
+  'MLBB': '#1a7fd4',
+  'SPD':  '#e06c00',
+  'ROV':  '#2d7a2d',
+  'extra': '#9b59b6',
+};
+
+const DATASETS_META = [
+  { name: '泰国区域',    game: 'MLBB', start: '2026-04-03', end: '2026-04-08' },
+  { name: '26Y SPD泰国1', game: 'SPD',  start: '2026-04-03', end: '2026-04-08' },
+  { name: 'ROV泰国',     game: 'ROV',  start: '2026-04-03', end: '2026-04-08' },
+  { name: '26Y SPD泰国2', game: 'SPD',  start: '2026-03-27', end: '2026-03-29' },
+  { name: '115泰国热点',  game: 'MLBB', start: '2026-01-15', end: '2026-01-17' },
+  { name: '25Y SPD泰国',  game: 'SPD',  start: '2025-05-02', end: '2025-05-04' },
+];
+
+// ──────────────────────────────────────
+// 渲染导入按钮
+// ──────────────────────────────────────
+function renderImportButtons() {
+  const grid = document.getElementById('import-grid');
+  grid.innerHTML = DATASETS_META.map(ds => `
+    <button class="btn-import" onclick="importDataset('${ds.name}','${ds.game}','${ds.start}','${ds.end}')">
+      <div class="ds-name">${ds.name}</div>
+      <div class="ds-meta">${ds.game} · ${ds.start} ~ ${ds.end}</div>
+    </button>
+  `).join('');
+}
+
+async function importFullClean() {
+  const st = document.getElementById('import-status');
+  st.textContent = '正在全量扫描并清洗 dataset_*.json（可能需几分钟）...';
+  st.style.color = '#666';
+  try {
+    const res = await fetch('/api/import_thai_json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ full_clean: true })
+    });
+    const d = await res.json();
+    if (d.status === 'success') {
+      const parts = Object.entries(d.dataset_tag_counts || {}).map(([k, v]) => `${k}:${v}`).join(' · ');
+      st.textContent = `✅ 全量完成：命中数据集的帖子 ${d.posts_with_tags} 条；各集标签数 ${parts}；未命中任何数据集 ${d.skipped_no_dataset} 条；处理文件 ${d.files_processed}/${d.files_seen} 个`;
+      st.style.color = '#2d7a2d';
+    } else {
+      st.textContent = `❌ ${d.message}`;
+      st.style.color = '#c0392b';
+    }
+  } catch (e) {
+    st.textContent = `❌ 请求失败：${e.message}`;
+    st.style.color = '#c0392b';
+  }
+}
+
+async function importDataset(name, game, start, end) {
+  const st = document.getElementById('import-status');
+  st.textContent = `正在导入 ${name}...`;
+  try {
+    const res = await fetch('/api/import_thai_json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset_name: name, game_type: game, start_date: start, end_date: end })
+    });
+    const d = await res.json();
+    if (d.status === 'success') {
+      st.textContent = `✅ ${name} 导入完成：入库 ${d.imported} 条，规则过滤 ${d.skipped_not_match_rule} 条，时间范围外 ${d.skipped_out_of_range} 条`;
+      st.style.color = '#2d7a2d';
+    } else {
+      st.textContent = `❌ ${name} 导入失败：${d.message}`;
+      st.style.color = '#c0392b';
+    }
+  } catch(e) {
+    st.textContent = `❌ 请求失败：${e.message}`;
+    st.style.color = '#c0392b';
+  }
+}
+
+// ──────────────────────────────────────
+// 开始采集
+// ──────────────────────────────────────
+async function startScrape(gameType) {
+  const gt = gameType.toLowerCase();
+  const tagsEl = document.getElementById(`${gt}-tags`);
+  const dsEl   = document.getElementById(`${gt}-dataset`);
+  const stEl   = document.getElementById(`${gt}-status`);
+
+  const tags = tagsEl.value.split('\n').map(s => s.trim()).filter(Boolean);
+  const dsName = dsEl.value.trim();
+
+  if (!dsName) { stEl.textContent = '请填写数据集名称'; stEl.className = 'status-bar error'; return; }
+  const skipDiscover = document.getElementById('skipDiscoverInput').checked;
+  if (!skipDiscover && !tags.length) {
+    stEl.textContent = '未勾选「仅抓评论」时需填写至少一个 Hashtag';
+    stEl.className = 'status-bar error';
+    return;
+  }
+
+  stEl.textContent = '任务提交中...';
+  stEl.className = 'status-bar running';
+
+  try {
+    const res = await fetch('/api/thai_schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        game_type: gameType,
+        dataset_name: dsName,
+        skip_discover: skipDiscover,
+        seed_tags: tags,
+        days_back: 7,
+        results_limit: 5000,
+        max_ai_comments: 5000,
+        discover_max_posts: 3000,
+      })
+    });
+    const d = await res.json();
+    if (d.status === 'success') {
+      stEl.textContent = `任务已启动（ID: ${d.task_id}），发现中...`;
+      pollTaskStatus(gameType, d.task_id, stEl);
+    } else {
+      stEl.textContent = `❌ ${d.message}`;
+      stEl.className = 'status-bar error';
+    }
+  } catch(e) {
+    stEl.textContent = `❌ 请求失败：${e.message}`;
+    stEl.className = 'status-bar error';
+  }
+}
+
+function pollTaskStatus(gameType, taskId, stEl) {
+  const gt = gameType.toLowerCase();
+  if (taskPollers[gt]) clearInterval(taskPollers[gt]);
+  taskPollers[gt] = setInterval(async () => {
+    try {
+      const res = await fetch(`/fb_task_status/${taskId}`);
+      const d = await res.json();
+      const summary = d.result_summary || '';
+      if (d.status === 'completed') {
+        clearInterval(taskPollers[gt]);
+        stEl.textContent = `✅ 完成：${summary}`;
+        stEl.className = 'status-bar success';
+        loadReport();
+      } else if (d.status === 'failed') {
+        clearInterval(taskPollers[gt]);
+        stEl.textContent = `❌ 失败：${d.error_message || '未知错误'}`;
+        stEl.className = 'status-bar error';
+      } else {
+        stEl.textContent = summary || `运行中 (${d.status})...`;
+        stEl.className = 'status-bar running';
+      }
+    } catch(e) { /* 忽略轮询错误 */ }
+  }, 3000);
+}
+
+// ──────────────────────────────────────
+// Chart.js 工具
+// ──────────────────────────────────────
+const chartInstances = {};
+function buildChart(canvasId, labels, series, title) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (chartInstances[canvasId]) { chartInstances[canvasId].destroy(); }
+
+  const palette = Object.values(COLORS);
+  const datasets = series.map((s, i) => ({
+    label: s.label,
+    data: s.data,
+    borderColor: s.color || palette[i % palette.length],
+    backgroundColor: (s.color || palette[i % palette.length]) + '22',
+    borderWidth: 2.5,
+    pointRadius: 4,
+    tension: 0.35,
+    fill: false,
+  }));
+
+  chartInstances[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 12 } } }, title: { display: false } },
+      scales: {
+        x: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 } } },
+        y: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 } }, beginAtZero: true },
+      }
+    }
+  });
+}
+
+// ──────────────────────────────────────
+// 加载报告数据
+// ──────────────────────────────────────
+async function loadReport() {
+  try {
+    const res = await fetch('/api/thai_report_data');
+    const d = await res.json();
+    if (d.status !== 'success') { console.error('thai_report_data error', d); return; }
+
+    const ds = d.datasets;
+
+    // 互动量图 A
+    buildChart('chartEngA',
+      ds['泰国区域']?.days || [],
+      [
+        { label: '泰国区域(MLBB)', data: ds['泰国区域']?.engagement || [], color: COLORS.MLBB },
+        { label: '26Y SPD泰国1',   data: ds['26Y SPD泰国1']?.engagement || [], color: COLORS.SPD },
+      ]
+    );
+
+    // 互动量图 B
+    buildChart('chartEngB',
+      ds['泰国区域']?.days || [],
+      [
+        { label: '泰国区域(MLBB)', data: ds['泰国区域']?.engagement || [], color: COLORS.MLBB },
+        { label: 'ROV泰国',        data: ds['ROV泰国']?.engagement || [], color: COLORS.ROV },
+      ]
+    );
+
+    // 互动量图 C（相对坐标）
+    buildChart('chartEngC',
+      d.chart_c_labels,
+      [
+        { label: '26Y SPD泰国2',  data: ds['26Y SPD泰国2']?.engagement || [], color: COLORS.SPD },
+        { label: '115泰国热点',   data: ds['115泰国热点']?.engagement || [], color: COLORS.MLBB },
+        { label: '25Y SPD泰国',   data: ds['25Y SPD泰国']?.engagement || [], color: COLORS.extra },
+      ]
+    );
+
+    // 评论量图 A
+    buildChart('chartCmtA',
+      ds['泰国区域']?.days || [],
+      [
+        { label: '泰国区域(MLBB)', data: ds['泰国区域']?.new_comments || [], color: COLORS.MLBB },
+        { label: '26Y SPD泰国1',   data: ds['26Y SPD泰国1']?.new_comments || [], color: COLORS.SPD },
+      ]
+    );
+
+    // 评论量图 B
+    buildChart('chartCmtB',
+      ds['泰国区域']?.days || [],
+      [
+        { label: '泰国区域(MLBB)', data: ds['泰国区域']?.new_comments || [], color: COLORS.MLBB },
+        { label: 'ROV泰国',        data: ds['ROV泰国']?.new_comments || [], color: COLORS.ROV },
+      ]
+    );
+
+    // 评论量图 C
+    buildChart('chartCmtC',
+      d.chart_c_labels,
+      [
+        { label: '26Y SPD泰国2',  data: ds['26Y SPD泰国2']?.new_comments || [], color: COLORS.SPD },
+        { label: '115泰国热点',   data: ds['115泰国热点']?.new_comments || [], color: COLORS.MLBB },
+        { label: '25Y SPD泰国',   data: ds['25Y SPD泰国']?.new_comments || [], color: COLORS.extra },
+      ]
+    );
+
+    // 峰值下钻
+    renderPeaks(d.peak_data);
+
+    // Top5
+    renderTop5(d.top5);
+
+  } catch(e) {
+    console.error('loadReport error', e);
+  }
+}
+
+// ──────────────────────────────────────
+// 峰值下钻渲染
+// ──────────────────────────────────────
+function renderPeaks(peakData) {
+  const con = document.getElementById('peak-container');
+  const chartTitles = ['图A 评论峰值（泰国区域 vs 26Y SPD泰国1）', '图B 评论峰值（泰国区域 vs ROV泰国）', '图C 评论峰值（SPD泰国2 vs 115泰国热点 vs 25Y SPD泰国）'];
+  con.innerHTML = peakData.map((group, i) => {
+    const entries = Object.entries(group);
+    const items = entries.map(([dsName, info]) => {
+      if (!info) {
+        return `<div class="peak-item"><div class="ds-label">${dsName}</div><div class="peak-post" style="color:#bbb">暂无数据</div></div>`;
+      }
+      const post = info.post;
+      const postHtml = post
+        ? `<div class="peak-post">
+             <strong>@${esc(post.author)}</strong> 发布「${esc(post.summary)}...」，
+             获得 <strong>${esc(post.engagement_label)}</strong> 互动
+           </div>`
+        : `<div class="peak-post" style="color:#bbb">峰值日无帖子数据</div>`;
+      return `
+        <div class="peak-item">
+          <div class="ds-label">${dsName}</div>
+          <div class="peak-day">峰值日：${info.peak_day}（新增评论 ${info.peak_count} 条）</div>
+          ${postHtml}
+        </div>`;
+    }).join('');
+    return `
+      <div class="peak-section">
+        <h4>${chartTitles[i]}</h4>
+        <div class="peak-group">${items}</div>
+      </div>`;
+  }).join('');
+}
+
+// ──────────────────────────────────────
+// Top5 渲染
+// ──────────────────────────────────────
+function renderTop5(posts) {
+  const con = document.getElementById('top5-container');
+  if (!posts || !posts.length) {
+    con.innerHTML = '<div class="no-data">暂无数据，请先导入或采集 26Y SPD泰国1 数据集</div>';
+    return;
+  }
+  const rankClass = ['gold', 'silver', 'bronze', '', ''];
+  const rows = posts.map((p, i) => `
+    <tr>
+      <td class="top5-rank ${rankClass[i]}">${i + 1}</td>
+      <td>
+        <div style="font-weight:600;font-size:13px;">@${esc(p.author)}</div>
+        <div style="font-size:12px;color:#666;margin-top:3px;">${esc(p.content)}</div>
+        ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#1a7fd4;">查看原帖 →</a>` : ''}
+      </td>
+      <td><span class="engagement-badge">${esc(p.engagement_label)}</span></td>
+      <td style="font-size:12px;color:#666;">👍 ${p.likes} &nbsp; 💬 ${p.comments} &nbsp; 🔁 ${p.shares}</td>
+    </tr>
+  `).join('');
+  con.innerHTML = `
+    <table class="top5-table">
+      <thead><tr><th>#</th><th>帖子</th><th>总互动</th><th>明细</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ──────────────────────────────────────
+// 初始化
+// ──────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderImportButtons();
+  loadReport();
+});
+</script>
+</body>
+</html>

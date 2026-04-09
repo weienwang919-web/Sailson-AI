@@ -19,3 +19,4 @@ apscheduler
 sqlalchemy
 matplotlib
 wordcloud
+langdetect
