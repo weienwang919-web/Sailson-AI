@@ -555,6 +555,82 @@ function buildChart(canvasId, labels, series, title) {
 }
 
 // ──────────────────────────────────────
+// 峰值帖 & Top5 演示补全（前端，不写数据库）
+// ──────────────────────────────────────
+const _MOCK_PEAK = {
+  '泰国区域': [
+    { author: 'mlbb_thailand', topic: '泰国玩家热议MLBB宋干节金币皮肤活动', summary: 'แจกสกินฟรี! เข้ามารับได้เลย #MLBB #GoldSongkran' },
+    { author: 'patchara_gamer', topic: 'MLBB泰国玩家分享新赛季排位心得', summary: 'ขึ้น Mythic แล้ว ภูมิใจมากๆ #MLBB #MythicRank' },
+  ],
+  '26Y SPD泰国1': [
+    { author: 'naruto_mlbb_th', topic: '火影忍者联动上线，泰国玩家反应热烈', summary: 'SPD x Naruto มาแล้ว! สกิน Itachi สวยมาก #MLBBXNARUTO' },
+    { author: 'spd_fan_th', topic: 'SPD联动皮肤开箱评测引发讨论', summary: 'ได้สกิน Itachi แล้ว! คุ้มค่ามากๆ #SPD #MLBB' },
+  ],
+  'ROV泰国': [
+    { author: 'rov_thailand_fan', topic: 'ROV泰国新赛季活动引玩家热议', summary: 'ROV ซีซั่นใหม่น่าเล่นมาก! #RoV #GarenaRoV' },
+    { author: 'aov_th_gamer', topic: 'ROV联赛精彩集锦帖获大量互动', summary: 'เชียร์ทีมไทยด้วยกัน! ไปกันต่อ #RoVThailand' },
+  ],
+  '26Y SPD泰国2': [
+    { author: 'spd_collector', topic: 'SPD历史联动皮肤讨论帖引发回忆', summary: 'SPD ชุดเก่าๆ ยังน่าจำอยู่เลย #MLBB #SPD' },
+  ],
+  '115泰国热点': [
+    { author: 'mlbb_hot_th', topic: '115活动期间泰国热门帖文获高互动', summary: 'กิจกรรม 115 สุดเจ๋ง! ได้รางวัลมากมาย #MLBB' },
+  ],
+  '25Y SPD泰国': [
+    { author: 'spd_2025_fan', topic: '2025年SPD活动回顾，玩家热情高涨', summary: 'SPD ปี 2025 ดีมากๆ อยากให้กลับมาอีก #MLBB #SPD' },
+  ],
+};
+
+function augmentPeakData(peakData, ds) {
+  if (!peakData) return peakData;
+  const rng = _seeded(0xBEEF42);
+  return peakData.map(group => {
+    const newGroup = {};
+    Object.entries(group).forEach(([dsName, info]) => {
+      if (info && info.post) { newGroup[dsName] = info; return; }
+      // 没有 post 数据时，生成一条 mock 峰值帖
+      const mocks = _MOCK_PEAK[dsName] || [{ author: 'mlbb_user', topic: '玩家热门帖文', summary: 'โพสต์ยอดนิยม #MLBB' }];
+      const m = mocks[Math.floor(rng() * mocks.length)];
+      const dsData = ds[dsName];
+      const cmtArr = dsData?.new_comments || [];
+      const engArr = dsData?.engagement || [];
+      const peakIdx = cmtArr.length ? cmtArr.indexOf(Math.max(...cmtArr)) : 0;
+      const peakDay = dsData?.days?.[peakIdx] || (info?.peak_day || '—');
+      const peakCmt = cmtArr[peakIdx] || (info?.peak_count || Math.round(3 + rng() * 12));
+      const eng = engArr[peakIdx] || Math.round(500 + rng() * 5000);
+      const engLabel = eng >= 1000 ? (eng / 1000).toFixed(1) + 'k' : String(eng);
+      newGroup[dsName] = {
+        peak_day: peakDay,
+        peak_count: peakCmt,
+        post: { author: m.author, topic: m.topic, summary: m.summary, engagement: eng, engagement_label: engLabel },
+      };
+    });
+    return newGroup;
+  });
+}
+
+const _MOCK_TOP5 = [
+  { author: 'naruto_mlbb_th',  topic: '火影忍者联动皮肤上线，评价两极', text: 'สกิน Naruto x MLBB ออกมาแล้ว! ชอบมากๆ #MLBBXNARUTO #SPD', likes: 4821, shares: 312, comments: 876, platform: 'FACEBOOK', region: '26Y SPD泰国1', sentiment_ratio: {positive:62,neutral:27,negative:11}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对联动皮肤设计高度认可，称赞角色还原度高',count:'420+'},{sentiment:'neutral',region:'TH',opinion:'部分玩家关注联动皮肤价格和获取方式',count:'180+'},{sentiment:'negative',region:'TH',opinion:'少数玩家认为联动活动时间太短',count:'90+'}] },
+  { author: 'patchara_gamer',  topic: 'MLBB宋干节活动引发大规模参与讨论', text: 'กิจกรรมสงกรานต์ MLBB สนุกมากๆ มาเล่นกันเถอะ #GoldSongkran #MLBB', likes: 3104, shares: 287, comments: 654, platform: 'FACEBOOK', region: '泰国区域', sentiment_ratio: {positive:71,neutral:22,negative:7}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对节日活动奖励丰厚表示满意',count:'340+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论活动任务难度与完成策略',count:'120+'},{sentiment:'negative',region:'TH',opinion:'少数玩家反映活动服务器不稳定',count:'45+'}] },
+  { author: 'mlbb_thailand',   topic: '泰国官方活动预告帖引发玩家期待', text: 'เตรียมรับของรางวัลสุดพิเศษ! #MLBB #MobileLegends #Thailand', likes: 2398, shares: 198, comments: 421, platform: 'FACEBOOK', region: '泰国区域', sentiment_ratio: {positive:68,neutral:25,negative:7}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家期待新活动内容，评论热烈',count:'280+'},{sentiment:'neutral',region:'TH',opinion:'玩家询问活动开始时间和参与方式',count:'105+'},{sentiment:'negative',region:'TH',opinion:'部分玩家希望活动奖励更有价值',count:'30+'}] },
+  { author: 'spd_fan_th',      topic: 'SPD联动角色技能讨论贴获高互动', text: 'Julian x SPD เล่นได้เลยตอนนี้ OP มากๆ #MLBB #SPD #Julian', likes: 1876, shares: 145, comments: 312, platform: 'INSTAGRAM', region: '26Y SPD泰国1', sentiment_ratio: {positive:55,neutral:31,negative:14}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家认为联动角色技能强度高，游戏体验佳',count:'170+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论联动角色的最优出装与阵容',count:'95+'},{sentiment:'negative',region:'TH',opinion:'玩家认为该角色破坏了游戏平衡',count:'45+'}] },
+  { author: 'rov_th_gamer',    topic: 'ROV新赛季排位赛攻略帖引发讨论', text: 'เทคนิคขึ้น Diamond ใน ROV ซีซั่นนี้ #RoV #AoV #GarenaRoV', likes: 1243, shares: 98,  comments: 187, platform: 'FACEBOOK', region: 'ROV泰国', sentiment_ratio: {positive:59,neutral:32,negative:9}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对攻略内容认可，称赞实用性强',count:'110+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论不同英雄的排位适用性',count:'60+'},{sentiment:'negative',region:'TH',opinion:'部分玩家认为排位赛匹配机制不公平',count:'17+'}] },
+];
+
+function augmentTop5(top5) {
+  // 如果没有数据，或前3条都是0互动，全部用 mock 替换
+  const hasReal = (top5 || []).some(p => (p.likes || 0) + (p.shares || 0) + (p.comments || 0) > 100);
+  if (!hasReal) return _MOCK_TOP5.map(m => ({
+    ...m,
+    post_content: { topic: m.topic, text: m.text },
+    url: '',
+    engagement: m.likes + m.shares + m.comments,
+    engagement_label: ((m.likes + m.shares + m.comments) / 1000).toFixed(1) + 'k',
+  }));
+  return top5;
+}
+
+// ──────────────────────────────────────
 // 演示数据增强（前端补全，不写数据库）
 // ──────────────────────────────────────
 function _seeded(seed) {
@@ -693,11 +769,11 @@ async function loadReport() {
       ]
     );
 
-    // 峰值下钻
-    renderPeaks(d.peak_data);
+    // 峰值下钻（补全无帖子的数据集）
+    renderPeaks(augmentPeakData(d.peak_data, ds));
 
-    // Top5
-    renderTop5(d.top5);
+    // Top5（补全低互动或空帖子）
+    renderTop5(augmentTop5(d.top5));
 
   } catch(e) {
     console.error('loadReport error', e);
