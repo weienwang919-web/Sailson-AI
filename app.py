@@ -5809,7 +5809,7 @@ def import_thai_json():
                                     platform_code = parsed['platform']
                                     engagement_val = likes + shares + comments_cnt
 
-                                if caption and not tasks._is_thai_content(caption):
+                                if not tasks._has_thai_chars(caption or ''):
                                     skipped_non_thai += 1
                                     continue
 
@@ -5826,9 +5826,9 @@ def import_thai_json():
                                         ON CONFLICT (post_url) DO UPDATE SET
                                             views = GREATEST(COALESCE(fb_post_metrics.views,0), EXCLUDED.views),
                                             shares = GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares),
-                                            likes = GREATEST(COALESCE(fb_post_metrics.likes,0), EXCLUDED.likes),
+                                            likes = EXCLUDED.likes,
                                             comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                                            engagement = GREATEST(COALESCE(fb_post_metrics.engagement,0), EXCLUDED.engagement),
+                                            engagement = EXCLUDED.likes + GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares) + GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
                                             post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
                                             updated_at = NOW()
                                     """, (
@@ -5951,10 +5951,10 @@ def import_thai_json():
                             skipped_lang += 1
                             continue
     
-                    if caption and not tasks._is_thai_content(caption):
+                    if not tasks._has_thai_chars(caption or ''):
                         skipped_non_thai += 1
                         continue
-    
+
                     # 写入 fb_post_metrics
                     try:
                         db.execute("""
@@ -5964,9 +5964,9 @@ def import_thai_json():
                             ON CONFLICT (post_url) DO UPDATE SET
                                 views = GREATEST(COALESCE(fb_post_metrics.views,0), EXCLUDED.views),
                                 shares = GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares),
-                                likes = GREATEST(COALESCE(fb_post_metrics.likes,0), EXCLUDED.likes),
+                                likes = EXCLUDED.likes,
                                 comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                                engagement = GREATEST(COALESCE(fb_post_metrics.engagement,0), EXCLUDED.engagement),
+                                engagement = EXCLUDED.likes + GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares) + GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
                                 post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
                                 updated_at = NOW()
                         """, (
@@ -6038,7 +6038,7 @@ def thai_fix_engagement():
         # 仅修复泰国专题数据中明显受污染的 FB 行（限定在泰国专题日期窗内）：
         # - platform=FACEBOOK
         # - 在 thai_report_datasets 中
-        # - views=0 且 comments/shares=0 但 likes>0（旧逻辑把 play_count 写进 likes）
+        # - likes>50000 且 comments/shares=0（play_count 污染特征：大量"赞"但零评论零转发）
         suspicious_where = """
             m.platform = 'FACEBOOK'
             AND EXISTS (
@@ -6046,10 +6046,9 @@ def thai_fix_engagement():
             )
             AND m.post_date >= %s
             AND m.post_date <= %s
-            AND COALESCE(m.views, 0) = 0
+            AND COALESCE(m.likes, 0) > 50000
             AND COALESCE(m.comments_count, 0) = 0
             AND COALESCE(m.shares, 0) = 0
-            AND COALESCE(m.likes, 0) > 0
         """
         suspicious_params = (start_date, end_date)
 
@@ -6304,6 +6303,23 @@ def thai_report_data():
             """, (dataset_name, start, end))
             return {r['day']: int(r['cnt']) for r in rows}
 
+        def _generate_post_topic(content: str) -> str:
+            """调用 Qwen 为帖文生成一句话中文摘要（≤50字）。无 Qwen 或失败时返回空字符串。"""
+            if not content or not qwen_client:
+                return ''
+            try:
+                resp = qwen_client.chat.completions.create(
+                    model='qwen-plus',
+                    messages=[{'role': 'user', 'content': (
+                        f"请用一句话（不超过50个中文字）概括以下帖子的主要内容，供手游品牌方快速了解帖文主题：\n\n{content[:400]}"
+                    )}],
+                    temperature=0.3,
+                    max_tokens=80,
+                )
+                return (resp.choices[0].message.content or '').strip()[:60]
+            except Exception:
+                return ''
+
         def _peak_post(dataset_name, peak_day):
             """返回峰值日评论最多的帖子信息"""
             row = db.query_one_with_timeout("""
@@ -6324,17 +6340,19 @@ def thai_report_data():
                 return None
             eng = int(row.get('engagement') or 0)
             eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
-            content = (row.get('post_content') or '')[:60]
+            raw_content = row.get('post_content') or ''
+            topic = _generate_post_topic(raw_content)
             return {
                 'author': row.get('author') or '',
-                'summary': content,
+                'summary': raw_content[:60],
+                'topic': topic,
                 'engagement': eng,
                 'engagement_label': eng_k,
             }
 
         def _top5_posts(dataset_name, start, end):
             rows = db.query_all_with_timeout("""
-                SELECT m.author, m.post_content, m.post_url,
+                SELECT m.author, m.post_content, m.post_url, m.platform,
                        COALESCE(m.likes,0) AS likes, COALESCE(m.shares,0) AS shares, COALESCE(m.comments_count,0) AS comments_count,
                        COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement
                 FROM fb_post_metrics m
@@ -6347,15 +6365,35 @@ def thai_report_data():
             result = []
             for r in rows:
                 eng = int(r.get('engagement') or 0)
+                post_url = r.get('post_url') or ''
+                raw_content = r.get('post_content') or ''
+
+                # AI 帖文摘要
+                topic = _generate_post_topic(raw_content)
+
+                # 查询评论做情感分析（最多 50 条）
+                cmt_rows = db.query_all(
+                    "SELECT content, language AS region FROM fb_comments WHERE post_url = %s ORDER BY created_at LIMIT 50",
+                    (post_url,)
+                )
+                sentiment_data = _ai_analyze_single_post(cmt_rows, len(cmt_rows)) if cmt_rows else None
+
                 result.append({
                     'author': r.get('author') or '',
-                    'content': (r.get('post_content') or '')[:120],
-                    'url': r.get('post_url') or '',
+                    'platform': (r.get('platform') or 'FACEBOOK').upper(),
+                    'region': dataset_name,
+                    'post_content': {
+                        'topic': topic,
+                        'text': raw_content[:120],
+                    },
+                    'url': post_url,
                     'likes': int(r.get('likes') or 0),
                     'shares': int(r.get('shares') or 0),
                     'comments': int(r.get('comments_count') or 0),
                     'engagement': eng,
                     'engagement_label': f"{eng/1000:.1f}k" if eng >= 1000 else str(eng),
+                    'sentiment_ratio': (sentiment_data or {}).get('sentiment_ratio') or {'positive': 0, 'neutral': 0, 'negative': 0},
+                    'top_sentiments': (sentiment_data or {}).get('sentiments') or [],
                 })
             return result
 

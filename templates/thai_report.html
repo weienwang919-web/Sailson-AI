@@ -239,6 +239,29 @@ function esc(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function allZero(arr) {
+  return !arr || arr.length === 0 || arr.every(v => !v || v === 0);
+}
+
+function formatK(n) {
+  const num = Number(n) || 0;
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+  return String(num);
+}
+
+function formatPercent(v) {
+  const n = parseFloat(v);
+  return isNaN(n) ? '0' : String(Math.round(n));
+}
+
+function safeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString();
+  } catch (e) {}
+  return '#';
+}
+
 // ──────────────────────────────────────
 // 全局状态
 // ──────────────────────────────────────
@@ -564,9 +587,9 @@ async function loadReport() {
     buildChart('chartEngC',
       d.chart_c_labels,
       [
-        { label: '26Y SPD泰国2',  data: ds['26Y SPD泰国2']?.engagement || [], color: COLORS.SPD },
-        { label: '115泰国热点',   data: ds['115泰国热点']?.engagement || [], color: COLORS.MLBB },
-        { label: '25Y SPD泰国',   data: ds['25Y SPD泰国']?.engagement || [], color: COLORS.extra },
+        { label: '26Y SPD泰国2'  + (allZero(ds['26Y SPD泰国2']?.engagement)  ? '（暂无数据）' : ''), data: ds['26Y SPD泰国2']?.engagement  || [], color: COLORS.SPD },
+        { label: '115泰国热点'   + (allZero(ds['115泰国热点']?.engagement)    ? '（暂无数据）' : ''), data: ds['115泰国热点']?.engagement   || [], color: COLORS.MLBB },
+        { label: '25Y SPD泰国'   + (allZero(ds['25Y SPD泰国']?.engagement)    ? '（暂无数据）' : ''), data: ds['25Y SPD泰国']?.engagement   || [], color: COLORS.extra },
       ]
     );
 
@@ -592,9 +615,9 @@ async function loadReport() {
     buildChart('chartCmtC',
       d.chart_c_labels,
       [
-        { label: '26Y SPD泰国2',  data: ds['26Y SPD泰国2']?.new_comments || [], color: COLORS.SPD },
-        { label: '115泰国热点',   data: ds['115泰国热点']?.new_comments || [], color: COLORS.MLBB },
-        { label: '25Y SPD泰国',   data: ds['25Y SPD泰国']?.new_comments || [], color: COLORS.extra },
+        { label: '26Y SPD泰国2'  + (allZero(ds['26Y SPD泰国2']?.new_comments)  ? '（暂无数据）' : ''), data: ds['26Y SPD泰国2']?.new_comments  || [], color: COLORS.SPD },
+        { label: '115泰国热点'   + (allZero(ds['115泰国热点']?.new_comments)    ? '（暂无数据）' : ''), data: ds['115泰国热点']?.new_comments   || [], color: COLORS.MLBB },
+        { label: '25Y SPD泰国'   + (allZero(ds['25Y SPD泰国']?.new_comments)    ? '（暂无数据）' : ''), data: ds['25Y SPD泰国']?.new_comments   || [], color: COLORS.extra },
       ]
     );
 
@@ -624,6 +647,7 @@ function renderPeaks(peakData) {
       const post = info.post;
       const postHtml = post
         ? `<div class="peak-post">
+             ${post.topic ? `<div style="font-weight:600;font-size:13px;color:#333;margin-bottom:4px;">${esc(post.topic)}</div>` : ''}
              <strong>@${esc(post.author)}</strong> 发布「${esc(post.summary)}...」，
              获得 <strong>${esc(post.engagement_label)}</strong> 互动
            </div>`
@@ -644,7 +668,7 @@ function renderPeaks(peakData) {
 }
 
 // ──────────────────────────────────────
-// Top5 渲染
+// Top5 渲染（SPD 同款表格格式）
 // ──────────────────────────────────────
 function renderTop5(posts) {
   const con = document.getElementById('top5-container');
@@ -652,24 +676,81 @@ function renderTop5(posts) {
     con.innerHTML = '<div class="no-data">暂无数据，请先导入或采集 26Y SPD泰国1 数据集</div>';
     return;
   }
-  const rankClass = ['gold', 'silver', 'bronze', '', ''];
-  const rows = posts.map((p, i) => `
-    <tr>
-      <td class="top5-rank ${rankClass[i]}">${i + 1}</td>
-      <td>
-        <div style="font-weight:600;font-size:13px;">@${esc(p.author)}</div>
-        <div style="font-size:12px;color:#666;margin-top:3px;">${esc(p.content)}</div>
-        ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:#1a7fd4;">查看原帖 →</a>` : ''}
-      </td>
-      <td><span class="engagement-badge">${esc(p.engagement_label)}</span></td>
-      <td style="font-size:12px;color:#666;">👍 ${p.likes} &nbsp; 💬 ${p.comments} &nbsp; 🔁 ${p.shares}</td>
-    </tr>
-  `).join('');
+
+  function renderSentimentGroup(label, items2) {
+    const top3 = (items2 || []).slice(0, 3);
+    if (!top3.length) return '';
+    return `
+      <div style="margin-bottom:6px;">
+        <strong>${label}</strong>
+        <ul style="margin:3px 0 0 16px;padding:0;font-size:12px;color:#555;">
+          ${top3.map(op => {
+            const regionPrefix = op.region ? `${esc(op.region)}：` : '';
+            const countSuffix = op.count ? `（${esc(String(op.count))}）` : '';
+            return `<li>${regionPrefix}${esc(op.opinion || '')}${countSuffix}</li>`;
+          }).join('')}
+        </ul>
+      </div>`;
+  }
+
+  const rows = posts.map(post => {
+    const ratio = post.sentiment_ratio || {};
+    const grouped = { positive: [], neutral: [], negative: [] };
+    (post.top_sentiments || []).forEach(op => {
+      const k = String(op.sentiment || '').toLowerCase();
+      if (grouped[k]) grouped[k].push(op);
+    });
+    const pc = post.post_content || {};
+    const link = safeUrl(post.url || '');
+    const hasSentiment = grouped.positive.length || grouped.neutral.length || grouped.negative.length;
+    return `
+      <tr>
+        <td style="font-size:12px;vertical-align:top;padding:8px 6px;">${esc(post.platform || 'FB')}</td>
+        <td style="font-size:12px;vertical-align:top;padding:8px 6px;">${esc(post.region || '-')}</td>
+        <td style="vertical-align:top;padding:8px 6px;">
+          <div style="font-weight:600;font-size:13px;">${esc(pc.topic || '-')}</div>
+          <div style="font-size:12px;color:#666;margin-top:3px;">${esc(pc.text || '')}</div>
+        </td>
+        <td style="font-size:13px;line-height:1.8;white-space:nowrap;vertical-align:top;padding:8px 6px;">
+          <span style="color:#0f9d58;">正 ${esc(formatPercent(ratio.positive))}%</span><br>
+          <span style="color:#666;">中 ${esc(formatPercent(ratio.neutral))}%</span><br>
+          <span style="color:#e45b5b;">负 ${esc(formatPercent(ratio.negative))}%</span>
+        </td>
+        <td style="font-size:12px;vertical-align:top;padding:8px 6px;">
+          ${hasSentiment
+            ? renderSentimentGroup('正面', grouped.positive)
+              + renderSentimentGroup('中性', grouped.neutral)
+              + renderSentimentGroup('负面', grouped.negative)
+            : '<span style="color:#bbb;font-size:12px;">暂无评论数据</span>'}
+        </td>
+        <td style="font-size:12px;line-height:1.8;white-space:nowrap;vertical-align:top;padding:8px 6px;">
+          <div>赞 ${esc(formatK(post.likes || 0))}</div>
+          <div>转 ${esc(formatK(post.shares || 0))}</div>
+          <div>评 ${esc(formatK(post.comments || 0))}</div>
+        </td>
+        <td style="vertical-align:top;padding:8px 6px;">
+          <a href="${link}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#1a7fd4;">查看</a>
+        </td>
+      </tr>`;
+  }).join('');
+
   con.innerHTML = `
-    <table class="top5-table">
-      <thead><tr><th>#</th><th>帖子</th><th>总互动</th><th>明细</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div style="overflow:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:#f5f5f5;font-weight:600;font-size:13px;">
+            <th style="padding:8px 6px;text-align:left;width:55px;">平台</th>
+            <th style="padding:8px 6px;text-align:left;width:110px;">数据集</th>
+            <th style="padding:8px 6px;text-align:left;width:240px;">帖子主要内容</th>
+            <th style="padding:8px 6px;text-align:left;width:100px;">舆情情绪占比</th>
+            <th style="padding:8px 6px;text-align:left;">正面/中性/负面 舆情提炼</th>
+            <th style="padding:8px 6px;text-align:left;width:75px;">赞/转/评</th>
+            <th style="padding:8px 6px;text-align:left;width:45px;">链接</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 // ──────────────────────────────────────

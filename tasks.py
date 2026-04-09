@@ -68,6 +68,15 @@ def _is_thai_content(text):
     return thai_chars / max(len(text), 1) > 0.15
 
 
+def _has_thai_chars(text: str) -> bool:
+    """只要文本含有任意泰文 Unicode 字符（U+0E00–U+0E7F）即返回 True。
+    比 _is_thai_content 更宽松：有泰语就算，不要求主语言为泰语。
+    """
+    if not text:
+        return False
+    return bool(_THAI_UNICODE_RE.search(text))
+
+
 def _normalize_list_input(values):
     if values is None:
         return []
