@@ -6086,14 +6086,8 @@ def thai_report_data():
     """
     try:
         from datetime import date as _date, timedelta
-        # 防止查询超时导致 Render 代理 502：单次查询最长 55 秒
-        try:
-            db.execute("SET LOCAL statement_timeout = '55s'")
-        except Exception:
-            pass
-
         def _fetch_daily_engagement(dataset_name, start, end):
-            rows = db.query_all("""
+            rows = db.query_all_with_timeout("""
                 SELECT m.post_date::text AS day,
                        COALESCE(SUM(m.likes),0) + COALESCE(SUM(m.shares),0) + COALESCE(SUM(m.comments_count),0) AS total
                 FROM fb_post_metrics m
@@ -6107,7 +6101,7 @@ def thai_report_data():
 
         def _fetch_daily_new_comments(dataset_name, start, end):
             # 用时间戳范围替代 DATE() 函数过滤，让 created_at 索引生效
-            rows = db.query_all("""
+            rows = db.query_all_with_timeout("""
                 SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
                        COUNT(*) AS cnt
                 FROM fb_comments c
@@ -6122,7 +6116,7 @@ def thai_report_data():
 
         def _peak_post(dataset_name, peak_day):
             """返回峰值日评论最多的帖子信息"""
-            row = db.query_one("""
+            row = db.query_one_with_timeout("""
                 SELECT m.author, m.post_content,
                        COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement,
                        COUNT(c.id) AS comment_cnt
@@ -6149,7 +6143,7 @@ def thai_report_data():
             }
 
         def _top5_posts(dataset_name, start, end):
-            rows = db.query_all("""
+            rows = db.query_all_with_timeout("""
                 SELECT m.author, m.post_content, m.post_url,
                        COALESCE(m.likes,0) AS likes, COALESCE(m.shares,0) AS shares, COALESCE(m.comments_count,0) AS comments_count,
                        COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement

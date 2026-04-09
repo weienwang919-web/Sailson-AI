@@ -81,6 +81,20 @@ def query_all(sql, params=None):
         cursor.execute(sql, params or ())
         return cursor.fetchall()
 
+def query_one_with_timeout(sql, params=None, timeout='55s'):
+    """查询单条记录（带 statement_timeout，防止慢查询拖垮 Render 代理）"""
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute(f"SET LOCAL statement_timeout = '{timeout}'")
+        cursor.execute(sql, params or ())
+        return cursor.fetchone()
+
+def query_all_with_timeout(sql, params=None, timeout='55s'):
+    """查询多条记录（带 statement_timeout，防止慢查询拖垮 Render 代理）"""
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute(f"SET LOCAL statement_timeout = '{timeout}'")
+        cursor.execute(sql, params or ())
+        return cursor.fetchall()
+
 def execute(sql, params=None):
     """执行 SQL（INSERT/UPDATE/DELETE）"""
     with get_db_cursor(commit=True) as cursor:
