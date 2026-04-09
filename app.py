@@ -6038,7 +6038,7 @@ def thai_fix_engagement():
         # 仅修复泰国专题数据中明显受污染的 FB 行（限定在泰国专题日期窗内）：
         # - platform=FACEBOOK
         # - 在 thai_report_datasets 中
-        # - likes>50000 且 comments/shares=0（play_count 污染特征：大量"赞"但零评论零转发）
+        # - likes>1000 且 comments/shares=0（play_count 污染特征：有"赞"但零评论零转发）
         suspicious_where = """
             m.platform = 'FACEBOOK'
             AND EXISTS (
@@ -6046,7 +6046,7 @@ def thai_fix_engagement():
             )
             AND m.post_date >= %s
             AND m.post_date <= %s
-            AND COALESCE(m.likes, 0) > 50000
+            AND COALESCE(m.likes, 0) > 1000
             AND COALESCE(m.comments_count, 0) = 0
             AND COALESCE(m.shares, 0) = 0
         """
