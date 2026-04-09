@@ -392,9 +392,9 @@ def ensure_fb_post_metrics_schema():
     except Exception as e:
         logger.warning(f"⚠️ 无法创建 thai_report_datasets 表: {e}")
 
-    # fb_comments 索引（加速泰国报告查询）
+    # fb_comments 复合索引（加速泰国报告的 JOIN + 时间过滤）
     try:
-        db.execute("CREATE INDEX IF NOT EXISTS idx_fb_comments_post_url ON fb_comments (post_url)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fb_comments_url_time ON fb_comments (post_url, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_fb_comments_created_at ON fb_comments (created_at)")
         logger.info("✅ 已确认 fb_comments 索引存在")
     except Exception as e:
@@ -6086,9 +6086,9 @@ def thai_report_data():
     """
     try:
         from datetime import date as _date, timedelta
-        # 防止查询超时导致 Render 代理 502：单次查询最长 25 秒
+        # 防止查询超时导致 Render 代理 502：单次查询最长 55 秒
         try:
-            db.execute("SET LOCAL statement_timeout = '25s'")
+            db.execute("SET LOCAL statement_timeout = '55s'")
         except Exception:
             pass
 
@@ -6106,14 +6106,15 @@ def thai_report_data():
             return {r['day']: int(r['total']) for r in rows}
 
         def _fetch_daily_new_comments(dataset_name, start, end):
+            # 用时间戳范围替代 DATE() 函数过滤，让 created_at 索引生效
             rows = db.query_all("""
                 SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
                        COUNT(*) AS cnt
                 FROM fb_comments c
                 JOIN thai_report_datasets d ON d.post_url = c.post_url
                 WHERE d.dataset_name = %s
-                  AND DATE(c.created_at AT TIME ZONE 'Asia/Shanghai') >= %s
-                  AND DATE(c.created_at AT TIME ZONE 'Asia/Shanghai') <= %s
+                  AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
+                  AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
                 GROUP BY 1
                 ORDER BY 1
             """, (dataset_name, start, end))
@@ -6129,11 +6130,12 @@ def thai_report_data():
                 JOIN fb_post_metrics m ON m.post_url = c.post_url
                 JOIN thai_report_datasets d ON d.post_url = c.post_url
                 WHERE d.dataset_name = %s
-                  AND DATE(c.created_at AT TIME ZONE 'Asia/Shanghai') = %s
+                  AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
+                  AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
                 GROUP BY m.post_url, m.author, m.post_content, m.likes, m.shares, m.comments_count
                 ORDER BY comment_cnt DESC
                 LIMIT 1
-            """, (dataset_name, peak_day))
+            """, (dataset_name, peak_day, peak_day))
             if not row:
                 return None
             eng = int(row.get('engagement') or 0)
