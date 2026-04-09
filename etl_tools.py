@@ -70,9 +70,12 @@ def filter_thai_rows_excel(file_bytes: bytes, text_column: Optional[str]) -> Tup
     if not col or col not in df.columns:
         col = _guess_text_column(df)
     kept_mask = []
-    for val in df[col].astype(str):
-        s = val if val != "nan" else ""
-        if not s.strip():
+    for val in df[col]:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            s = ""
+        else:
+            s = str(val).strip()
+        if not s or s.lower() == "nan":
             kept_mask.append(False)
         else:
             kept_mask.append(bool(is_thai_content(s)))
