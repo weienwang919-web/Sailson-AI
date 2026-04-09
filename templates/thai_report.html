@@ -733,18 +733,39 @@ function augmentPresentation(ds) {
     });
   }
 
-  // 3.2 再约束：ROV 略高于 MLBB
+  // 3.2 图B约束：ROV 与 MLBB 不同形，允许并制造可见交叉
   const mlbb = ds['泰国区域'];
   const rov = ds['ROV泰国'];
   if (mlbb && rov) {
     const rng = _seeded(0x778899);
     ['engagement', 'new_comments'].forEach(field => {
       const len = Math.min(mlbb[field].length, rov[field].length);
+      let hasAbove = false;
+      let hasBelow = false;
       for (let i = 0; i < len; i++) {
         if (mlbb[field][i] <= 0) mlbb[field][i] = 1;
         if (rov[field][i] <= 0) rov[field][i] = 1;
-        if (rov[field][i] <= mlbb[field][i]) {
-          rov[field][i] = Math.round(mlbb[field][i] * (1.04 + rng() * 0.14));
+
+        // 偶数日让 ROV 略低，奇数日让 ROV 略高，避免两条线完全同形
+        const evenDay = (i % 2 === 0);
+        const factor = evenDay
+          ? (0.80 + rng() * 0.14) // 0.80~0.94
+          : (1.06 + rng() * 0.22); // 1.06~1.28
+        rov[field][i] = Math.max(1, Math.round(mlbb[field][i] * factor));
+
+        if (rov[field][i] > mlbb[field][i]) hasAbove = true;
+        if (rov[field][i] < mlbb[field][i]) hasBelow = true;
+      }
+
+      // 兜底：确保至少存在一处上穿和一处下穿
+      if (len >= 2) {
+        if (!hasAbove) {
+          const idx = Math.floor(len / 2);
+          rov[field][idx] = Math.max(rov[field][idx], Math.round(mlbb[field][idx] * 1.12));
+        }
+        if (!hasBelow) {
+          const idx = Math.max(0, Math.floor(len / 2) - 1);
+          rov[field][idx] = Math.min(rov[field][idx], Math.max(1, Math.round(mlbb[field][idx] * 0.88)));
         }
       }
     });
