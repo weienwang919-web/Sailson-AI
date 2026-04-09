@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel 数据工具</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
+    .page-header { background: linear-gradient(135deg, #1e3a5f, #16213e); color: #fff; padding: 22px 28px; }
+    .page-header h1 { font-size: 20px; font-weight: 700; }
+    .page-header .subtitle { font-size: 12px; color: rgba(255,255,255,0.65); margin-top: 6px; }
+    .page-header a { color: #8ec5ff; font-size: 13px; }
+    .container { max-width: 960px; margin: 0 auto; padding: 20px 18px 48px; }
+    .card { background: #fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #1a1a2e; border-left: 4px solid #1a7fd4; padding-left: 10px; }
+    .hint { font-size: 12px; color: #666; line-height: 1.55; margin-bottom: 12px; background: #f8f9fa; padding: 10px 12px; border-radius: 8px; }
+    label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; margin-top: 10px; }
+    input[type="text"], input[type="date"], input[type="number"], select, textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 13px;
+    }
+    textarea { min-height: 72px; font-family: ui-monospace, monospace; resize: vertical; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .btn { padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+    .btn-primary { background: #1a7fd4; color: #fff; }
+    .btn-primary:hover { background: #1565b8; }
+    .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+    .status { margin-top: 10px; font-size: 12px; color: #666; min-height: 18px; word-break: break-all; }
+    .status.err { color: #c0392b; }
+    .status.ok { color: #2d7a2d; }
+    .chk-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+  </style>
+</head>
+<body>
+<div class="page-header">
+  <h1>Excel 数据工具</h1>
+  <div class="subtitle">抓取 / 清洗 / 导出，与泰国专题报告相互独立</div>
+  <div style="margin-top:10px;"><a href="/">← 返回首页</a></div>
+</div>
+
+<div class="container">
+
+  <!-- 1 -->
+  <div class="card" id="sec1">
+    <h2>功能 1：Hashtag 抓取（Facebook / Instagram）</h2>
+    <div class="hint">
+      调用 Apify 按标签发现帖子，按下方日期范围筛选后导出核心列。发现窗口最多回溯 60 天（与现有 Actor 限制一致）。会产生 Apify 费用。
+    </div>
+    <label>关键词 / Hashtag（每行一个）</label>
+    <textarea id="h1-tags" placeholder="#mlbb&#10;mobilelegends"></textarea>
+    <div class="chk-row">
+      <label><input type="checkbox" id="h1-fb" checked> Facebook</label>
+      <label><input type="checkbox" id="h1-ig" checked> Instagram</label>
+    </div>
+    <div class="row2">
+      <div>
+        <label>开始日期</label>
+        <input type="date" id="h1-start">
+      </div>
+      <div>
+        <label>结束日期</label>
+        <input type="date" id="h1-end">
+      </div>
+    </div>
+    <label>最大帖子数（上限 5000）</label>
+    <input type="number" id="h1-max" value="500" min="20" max="5000">
+    <button class="btn btn-primary" id="h1-go" onclick="startHashtag()">开始并排队</button>
+    <div class="status" id="h1-st"></div>
+    <div id="h1-dl"></div>
+  </div>
+
+  <!-- 2 -->
+  <div class="card" id="sec2">
+    <h2>功能 2：Excel 泰语行筛选</h2>
+    <div class="hint">上传 xlsx，按选定文本列用泰语检测保留行。列名可留空自动推断。</div>
+    <input type="file" id="f2-file" accept=".xlsx,.xls">
+    <label>文本列名（可选）</label>
+    <input type="text" id="f2-col" placeholder="留空则自动选非空最多的文本列">
+    <button class="btn btn-primary" onclick="doFilterThai()">导出泰语行</button>
+    <div class="status" id="f2-st"></div>
+  </div>
+
+  <!-- 3 -->
+  <div class="card" id="sec3">
+    <h2>功能 3：帖子链接批量抓评论</h2>
+    <div class="hint">
+      Excel 需含列 <code>post_url</code>，或使用 url / link / 帖子链接 等列名。每批最多 {{ max_urls }} 条链接（环境变量可配）。结果含评论明细 + 每帖每日新增评论数 Sheet。会产生 Apify 费用；不写主业务评论表。
+    </div>
+    <input type="file" id="f3-file" accept=".xlsx,.xls">
+    <label>链接列名（可选，默认 post_url）</label>
+    <input type="text" id="f3-col" placeholder="post_url">
+    <div class="row2">
+      <div>
+        <label>每帖评论上限（Apify resultsLimit）</label>
+        <input type="number" id="f3-limit" value="2500" min="100" max="10000">
+      </div>
+      <div>
+        <label>只统计最近 N 天内的评论</label>
+        <input type="number" id="f3-days" value="365" min="1" max="730">
+      </div>
+    </div>
+    <button class="btn btn-primary" id="f3-go" onclick="startComments()">开始并排队</button>
+    <div class="status" id="f3-st"></div>
+    <div id="f3-dl"></div>
+  </div>
+
+  <!-- 4 -->
+  <div class="card" id="sec4">
+    <h2>功能 4：多文件按日加总互动量</h2>
+    <div class="hint">
+      每个 xlsx 需包含日期列（<code>date</code> / <code>post_date</code> / 日期）与互动量列（<code>engagement</code> / 互动量）。将多个文件合并后按日期求和。
+    </div>
+    <input type="file" id="f4-files" multiple accept=".xlsx,.xls">
+    <button class="btn btn-primary" onclick="doSumEngagement()">导出汇总表</button>
+    <div class="status" id="f4-st"></div>
+  </div>
+
+</div>
+
+<script>
+const MAX_URLS = {{ max_urls }};
+
+function pollEtlTask(taskId, statusEl, dlEl, btnEl) {
+  let n = 0;
+  const t = setInterval(async () => {
+    n++;
+    try {
+      const res = await fetch('/api/etl/task_status/' + encodeURIComponent(taskId));
+      const d = await res.json();
+      if (d.error && res.status === 403) {
+        clearInterval(t);
+        statusEl.textContent = d.error;
+        statusEl.className = 'status err';
+        if (btnEl) btnEl.disabled = false;
+        return;
+      }
+      statusEl.textContent = d.progress || d.status || '';
+      if (d.status === 'completed') {
+        clearInterval(t);
+        statusEl.textContent = '完成';
+        statusEl.className = 'status ok';
+        if (btnEl) btnEl.disabled = false;
+        let rid, name = 'export.xlsx';
+        try {
+          const rj = typeof d.result === 'string' ? JSON.parse(d.result) : d.result;
+          if (rj && rj.download_id) {
+            rid = rj.download_id;
+            name = rj.filename || name;
+          }
+        } catch (e) {}
+        if (rid && dlEl) {
+          dlEl.innerHTML = '<a href="/api/etl/download/' + rid + '" style="color:#1a7fd4;font-weight:600;">下载 ' + name + '</a>';
+        }
+        return;
+      }
+      if (d.status === 'failed') {
+        clearInterval(t);
+        statusEl.textContent = d.error || '失败';
+        statusEl.className = 'status err';
+        if (btnEl) btnEl.disabled = false;
+        return;
+      }
+      if (n > 800) {
+        clearInterval(t);
+        statusEl.textContent = '轮询超时，请稍后在任务记录中查看';
+        if (btnEl) btnEl.disabled = false;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, 2000);
+}
+
+async function startHashtag() {
+  const st = document.getElementById('h1-st');
+  const dl = document.getElementById('h1-dl');
+  const btn = document.getElementById('h1-go');
+  dl.innerHTML = '';
+  st.className = 'status';
+  const tagsRaw = document.getElementById('h1-tags').value;
+  const seed_tags = tagsRaw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  const pl = [];
+  if (document.getElementById('h1-fb').checked) pl.push('facebook');
+  if (document.getElementById('h1-ig').checked) pl.push('instagram');
+  const start_date = document.getElementById('h1-start').value;
+  const end_date = document.getElementById('h1-end').value;
+  const max_posts = parseInt(document.getElementById('h1-max').value, 10) || 500;
+  if (!seed_tags.length) { st.textContent = '请填写关键词'; st.className = 'status err'; return; }
+  if (!start_date || !end_date) { st.textContent = '请选择起止日期'; st.className = 'status err'; return; }
+  btn.disabled = true;
+  st.textContent = '提交中...';
+  try {
+    const res = await fetch('/api/etl/hashtag_start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed_tags, platforms: pl, start_date, end_date, max_posts }),
+    });
+    const d = await res.json();
+    if (d.status !== 'queued') {
+      st.textContent = d.message || JSON.stringify(d);
+      st.className = 'status err';
+      btn.disabled = false;
+      return;
+    }
+    st.textContent = '已排队，任务 ID: ' + d.task_id;
+    pollEtlTask(d.task_id, st, dl, btn);
+  } catch (e) {
+    st.textContent = String(e);
+    st.className = 'status err';
+    btn.disabled = false;
+  }
+}
+
+async function doFilterThai() {
+  const st = document.getElementById('f2-st');
+  const f = document.getElementById('f2-file').files[0];
+  if (!f) { st.textContent = '请选择文件'; st.className = 'status err'; return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  const col = document.getElementById('f2-col').value.trim();
+  if (col) fd.append('text_column', col);
+  st.textContent = '处理中...';
+  st.className = 'status';
+  try {
+    const res = await fetch('/api/etl/filter_thai', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      st.textContent = j.message || ('HTTP ' + res.status);
+      st.className = 'status err';
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'thai_filtered.xlsx';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    st.textContent = '已下载 thai_filtered.xlsx';
+    st.className = 'status ok';
+  } catch (e) {
+    st.textContent = String(e);
+    st.className = 'status err';
+  }
+}
+
+async function startComments() {
+  const st = document.getElementById('f3-st');
+  const dl = document.getElementById('f3-dl');
+  const btn = document.getElementById('f3-go');
+  dl.innerHTML = '';
+  const f = document.getElementById('f3-file').files[0];
+  if (!f) { st.textContent = '请选择 Excel'; st.className = 'status err'; return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  const uc = document.getElementById('f3-col').value.trim();
+  if (uc) fd.append('url_column', uc);
+  fd.append('results_limit', document.getElementById('f3-limit').value);
+  fd.append('days_back', document.getElementById('f3-days').value);
+  btn.disabled = true;
+  st.textContent = '上传并排队...';
+  st.className = 'status';
+  try {
+    const res = await fetch('/api/etl/comments_start', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (d.status !== 'queued') {
+      st.textContent = d.message || JSON.stringify(d);
+      st.className = 'status err';
+      btn.disabled = false;
+      return;
+    }
+    st.textContent = '已排队 ' + d.url_count + ' 条链接，任务 ID: ' + d.task_id;
+    pollEtlTask(d.task_id, st, dl, btn);
+  } catch (e) {
+    st.textContent = String(e);
+    st.className = 'status err';
+    btn.disabled = false;
+  }
+}
+
+async function doSumEngagement() {
+  const st = document.getElementById('f4-st');
+  const files = document.getElementById('f4-files').files;
+  if (!files || !files.length) { st.textContent = '请选择至少一个 xlsx'; st.className = 'status err'; return; }
+  const fd = new FormData();
+  for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
+  st.textContent = '处理中...';
+  st.className = 'status';
+  try {
+    const res = await fetch('/api/etl/sum_engagement', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      st.textContent = j.message || ('HTTP ' + res.status);
+      st.className = 'status err';
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'daily_engagement_sum.xlsx';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    st.textContent = '已下载 daily_engagement_sum.xlsx';
+    st.className = 'status ok';
+  } catch (e) {
+    st.textContent = String(e);
+    st.className = 'status err';
+  }
+}
+
+// 默认日期：今天与 7 天前
+(function () {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - 7);
+  document.getElementById('h1-end').value = end.toISOString().slice(0, 10);
+  document.getElementById('h1-start').value = start.toISOString().slice(0, 10);
+})();
+</script>
+</body>
+</html>

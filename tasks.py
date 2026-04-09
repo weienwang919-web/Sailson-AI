@@ -756,6 +756,8 @@ def scrape_fb_comments(
     language_filter=None,
     dataset_name=None,
     min_comments_for_actor=None,
+    persist_to_db=True,
+    progress_hook=None,
 ):
     """
     Scrape FB/IG comments from post URLs
@@ -772,9 +774,11 @@ def scrape_fb_comments(
         dataset_name: 数据集名称，入库时写入 thai_report_datasets 表
         min_comments_for_actor: 若为正整数，仅当 fb_post_metrics.comments_count 已存在且
             大于等于该值时才调用评论 Actor；用于跳过 0～2 条评论的帖子以省 Apify。
+        persist_to_db: False 时仅内存收集评论，不写 fb_comments / fb_post_metrics / 数据集表（ETL 导出用）
+        progress_hook: 可选 def(msg: str)，用于无 scrape_tasks 时的进度回调
 
     Returns:
-        dict with status and stats
+        dict with status and stats；persist_to_db=False 时含 export_rows 列表
     """
     logger.info(f"🔄 Starting social comment scraping task (days_back={days_back}, task_id={task_id}, language_filter={language_filter})")
 
@@ -833,8 +837,11 @@ def scrape_fb_comments(
     ins_posts_count = 0
     cutoff_date = datetime.datetime.now(BEIJING_TZ) - datetime.timedelta(days=days_back)
 
-    # 先落 discover 阶段的帖子级指标，供报告口径使用
-    discovered_count = upsert_post_metrics(discovered_posts or [])
+    export_rows = []
+    if persist_to_db:
+        discovered_count = upsert_post_metrics(discovered_posts or [])
+    else:
+        discovered_count = 0
 
     # Build post_url -> post_content map for pre-Apify Thai check
     _discovered_content = {
@@ -867,6 +874,11 @@ def scrape_fb_comments(
             logger.warning(f"⚠️ 批量读取 comments_count 失败，将不跳过低评论帖: {_e}")
 
     def _update_progress(msg):
+        if progress_hook:
+            try:
+                progress_hook(msg)
+            except Exception as _e:
+                logger.debug(f"progress_hook failed: {_e}")
         if task_id:
             try:
                 db.execute(
@@ -880,7 +892,7 @@ def scrape_fb_comments(
     for post_idx, post_url in enumerate(post_urls):
         # 每5条帖子更新一次进度
         if post_idx % 5 == 0 or post_idx == total_posts - 1:
-            _update_progress(f"正在处理第 {post_idx + 1}/{total_posts} 条帖子，已入库评论 {total_new} 条...")
+            _update_progress(f"正在处理第 {post_idx + 1}/{total_posts} 条帖子，已处理评论 {total_new} 条...")
 
         try:
             platform = _detect_social_platform(post_url)
@@ -939,12 +951,14 @@ def scrape_fb_comments(
                 comment_ids.append(parsed["comment_id"])
             existing_ids = set()
 
-            if comment_ids:
+            if persist_to_db and comment_ids:
                 placeholders = ','.join(['%s'] * len(comment_ids))
                 sql = f"SELECT comment_id FROM fb_comments WHERE comment_id IN ({placeholders})"
                 rows = db.query_all(sql, tuple(comment_ids))
                 existing_ids = {row['comment_id'] for row in rows}
                 logger.info(f"📊 Found {len(existing_ids)} existing comments out of {len(comment_ids)}")
+            else:
+                existing_ids = set()
 
             # 平台统计
             if platform == "facebook":
@@ -967,6 +981,17 @@ def scrape_fb_comments(
                 # Memory-based deduplication (fast)
                 if comment_id in existing_ids:
                     total_updated += 1
+                    continue
+
+                if not persist_to_db:
+                    export_rows.append({
+                        "post_url": row_post_url,
+                        "comment_id": comment_id,
+                        "author": author,
+                        "content": content,
+                        "created_at": created_at,
+                    })
+                    total_new += 1
                     continue
 
                 # Analyze sentiment using Qwen (with cap to control latency/cost)
@@ -994,35 +1019,36 @@ def scrape_fb_comments(
                 total_new += 1
 
             # 每处理完一个帖子，尽量补齐帖子级 comments_count/engagement（基于本次 actor 返回）
-            try:
-                post_comments_count = len(normalized_rows)
-                post_likes = max([_safe_int((it or {}).get("likes") or (it or {}).get("likeCount")) for it in items] + [0])
-                post_shares = max([_safe_int((it or {}).get("shares") or (it or {}).get("shareCount")) for it in items] + [0])
-                db.execute(
-                    """
-                    INSERT INTO fb_post_metrics (post_url, platform, comments_count, likes, shares, engagement, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (post_url) DO UPDATE SET
-                        comments_count = COALESCE(EXCLUDED.comments_count, fb_post_metrics.comments_count, 0),
-                        likes = COALESCE(EXCLUDED.likes, fb_post_metrics.likes, 0),
-                        shares = COALESCE(EXCLUDED.shares, fb_post_metrics.shares, 0),
-                        engagement = COALESCE(EXCLUDED.likes, 0) + COALESCE(EXCLUDED.comments_count, 0) + COALESCE(EXCLUDED.shares, 0),
-                        updated_at = NOW()
-                    """,
-                    (
-                        post_url,
-                        platform.upper()[:16],
-                        post_comments_count,
-                        post_likes,
-                        post_shares,
-                        post_likes + post_comments_count + post_shares
+            if persist_to_db:
+                try:
+                    post_comments_count = len(normalized_rows)
+                    post_likes = max([_safe_int((it or {}).get("likes") or (it or {}).get("likeCount")) for it in items] + [0])
+                    post_shares = max([_safe_int((it or {}).get("shares") or (it or {}).get("shareCount")) for it in items] + [0])
+                    db.execute(
+                        """
+                        INSERT INTO fb_post_metrics (post_url, platform, comments_count, likes, shares, engagement, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (post_url) DO UPDATE SET
+                            comments_count = COALESCE(EXCLUDED.comments_count, fb_post_metrics.comments_count, 0),
+                            likes = COALESCE(EXCLUDED.likes, fb_post_metrics.likes, 0),
+                            shares = COALESCE(EXCLUDED.shares, fb_post_metrics.shares, 0),
+                            engagement = COALESCE(EXCLUDED.likes, 0) + COALESCE(EXCLUDED.comments_count, 0) + COALESCE(EXCLUDED.shares, 0),
+                            updated_at = NOW()
+                        """,
+                        (
+                            post_url,
+                            platform.upper()[:16],
+                            post_comments_count,
+                            post_likes,
+                            post_shares,
+                            post_likes + post_comments_count + post_shares
+                        )
                     )
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ 更新帖子级 metrics 失败: {e}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 更新帖子级 metrics 失败: {e}")
 
             # Auto-route to matching datasets based on date + game tags
-            if dataset_name:
+            if persist_to_db and dataset_name:
                 try:
                     post_content = _discovered_content.get(post_url, '')
                     post_date_str = ''
@@ -1066,14 +1092,15 @@ def scrape_fb_comments(
             continue
 
     # Update last_scraped_at for all processed URLs
-    for post_url in post_urls:
-        try:
-            db.execute(
-                "UPDATE fb_monitor_config SET last_scraped_at = NOW() WHERE post_url = %s",
-                (post_url,)
-            )
-        except:
-            pass
+    if persist_to_db:
+        for post_url in post_urls:
+            try:
+                db.execute(
+                    "UPDATE fb_monitor_config SET last_scraped_at = NOW() WHERE post_url = %s",
+                    (post_url,)
+                )
+            except Exception:
+                pass
 
     logger.info(f"✅ Social scraping complete: {total_new} new, {total_updated} existing")
 
@@ -1094,6 +1121,8 @@ def scrape_fb_comments(
         "fb_posts": fb_posts_count,
         "ins_posts": ins_posts_count,
     }
+    if not persist_to_db:
+        result["export_rows"] = export_rows
 
     # Update task status to completed
     if task_id:

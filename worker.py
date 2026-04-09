@@ -6,6 +6,8 @@
   - competitor  : 竞品监控（调用 process_competitor_task）
   - fb_scrape   : FB/SPD 舆情看板抓取（调用 tasks.scrape_fb_comments）
   - thai_scrape : 泰国专题抓取（调用 tasks.run_thai_scrape_job）
+  - etl_hashtag : Excel 工具 Hashtag 发现导出（etl_jobs.run_etl_hashtag_task）
+  - etl_comments: Excel 工具链接批量抓评论导出（etl_jobs.run_etl_comments_task）
 
 启动方式：
   python worker.py
@@ -128,6 +130,10 @@ def dispatch_task(task_row):
             _handle_fb_scrape(task_id, params)
         elif func_type == 'thai_scrape':
             _handle_thai_scrape(task_id, params)
+        elif func_type == 'etl_hashtag':
+            _handle_etl_hashtag(task_id, params)
+        elif func_type == 'etl_comments':
+            _handle_etl_comments(task_id, params)
         else:
             logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
             update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
@@ -358,6 +364,30 @@ def _handle_thai_scrape(task_id, params):
         update_task(task_id, status='completed', progress='泰国抓取完成')
     except Exception as e:
         logger.error(f"❌ 泰国专题 Worker 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
+def _handle_etl_hashtag(task_id, params):
+    """Excel 工具：Hashtag 发现导出。"""
+    import etl_jobs
+    try:
+        etl_jobs.run_etl_hashtag_task(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ etl_hashtag 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
+def _handle_etl_comments(task_id, params):
+    """Excel 工具：链接批量抓评论导出。"""
+    import etl_jobs
+    try:
+        etl_jobs.run_etl_comments_task(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ etl_comments 失败: {e}")
         import traceback
         traceback.print_exc()
         update_task(task_id, status='failed', error=str(e)[:500])

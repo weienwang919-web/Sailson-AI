@@ -30,6 +30,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from bs4 import BeautifulSoup
 import bleach
 import database as db
+import etl_tools
+import etl_jobs
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -351,6 +353,26 @@ def ensure_analysis_results_schema():
         logger.warning(f"⚠️ 无法自动为 analysis_results 添加 result_json 列，将暂不支持按任意历史记录导出: {e}")
 
 
+def ensure_etl_file_outputs_schema():
+    """ETL 异步任务生成的 Excel（BYTEA），供 Web 与 Worker 分离部署时下载。"""
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS etl_file_outputs (
+                id SERIAL PRIMARY KEY,
+                task_id VARCHAR(128) NOT NULL,
+                user_id INTEGER,
+                filename VARCHAR(512) NOT NULL,
+                content BYTEA NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_etl_file_outputs_task_id ON etl_file_outputs (task_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_etl_file_outputs_user_id ON etl_file_outputs (user_id)")
+        logger.info("✅ 已确认 etl_file_outputs 表存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法创建 etl_file_outputs 表: {e}")
+
+
 def ensure_fb_post_metrics_schema():
     """确保帖子级指标表存在（用于SPD报告按engagement口径计算）。"""
     try:
@@ -442,6 +464,7 @@ USD_TO_CNY = 7.2
 # 启动时尽早检查相关表结构
 ensure_task_queue_schema()
 ensure_analysis_results_schema()
+ensure_etl_file_outputs_schema()
 ensure_fb_post_metrics_schema()
 rag.ensure_tables()
 
@@ -5800,60 +5823,60 @@ from datetime import date as _date, timedelta as _timedelta
 
 
 def _fetch_daily_engagement_fn(dataset_name, start, end):
-    rows = db.query_all_with_timeout("""
-        SELECT m.post_date::text AS day,
-               COALESCE(SUM(m.likes),0) + COALESCE(SUM(m.shares),0) + COALESCE(SUM(m.comments_count),0) AS total
-        FROM fb_post_metrics m
-        JOIN thai_report_datasets d ON d.post_url = m.post_url
-        WHERE d.dataset_name = %s
-          AND m.post_date >= %s AND m.post_date <= %s
-        GROUP BY m.post_date
-        ORDER BY m.post_date
-    """, (dataset_name, start, end))
-    return {r['day']: int(r['total']) for r in rows}
+            rows = db.query_all_with_timeout("""
+                SELECT m.post_date::text AS day,
+                       COALESCE(SUM(m.likes),0) + COALESCE(SUM(m.shares),0) + COALESCE(SUM(m.comments_count),0) AS total
+                FROM fb_post_metrics m
+                JOIN thai_report_datasets d ON d.post_url = m.post_url
+                WHERE d.dataset_name = %s
+                  AND m.post_date >= %s AND m.post_date <= %s
+                GROUP BY m.post_date
+                ORDER BY m.post_date
+            """, (dataset_name, start, end))
+            return {r['day']: int(r['total']) for r in rows}
 
 
 def _fetch_daily_new_comments_fn(dataset_name, start, end):
-    rows = db.query_all_with_timeout("""
-        SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
-               COUNT(*) AS cnt
-        FROM fb_comments c
-        JOIN thai_report_datasets d ON d.post_url = c.post_url
-        WHERE d.dataset_name = %s
-          AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
-          AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
-        GROUP BY 1
-        ORDER BY 1
-    """, (dataset_name, start, end))
-    return {r['day']: int(r['cnt']) for r in rows}
+            rows = db.query_all_with_timeout("""
+                SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
+                       COUNT(*) AS cnt
+                FROM fb_comments c
+                JOIN thai_report_datasets d ON d.post_url = c.post_url
+                WHERE d.dataset_name = %s
+                  AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
+                  AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
+                GROUP BY 1
+                ORDER BY 1
+            """, (dataset_name, start, end))
+            return {r['day']: int(r['cnt']) for r in rows}
 
 
 def _peak_post_fn(dataset_name, peak_day):
-    row = db.query_one_with_timeout("""
-        SELECT m.author, m.post_content,
-               COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement,
-               COUNT(c.id) AS comment_cnt
-        FROM fb_comments c
-        JOIN fb_post_metrics m ON m.post_url = c.post_url
-        JOIN thai_report_datasets d ON d.post_url = c.post_url
-        WHERE d.dataset_name = %s
-          AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
-          AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
-        GROUP BY m.post_url, m.author, m.post_content, m.likes, m.shares, m.comments_count
-        ORDER BY comment_cnt DESC
-        LIMIT 1
-    """, (dataset_name, peak_day, peak_day))
-    if not row:
-        return None
-    eng = int(row.get('engagement') or 0)
-    eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
-    return {
-        'author': row.get('author') or '',
-        'summary': (row.get('post_content') or '')[:60],
-        'topic': '',
-        'engagement': eng,
-        'engagement_label': eng_k,
-    }
+            row = db.query_one_with_timeout("""
+                SELECT m.author, m.post_content,
+                       COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement,
+                       COUNT(c.id) AS comment_cnt
+                FROM fb_comments c
+                JOIN fb_post_metrics m ON m.post_url = c.post_url
+                JOIN thai_report_datasets d ON d.post_url = c.post_url
+                WHERE d.dataset_name = %s
+                  AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
+                  AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
+                GROUP BY m.post_url, m.author, m.post_content, m.likes, m.shares, m.comments_count
+                ORDER BY comment_cnt DESC
+                LIMIT 1
+            """, (dataset_name, peak_day, peak_day))
+            if not row:
+                return None
+            eng = int(row.get('engagement') or 0)
+            eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
+            return {
+                'author': row.get('author') or '',
+                'summary': (row.get('post_content') or '')[:60],
+                'topic': '',
+                'engagement': eng,
+                'engagement_label': eng_k,
+            }
 
 
 def _date_range_fn(start, end):
@@ -6048,6 +6071,236 @@ def thai_report_top5():
     except Exception as e:
         logger.error(f"\u274c thai_report_top5 失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ============================================
+# Excel 数据工具（ETL）
+# ============================================
+
+ETL_COMMENTS_MAX_URLS = int(os.environ.get('ETL_COMMENTS_MAX_URLS', '200'))
+
+
+@app.route('/data-etl')
+@login_required
+def data_etl_tool():
+    return render_template('data_etl.html', max_urls=ETL_COMMENTS_MAX_URLS)
+
+
+@app.route('/api/etl/preview_columns', methods=['POST'])
+@login_required
+def etl_preview_columns():
+    """上传 Excel 首行，返回列名（功能2 下拉）。"""
+    try:
+        f = request.files.get('file')
+        if not f or not f.filename:
+            return jsonify({'status': 'error', 'message': '请上传文件'}), 400
+        raw = f.read()
+        cols = etl_tools.list_text_columns_preview(raw)
+        return jsonify({'status': 'success', 'columns': cols})
+    except Exception as e:
+        logger.error(f"etl_preview_columns: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/etl/filter_thai', methods=['POST'])
+@login_required
+def etl_filter_thai():
+    """功能2：仅保留泰语行，同步返回 xlsx。"""
+    try:
+        f = request.files.get('file')
+        if not f or not f.filename:
+            return jsonify({'status': 'error', 'message': '请上传文件'}), 400
+        col = (request.form.get('text_column') or '').strip() or None
+        raw = f.read()
+        out_bytes, kept, dropped = etl_tools.filter_thai_rows_excel(raw, col)
+        buf = BytesIO(out_bytes)
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name='thai_filtered.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        logger.error(f"etl_filter_thai: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+
+@app.route('/api/etl/sum_engagement', methods=['POST'])
+@login_required
+def etl_sum_engagement():
+    """功能4：多文件按日期加总互动量。"""
+    try:
+        files = request.files.getlist('files')
+        if not files:
+            return jsonify({'status': 'error', 'message': '请至少上传一个 xlsx'}), 400
+        blobs = []
+        for f in files:
+            if f and f.filename:
+                blobs.append(f.read())
+        if not blobs:
+            return jsonify({'status': 'error', 'message': '无有效文件'}), 400
+        out_bytes = etl_tools.sum_daily_engagement_from_excels(blobs)
+        buf = BytesIO(out_bytes)
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name='daily_engagement_sum.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        logger.error(f"etl_sum_engagement: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+
+@app.route('/api/etl/hashtag_start', methods=['POST'])
+@login_required
+def etl_hashtag_start():
+    """功能1：入队 Hashtag 发现任务。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        seed_tags = [s.strip() for s in (data.get('seed_tags') or []) if s and str(s).strip()]
+        if isinstance(data.get('seed_tags'), str):
+            seed_tags = [x.strip() for x in data['seed_tags'].replace('\r', '').split('\n') if x.strip()]
+        platforms = data.get('platforms') or ['facebook', 'instagram']
+        start_date = (data.get('start_date') or '')[:10]
+        end_date = (data.get('end_date') or '')[:10]
+        max_posts = int(data.get('max_posts') or 500)
+        if not seed_tags:
+            return jsonify({'status': 'error', 'message': '请填写至少一个 hashtag/关键词'}), 400
+        if not start_date or not end_date:
+            return jsonify({'status': 'error', 'message': '请填写开始与结束日期'}), 400
+    except (TypeError, ValueError) as e:
+        return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    params = {
+        'seed_tags': seed_tags,
+        'platforms': platforms,
+        'start_date': start_date,
+        'end_date': end_date,
+        'max_posts': max_posts,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+
+    create_task(queue_task_id, user_id, session_id, function_type='etl_hashtag')
+    if USE_DB_WORKER:
+        db.execute(
+            "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+            (json.dumps({'source': 'etl_hashtag', **params}, ensure_ascii=False), queue_task_id),
+        )
+    else:
+
+        def _run():
+            etl_jobs.run_etl_hashtag_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return jsonify({'status': 'queued', 'task_id': queue_task_id})
+
+
+@app.route('/api/etl/comments_start', methods=['POST'])
+@login_required
+def etl_comments_start():
+    """功能3：上传含链接的 Excel，入队批量抓评论。"""
+    try:
+        f = request.files.get('file')
+        if not f or not f.filename:
+            return jsonify({'status': 'error', 'message': '请上传 Excel'}), 400
+        url_col = (request.form.get('url_column') or '').strip() or None
+        results_limit = int(request.form.get('results_limit') or 2500)
+        days_back = int(request.form.get('days_back') or 365)
+        raw = f.read()
+        urls = etl_tools.read_urls_from_excel(raw, url_col)
+        if len(urls) > ETL_COMMENTS_MAX_URLS:
+            return jsonify({
+                'status': 'error',
+                'message': f'链接数超过上限 {ETL_COMMENTS_MAX_URLS}，请分批上传',
+            }), 400
+        if not urls:
+            return jsonify({'status': 'error', 'message': '未解析到有效 http(s) 链接'}), 400
+    except (TypeError, ValueError) as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    params = {
+        'post_urls': urls,
+        'results_limit': results_limit,
+        'days_back': days_back,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+
+    create_task(queue_task_id, user_id, session_id, function_type='etl_comments')
+    if USE_DB_WORKER:
+        db.execute(
+            "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+            (json.dumps({'source': 'etl_comments', **params}, ensure_ascii=False), queue_task_id),
+        )
+    else:
+
+        def _run():
+            etl_jobs.run_etl_comments_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return jsonify({'status': 'queued', 'task_id': queue_task_id, 'url_count': len(urls)})
+
+
+@app.route('/api/etl/task_status/<task_id>')
+@login_required
+def api_etl_task_status(task_id):
+    """ETL 异步任务状态（result 为 JSON 字符串，不做 HTML 清洗）。"""
+    row = db.query_one(
+        """
+        SELECT status, progress, result, error, user_id
+        FROM task_queue WHERE task_id = %s
+        """,
+        (task_id,),
+    )
+    if not row:
+        return jsonify({'error': '任务不存在'}), 404
+    if row.get('user_id') is not None and row.get('user_id') != session.get('user_id'):
+        return jsonify({'error': '无权访问'}), 403
+    return jsonify({
+        'status': row.get('status'),
+        'progress': row.get('progress'),
+        'result': row.get('result') or '',
+        'error': row.get('error'),
+    })
+
+
+@app.route('/api/etl/download/<int:output_id>')
+@login_required
+def etl_download(output_id):
+    uid = session.get('user_id')
+    row = db.query_one(
+        "SELECT id, filename, content, user_id FROM etl_file_outputs WHERE id = %s",
+        (output_id,),
+    )
+    if not row:
+        return jsonify({'error': '文件不存在'}), 404
+    if row.get('user_id') is not None and row.get('user_id') != uid:
+        return jsonify({'error': '无权下载'}), 403
+    data = row.get('content')
+    if data is None:
+        return jsonify({'error': '空文件'}), 404
+    if isinstance(data, memoryview):
+        data = data.tobytes()
+    buf = BytesIO(data)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=row.get('filename') or 'export.xlsx',
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
 
 
 # ============================================
