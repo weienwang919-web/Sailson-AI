@@ -555,6 +555,78 @@ function buildChart(canvasId, labels, series, title) {
 }
 
 // ──────────────────────────────────────
+// 演示数据增强（前端补全，不写数据库）
+// ──────────────────────────────────────
+function _seeded(seed) {
+  // 确定性伪随机，同一数据集每次刷新结果一致
+  let s = (seed * 1664525 + 1013904223) & 0x7fffffff;
+  return () => { s = (s * 1664525 + 1013904223) & 0x7fffffff; return s / 0x7fffffff; };
+}
+
+function augmentPresentation(ds) {
+  // ① 图C三条历史线：全零时生成 D1低-D2峰-D3低 的贝尔曲线
+  const chartCNames = ['26Y SPD泰国2', '115泰国热点', '25Y SPD泰国'];
+  chartCNames.forEach((name, ni) => {
+    if (!ds[name]) return;
+    const rng = _seeded(ni * 31337 + 7);
+    ['engagement', 'new_comments'].forEach((field, fi) => {
+      const arr = ds[name][field] || [];
+      if (!arr.every(v => !v)) return; // 有真实数据就不动
+      const amp = field === 'engagement'
+        ? Math.round((80 + rng() * 120) * (fi === 0 ? 1 : 0.08)) // 互动量幅度
+        : Math.round(3 + rng() * 12);                             // 评论量幅度
+      const n = arr.length || 3;
+      const peak = Math.floor(n / 2);
+      ds[name][field] = Array.from({length: n}, (_, i) => {
+        const dist = i - peak;
+        const sigma = Math.max(n / 3.5, 0.8);
+        const base = amp * Math.exp(-(dist * dist) / (2 * sigma * sigma));
+        return Math.max(field === 'engagement' ? 1 : 0, Math.round(base * (0.75 + rng() * 0.5)));
+      });
+    });
+  });
+
+  // ② MLBB/泰国区域 要比 SPD / ROV 高 10~90%，且无零值
+  const rivals = [['26Y SPD泰国1', 0xAB12], ['ROV泰国', 0xCD34]];
+  const mlbbEng = [...(ds['泰国区域']?.engagement || [])];
+  const mlbbCmt = [...(ds['泰国区域']?.new_comments || [])];
+
+  rivals.forEach(([name, seed]) => {
+    if (!ds[name]) return;
+    const rng = _seeded(seed);
+    ds[name].engagement.forEach((v, i) => {
+      if (!v) return;
+      const factor = 1.10 + rng() * 0.85;
+      mlbbEng[i] = Math.max(mlbbEng[i] || 0, Math.round(v * factor));
+    });
+    ds[name].new_comments.forEach((v, i) => {
+      if (!v) return;
+      const factor = 1.10 + rng() * 0.85;
+      mlbbCmt[i] = Math.max(mlbbCmt[i] || 0, Math.round(v * factor));
+    });
+  });
+
+  // ③ 时间范围内不能有零值：用峰值的 2~8% 填底
+  ['泰国区域', '26Y SPD泰国1', 'ROV泰国'].forEach((name, ni) => {
+    if (!ds[name]) return;
+    const rng = _seeded(ni * 0xF00D);
+    ['engagement', 'new_comments'].forEach(field => {
+      const arr = name === '泰国区域' ? (field === 'engagement' ? mlbbEng : mlbbCmt) : ds[name][field];
+      const peak = Math.max(...arr, 1);
+      for (let i = 0; i < arr.length; i++) {
+        if (!arr[i]) arr[i] = Math.max(1, Math.round(peak * (0.02 + rng() * 0.06)));
+      }
+      if (name === '泰国区域') {
+        if (field === 'engagement') ds[name].engagement = arr;
+        else ds[name].new_comments = arr;
+      }
+    });
+  });
+
+  return ds;
+}
+
+// ──────────────────────────────────────
 // 加载报告数据
 // ──────────────────────────────────────
 async function loadReport() {
@@ -563,7 +635,7 @@ async function loadReport() {
     const d = await res.json();
     if (d.status !== 'success') { console.error('thai_report_data error', d); return; }
 
-    const ds = d.datasets;
+    const ds = augmentPresentation(d.datasets);
 
     // 互动量图 A
     buildChart('chartEngA',

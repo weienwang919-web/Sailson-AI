@@ -6135,6 +6135,87 @@ def thai_fix_engagement():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/thai_cleanup_non_thai', methods=['POST'])
+@login_required
+def thai_cleanup_non_thai():
+    """清理 thai_report_datasets 中 caption 不含泰文字符的非泰语帖子。
+    dry_run=true 仅预览，dry_run=false + confirm=CLEANUP_NON_THAI 正式删除。
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        dry_run_raw = payload.get('dry_run', True)
+        dry_run = dry_run_raw if isinstance(dry_run_raw, bool) else str(dry_run_raw).lower() in ('1', 'true', 'yes')
+
+        # 找出 thai_report_datasets 里所有 post_content 不含泰文字符的帖子
+        # PostgreSQL 正则：[\x{0E00}-\x{0E7F}] 匹配泰文 Unicode 区段
+        non_thai_rows = db.query_all("""
+            SELECT d.dataset_name, d.post_url,
+                   LEFT(COALESCE(m.post_content,''), 80) AS preview,
+                   m.platform
+            FROM thai_report_datasets d
+            LEFT JOIN fb_post_metrics m ON m.post_url = d.post_url
+            WHERE COALESCE(m.post_content, '') !~ '[\x{0E00}-\x{0E7F}]'
+            ORDER BY d.dataset_name, d.post_url
+            LIMIT 200
+        """)
+        total_row = db.query_one("""
+            SELECT COUNT(*) AS cnt
+            FROM thai_report_datasets d
+            LEFT JOIN fb_post_metrics m ON m.post_url = d.post_url
+            WHERE COALESCE(m.post_content, '') !~ '[\x{0E00}-\x{0E7F}]'
+        """)
+        total_cnt = int((total_row or {}).get('cnt') or 0)
+
+        if dry_run:
+            return jsonify({
+                'status': 'success',
+                'mode': 'dry_run',
+                'non_thai_rows': total_cnt,
+                'sample': non_thai_rows[:20],
+                'message': '预览完成。若确认删除，请传 dry_run=false 且 confirm=CLEANUP_NON_THAI',
+            })
+
+        confirm = (payload.get('confirm') or '').strip()
+        if confirm != 'CLEANUP_NON_THAI':
+            return jsonify({'status': 'error', 'message': '需传 confirm=CLEANUP_NON_THAI 才能执行删除'}), 400
+
+        del_row = db.execute_and_fetch_one("""
+            WITH deleted AS (
+                DELETE FROM thai_report_datasets d
+                USING fb_post_metrics m
+                WHERE d.post_url = m.post_url
+                  AND COALESCE(m.post_content, '') !~ '[\x{0E00}-\x{0E7F}]'
+                RETURNING d.post_url
+            )
+            SELECT COUNT(*) AS cnt FROM deleted
+        """)
+        deleted_cnt = int((del_row or {}).get('cnt') or 0)
+
+        # 同时删除孤立的 fb_post_metrics（不再属于任何数据集的帖子）
+        orphan_row = db.execute_and_fetch_one("""
+            WITH orphan AS (
+                DELETE FROM fb_post_metrics m
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM thai_report_datasets d WHERE d.post_url = m.post_url
+                )
+                RETURNING m.post_url
+            )
+            SELECT COUNT(*) AS cnt FROM orphan
+        """)
+        orphan_cnt = int((orphan_row or {}).get('cnt') or 0)
+
+        return jsonify({
+            'status': 'success',
+            'mode': 'apply',
+            'deleted_from_datasets': deleted_cnt,
+            'deleted_orphan_metrics': orphan_cnt,
+            'message': f'已删除 {deleted_cnt} 条非泰语帖子标签，清理 {orphan_cnt} 条孤立指标行',
+        })
+    except Exception as e:
+        logger.error(f"❌ thai_cleanup_non_thai 失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/thai_schedule', methods=['POST'])
 @login_required
 def thai_schedule():
