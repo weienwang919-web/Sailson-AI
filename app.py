@@ -6164,7 +6164,7 @@ def thai_schedule():
             results_limit = int(data.get('results_limit', 5000))
             max_ai_comments = int(data.get('max_ai_comments', 5000))
             discover_max_posts = int(data.get('discover_max_posts', 3000))
-            _min_raw = data.get('min_comments_for_actor', 3)
+            _min_raw = data.get('min_comments_for_actor', 1)
             min_comments_for_actor = int(_min_raw) if _min_raw is not None and str(_min_raw).strip() != '' else 0
         except (TypeError, ValueError):
             return jsonify({'status': 'error', 'message': '数值参数格式错误'}), 400
