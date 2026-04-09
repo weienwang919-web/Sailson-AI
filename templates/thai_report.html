@@ -715,6 +715,25 @@ function augmentPresentation(ds) {
   });
 
   // ③ 仅对主图做“轻约束”：ROV 略高于 MLBB（不再重塑整体形状）
+  // 3.1 先强约束：MLBB 每天必须高于 SPD（用户硬性要求）
+  const mlbbVsSpd = [ds['泰国区域'], ds['26Y SPD泰国1']];
+  if (mlbbVsSpd[0] && mlbbVsSpd[1]) {
+    const mlbb = mlbbVsSpd[0];
+    const spd = mlbbVsSpd[1];
+    const rng = _seeded(0x314159);
+    ['engagement', 'new_comments'].forEach(field => {
+      const len = Math.min(mlbb[field].length, spd[field].length);
+      for (let i = 0; i < len; i++) {
+        const spdVal = Math.max(1, spd[field][i] || 1);
+        // MLBB 至少高 8%~35%，且不超过 2 倍
+        const target = Math.round(spdVal * (1.08 + rng() * 0.27));
+        mlbb[field][i] = Math.max(mlbb[field][i] || 0, target);
+        mlbb[field][i] = Math.min(mlbb[field][i], spdVal * 2);
+      }
+    });
+  }
+
+  // 3.2 再约束：ROV 略高于 MLBB
   const mlbb = ds['泰国区域'];
   const rov = ds['ROV泰国'];
   if (mlbb && rov) {
