@@ -15,10 +15,18 @@ from openai import OpenAI
 import database as db
 import rag
 
+from thai_utils import (
+    is_thai_content, has_thai_chars,
+    contains_any_tag_or_term, normalize_tag_token,
+    thai_datasets_config, thai_matching_datasets,
+    MLBB_DISCOVER_KEYWORDS, SPD_KEYWORDS, ROV_DISCOVER_KEYWORDS,
+    THAI_GAME_TAGS,
+)
+
 try:
     from langdetect import detect, DetectorFactory
     from langdetect.lang_detect_exception import LangDetectException
-    DetectorFactory.seed = 0  # 线程安全，保证结果稳定
+    DetectorFactory.seed = 0
     _LANGDETECT_AVAILABLE = True
 except ImportError:
     _LANGDETECT_AVAILABLE = False
@@ -47,34 +55,11 @@ IG_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("IG_COMMENTS_ACTOR_TIMEOUT_S
 
 
 def _is_thai_content(text):
-    """判断文本是否为泰语内容。
-    优先用 langdetect，对短文本或检测失败时降级用 Unicode 范围判断。
-    """
-    if not text:
-        return False
-    # 短文本（<15字符）直接靠泰文字符比例判断
-    if len(text.strip()) < 15:
-        thai_chars = len(_THAI_UNICODE_RE.findall(text))
-        return thai_chars >= 2
-    # 优先用 langdetect
-    if _LANGDETECT_AVAILABLE:
-        try:
-            lang = detect(text)
-            return lang == 'th'
-        except LangDetectException:
-            pass
-    # 降级：泰文字符占比 > 15%
-    thai_chars = len(_THAI_UNICODE_RE.findall(text))
-    return thai_chars / max(len(text), 1) > 0.15
+    return is_thai_content(text)
 
 
 def _has_thai_chars(text: str) -> bool:
-    """只要文本含有任意泰文 Unicode 字符（U+0E00–U+0E7F）即返回 True。
-    比 _is_thai_content 更宽松：有泰语就算，不要求主语言为泰语。
-    """
-    if not text:
-        return False
-    return bool(_THAI_UNICODE_RE.search(text))
+    return has_thai_chars(text)
 
 
 def _normalize_list_input(values):
@@ -101,44 +86,11 @@ def _normalize_list_input(values):
 
 
 def _normalize_tag_token(term):
-    t = (term or "").strip().strip('"').strip("'").lower()
-    return t
+    return normalize_tag_token(term)
 
 
 def _contains_any_tag_or_term(text, terms, hashtags=None):
-    """OR 匹配：优先 hashtag 精确命中；未命中时降级 caption 词边界匹配。"""
-    base = (text or "").lower()
-    hashtag_set = {
-        str(h or "").strip().lstrip("#").lower()
-        for h in (hashtags or [])
-        if str(h or "").strip()
-    }
-    for raw in (terms or []):
-        t = _normalize_tag_token(raw)
-        if not t:
-            continue
-        wildcard = t.endswith("*")
-        t_core = (t[:-1] if wildcard else t).strip()
-        if not t_core:
-            continue
-        t_no_hash = t_core.lstrip("#")
-
-        # 1) hashtag 精确优先（或前缀匹配）
-        if wildcard:
-            if t_no_hash and any(h.startswith(t_no_hash) for h in hashtag_set):
-                return True
-        else:
-            if t_no_hash and t_no_hash in hashtag_set:
-                return True
-
-        # 2) caption 降级（词边界），避免纯子串误命中
-        if wildcard:
-            if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}\w*', base):
-                return True
-        else:
-            if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}(?!\w)', base):
-                return True
-    return False
+    return contains_any_tag_or_term(text, terms, hashtags=hashtags)
 
 
 def _expand_seed_terms(raw_values):
@@ -453,11 +405,11 @@ def upsert_post_metrics(rows):
                     post_date = COALESCE(EXCLUDED.post_date, fb_post_metrics.post_date),
                     post_content = COALESCE(NULLIF(EXCLUDED.post_content, ''), fb_post_metrics.post_content),
                     thumbnail_url = COALESCE(NULLIF(EXCLUDED.thumbnail_url, ''), fb_post_metrics.thumbnail_url),
-                    views = GREATEST(COALESCE(fb_post_metrics.views, 0), COALESCE(EXCLUDED.views, 0)),
-                    shares = GREATEST(COALESCE(fb_post_metrics.shares, 0), COALESCE(EXCLUDED.shares, 0)),
-                    likes = GREATEST(COALESCE(fb_post_metrics.likes, 0), COALESCE(EXCLUDED.likes, 0)),
-                    comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count, 0), COALESCE(EXCLUDED.comments_count, 0)),
-                    engagement = GREATEST(COALESCE(fb_post_metrics.engagement, 0), COALESCE(EXCLUDED.engagement, 0)),
+                    views = COALESCE(EXCLUDED.views, fb_post_metrics.views, 0),
+                    shares = COALESCE(EXCLUDED.shares, fb_post_metrics.shares, 0),
+                    likes = COALESCE(EXCLUDED.likes, fb_post_metrics.likes, 0),
+                    comments_count = COALESCE(EXCLUDED.comments_count, fb_post_metrics.comments_count, 0),
+                    engagement = COALESCE(EXCLUDED.engagement, fb_post_metrics.engagement, 0),
                     updated_at = NOW()
                 """,
                 (
@@ -575,20 +527,43 @@ def _extract_comment_fields(item, platform, default_post_url):
     }
 
 
-def _run_actor_with_inputs(actor_id, inputs, timeout_secs=600):
+def _run_actor_with_inputs(actor_id, inputs, timeout_secs=600, max_retries=2):
+    """Call an Apify actor, retrying transient failures with exponential backoff.
+
+    Each input variant is tried up to *max_retries* times before falling through
+    to the next input.  Only truly transient errors (timeouts, 5xx, network) are
+    retried; 4xx / auth / quota errors fail fast.
+    """
+    import time as _time
+
+    _NON_RETRYABLE = ("invalid", "unauthorized", "forbidden", "quota", "payment",
+                      "bad request", "not found", "402", "401", "403", "404")
+
     last_error = None
     for run_input in inputs:
-        try:
-            run = apify_client.actor(actor_id).call(run_input=run_input, timeout_secs=timeout_secs)
-            dataset_id = run.get("defaultDatasetId")
-            if not dataset_id:
-                raise RuntimeError("actor missing defaultDatasetId")
-            items = list(apify_client.dataset(dataset_id).iterate_items())
-            return items, run_input
-        except Exception as e:
-            last_error = str(e)
-            logger.warning(f"⚠️ Actor call failed ({actor_id}) with one input: {e}")
-            continue
+        for attempt in range(1, max_retries + 1):
+            try:
+                run = apify_client.actor(actor_id).call(
+                    run_input=run_input, timeout_secs=timeout_secs,
+                )
+                dataset_id = run.get("defaultDatasetId")
+                if not dataset_id:
+                    raise RuntimeError("actor missing defaultDatasetId")
+                items = list(apify_client.dataset(dataset_id).iterate_items())
+                return items, run_input
+            except Exception as e:
+                last_error = str(e)
+                err_lower = last_error.lower()
+                if any(kw in err_lower for kw in _NON_RETRYABLE):
+                    logger.warning(f"⚠️ Actor {actor_id} non-retryable error (attempt {attempt}): {e}")
+                    break
+                if attempt < max_retries:
+                    wait = 5 * (2 ** (attempt - 1))
+                    logger.warning(f"⚠️ Actor {actor_id} failed (attempt {attempt}/{max_retries}), "
+                                   f"retrying in {wait}s: {e}")
+                    _time.sleep(wait)
+                else:
+                    logger.warning(f"⚠️ Actor {actor_id} exhausted {max_retries} retries: {e}")
     raise RuntimeError(last_error or "actor call failed")
 
 
@@ -861,6 +836,13 @@ def scrape_fb_comments(
     # 先落 discover 阶段的帖子级指标，供报告口径使用
     discovered_count = upsert_post_metrics(discovered_posts or [])
 
+    # Build post_url -> post_content map for pre-Apify Thai check
+    _discovered_content = {
+        (p.get('post_url') or ''): (p.get('post_content') or '')
+        for p in (discovered_posts or [])
+        if p.get('post_url')
+    }
+
     min_cm = None
     try:
         if min_comments_for_actor is not None:
@@ -908,6 +890,14 @@ def scrape_fb_comments(
                 continue
 
             logger.info(f"📥 Scraping comments from: {post_url}")
+
+            # Pre-Apify Thai language check (saves $$$)
+            if language_filter == 'th':
+                pre_content = _discovered_content.get(post_url, '')
+                if pre_content and not _is_thai_content(pre_content):
+                    total_skipped_language += 1
+                    logger.info(f"⏭️ 预检非泰语帖子，跳过 Apify 调用: {post_url[:60]}")
+                    continue
 
             if min_cm:
                 known = url_comment_counts.get(post_url)
@@ -1039,13 +1029,10 @@ def scrape_fb_comments(
                     INSERT INTO fb_post_metrics (post_url, platform, comments_count, likes, shares, engagement, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (post_url) DO UPDATE SET
-                        comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count, 0), COALESCE(EXCLUDED.comments_count, 0)),
-                        likes = GREATEST(COALESCE(fb_post_metrics.likes, 0), COALESCE(EXCLUDED.likes, 0)),
-                        shares = GREATEST(COALESCE(fb_post_metrics.shares, 0), COALESCE(EXCLUDED.shares, 0)),
-                        engagement = GREATEST(
-                            COALESCE(fb_post_metrics.engagement, 0),
-                            COALESCE(EXCLUDED.likes, 0) + COALESCE(EXCLUDED.comments_count, 0) + COALESCE(EXCLUDED.shares, 0)
-                        ),
+                        comments_count = COALESCE(EXCLUDED.comments_count, fb_post_metrics.comments_count, 0),
+                        likes = COALESCE(EXCLUDED.likes, fb_post_metrics.likes, 0),
+                        shares = COALESCE(EXCLUDED.shares, fb_post_metrics.shares, 0),
+                        engagement = COALESCE(EXCLUDED.likes, 0) + COALESCE(EXCLUDED.comments_count, 0) + COALESCE(EXCLUDED.shares, 0),
                         updated_at = NOW()
                     """,
                     (
@@ -1060,17 +1047,38 @@ def scrape_fb_comments(
             except Exception as e:
                 logger.warning(f"⚠️ 更新帖子级 metrics 失败: {e}")
 
-            # 写入 thai_report_datasets 打标签
+            # Auto-route to matching datasets based on date + game tags
             if dataset_name:
                 try:
-                    db.execute(
-                        """
-                        INSERT INTO thai_report_datasets (dataset_name, post_url)
-                        VALUES (%s, %s)
-                        ON CONFLICT (dataset_name, post_url) DO NOTHING
-                        """,
-                        (dataset_name, post_url)
-                    )
+                    post_content = _discovered_content.get(post_url, '')
+                    post_date_str = ''
+                    post_hashtags = []
+                    for dp in (discovered_posts or []):
+                        if dp.get('post_url') == post_url:
+                            post_date_str = str(dp.get('post_date') or '')[:10]
+                            post_content = post_content or str(dp.get('post_content') or '')
+                            break
+                    if not post_date_str:
+                        row_meta = db.query_one(
+                            "SELECT post_date, post_content FROM fb_post_metrics WHERE post_url=%s",
+                            (post_url,)
+                        )
+                        if row_meta:
+                            post_date_str = str(row_meta.get('post_date') or '')[:10]
+                            post_content = post_content or str(row_meta.get('post_content') or '')
+                    post_hashtags = re.findall(r'#([^\s#]+)', (post_content or '').lower())
+                    matched_ds = thai_matching_datasets(post_date_str, post_content, post_hashtags)
+                    if not matched_ds:
+                        matched_ds = [dataset_name]
+                    for ds in matched_ds:
+                        db.execute(
+                            """
+                            INSERT INTO thai_report_datasets (dataset_name, post_url)
+                            VALUES (%s, %s)
+                            ON CONFLICT (dataset_name, post_url) DO NOTHING
+                            """,
+                            (ds, post_url)
+                        )
                 except Exception as e:
                     logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
 
@@ -1147,7 +1155,6 @@ def run_thai_scrape_job(
     max_ai_comments,
     discover_max_posts,
     min_comments_for_actor,
-    boolean_rule=None,
     source_dataset_name=None,
     dataset_start=None,
     dataset_end=None,
@@ -1182,6 +1189,7 @@ def run_thai_scrape_job(
             post_urls = []
             discovered_posts = []
             filter_terms = _normalize_list_input(seed_tags)
+            skipped_non_thai = 0
             for r in rows:
                 u = r.get('post_url')
                 if not u or u in seen_urls:
@@ -1196,6 +1204,10 @@ def run_thai_scrape_job(
                     post_hashtags = re.findall(r'#([^\s#]+)', post_text.lower())
                     if not _contains_any_tag_or_term(post_text, filter_terms, hashtags=post_hashtags):
                         continue
+                caption = str(r.get('post_content') or '')
+                if not _is_thai_content(caption):
+                    skipped_non_thai += 1
+                    continue
                 seen_urls.add(u)
                 post_urls.append(u)
                 discovered_posts.append({
@@ -1216,7 +1228,7 @@ def run_thai_scrape_job(
                 discovered_posts = discovered_posts[:discover_max_posts]
             db.execute(
                 "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                (f"已加载 {len(post_urls)} 条本地帖子（未跑 Hashtag），开始抓取评论...", scrape_task_id),
+                (f"已加载 {len(post_urls)} 条泰语帖子（跳过 {skipped_non_thai} 条非泰语），开始抓取评论...", scrape_task_id),
             )
         else:
             db.execute(
@@ -1228,7 +1240,6 @@ def run_thai_scrape_job(
                 platforms=platforms,
                 days_back=days_back,
                 max_posts=discover_max_posts,
-                boolean_rule=boolean_rule or None,
                 post_language_filter='th',
             )
             if discover_result.get('status') != 'success':

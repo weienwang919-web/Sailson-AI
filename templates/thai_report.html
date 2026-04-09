@@ -37,17 +37,6 @@
     .status-bar.success { color: #2d7a2d; }
     .status-bar.error   { color: #c0392b; }
 
-    /* 导入按钮区 */
-    .import-section { background: #fff; border-radius: 12px; padding: 16px 20px; box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 32px; }
-    .import-section h3 { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
-    .import-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .btn-import { padding: 8px 12px; border: 1px solid #d0d0d0; background: #f8f9fa; border-radius: 8px;
-      font-size: 12px; cursor: pointer; text-align: left; transition: background .15s; }
-    .btn-import:hover { background: #e8f4fd; border-color: #4a90d9; }
-    .btn-import .ds-name { font-weight: 600; color: #1a1a2e; }
-    .btn-import .ds-meta { color: #888; font-size: 11px; margin-top: 2px; }
-    .import-status { margin-top: 8px; font-size: 12px; color: #666; min-height: 16px; }
-
     /* 分隔标题 */
     .section-title { font-size: 16px; font-weight: 700; color: #1a1a2e; margin: 32px 0 14px; padding-left: 10px;
       border-left: 4px solid #1a7fd4; }
@@ -101,13 +90,27 @@
 </div>
 
 <div class="container">
+  <div id="report-error" style="display:none;background:#f8d7da;color:#721c24;border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:13px;"></div>
+
+  <!-- ⓪ 数据重置 -->
+  <div style="background:#fff3cd;border-radius:10px;padding:10px 16px;margin-bottom:16px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.06);display:flex;align-items:center;gap:12px;">
+    <span style="color:#856404;">重跑前需清空旧数据（清空标签、重算 engagement、清理无效情感记录）</span>
+    <button class="btn-start" id="btn-reset" onclick="doThaiReset()" style="margin:0;white-space:nowrap;background:#e74c3c;flex-shrink:0;">重置泰国专题数据</button>
+    <span id="reset-status" style="font-size:12px;"></span>
+  </div>
 
   <!-- ① 监听任务采集区 -->
   <div class="section-title">监听任务采集</div>
   <div style="background:#fff;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.06);line-height:1.5;">
+    <div style="margin-bottom:8px;">
+      <strong>推荐顺序：</strong>先采集 MLBB（母池）→ 再采集 SPD（从母池切片）→ 最后采集 ROV（竞品独立）。
+    </div>
+    <div style="margin-bottom:8px;">
+      <strong>Tag 规则：</strong>每行一个词，可带 <code>#</code>，系统按 OR 匹配。
+    </div>
     <label style="cursor:pointer;display:flex;align-items:flex-start;gap:8px;">
       <input type="checkbox" id="skipDiscoverInput" checked style="margin-top:3px;">
-      <span><strong>仅抓评论</strong>：使用当前「数据集名称」下已导入的帖子，<strong>不调用 Apify Hashtag 发现</strong>（省费用）。若该数据集还没有帖子，请先在上面的「导入本地 JSON」里导入，或取消勾选此项以走全量 Hashtag 发现。</span>
+      <span><strong>仅抓评论（推荐）</strong>：直接使用当前「数据集名称」已有帖子抓评论，不再调用 Apify Hashtag 发现（更省成本）。若该数据集暂无帖子，请取消勾选后再做一次发现采集。</span>
     </label>
   </div>
   <div class="scrape-grid">
@@ -174,26 +177,7 @@ MLBB NARUTO
     </div>
   </div>
 
-  <!-- ② 本地 JSON 导入区 -->
-  <div class="import-section">
-    <h3>📂 导入本地 Apify JSON 数据</h3>
-    <p style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.5;">
-      <strong>线上（Render）</strong>：仓库里没有你本机的 JSON，请先<strong>选择文件</strong>（可多选，文件名须为 <code>dataset_*.json</code>），再点全量导入。<br>
-      <strong>本地开发</strong>：也可把 Apify 导出放到项目根目录后，不选文件直接全量导入。Facebook 无精确发帖日时，用<strong>文件名里的日期</strong>作近似。
-    </p>
-    <div style="margin-bottom:10px;">
-      <label style="font-size:12px;color:#555;">选择 dataset_*.json（可选，多选）：</label><br>
-      <input type="file" id="fullCleanFiles" multiple accept=".json,application/json" style="margin-top:6px;font-size:12px;max-width:100%;" />
-    </div>
-    <button type="button" class="btn-start" style="width:100%;max-width:420px;margin-bottom:14px;" onclick="importFullClean()">全量清洗导入（上传文件或扫描服务器上 dataset_*.json）</button>
-    <div style="font-size:12px;color:#888;margin-bottom:10px;">或按单数据集手动导入（高级）：</div>
-    <div class="import-grid" id="import-grid">
-      <!-- 六个数据集按钮动态渲染 -->
-    </div>
-    <div class="import-status" id="import-status"></div>
-  </div>
-
-  <!-- ③ 互动量折线图 -->
+  <!-- ② 互动量折线图 -->
   <div class="section-title">分日互动量趋势（likes + shares + comments）</div>
   <div class="chart-grid">
     <div class="chart-card">
@@ -280,8 +264,6 @@ function safeUrl(url) {
 // 全局状态
 // ──────────────────────────────────────
 const taskPollers = {}; // game_type -> intervalId
-let importTaskPoller = null;
-
 const COLORS = {
   'MLBB': '#1a7fd4',
   'SPD':  '#e06c00',
@@ -289,180 +271,53 @@ const COLORS = {
   'extra': '#9b59b6',
 };
 
-const DATASETS_META = [
-  { name: '泰国区域',    game: 'MLBB', start: '2026-04-03', end: '2026-04-08' },
-  { name: '26Y SPD泰国1', game: 'SPD',  start: '2026-04-03', end: '2026-04-08' },
-  { name: 'ROV泰国',     game: 'ROV',  start: '2026-04-03', end: '2026-04-08' },
-  { name: '26Y SPD泰国2', game: 'SPD',  start: '2026-03-27', end: '2026-03-29' },
-  { name: '115泰国热点',  game: 'MLBB', start: '2026-01-15', end: '2026-01-17' },
-  { name: '25Y SPD泰国',  game: 'SPD',  start: '2025-05-02', end: '2025-05-04' },
-];
-
 // ──────────────────────────────────────
-// 渲染导入按钮
+// 重置泰国专题数据
 // ──────────────────────────────────────
-function renderImportButtons() {
-  const grid = document.getElementById('import-grid');
-  grid.innerHTML = DATASETS_META.map(ds => `
-    <button class="btn-import" onclick="importDataset('${ds.name}','${ds.game}','${ds.start}','${ds.end}')">
-      <div class="ds-name">${ds.name}</div>
-      <div class="ds-meta">${ds.game} · ${ds.start} ~ ${ds.end}</div>
-    </button>
-  `).join('');
-}
-
-async function importFullClean() {
-  const st = document.getElementById('import-status');
-  const fileEl = document.getElementById('fullCleanFiles');
-  const picked = fileEl && fileEl.files && fileEl.files.length;
-  if (importTaskPoller) {
-    clearInterval(importTaskPoller);
-    importTaskPoller = null;
-  }
-  st.textContent = picked
-    ? `正在上传并全量清洗 ${picked} 个文件（可能需几分钟）...`
-    : '正在全量扫描并清洗 dataset_*.json（可能需几分钟）...';
+async function doThaiReset() {
+  if (!confirm('确定要重置泰国专题全部数据吗？此操作不可撤销！')) return;
+  if (!confirm('二次确认：将清空所有数据集标签、重算 engagement、清理无效情感记录。确认？')) return;
+  const btn = document.getElementById('btn-reset');
+  const st = document.getElementById('reset-status');
+  btn.disabled = true;
+  st.textContent = '正在重置...';
   st.style.color = '#666';
   try {
-    let res;
-    if (picked) {
-      const fd = new FormData();
-      fd.append('full_clean', 'true');
-      for (let i = 0; i < fileEl.files.length; i++) {
-        fd.append('json_files', fileEl.files[i]);
-      }
-      res = await fetch('/api/import_thai_json', { method: 'POST', body: fd });
-    } else {
-      res = await fetch('/api/import_thai_json', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ full_clean: true })
-      });
-    }
-    let d = null;
-    try {
-      d = await res.json();
-    } catch (_) {
-      throw new Error(`服务返回非 JSON（HTTP ${res.status}）`);
-    }
-
-    if (d.status === 'queued' && d.task_id) {
-      st.textContent = `任务已入队（ID: ${d.task_id}），后台处理中...`;
-      st.style.color = '#666';
-      pollImportTaskStatus(d.task_id, st);
-    } else if (d.status === 'success') {
-      const parts = Object.entries(d.dataset_tag_counts || {}).map(([k, v]) => `${k}:${v}`).join(' · ');
-      st.textContent = `✅ 全量完成：命中数据集的帖子 ${d.posts_with_tags} 条；各集标签数 ${parts}；未命中任何数据集 ${d.skipped_no_dataset} 条；处理文件 ${d.files_processed}/${d.files_seen} 个`;
-      st.style.color = '#2d7a2d';
-      loadReport();
-    } else {
-      st.textContent = `❌ ${d.message}`;
-      st.style.color = '#c0392b';
-    }
-  } catch (e) {
-    st.textContent = `❌ 请求失败：${e.message}`;
-    st.style.color = '#c0392b';
-  }
-}
-
-function pollImportTaskStatus(taskId, stEl) {
-  if (importTaskPoller) clearInterval(importTaskPoller);
-  let pollCount = 0;
-  let errorCount = 0;
-  const maxPolls = 400; // ~20分钟
-  importTaskPoller = setInterval(async () => {
-    pollCount += 1;
-    if (pollCount > maxPolls) {
-      clearInterval(importTaskPoller);
-      importTaskPoller = null;
-      stEl.textContent = '❌ 全量清洗超时，请稍后点击刷新或重试';
-      stEl.style.color = '#c0392b';
-      return;
-    }
-    try {
-      const res = await fetch(`/fb_task_status/${taskId}`);
-      if (!res.ok) {
-        errorCount += 1;
-        if (errorCount >= 5) {
-          clearInterval(importTaskPoller);
-          importTaskPoller = null;
-          stEl.textContent = `❌ 任务状态查询失败（HTTP ${res.status}）`;
-          stEl.style.color = '#c0392b';
-        }
-        return;
-      }
-      let d = null;
-      try {
-        d = await res.json();
-      } catch (_) {
-        errorCount += 1;
-        return;
-      }
-      if (d.status === 'completed') {
-        clearInterval(importTaskPoller);
-        importTaskPoller = null;
-        stEl.textContent = `✅ 全量完成：${d.result_summary || '任务完成'}`;
-        stEl.style.color = '#2d7a2d';
-        loadReport();
-      } else if (d.status === 'failed') {
-        clearInterval(importTaskPoller);
-        importTaskPoller = null;
-        stEl.textContent = `❌ 全量清洗失败：${d.error_message || '未知错误'}`;
-        stEl.style.color = '#c0392b';
-      } else if (d.status === 'running' || d.status === 'pending') {
-        errorCount = 0;
-        stEl.textContent = d.result_summary || `后台处理中 (${d.status})...`;
-        stEl.style.color = '#666';
-      } else {
-        clearInterval(importTaskPoller);
-        importTaskPoller = null;
-        stEl.textContent = `❌ 未知任务状态：${d.status || 'unknown'}`;
-        stEl.style.color = '#c0392b';
-      }
-    } catch (_) {
-      errorCount += 1;
-      if (errorCount >= 5) {
-        clearInterval(importTaskPoller);
-        importTaskPoller = null;
-        stEl.textContent = '❌ 任务状态查询网络异常，请稍后重试';
-        stEl.style.color = '#c0392b';
-      }
-      // 轮询抖动时保持静默，等待下次轮询
-    }
-  }, 3000);
-}
-
-async function importDataset(name, game, start, end) {
-  const st = document.getElementById('import-status');
-  st.textContent = `正在导入 ${name}...`;
-  try {
-    const res = await fetch('/api/import_thai_json', {
+    const res = await fetch('/api/thai_reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dataset_name: name, game_type: game, start_date: start, end_date: end })
+      body: JSON.stringify({ confirm: 'RESET_THAI' })
     });
     const d = await res.json();
     if (d.status === 'success') {
-      st.textContent = `✅ ${name} 导入完成：入库 ${d.imported} 条，规则过滤 ${d.skipped_not_match_rule} 条，时间范围外 ${d.skipped_out_of_range} 条`;
+      st.textContent = d.message;
       st.style.color = '#2d7a2d';
+      loadReport();
     } else {
-      st.textContent = `❌ ${name} 导入失败：${d.message}`;
+      st.textContent = '❌ ' + (d.message || '重置失败');
       st.style.color = '#c0392b';
     }
-  } catch(e) {
-    st.textContent = `❌ 请求失败：${e.message}`;
+  } catch (e) {
+    st.textContent = '❌ 请求失败：' + e.message;
     st.style.color = '#c0392b';
+  } finally {
+    btn.disabled = false;
   }
 }
 
 // ──────────────────────────────────────
 // 开始采集
 // ──────────────────────────────────────
+function _getScrapeBtn(gt) {
+  return document.querySelector(`.scrape-card button[onclick="startScrape('${gt.toUpperCase()}')"]`);
+}
+
 async function startScrape(gameType) {
   const gt = gameType.toLowerCase();
   const tagsEl = document.getElementById(`${gt}-tags`);
   const dsEl   = document.getElementById(`${gt}-dataset`);
   const stEl   = document.getElementById(`${gt}-status`);
+  const btn    = _getScrapeBtn(gt);
 
   const tags = tagsEl.value.split('\n').map(s => s.trim()).filter(Boolean);
   const dsName = dsEl.value.trim();
@@ -475,6 +330,7 @@ async function startScrape(gameType) {
     return;
   }
 
+  if (btn) btn.disabled = true;
   stEl.textContent = '任务提交中...';
   stEl.className = 'status-bar running';
 
@@ -497,39 +353,78 @@ async function startScrape(gameType) {
     if (d.status === 'success') {
       stEl.textContent = `任务已启动（ID: ${d.task_id}），发现中...`;
       pollTaskStatus(gameType, d.task_id, stEl);
+    } else if (d.status === 'duplicate') {
+      stEl.textContent = d.message;
+      stEl.className = 'status-bar running';
+      pollTaskStatus(gameType, d.task_id, stEl);
     } else {
       stEl.textContent = `❌ ${d.message}`;
       stEl.className = 'status-bar error';
+      if (btn) btn.disabled = false;
     }
   } catch(e) {
     stEl.textContent = `❌ 请求失败：${e.message}`;
     stEl.className = 'status-bar error';
+    if (btn) btn.disabled = false;
   }
 }
 
+const pollStartTimes = {};
+
 function pollTaskStatus(gameType, taskId, stEl) {
   const gt = gameType.toLowerCase();
+  const btn = _getScrapeBtn(gt);
+  if (btn) btn.disabled = true;
   if (taskPollers[gt]) clearInterval(taskPollers[gt]);
-  taskPollers[gt] = setInterval(async () => {
+  pollStartTimes[gt] = Date.now();
+  let errorCount = 0;
+
+  function getInterval() {
+    const elapsed = Date.now() - pollStartTimes[gt];
+    if (elapsed < 5 * 60 * 1000) return 3000;
+    if (elapsed < 30 * 60 * 1000) return 15000;
+    return 60000;
+  }
+
+  function scheduleNext() {
+    taskPollers[gt] = setTimeout(poll, getInterval());
+  }
+
+  async function poll() {
     try {
       const res = await fetch(`/fb_task_status/${taskId}`);
+      if (!res.ok) { errorCount++; scheduleNext(); return; }
       const d = await res.json();
+      errorCount = 0;
       const summary = d.result_summary || '';
+      const elapsed = Date.now() - pollStartTimes[gt];
+
       if (d.status === 'completed') {
-        clearInterval(taskPollers[gt]);
         stEl.textContent = `✅ 完成：${summary}`;
         stEl.className = 'status-bar success';
+        if (btn) btn.disabled = false;
         loadReport();
+        return;
       } else if (d.status === 'failed') {
-        clearInterval(taskPollers[gt]);
         stEl.textContent = `❌ 失败：${d.error_message || '未知错误'}`;
         stEl.className = 'status-bar error';
+        if (btn) btn.disabled = false;
+        return;
       } else {
-        stEl.textContent = summary || `运行中 (${d.status})...`;
+        let msg = summary || `运行中 (${d.status})...`;
+        if (elapsed > 40 * 60 * 1000) {
+          msg += ' ⚠️ 任务运行超过40分钟，仍在处理中，请勿重复提交';
+          stEl.style.color = '#e67e22';
+        }
+        stEl.textContent = msg;
         stEl.className = 'status-bar running';
       }
-    } catch(e) { /* 忽略轮询错误 */ }
-  }, 3000);
+    } catch(e) {
+      errorCount++;
+    }
+    scheduleNext();
+  }
+  poll();
 }
 
 // ──────────────────────────────────────
@@ -568,225 +463,7 @@ function buildChart(canvasId, labels, series, title) {
   });
 }
 
-// ──────────────────────────────────────
-// 峰值帖 & Top5 演示补全（前端，不写数据库）
-// ──────────────────────────────────────
-const _MOCK_PEAK = {
-  '泰国区域': [
-    { author: 'mlbb_thailand', topic: '泰国玩家热议MLBB宋干节金币皮肤活动', summary: 'แจกสกินฟรี! เข้ามารับได้เลย #MLBB #GoldSongkran' },
-    { author: 'patchara_gamer', topic: 'MLBB泰国玩家分享新赛季排位心得', summary: 'ขึ้น Mythic แล้ว ภูมิใจมากๆ #MLBB #MythicRank' },
-  ],
-  '26Y SPD泰国1': [
-    { author: 'naruto_mlbb_th', topic: '火影忍者联动上线，泰国玩家反应热烈', summary: 'SPD x Naruto มาแล้ว! สกิน Itachi สวยมาก #MLBBXNARUTO' },
-    { author: 'spd_fan_th', topic: 'SPD联动皮肤开箱评测引发讨论', summary: 'ได้สกิน Itachi แล้ว! คุ้มค่ามากๆ #SPD #MLBB' },
-  ],
-  'ROV泰国': [
-    { author: 'rov_thailand_fan', topic: 'ROV泰国新赛季活动引玩家热议', summary: 'ROV ซีซั่นใหม่น่าเล่นมาก! #RoV #GarenaRoV' },
-    { author: 'aov_th_gamer', topic: 'ROV联赛精彩集锦帖获大量互动', summary: 'เชียร์ทีมไทยด้วยกัน! ไปกันต่อ #RoVThailand' },
-  ],
-  '26Y SPD泰国2': [
-    { author: 'spd_collector', topic: 'SPD历史联动皮肤讨论帖引发回忆', summary: 'SPD ชุดเก่าๆ ยังน่าจำอยู่เลย #MLBB #SPD' },
-  ],
-  '115泰国热点': [
-    { author: 'mlbb_hot_th', topic: '115活动期间泰国热门帖文获高互动', summary: 'กิจกรรม 115 สุดเจ๋ง! ได้รางวัลมากมาย #MLBB' },
-  ],
-  '25Y SPD泰国': [
-    { author: 'spd_2025_fan', topic: '2025年SPD活动回顾，玩家热情高涨', summary: 'SPD ปี 2025 ดีมากๆ อยากให้กลับมาอีก #MLBB #SPD' },
-  ],
-};
-
-function augmentPeakData(peakData, ds) {
-  if (!peakData) return peakData;
-  const rng = _seeded(0xBEEF42);
-  return peakData.map(group => {
-    const newGroup = {};
-    Object.entries(group).forEach(([dsName, info]) => {
-      if (info && info.post) { newGroup[dsName] = info; return; }
-      // 没有 post 数据时，生成一条 mock 峰值帖
-      const mocks = _MOCK_PEAK[dsName] || [{ author: 'mlbb_user', topic: '玩家热门帖文', summary: 'โพสต์ยอดนิยม #MLBB' }];
-      const m = mocks[Math.floor(rng() * mocks.length)];
-      const dsData = ds[dsName];
-      const cmtArr = dsData?.new_comments || [];
-      const engArr = dsData?.engagement || [];
-      const peakIdx = cmtArr.length ? cmtArr.indexOf(Math.max(...cmtArr)) : 0;
-      const peakDay = dsData?.days?.[peakIdx] || (info?.peak_day || '—');
-      const peakCmt = cmtArr[peakIdx] || (info?.peak_count || Math.round(3 + rng() * 12));
-      const eng = engArr[peakIdx] || Math.round(500 + rng() * 5000);
-      const engLabel = eng >= 1000 ? (eng / 1000).toFixed(1) + 'k' : String(eng);
-      newGroup[dsName] = {
-        peak_day: peakDay,
-        peak_count: peakCmt,
-        post: { author: m.author, topic: m.topic, summary: m.summary, engagement: eng, engagement_label: engLabel },
-      };
-    });
-    return newGroup;
-  });
-}
-
-const _MOCK_TOP5 = [
-  { author: 'naruto_mlbb_th',  topic: '火影忍者联动皮肤上线，评价两极', text: 'สกิน Naruto x MLBB ออกมาแล้ว! ชอบมากๆ #MLBBXNARUTO #SPD', likes: 4821, shares: 312, comments: 876, platform: 'FACEBOOK', region: '26Y SPD泰国1', sentiment_ratio: {positive:62,neutral:27,negative:11}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对联动皮肤设计高度认可，称赞角色还原度高',count:'420+'},{sentiment:'neutral',region:'TH',opinion:'部分玩家关注联动皮肤价格和获取方式',count:'180+'},{sentiment:'negative',region:'TH',opinion:'少数玩家认为联动活动时间太短',count:'90+'}] },
-  { author: 'patchara_gamer',  topic: 'MLBB宋干节活动引发大规模参与讨论', text: 'กิจกรรมสงกรานต์ MLBB สนุกมากๆ มาเล่นกันเถอะ #GoldSongkran #MLBB', likes: 3104, shares: 287, comments: 654, platform: 'FACEBOOK', region: '泰国区域', sentiment_ratio: {positive:71,neutral:22,negative:7}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对节日活动奖励丰厚表示满意',count:'340+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论活动任务难度与完成策略',count:'120+'},{sentiment:'negative',region:'TH',opinion:'少数玩家反映活动服务器不稳定',count:'45+'}] },
-  { author: 'mlbb_thailand',   topic: '泰国官方活动预告帖引发玩家期待', text: 'เตรียมรับของรางวัลสุดพิเศษ! #MLBB #MobileLegends #Thailand', likes: 2398, shares: 198, comments: 421, platform: 'FACEBOOK', region: '泰国区域', sentiment_ratio: {positive:68,neutral:25,negative:7}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家期待新活动内容，评论热烈',count:'280+'},{sentiment:'neutral',region:'TH',opinion:'玩家询问活动开始时间和参与方式',count:'105+'},{sentiment:'negative',region:'TH',opinion:'部分玩家希望活动奖励更有价值',count:'30+'}] },
-  { author: 'spd_fan_th',      topic: 'SPD联动角色技能讨论贴获高互动', text: 'Julian x SPD เล่นได้เลยตอนนี้ OP มากๆ #MLBB #SPD #Julian', likes: 1876, shares: 145, comments: 312, platform: 'INSTAGRAM', region: '26Y SPD泰国1', sentiment_ratio: {positive:55,neutral:31,negative:14}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家认为联动角色技能强度高，游戏体验佳',count:'170+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论联动角色的最优出装与阵容',count:'95+'},{sentiment:'negative',region:'TH',opinion:'玩家认为该角色破坏了游戏平衡',count:'45+'}] },
-  { author: 'rov_th_gamer',    topic: 'ROV新赛季排位赛攻略帖引发讨论', text: 'เทคนิคขึ้น Diamond ใน ROV ซีซั่นนี้ #RoV #AoV #GarenaRoV', likes: 1243, shares: 98,  comments: 187, platform: 'FACEBOOK', region: 'ROV泰国', sentiment_ratio: {positive:59,neutral:32,negative:9}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对攻略内容认可，称赞实用性强',count:'110+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论不同英雄的排位适用性',count:'60+'},{sentiment:'negative',region:'TH',opinion:'部分玩家认为排位赛匹配机制不公平',count:'17+'}] },
-];
-
-function augmentTop5(top5) {
-  // 真实数据优先：不再人为抬高评论数，不再混入高值 mock 破坏排序
-  const rows = (top5 || [])
-    .filter(Boolean)
-    .map(p => ({ ...p }))
-    .sort((a, b) => (b.engagement || 0) - (a.engagement || 0));
-
-  if (!rows.length) {
-    // 完全无数据时仅做兜底展示
-    return _MOCK_TOP5.slice(0, 3).map(m => ({
-      ...m,
-      post_content: { topic: m.topic, text: m.text },
-      url: '',
-      engagement: m.likes + m.shares + m.comments,
-      engagement_label: ((m.likes + m.shares + m.comments) / 1000).toFixed(1) + 'k',
-    }));
-  }
-  return rows;
-}
-
-// ──────────────────────────────────────
-// 演示数据增强（前端补全，不写数据库）
-// ──────────────────────────────────────
-function _seeded(seed) {
-  // 确定性伪随机，同一数据集每次刷新结果一致
-  let s = (seed * 1664525 + 1013904223) & 0x7fffffff;
-  return () => { s = (s * 1664525 + 1013904223) & 0x7fffffff; return s / 0x7fffffff; };
-}
-
-function augmentPresentation(ds) {
-  function fillZeroGaps(arr, seed) {
-    const out = [...arr];
-    const rng = _seeded(seed);
-    const peak = Math.max(...out, 1);
-    for (let i = 0; i < out.length; i++) {
-      if (out[i] > 0) continue;
-      let left = i - 1, right = i + 1;
-      while (left >= 0 && out[left] <= 0) left--;
-      while (right < out.length && out[right] <= 0) right++;
-      if (left >= 0 && right < out.length) {
-        out[i] = Math.max(1, Math.round(((out[left] + out[right]) / 2) * (0.85 + rng() * 0.3)));
-      } else if (left >= 0) {
-        out[i] = Math.max(1, Math.round(out[left] * (0.6 + rng() * 0.25)));
-      } else if (right < out.length) {
-        out[i] = Math.max(1, Math.round(out[right] * (0.6 + rng() * 0.25)));
-      } else {
-        out[i] = Math.max(1, Math.round(peak * (0.04 + rng() * 0.06)));
-      }
-    }
-    return out;
-  }
-
-  // ① 真实优先：仅补零，不重塑有数据的曲线
-  Object.keys(ds || {}).forEach((name, ni) => {
-    ['engagement', 'new_comments'].forEach((field, fi) => {
-      const arr = [...(ds[name]?.[field] || [])];
-      if (!arr.length) return;
-      if (arr.some(v => v > 0)) {
-        ds[name][field] = fillZeroGaps(arr, ni * 100 + fi + 1);
-      }
-    });
-  });
-
-  // ② 图C如果全空，再按不同数据集生成不同形态（避免三条线同形）
-  const chartCNames = ['26Y SPD泰国2', '115泰国热点', '25Y SPD泰国'];
-  const mainPeakEng = Math.max(
-    ...(ds['泰国区域']?.engagement || [1]),
-    ...(ds['26Y SPD泰国1']?.engagement || [1]),
-    ...(ds['ROV泰国']?.engagement || [1]),
-    1
-  );
-  const mainPeakCmt = Math.max(
-    ...(ds['泰国区域']?.new_comments || [1]),
-    ...(ds['26Y SPD泰国1']?.new_comments || [1]),
-    ...(ds['ROV泰国']?.new_comments || [1]),
-    1
-  );
-  chartCNames.forEach((name, ni) => {
-    if (!ds[name]) return;
-    const rng = _seeded(0xAC00 + ni * 97);
-    ['engagement', 'new_comments'].forEach((field) => {
-      const arr = ds[name][field] || [];
-      if (!arr.length || arr.some(v => v > 0)) return;
-      const n = arr.length || 3;
-      const peakIdx = Math.min(n - 1, Math.max(0, Math.floor((0.35 + ni * 0.22) * (n - 1))));
-      const amp = field === 'engagement'
-        ? Math.round(mainPeakEng * (0.38 + ni * 0.12))
-        : Math.max(3, Math.round(mainPeakCmt * (0.45 + ni * 0.10)));
-      ds[name][field] = Array.from({ length: n }, (_, i) => {
-        const dist = Math.abs(i - peakIdx);
-        const decay = Math.pow(0.52 + ni * 0.08, dist);
-        const noise = 0.9 + rng() * 0.22;
-        return Math.max(1, Math.round(amp * decay * noise));
-      });
-    });
-  });
-
-  // ③ 仅对主图做“轻约束”：ROV 略高于 MLBB（不再重塑整体形状）
-  // 3.1 先强约束：MLBB 每天必须高于 SPD（用户硬性要求）
-  const mlbbVsSpd = [ds['泰国区域'], ds['26Y SPD泰国1']];
-  if (mlbbVsSpd[0] && mlbbVsSpd[1]) {
-    const mlbb = mlbbVsSpd[0];
-    const spd = mlbbVsSpd[1];
-    const rng = _seeded(0x314159);
-    ['engagement', 'new_comments'].forEach(field => {
-      const len = Math.min(mlbb[field].length, spd[field].length);
-      for (let i = 0; i < len; i++) {
-        const spdVal = Math.max(1, spd[field][i] || 1);
-        // MLBB 至少高 8%~35%，且不超过 2 倍
-        const target = Math.round(spdVal * (1.08 + rng() * 0.27));
-        mlbb[field][i] = Math.max(mlbb[field][i] || 0, target);
-        mlbb[field][i] = Math.min(mlbb[field][i], spdVal * 2);
-      }
-    });
-  }
-
-  // 3.2 图B约束：ROV 与 MLBB 不同形，允许并制造可见交叉
-  const mlbb = ds['泰国区域'];
-  const rov = ds['ROV泰国'];
-  if (mlbb && rov) {
-    const rng = _seeded(0x778899);
-    ['engagement', 'new_comments'].forEach(field => {
-      const len = Math.min(mlbb[field].length, rov[field].length);
-      let hasAbove = false;
-      let hasBelow = false;
-      for (let i = 0; i < len; i++) {
-        if (mlbb[field][i] <= 0) mlbb[field][i] = 1;
-        if (rov[field][i] <= 0) rov[field][i] = 1;
-
-        // 偶数日让 ROV 略低，奇数日让 ROV 略高，避免两条线完全同形
-        const evenDay = (i % 2 === 0);
-        const factor = evenDay
-          ? (0.80 + rng() * 0.14) // 0.80~0.94
-          : (1.06 + rng() * 0.22); // 1.06~1.28
-        rov[field][i] = Math.max(1, Math.round(mlbb[field][i] * factor));
-
-        if (rov[field][i] > mlbb[field][i]) hasAbove = true;
-        if (rov[field][i] < mlbb[field][i]) hasBelow = true;
-      }
-
-      // 兜底：确保至少存在一处上穿和一处下穿
-      if (len >= 2) {
-        if (!hasAbove) {
-          const idx = Math.floor(len / 2);
-          rov[field][idx] = Math.max(rov[field][idx], Math.round(mlbb[field][idx] * 1.12));
-        }
-        if (!hasBelow) {
-          const idx = Math.max(0, Math.floor(len / 2) - 1);
-          rov[field][idx] = Math.min(rov[field][idx], Math.max(1, Math.round(mlbb[field][idx] * 0.88)));
-        }
-      }
-    });
-  }
-
-  return ds;
-}
+// 页面仅展示后端真实数据，不再做前端 mock/augment 补数。
 
 // ──────────────────────────────────────
 // 加载报告数据
@@ -855,14 +532,31 @@ async function loadReport() {
       ]
     );
 
-    // 峰值下钻（真实数据）
     renderPeaks(d.peak_data);
 
-    // Top5（真实数据）
-    renderTop5(d.top5);
+    loadTop5();
 
   } catch(e) {
     console.error('loadReport error', e);
+    const errBar = document.getElementById('report-error');
+    if (errBar) { errBar.textContent = '数据加载失败，请刷新重试'; errBar.style.display = 'block'; }
+  }
+}
+
+async function loadTop5() {
+  const container = document.getElementById('top5-container');
+  if (container) container.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">Top5 数据加载中...</div>';
+  try {
+    const res = await fetch('/api/thai_report_top5');
+    const d = await res.json();
+    if (d.status === 'success') {
+      renderTop5(d.top5);
+    } else {
+      if (container) container.innerHTML = '<div style="color:#c0392b;padding:12px;">Top5 加载失败</div>';
+    }
+  } catch(e) {
+    console.error('loadTop5 error', e);
+    if (container) container.innerHTML = '<div style="color:#c0392b;padding:12px;">Top5 加载失败</div>';
   }
 }
 
@@ -990,9 +684,28 @@ function renderTop5(posts) {
 // ──────────────────────────────────────
 // 初始化
 // ──────────────────────────────────────
+async function recoverRunningTasks() {
+  try {
+    const res = await fetch('/api/thai_running_tasks');
+    const d = await res.json();
+    if (d.status !== 'success' || !d.tasks || !d.tasks.length) return;
+    for (const t of d.tasks) {
+      const gt = (t.game_type || '').toLowerCase();
+      const stEl = document.getElementById(`${gt}-status`);
+      if (!stEl) continue;
+      const btn = _getScrapeBtn(gt);
+      stEl.textContent = t.result_summary || `运行中 (${t.status})...`;
+      stEl.className = 'status-bar running';
+      pollTaskStatus(t.game_type, t.task_id, stEl);
+    }
+  } catch(e) {
+    console.error('recoverRunningTasks error', e);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-  renderImportButtons();
   loadReport();
+  recoverRunningTasks();
 });
 </script>
 </body>

@@ -1287,22 +1287,13 @@ def sentiment_tool():
     return render_template('analysis.html', has_used_sentiment=has_used_sentiment)
 
 
-MLBB_DISCOVER_KEYWORDS = [
-    "#mlbb", "#mlbb*", "mlbb", "#mobilelegends", "mobilelegends", "mobilelegendsbangbang",
-    "#mobilelegendsbangbang", "#mobalegends", "#moba55", "mobile legends",
-    "mlbbxnaruto", "mlbb naruto", "#mlbbnewskin", "#mlbbfreegaaraskin",
-    "#valirfreeskin", "#goldsongkran", "#goldhunt",
-]
-
-SPD_KEYWORDS = [
-    "mlbbxnaruto", "mlbb naruto", "#mlbbnewskin", "#mlbbfreegaaraskin",
-    "#valirfreeskin", "#goldsongkran", "#goldhunt",
-]
-
-ROV_DISCOVER_KEYWORDS = [
-    "#rov", "#realmofvalor", "#garenarov", "#rovthailand",
-    "#rovvietnam", "#อาโอวี", "#garenarovthailand", "#ambassadorofvalor",
-]
+from thai_utils import (
+    is_thai_content, has_thai_chars,
+    contains_any_tag_or_term, normalize_tag_token,
+    thai_datasets_config, thai_matching_datasets,
+    MLBB_DISCOVER_KEYWORDS, SPD_KEYWORDS, ROV_DISCOVER_KEYWORDS,
+    THAI_GAME_TAGS,
+)
 
 # 布尔规则：后端 _eval_boolean_expr 匹配（小写归一），非 AI。
 TASK_BOOLEAN_RULES = {
@@ -5531,148 +5522,10 @@ def fb_scheduler_status():
 # 泰国专题报告
 # ============================================
 
-# 六个数据集配置
-def _thai_datasets_config():
-    """动态生成数据集配置，进行中的数据集 end 使用今天日期"""
-    _today = datetime.date.today().isoformat()
-    return {
-        "泰国区域":     {"game": "MLBB", "start": "2026-04-03", "end": _today},
-        "26Y SPD泰国1": {"game": "SPD",  "start": "2026-04-03", "end": _today},
-        "ROV泰国":      {"game": "ROV",  "start": "2026-04-03", "end": _today},
-        "26Y SPD泰国2": {"game": "SPD",  "start": "2026-03-27", "end": "2026-03-29"},
-        "115泰国热点":  {"game": "MLBB", "start": "2026-01-15", "end": "2026-01-17"},
-        "25Y SPD泰国":  {"game": "SPD",  "start": "2025-05-02", "end": "2025-05-04"},
-    }
-
-THAI_DATASETS_CONFIG = _thai_datasets_config()
-
-
-def _normalize_tag_token(term: str) -> str:
-    t = (term or '').strip().strip('"').strip("'").lower()
-    if not t:
-        return ''
-    return t
-
-
-def _contains_any_tag_or_term(text: str, terms, hashtags=None) -> bool:
-    """OR 匹配：优先 hashtag 精确命中；未命中时降级到 caption 词边界匹配。"""
-    base = (text or '').lower()
-    hashtag_set = {
-        str(h or '').strip().lstrip('#').lower()
-        for h in (hashtags or [])
-        if str(h or '').strip()
-    }
-    for raw in (terms or []):
-        t = _normalize_tag_token(raw)
-        if not t:
-            continue
-        wildcard = t.endswith('*')
-        t_core = t[:-1] if wildcard else t
-        t_core = t_core.strip()
-        if not t_core:
-            continue
-        t_no_hash = t_core.lstrip('#')
-        # 1) hashtag 精确优先（或前缀匹配）
-        if wildcard:
-            if t_no_hash and any(h.startswith(t_no_hash) for h in hashtag_set):
-                return True
-        else:
-            if t_no_hash and t_no_hash in hashtag_set:
-                return True
-
-        # 2) caption 降级（词边界），避免纯子串误命中
-        if wildcard:
-            if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}\w*', base):
-                return True
-            continue
-        if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}(?!\w)', base):
-            return True
-    return False
-
-
-THAI_GAME_TAGS = {
-    'MLBB': MLBB_DISCOVER_KEYWORDS,
-    'SPD': SPD_KEYWORDS,
-    'ROV': ROV_DISCOVER_KEYWORDS,
-}
-
-
-def _thai_matching_datasets(post_date_str, caption, hashtags):
-    """根据发帖日期 + 正文/hashtag 做 OR tag 匹配判定数据集（可命中多个）。"""
-    cfg = _thai_datasets_config()
-    hashtag_text = ' '.join(f'#{h}' for h in (hashtags or []) if h is not None and str(h).strip())
-    full_text = re.sub(r'\s+', ' ', f'{caption or ""} {hashtag_text}'.lower()).strip()
-    matched = []
-    for ds_name, meta in cfg.items():
-        start, end = meta['start'], meta['end']
-        if post_date_str < start or post_date_str > end:
-            continue
-        game = meta.get('game') or 'MLBB'
-        terms = THAI_GAME_TAGS.get(game, [])
-        if _contains_any_tag_or_term(full_text, terms, hashtags=hashtags):
-            matched.append(ds_name)
-
-    return matched
-
-
-def _is_instagram_hashtag_export_row(item):
-    """Apify Instagram hashtag 导出：至少要有 url 与时间戳。"""
-    if not isinstance(item, dict):
-        return False
-    return bool((item.get('url') or '').strip() and (item.get('timestamp') or ''))
-
-
-def _is_facebook_hashtag_export_row(item):
-    """Apify Facebook hashtag 导出：视频/Reel 条目，有 permalink，通常无发帖时间字段。"""
-    if not isinstance(item, dict):
-        return False
-    if not (item.get('permalink_url') or '').strip():
-        return False
-    return item.get('__typename') == 'Video' or item.get('hashtag') is not None
-
-
-def _extract_date_from_dataset_filename(fpath):
-    """从 dataset_*_2026-04-07_* 这类文件名提取抓取日，用作 FB 无时间戳时的近似发帖日。"""
-    m = re.search(r'(20\d{2}-\d{2}-\d{2})', os.path.basename(fpath or ''))
-    return m.group(1) if m else datetime.date.today().isoformat()
-
-
-def _parse_facebook_hashtag_item(item, proxy_post_date):
-    """将 FB hashtag 导出行转为与 IG 一致的字段。proxy_post_date：文件名中的日期。"""
-    def _to_int(v):
-        try:
-            return int(v or 0)
-        except Exception:
-            return 0
-
-    url = (item.get('permalink_url') or '').strip()
-    if not url:
-        return None
-    ht = item.get('hashtag')
-    hashtags = [str(ht).strip()] if ht else []
-    cap = (item.get('animated_image_caption') or '') or ''
-    vo = item.get('video_owner') or {}
-    if isinstance(vo, dict):
-        author = (vo.get('name') or '')[:256]
-    else:
-        author = ''
-    play = _to_int(item.get('play_count'))
-    likes = _to_int(item.get('likes_count') or item.get('like_count'))
-    comments_cnt = _to_int(item.get('comments_count') or item.get('comment_count'))
-    shares = _to_int(item.get('shares_count') or item.get('share_count'))
-    return {
-        'url': url,
-        'caption': cap.strip(),
-        'hashtags': hashtags,
-        'post_date': proxy_post_date,
-        'author': author,
-        # play_count 仅作为观看量，不应计入点赞口径
-        'views': play,
-        'likes': likes,
-        'comments_cnt': comments_cnt,
-        'shares': shares,
-        'platform': 'FACEBOOK',
-    }
+# Aliases for backward compat within this file
+_thai_datasets_config = thai_datasets_config
+_thai_matching_datasets = thai_matching_datasets
+_contains_any_tag_or_term = contains_any_tag_or_term
 
 
 @app.route('/thai-report-tool')
@@ -5681,587 +5534,90 @@ def thai_report_tool():
     return render_template('thai_report.html')
 
 
-@app.route('/api/import_thai_json', methods=['POST'])
+@app.route('/api/thai_reset', methods=['POST'])
 @login_required
-def import_thai_json():
-    """把项目目录下的 dataset_*.json 导入数据库并打 thai_report_datasets 标签。
-
-    两种模式：
-    - full_clean=true：扫描全部 dataset_*.json。支持 Instagram hashtag 导出（有 timestamp）与
-      Facebook hashtag 导出（有 permalink_url；发帖日用文件名中的 YYYY-MM-DD 近似）。
-      按日期窗口 + MLBB/SPD/ROV 布尔规则自动归入 6 个数据集，无需区分文件对应哪个 tag。
-    - 默认：按 dataset_name + game_type + 日期范围 单数据集导入（兼容旧流程）。
-
-    支持 multipart/form-data：字段 json_files 可上传多个文件（文件名须匹配 dataset_*.json），
-    用于 Render 等云端环境（仓库内无本地 Apify 导出文件时）。
-    """
-    import glob as _glob
-    import tempfile
-    import uuid as _uuid
-
-    upload_temp_paths = []
-    data = request.get_json(silent=True) or {}
-    if request.content_type and 'multipart/form-data' in (request.content_type or '').lower():
-        merged_form = {k: request.form.get(k) for k in request.form}
-        data = {**merged_form, **data}
-        for uf in request.files.getlist('json_files'):
-            if not uf or not uf.filename:
-                continue
-            fname = os.path.basename(uf.filename)
-            if not re.match(r'^dataset_[\w\-\.]+\.json$', fname):
-                for p in upload_temp_paths:
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
-                return jsonify({
-                    'status': 'error',
-                    'message': f'文件名须匹配 dataset_*.json（当前: {fname}）',
-                }), 400
-            tpath = os.path.join(
-                tempfile.gettempdir(),
-                f"thai_upload_{_uuid.uuid4().hex[:12]}_{fname}",
-            )
-            uf.save(tpath)
-            upload_temp_paths.append(tpath)
-
-    full_raw = data.get('full_clean', data.get('full'))
-    if isinstance(full_raw, str):
-        full_clean = full_raw.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
-    else:
-        full_clean = bool(full_raw)
-
-    dataset_name = (data.get('dataset_name') or '').strip()
-    game_type = (data.get('game_type') or 'MLBB').strip().upper()
-    start_date = (data.get('start_date') or '').strip()
-    end_date = (data.get('end_date') or '').strip()
-    json_files_raw = data.get('json_files') or []
-    if isinstance(json_files_raw, str):
-        json_files_raw = [json_files_raw]
-    if not isinstance(json_files_raw, list):
-        json_files_raw = []
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    files = []
-    if upload_temp_paths:
-        files = list(upload_temp_paths)
-    elif json_files_raw:
-        for f in json_files_raw:
-            if not isinstance(f, str):
-                continue
-            fname = os.path.basename(f)
-            if not re.match(r'^dataset_[\w\-\.]+\.json$', fname):
-                logger.warning(f"⚠️ 拒绝非法文件名: {fname}")
-                continue
-            files.append(os.path.join(base_dir, fname))
-    elif full_clean:
-        files = sorted(set(_glob.glob(os.path.join(base_dir, 'dataset_*.json'))))
-    else:
-        files = sorted(set(
-            _glob.glob(os.path.join(base_dir, 'dataset_instagram-hashtag-scraper_*.json'))
-            + _glob.glob(os.path.join(base_dir, 'dataset_*goldsongkran*.json'))
-            + _glob.glob(os.path.join(base_dir, 'dataset_*GOLDHUNT*.json'))
-            + _glob.glob(os.path.join(base_dir, 'dataset_*goldhunt*.json'))
-        ))
-
-    if not files:
-        return jsonify({
-            'status': 'error',
-            'message': (
-                '未找到 dataset_*.json。云端没有本机项目目录里的文件；'
-                '请在下方选择 Apify 导出的 JSON 上传（文件名须以 dataset_ 开头），'
-                '或把文件放进仓库根目录并重新部署。'
-            ),
-        }), 404
-
-    try:
-        if full_clean:
-            # 全量清洗数据量大，改为后台线程处理，立即返回 task_id 供前端轮询
-            import_task_id = db.execute_and_fetch_id(
-                "INSERT INTO scrape_tasks (task_type, status, result_summary) VALUES (%s,%s,%s) RETURNING id",
-                ('thai_import', 'running', f'正在处理 {len(files)} 个文件...')
-            )
-
-            _import_files = list(files)
-            _import_temp_paths = list(upload_temp_paths)
-
-            def _do_full_clean():
-                dataset_tag_counts = {name: 0 for name in _thai_datasets_config().keys()}
-                posts_with_tags = 0
-                skipped_no_dataset = 0
-                skipped_non_thai = 0
-                skipped_bad_row = 0
-                errors = 0
-                files_used = 0
-                try:
-                    for fpath in _import_files:
-                        try:
-                            with open(fpath, encoding='utf-8') as fp:
-                                rows = json.load(fp)
-                        except Exception as e:
-                            logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
-                            errors += 1
-                            continue
-                        if not isinstance(rows, list) or not rows:
-                            logger.warning(f"⚠️ 跳过空或非列表 JSON: {fpath}")
-                            errors += 1
-                            continue
-                        file_kind = None
-                        for probe in rows[:300]:
-                            if _is_instagram_hashtag_export_row(probe):
-                                file_kind = 'instagram'
-                                break
-                            if _is_facebook_hashtag_export_row(probe):
-                                file_kind = 'facebook'
-                                break
-                        if not file_kind:
-                            logger.info(f"⏭️ 跳过无法识别的导出格式: {os.path.basename(fpath)}")
-                            continue
-                        files_used += 1
-                        is_ig = file_kind == 'instagram'
-                        fb_proxy_date = _extract_date_from_dataset_filename(fpath) if not is_ig else None
-
-                        for item in rows:
-                            try:
-                                if is_ig:
-                                    if not _is_instagram_hashtag_export_row(item):
-                                        skipped_bad_row += 1
-                                        continue
-                                    caption = (item.get('caption') or '').strip()
-                                    url = (item.get('url') or '').strip()
-                                    author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
-                                    likes = int(item.get('likesCount') or 0)
-                                    comments_cnt = int(item.get('commentsCount') or 0)
-                                    shares = int(item.get('sharesCount') or item.get('shareCount') or 0)
-                                    views = int(item.get('views') or item.get('viewCount') or item.get('videoViewCount') or 0)
-                                    timestamp = item.get('timestamp') or ''
-                                    hashtags = item.get('hashtags') or []
-                                    post_date = timestamp[:10]
-                                    platform_code = 'INSTAGRAM'
-                                    engagement_val = likes + shares + comments_cnt
-                                else:
-                                    parsed = _parse_facebook_hashtag_item(item, fb_proxy_date)
-                                    if not parsed:
-                                        skipped_bad_row += 1
-                                        continue
-                                    caption = parsed['caption']
-                                    url = parsed['url']
-                                    author = parsed['author']
-                                    views = parsed.get('views') or 0
-                                    likes = parsed['likes']
-                                    comments_cnt = parsed['comments_cnt']
-                                    shares = parsed.get('shares') or 0
-                                    post_date = parsed['post_date']
-                                    hashtags = parsed['hashtags']
-                                    platform_code = parsed['platform']
-                                    engagement_val = likes + shares + comments_cnt
-
-                                if not tasks._has_thai_chars(caption or ''):
-                                    skipped_non_thai += 1
-                                    continue
-
-                                matching = _thai_matching_datasets(post_date, caption, hashtags)
-                                if not matching:
-                                    skipped_no_dataset += 1
-                                    continue
-
-                                try:
-                                    db.execute("""
-                                        INSERT INTO fb_post_metrics
-                                            (post_url, platform, author, post_date, post_content, views, shares, likes, comments_count, engagement, updated_at)
-                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                                        ON CONFLICT (post_url) DO UPDATE SET
-                                            views = GREATEST(COALESCE(fb_post_metrics.views,0), EXCLUDED.views),
-                                            shares = GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares),
-                                            likes = EXCLUDED.likes,
-                                            comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                                            engagement = EXCLUDED.likes + GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares) + GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                                            post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
-                                            updated_at = NOW()
-                                    """, (
-                                        url, platform_code[:16], author, post_date, caption,
-                                        views, shares, likes, comments_cnt, engagement_val
-                                    ))
-                                except Exception as e:
-                                    logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
-
-                                for ds in matching:
-                                    try:
-                                        db.execute("""
-                                            INSERT INTO thai_report_datasets (dataset_name, post_url)
-                                            VALUES (%s, %s)
-                                            ON CONFLICT (dataset_name, post_url) DO NOTHING
-                                        """, (ds, url))
-                                        dataset_tag_counts[ds] = dataset_tag_counts.get(ds, 0) + 1
-                                    except Exception as e:
-                                        logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
-                                posts_with_tags += 1
-                            except Exception as e:
-                                logger.warning(f"⚠️ 处理记录失败: {e}")
-                                errors += 1
-
-                    total_tags = sum(dataset_tag_counts.values())
-                    parts = ' · '.join(f'{k}:{v}' for k, v in dataset_tag_counts.items() if v)
-                    summary = (
-                        f"✅ 全量完成：命中 {posts_with_tags} 条；各集 {parts}；"
-                        f"未命中 {skipped_no_dataset}；非泰语 {skipped_non_thai}；"
-                        f"处理文件 {files_used}/{len(_import_files)}"
-                    )
-                    db.execute(
-                        "UPDATE scrape_tasks SET status='completed', completed_at=NOW(), result_summary=%s WHERE id=%s",
-                        (summary[:500], import_task_id)
-                    )
-                    logger.info(f"✅ 全量清洗完成 task_id={import_task_id}: {summary}")
-                except Exception as e:
-                    logger.error(f"❌ 全量清洗失败 task_id={import_task_id}: {e}")
-                    try:
-                        db.execute(
-                            "UPDATE scrape_tasks SET status='failed', completed_at=NOW(), error_message=%s WHERE id=%s",
-                            (str(e)[:500], import_task_id)
-                        )
-                    except Exception:
-                        pass
-                finally:
-                    for p in _import_temp_paths:
-                        try:
-                            os.unlink(p)
-                        except OSError:
-                            pass
-
-            # 线程自己负责清理 _import_temp_paths，阻止外层 finally 提前删除
-            upload_temp_paths.clear()
-            try:
-                threading.Thread(target=_do_full_clean, daemon=True).start()
-            except Exception as e:
-                logger.error(f"❌ 启动全量清洗线程失败 task_id={import_task_id}: {e}")
-                for p in _import_temp_paths:
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
-                db.execute(
-                    "UPDATE scrape_tasks SET status='failed', completed_at=NOW(), error_message=%s WHERE id=%s",
-                    (f'线程启动失败: {e}'[:500], import_task_id),
-                )
-                return jsonify({'status': 'error', 'message': '后台任务启动失败，请重试'}), 500
-            return jsonify({'status': 'queued', 'task_id': import_task_id,
-                            'message': f'正在后台处理 {len(files)} 个文件，请稍候...'})
-    
-        if not dataset_name:
-            return jsonify({'status': 'error', 'message': '单数据集导入需要 dataset_name；或传 full_clean=true 做全量清洗'}), 400
-    
-        imported = 0
-        skipped_lang = 0
-        skipped_non_thai = 0
-        skipped_date = 0
-        errors = 0
-    
-        for fpath in files:
-            try:
-                with open(fpath, encoding='utf-8') as fp:
-                    rows = json.load(fp)
-            except Exception as e:
-                logger.warning(f"⚠️ 读取 {fpath} 失败: {e}")
-                errors += 1
-                continue
-    
-            for item in rows:
-                try:
-                    caption = (item.get('caption') or '').strip()
-                    url = (item.get('url') or '').strip()
-                    author = (item.get('ownerUsername') or item.get('ownerFullName') or '').strip()
-                    likes = int(item.get('likesCount') or 0)
-                    comments_cnt = int(item.get('commentsCount') or 0)
-                    shares = int(item.get('sharesCount') or item.get('shareCount') or 0)
-                    views = int(item.get('views') or item.get('viewCount') or item.get('videoViewCount') or 0)
-                    timestamp = item.get('timestamp') or ''
-                    hashtags = item.get('hashtags') or []
-    
-                    if not url or not timestamp:
-                        continue
-    
-                    # 日期过滤
-                    post_date = timestamp[:10]
-                    if start_date and post_date < start_date:
-                        skipped_date += 1
-                        continue
-                    if end_date and post_date > end_date:
-                        skipped_date += 1
-                        continue
-    
-                    # 游戏类型 OR tags 过滤（不再走布尔规则）
-                    terms = THAI_GAME_TAGS.get(game_type, [])
-                    if terms:
-                        hashtag_text = ' '.join(f'#{h}' for h in hashtags)
-                        full_text = re.sub(r'\s+', ' ', f"{caption} {hashtag_text}".lower()).strip()
-                        if not _contains_any_tag_or_term(full_text, terms, hashtags=hashtags):
-                            skipped_lang += 1
-                            continue
-    
-                    if not tasks._has_thai_chars(caption or ''):
-                        skipped_non_thai += 1
-                        continue
-
-                    # 写入 fb_post_metrics
-                    try:
-                        db.execute("""
-                            INSERT INTO fb_post_metrics
-                                (post_url, platform, author, post_date, post_content, views, shares, likes, comments_count, engagement, updated_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                            ON CONFLICT (post_url) DO UPDATE SET
-                                views = GREATEST(COALESCE(fb_post_metrics.views,0), EXCLUDED.views),
-                                shares = GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares),
-                                likes = EXCLUDED.likes,
-                                comments_count = GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                                engagement = EXCLUDED.likes + GREATEST(COALESCE(fb_post_metrics.shares,0), EXCLUDED.shares) + GREATEST(COALESCE(fb_post_metrics.comments_count,0), EXCLUDED.comments_count),
-                                post_content = COALESCE(NULLIF(fb_post_metrics.post_content,''), EXCLUDED.post_content),
-                                updated_at = NOW()
-                        """, (
-                            url, 'INSTAGRAM', author, post_date, caption,
-                            views, shares, likes, comments_cnt, likes + shares + comments_cnt
-                        ))
-                    except Exception as e:
-                        logger.warning(f"⚠️ upsert fb_post_metrics 失败: {e}")
-    
-                    # 写 thai_report_datasets 标签
-                    try:
-                        db.execute("""
-                            INSERT INTO thai_report_datasets (dataset_name, post_url)
-                            VALUES (%s, %s)
-                            ON CONFLICT (dataset_name, post_url) DO NOTHING
-                        """, (dataset_name, url))
-                    except Exception as e:
-                        logger.warning(f"⚠️ 写入 thai_report_datasets 失败: {e}")
-    
-                    imported += 1
-                except Exception as e:
-                    logger.warning(f"⚠️ 处理记录失败: {e}")
-                    errors += 1
-    
-        return jsonify({
-            'status': 'success',
-            'mode': 'single',
-            'imported': imported,
-            'skipped_not_match_rule': skipped_lang,
-            'skipped_non_thai': skipped_non_thai,
-            'skipped_out_of_range': skipped_date,
-            'errors': errors,
-            'files_processed': len(files),
-        })
-    finally:
-        for _p in upload_temp_paths:
-            try:
-                os.unlink(_p)
-            except OSError:
-                pass
-
-
-@app.route('/api/thai_fix_engagement', methods=['POST'])
-@login_required
-def thai_fix_engagement():
-    """受控纠偏：修正泰国专题历史数据里被 play_count 污染的互动口径。"""
+def thai_reset():
+    """Full reset: clear dataset tags, recalculate engagement, optionally purge stale sentiment."""
     try:
         payload = request.get_json(silent=True) or {}
-
-        dry_run_raw = payload.get('dry_run', True)
-        if isinstance(dry_run_raw, str):
-            dry_run = dry_run_raw.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
-        else:
-            dry_run = bool(dry_run_raw)
-
-        ds_cfg = _thai_datasets_config().values()
-        default_start = min(cfg['start'] for cfg in ds_cfg)
-        default_end = max(cfg['end'] for cfg in ds_cfg)
-        start_date = (payload.get('start_date') or default_start).strip()
-        end_date = (payload.get('end_date') or default_end).strip()
-        try:
-            datetime.date.fromisoformat(start_date)
-            datetime.date.fromisoformat(end_date)
-        except Exception:
-            return jsonify({'status': 'error', 'message': 'start_date/end_date 必须是 YYYY-MM-DD'}), 400
-        if start_date > end_date:
-            return jsonify({'status': 'error', 'message': 'start_date 不能晚于 end_date'}), 400
-
-        # 仅修复泰国专题数据中明显受污染的 FB 行（限定在泰国专题日期窗内）：
-        # - platform=FACEBOOK
-        # - 在 thai_report_datasets 中
-        # - likes>1000 且 comments/shares=0（play_count 污染特征：有"赞"但零评论零转发）
-        suspicious_where = """
-            m.platform = 'FACEBOOK'
-            AND EXISTS (
-                SELECT 1 FROM thai_report_datasets d WHERE d.post_url = m.post_url
-            )
-            AND m.post_date >= %s
-            AND m.post_date <= %s
-            AND COALESCE(m.likes, 0) > 1000
-            AND COALESCE(m.comments_count, 0) = 0
-            AND COALESCE(m.shares, 0) = 0
-        """
-        suspicious_params = (start_date, end_date)
-
-        suspicious_cnt = db.query_one(
-            f"SELECT COUNT(*) AS cnt FROM fb_post_metrics m WHERE {suspicious_where}",
-            suspicious_params,
-        ).get('cnt', 0)
-        sample_rows = db.query_all(
-            f"""
-                SELECT m.post_url, m.likes, m.views, m.comments_count, m.shares, m.post_date
-                FROM fb_post_metrics m
-                WHERE {suspicious_where}
-                ORDER BY m.post_date DESC NULLS LAST
-                LIMIT 20
-            """,
-            suspicious_params,
-        )
-
-        if dry_run:
-            return jsonify({
-                'status': 'success',
-                'mode': 'dry_run',
-                'start_date': start_date,
-                'end_date': end_date,
-                'suspicious_rows': int(suspicious_cnt or 0),
-                'sample': sample_rows,
-                'message': '已完成预览。若要执行修复，请传 dry_run=false 且 confirm=FIX_THAI_ENGAGEMENT',
-            })
-
         confirm = (payload.get('confirm') or '').strip()
-        if confirm != 'FIX_THAI_ENGAGEMENT':
-            return jsonify({
-                'status': 'error',
-                'message': '缺少确认口令。执行修复需传 confirm=FIX_THAI_ENGAGEMENT',
-            }), 400
+        if confirm != 'RESET_THAI':
+            return jsonify({'status': 'error', 'message': '需传 confirm=RESET_THAI 才能执行重置'}), 400
 
-        moved_row = db.execute_and_fetch_one(
-            f"""
-            WITH moved AS (
-                UPDATE fb_post_metrics m
-                SET views = GREATEST(COALESCE(m.views, 0), COALESCE(m.likes, 0)),
-                    likes = 0,
-                    engagement = COALESCE(m.shares, 0) + COALESCE(m.comments_count, 0),
-                    updated_at = NOW()
-                WHERE {suspicious_where}
-                RETURNING 1
-            )
-            SELECT COUNT(*) AS cnt FROM moved
-            """,
-            suspicious_params,
-        )
-        moved_count = int((moved_row or {}).get('cnt') or 0)
-
+        # 1) Recalculate engagement for posts that belong to Thai datasets
         recalc_row = db.execute_and_fetch_one("""
             WITH recalced AS (
                 UPDATE fb_post_metrics m
-                SET engagement = COALESCE(m.likes, 0) + COALESCE(m.shares, 0) + COALESCE(m.comments_count, 0),
+                SET engagement = COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0),
                     updated_at = NOW()
                 WHERE EXISTS (
                     SELECT 1 FROM thai_report_datasets d WHERE d.post_url = m.post_url
                 )
-                AND m.post_date >= %s
-                AND m.post_date <= %s
-                AND COALESCE(m.engagement, 0) <> (
-                    COALESCE(m.likes, 0) + COALESCE(m.shares, 0) + COALESCE(m.comments_count, 0)
-                )
                 RETURNING 1
             )
             SELECT COUNT(*) AS cnt FROM recalced
-        """, (start_date, end_date))
-        recalc_count = int((recalc_row or {}).get('cnt') or 0)
+        """)
+        recalc_cnt = int((recalc_row or {}).get('cnt') or 0)
 
-        return jsonify({
-            'status': 'success',
-            'mode': 'apply',
-            'start_date': start_date,
-            'end_date': end_date,
-            'moved_rows': moved_count,
-            'recalculated_rows': recalc_count,
-            'message': '历史口径纠偏完成',
-        })
-    except Exception as e:
-        logger.error(f"❌ 泰国专题历史口径纠偏失败: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/api/thai_cleanup_non_thai', methods=['POST'])
-@login_required
-def thai_cleanup_non_thai():
-    """清理 thai_report_datasets 中 caption 不含泰文字符的非泰语帖子。
-    dry_run=true 仅预览，dry_run=false + confirm=CLEANUP_NON_THAI 正式删除。
-    """
-    try:
-        payload = request.get_json(silent=True) or {}
-        dry_run_raw = payload.get('dry_run', True)
-        dry_run = dry_run_raw if isinstance(dry_run_raw, bool) else str(dry_run_raw).lower() in ('1', 'true', 'yes')
-
-        # 找出 thai_report_datasets 里所有 post_content 不含泰文字符的帖子
-        # 使用泰文实际字符范围 ก-๛ 代替 Unicode 转义，避免 Python 解析歧义
-        THAI_RE = '[ก-๛]'
-        non_thai_rows = db.query_all("""
-            SELECT d.dataset_name, d.post_url,
-                   LEFT(COALESCE(m.post_content,''), 80) AS preview,
-                   m.platform
-            FROM thai_report_datasets d
-            LEFT JOIN fb_post_metrics m ON m.post_url = d.post_url
-            WHERE COALESCE(m.post_content, '') !~ %s
-            ORDER BY d.dataset_name, d.post_url
-            LIMIT 200
-        """, (THAI_RE,))
-        total_row = db.query_one("""
-            SELECT COUNT(*) AS cnt
-            FROM thai_report_datasets d
-            LEFT JOIN fb_post_metrics m ON m.post_url = d.post_url
-            WHERE COALESCE(m.post_content, '') !~ %s
-        """, (THAI_RE,))
-        total_cnt = int((total_row or {}).get('cnt') or 0)
-
-        if dry_run:
-            return jsonify({
-                'status': 'success',
-                'mode': 'dry_run',
-                'non_thai_rows': total_cnt,
-                'sample': non_thai_rows[:20],
-                'message': '预览完成。若确认删除，请传 dry_run=false 且 confirm=CLEANUP_NON_THAI',
-            })
-
-        confirm = (payload.get('confirm') or '').strip()
-        if confirm != 'CLEANUP_NON_THAI':
-            return jsonify({'status': 'error', 'message': '需传 confirm=CLEANUP_NON_THAI 才能执行删除'}), 400
-
+        # 2) Clear all dataset tags
         del_row = db.execute_and_fetch_one("""
             WITH deleted AS (
-                DELETE FROM thai_report_datasets d
-                USING fb_post_metrics m
-                WHERE d.post_url = m.post_url
-                  AND COALESCE(m.post_content, '') !~ %s
-                RETURNING d.post_url
+                DELETE FROM thai_report_datasets RETURNING 1
             )
             SELECT COUNT(*) AS cnt FROM deleted
-        """, (THAI_RE,))
-        deleted_cnt = int((del_row or {}).get('cnt') or 0)
-
-        # 同时删除孤立的 fb_post_metrics（不再属于任何数据集的帖子）
-        orphan_row = db.execute_and_fetch_one("""
-            WITH orphan AS (
-                DELETE FROM fb_post_metrics m
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM thai_report_datasets d WHERE d.post_url = m.post_url
-                )
-                RETURNING m.post_url
-            )
-            SELECT COUNT(*) AS cnt FROM orphan
         """)
-        orphan_cnt = int((orphan_row or {}).get('cnt') or 0)
+        del_cnt = int((del_row or {}).get('cnt') or 0)
+
+        # 3) Purge stale sentiment records (placeholder analyses)
+        purge_row = db.execute_and_fetch_one("""
+            WITH purged AS (
+                DELETE FROM fb_comments
+                WHERE sentiment_score = 0 AND category = 'unknown'
+                RETURNING 1
+            )
+            SELECT COUNT(*) AS cnt FROM purged
+        """)
+        purge_cnt = int((purge_row or {}).get('cnt') or 0)
 
         return jsonify({
             'status': 'success',
-            'mode': 'apply',
-            'deleted_from_datasets': deleted_cnt,
-            'deleted_orphan_metrics': orphan_cnt,
-            'message': f'已删除 {deleted_cnt} 条非泰语帖子标签，清理 {orphan_cnt} 条孤立指标行',
+            'recalculated_engagement': recalc_cnt,
+            'deleted_dataset_tags': del_cnt,
+            'purged_stale_sentiment': purge_cnt,
+            'message': f'重置完成：重算 {recalc_cnt} 条 engagement，清空 {del_cnt} 条标签，清理 {purge_cnt} 条无效情感记录',
         })
     except Exception as e:
-        logger.error(f"❌ thai_cleanup_non_thai 失败: {e}")
+        logger.error(f"❌ thai_reset 失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/thai_running_tasks', methods=['GET'])
+@login_required
+def thai_running_tasks():
+    """Return currently running/pending Thai scrape tasks for frontend recovery."""
+    try:
+        rows = db.query_all("""
+            SELECT id, task_type, status, result_summary
+            FROM scrape_tasks
+            WHERE task_type LIKE 'thai_%%_scrape'
+              AND status IN ('pending', 'running')
+            ORDER BY id DESC
+            LIMIT 10
+        """)
+        tasks = []
+        for r in rows:
+            tt = r.get('task_type') or ''
+            game_type = tt.replace('thai_', '').replace('_scrape', '').upper()
+            tasks.append({
+                'task_id': r['id'],
+                'game_type': game_type,
+                'status': r.get('status'),
+                'result_summary': r.get('result_summary') or '',
+            })
+        return jsonify({'status': 'success', 'tasks': tasks})
+    except Exception as e:
+        logger.error(f"❌ thai_running_tasks 失败: {e}")
+        return jsonify({'status': 'error', 'tasks': []})
 
 
 @app.route('/api/thai_schedule', methods=['POST'])
@@ -6321,6 +5677,20 @@ def thai_schedule():
             skip_discover = True
             source_dataset_name = '泰国区域'
 
+        # Duplicate prevention: reject if same game_type already has a running/pending task
+        existing = db.query_one(
+            """SELECT id FROM scrape_tasks
+               WHERE task_type = %s AND status IN ('pending','running')
+               LIMIT 1""",
+            (f'thai_{game_type.lower()}_scrape',)
+        )
+        if existing:
+            return jsonify({
+                'status': 'duplicate',
+                'task_id': existing['id'],
+                'message': f'{game_type} 已有运行中的采集任务（ID: {existing["id"]}），请等待完成后再提交',
+            }), 409
+
         task_id = db.execute_and_fetch_id(
             "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
             (f'thai_{game_type.lower()}_scrape', 'pending')
@@ -6338,7 +5708,6 @@ def thai_schedule():
             max_ai_comments=max_ai_comments,
             discover_max_posts=discover_max_posts,
             min_comments_for_actor=min_comments_for_actor,
-            boolean_rule=None,
             source_dataset_name=source_dataset_name,
             dataset_start=dataset_start,
             dataset_end=dataset_end,
@@ -6362,7 +5731,6 @@ def thai_schedule():
                 'max_ai_comments': max_ai_comments,
                 'discover_max_posts': discover_max_posts,
                 'min_comments_for_actor': min_comments_for_actor,
-                'boolean_rule': None,
                 'source_dataset_name': source_dataset_name,
                 'dataset_start': dataset_start,
                 'dataset_end': dataset_end,
@@ -6406,149 +5774,114 @@ def thai_schedule():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+import time as _time
+
+_thai_report_cache = {}
+_THAI_CACHE_TTL = 300
+
+
+def _thai_cache_get(key):
+    entry = _thai_report_cache.get(key)
+    if entry and (_time.time() - entry['ts']) < _THAI_CACHE_TTL:
+        return entry['data']
+    return None
+
+
+def _thai_cache_set(key, data):
+    _thai_report_cache[key] = {'data': data, 'ts': _time.time()}
+
+
+from datetime import date as _date, timedelta as _timedelta
+
+
+def _fetch_daily_engagement_fn(dataset_name, start, end):
+    rows = db.query_all_with_timeout("""
+        SELECT m.post_date::text AS day,
+               COALESCE(SUM(m.likes),0) + COALESCE(SUM(m.shares),0) + COALESCE(SUM(m.comments_count),0) AS total
+        FROM fb_post_metrics m
+        JOIN thai_report_datasets d ON d.post_url = m.post_url
+        WHERE d.dataset_name = %s
+          AND m.post_date >= %s AND m.post_date <= %s
+        GROUP BY m.post_date
+        ORDER BY m.post_date
+    """, (dataset_name, start, end))
+    return {r['day']: int(r['total']) for r in rows}
+
+
+def _fetch_daily_new_comments_fn(dataset_name, start, end):
+    rows = db.query_all_with_timeout("""
+        SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
+               COUNT(*) AS cnt
+        FROM fb_comments c
+        JOIN thai_report_datasets d ON d.post_url = c.post_url
+        WHERE d.dataset_name = %s
+          AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
+          AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
+        GROUP BY 1
+        ORDER BY 1
+    """, (dataset_name, start, end))
+    return {r['day']: int(r['cnt']) for r in rows}
+
+
+def _peak_post_fn(dataset_name, peak_day):
+    row = db.query_one_with_timeout("""
+        SELECT m.author, m.post_content,
+               COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement,
+               COUNT(c.id) AS comment_cnt
+        FROM fb_comments c
+        JOIN fb_post_metrics m ON m.post_url = c.post_url
+        JOIN thai_report_datasets d ON d.post_url = c.post_url
+        WHERE d.dataset_name = %s
+          AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
+          AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
+        GROUP BY m.post_url, m.author, m.post_content, m.likes, m.shares, m.comments_count
+        ORDER BY comment_cnt DESC
+        LIMIT 1
+    """, (dataset_name, peak_day, peak_day))
+    if not row:
+        return None
+    eng = int(row.get('engagement') or 0)
+    eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
+    return {
+        'author': row.get('author') or '',
+        'summary': (row.get('post_content') or '')[:60],
+        'topic': '',
+        'engagement': eng,
+        'engagement_label': eng_k,
+    }
+
+
+def _date_range_fn(start, end):
+    s = _date.fromisoformat(start)
+    e = _date.fromisoformat(end)
+    days = []
+    cur = s
+    while cur <= e:
+        days.append(cur.isoformat())
+        cur += _timedelta(days=1)
+    return days
+
+
 @app.route('/api/thai_report_data', methods=['GET'])
 @login_required
 def thai_report_data():
-    """
-    返回泰国专题六个数据集的聚合数据：
-    - 分日互动量（likes+shares+comments）
-    - 分日新增评论量（按 fb_comments.created_at）
-    - 各数据集峰值评论日 + 峰值帖子信息
-    - 26Y SPD泰国1 的 Top5 帖子
-    """
+    """Charts + peaks (lightweight, cached 5 min). Top5 moved to /api/thai_report_top5."""
     try:
-        from datetime import date as _date, timedelta
-        def _fetch_daily_engagement(dataset_name, start, end):
-            rows = db.query_all_with_timeout("""
-                SELECT m.post_date::text AS day,
-                       COALESCE(SUM(m.likes),0) + COALESCE(SUM(m.shares),0) + COALESCE(SUM(m.comments_count),0) AS total
-                FROM fb_post_metrics m
-                JOIN thai_report_datasets d ON d.post_url = m.post_url
-                WHERE d.dataset_name = %s
-                  AND m.post_date >= %s AND m.post_date <= %s
-                GROUP BY m.post_date
-                ORDER BY m.post_date
-            """, (dataset_name, start, end))
-            return {r['day']: int(r['total']) for r in rows}
+        cached = _thai_cache_get('report_charts')
+        if cached:
+            return jsonify(cached)
 
-        def _fetch_daily_new_comments(dataset_name, start, end):
-            # 用时间戳范围替代 DATE() 函数过滤，让 created_at 索引生效
-            rows = db.query_all_with_timeout("""
-                SELECT DATE(c.created_at AT TIME ZONE 'Asia/Shanghai')::text AS day,
-                       COUNT(*) AS cnt
-                FROM fb_comments c
-                JOIN thai_report_datasets d ON d.post_url = c.post_url
-                WHERE d.dataset_name = %s
-                  AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
-                  AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
-                GROUP BY 1
-                ORDER BY 1
-            """, (dataset_name, start, end))
-            return {r['day']: int(r['cnt']) for r in rows}
-
-        def _generate_post_topic(content: str) -> str:
-            """调用 Qwen 为帖文生成一句话中文摘要（≤50字）。无 Qwen 或失败时返回空字符串。"""
-            if not content or not qwen_client:
-                return ''
-            try:
-                resp = qwen_client.chat.completions.create(
-                    model='qwen-plus',
-                    messages=[{'role': 'user', 'content': (
-                        f"请用一句话（不超过50个中文字）概括以下帖子的主要内容，供手游品牌方快速了解帖文主题：\n\n{content[:400]}"
-                    )}],
-                    temperature=0.3,
-                    max_tokens=80,
-                )
-                return (resp.choices[0].message.content or '').strip()[:60]
-            except Exception:
-                return ''
-
-        def _peak_post(dataset_name, peak_day):
-            """返回峰值日评论最多的帖子信息"""
-            row = db.query_one_with_timeout("""
-                SELECT m.author, m.post_content,
-                       COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement,
-                       COUNT(c.id) AS comment_cnt
-                FROM fb_comments c
-                JOIN fb_post_metrics m ON m.post_url = c.post_url
-                JOIN thai_report_datasets d ON d.post_url = c.post_url
-                WHERE d.dataset_name = %s
-                  AND c.created_at >= %s::date::timestamp AT TIME ZONE 'Asia/Shanghai'
-                  AND c.created_at <  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Shanghai'
-                GROUP BY m.post_url, m.author, m.post_content, m.likes, m.shares, m.comments_count
-                ORDER BY comment_cnt DESC
-                LIMIT 1
-            """, (dataset_name, peak_day, peak_day))
-            if not row:
-                return None
-            eng = int(row.get('engagement') or 0)
-            eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
-            raw_content = row.get('post_content') or ''
-            return {
-                'author': row.get('author') or '',
-                'summary': raw_content[:60],
-                'topic': '',
-                'engagement': eng,
-                'engagement_label': eng_k,
-            }
-
-        def _top5_posts(dataset_name, start, end):
-            # 优先取“有评论”的真实帖子，避免 Top5 出现大量 0 评论占位
-            rows = db.query_all_with_timeout("""
-                SELECT m.author, m.post_content, m.post_url, m.platform,
-                       COALESCE(m.likes,0) AS likes, COALESCE(m.shares,0) AS shares, COALESCE(m.comments_count,0) AS comments_count,
-                       COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement
-                FROM fb_post_metrics m
-                JOIN thai_report_datasets d ON d.post_url = m.post_url
-                WHERE d.dataset_name = %s
-                  AND m.post_date >= %s AND m.post_date <= %s
-                ORDER BY COALESCE(m.comments_count,0) DESC, engagement DESC
-                LIMIT 20
-            """, (dataset_name, start, end))
-            preferred = [r for r in rows if int(r.get('comments_count') or 0) > 0]
-            chosen_rows = (preferred[:5] if len(preferred) >= 5 else (preferred + rows)[:5])
-            result = []
-            for r in chosen_rows:
-                eng = int(r.get('engagement') or 0)
-                post_url = r.get('post_url') or ''
-                raw_content = r.get('post_content') or ''
-
-                result.append({
-                    'author': r.get('author') or '',
-                    'platform': (r.get('platform') or 'FACEBOOK').upper(),
-                    'region': dataset_name,
-                    'post_content': {
-                        'topic': '',
-                        'text': raw_content[:120],
-                    },
-                    'url': post_url,
-                    'likes': int(r.get('likes') or 0),
-                    'shares': int(r.get('shares') or 0),
-                    'comments': int(r.get('comments_count') or 0),
-                    'engagement': eng,
-                    'engagement_label': f"{eng/1000:.1f}k" if eng >= 1000 else str(eng),
-                    'sentiment_ratio': {'positive': 0, 'neutral': 0, 'negative': 0},
-                    'top_sentiments': [],
-                })
-            return result
-
-        # 构建每个数据集的日期范围 -> 日期列表
-        def _date_range(start, end):
-            s = _date.fromisoformat(start)
-            e = _date.fromisoformat(end)
-            days = []
-            cur = s
-            while cur <= e:
-                days.append(cur.isoformat())
-                cur += timedelta(days=1)
-            return days
-
+        # -- keep old local names for minimal diff below --
+        _fetch_daily_engagement = _fetch_daily_engagement_fn
+        _fetch_daily_new_comments = _fetch_daily_new_comments_fn
+        _peak_post = _peak_post_fn
+        _date_range = _date_range_fn
         datasets_out = {}
         for ds_name, cfg in _thai_datasets_config().items():
             s, e = cfg['start'], cfg['end']
-            days = _date_range(s, e)
-            eng_map = _fetch_daily_engagement(ds_name, s, e)
-            cmt_map = _fetch_daily_new_comments(ds_name, s, e)
+            days = _date_range_fn(s, e)
+            eng_map = _fetch_daily_engagement_fn(ds_name, s, e)
+            cmt_map = _fetch_daily_new_comments_fn(ds_name, s, e)
             datasets_out[ds_name] = {
                 'game': cfg['game'],
                 'start': s,
@@ -6558,19 +5891,17 @@ def thai_report_data():
                 'new_comments': [cmt_map.get(d, 0) for d in days],
             }
 
-        # 图 C 的三个数据集用相对 day_index（D1/D2/D3）
         chart_c_datasets = ["26Y SPD泰国2", "115泰国热点", "25Y SPD泰国"]
-        chart_c_labels = []
         chart_c_max_days = max(
-            len(datasets_out[n]['days']) for n in chart_c_datasets if n in datasets_out
-        ) if any(n in datasets_out for n in chart_c_datasets) else 0
+            (len(datasets_out[n]['days']) for n in chart_c_datasets if n in datasets_out),
+            default=0,
+        )
         chart_c_labels = [f"D{i+1}" for i in range(chart_c_max_days)]
 
-        # 峰值下钻（三张评论折线图各自的峰值帖）
         peak_chart_groups = [
-            ("泰国区域", "26Y SPD泰国1"),   # 图 a
-            ("泰国区域", "ROV泰国"),         # 图 b
-            ("26Y SPD泰国2", "115泰国热点", "25Y SPD泰国"),  # 图 c
+            ("泰国区域", "26Y SPD泰国1"),
+            ("泰国区域", "ROV泰国"),
+            ("26Y SPD泰国2", "115泰国热点", "25Y SPD泰国"),
         ]
         peak_data = []
         for group in peak_chart_groups:
@@ -6585,7 +5916,7 @@ def thai_report_data():
                     continue
                 peak_idx = cmt_list.index(max(cmt_list))
                 peak_day = days_list[peak_idx]
-                post = _peak_post(ds_name, peak_day)
+                post = _peak_post_fn(ds_name, peak_day)
                 group_peaks[ds_name] = {
                     'peak_day': peak_day,
                     'peak_count': cmt_list[peak_idx],
@@ -6593,21 +5924,124 @@ def thai_report_data():
                 }
             peak_data.append(group_peaks)
 
-        # Top5（仅 26Y SPD泰国1）
-        spd1_cfg = _thai_datasets_config().get("26Y SPD泰国1", {})
-        top5 = _top5_posts("26Y SPD泰国1", spd1_cfg.get('start', ''), spd1_cfg.get('end', ''))
-
-        return jsonify({
+        result = {
             'status': 'success',
             'datasets': datasets_out,
             'chart_c_labels': chart_c_labels,
             'chart_c_datasets': chart_c_datasets,
             'peak_data': peak_data,
-            'top5': top5,
-        })
+        }
+        _thai_cache_set('report_charts', result)
+        return jsonify(result)
 
     except Exception as e:
-        logger.error(f"❌ thai_report_data 失败: {e}")
+        logger.error(f"\u274c thai_report_data 失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/thai_report_top5', methods=['GET'])
+@login_required
+def thai_report_top5():
+    """Top5 posts with sentiment analysis (heavier, cached 5 min)."""
+    try:
+        cached = _thai_cache_get('report_top5')
+        if cached:
+            return jsonify(cached)
+
+        spd1_cfg = _thai_datasets_config().get("26Y SPD泰国1", {})
+        ds_name = "26Y SPD泰国1"
+        start = spd1_cfg.get('start', '')
+        end = spd1_cfg.get('end', '')
+
+        rows = db.query_all_with_timeout("""
+            SELECT m.author, m.post_content, m.post_url, m.platform,
+                   COALESCE(m.likes,0) AS likes, COALESCE(m.shares,0) AS shares,
+                   COALESCE(m.comments_count,0) AS comments_count,
+                   COALESCE(m.likes,0) + COALESCE(m.shares,0) + COALESCE(m.comments_count,0) AS engagement
+            FROM fb_post_metrics m
+            JOIN thai_report_datasets d ON d.post_url = m.post_url
+            WHERE d.dataset_name = %s
+              AND m.post_date >= %s AND m.post_date <= %s
+            ORDER BY COALESCE(m.comments_count,0) DESC, engagement DESC
+            LIMIT 20
+        """, (ds_name, start, end))
+        preferred = [r for r in rows if int(r.get('comments_count') or 0) > 0]
+        chosen_rows = (preferred[:5] if len(preferred) >= 5 else (preferred + rows)[:5])
+        top5 = []
+        for r in chosen_rows:
+            eng = int(r.get('engagement') or 0)
+            post_url = r.get('post_url') or ''
+            raw_content = r.get('post_content') or ''
+
+            sentiment_ratio = {'positive': 0, 'neutral': 0, 'negative': 0}
+            top_sentiments = []
+            comments = []
+            try:
+                comments = db.query_all_with_timeout("""
+                    SELECT content, sentiment_score, category, brief_analysis
+                    FROM fb_comments
+                    WHERE post_url = %s AND sentiment_score IS NOT NULL AND sentiment_score != 0
+                    ORDER BY ABS(sentiment_score) DESC
+                    LIMIT 200
+                """, (post_url,))
+                if comments:
+                    pos = sum(1 for c in comments if (c.get('sentiment_score') or 0) > 0)
+                    neg = sum(1 for c in comments if (c.get('sentiment_score') or 0) < 0)
+                    neu = len(comments) - pos - neg
+                    total = len(comments)
+                    sentiment_ratio = {
+                        'positive': round(pos / total * 100),
+                        'neutral': round(neu / total * 100),
+                        'negative': round(neg / total * 100),
+                    }
+                    seen_analyses = set()
+                    for c in comments:
+                        analysis = (c.get('brief_analysis') or '').strip()
+                        if analysis and analysis not in seen_analyses:
+                            seen_analyses.add(analysis)
+                            score = c.get('sentiment_score') or 0
+                            label = 'positive' if score > 0 else ('negative' if score < 0 else 'neutral')
+                            top_sentiments.append({'text': analysis[:100], 'type': label})
+                        if len(top_sentiments) >= 5:
+                            break
+            except Exception as e:
+                logger.warning(f"\u26a0\ufe0f 获取 Top5 情感数据失败: {e}")
+
+            if not top_sentiments and comments:
+                try:
+                    ai_result = _ai_analyze_single_post(comments, len(comments))
+                    if ai_result:
+                        if ai_result.get('sentiment_ratio'):
+                            sentiment_ratio = ai_result['sentiment_ratio']
+                        for s in (ai_result.get('sentiments') or [])[:5]:
+                            top_sentiments.append({
+                                'text': (s.get('opinion') or s.get('text') or '')[:100],
+                                'type': s.get('type', 'neutral'),
+                            })
+                except Exception:
+                    pass
+
+            top5.append({
+                'author': r.get('author') or '',
+                'platform': (r.get('platform') or 'FACEBOOK').upper(),
+                'region': ds_name,
+                'post_content': {'topic': '', 'text': raw_content[:120]},
+                'url': post_url,
+                'likes': int(r.get('likes') or 0),
+                'shares': int(r.get('shares') or 0),
+                'comments': int(r.get('comments_count') or 0),
+                'engagement': eng,
+                'engagement_label': f"{eng/1000:.1f}k" if eng >= 1000 else str(eng),
+                'sentiment_ratio': sentiment_ratio,
+                'top_sentiments': top_sentiments,
+            })
+
+        result = {'status': 'success', 'top5': top5}
+        _thai_cache_set('report_top5', result)
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"\u274c thai_report_top5 失败: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

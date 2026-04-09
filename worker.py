@@ -350,7 +350,6 @@ def _handle_thai_scrape(task_id, params):
             max_ai_comments=int(params.get('max_ai_comments', 5000)),
             discover_max_posts=int(params.get('discover_max_posts', 3000)),
             min_comments_for_actor=int(params.get('min_comments_for_actor', 0)),
-            boolean_rule=(params.get('boolean_rule') or '').strip(),
             source_dataset_name=(params.get('source_dataset_name') or '').strip() or None,
             dataset_start=(params.get('dataset_start') or '').strip() or None,
             dataset_end=(params.get('dataset_end') or '').strip() or None,
