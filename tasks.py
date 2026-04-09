@@ -1085,6 +1085,123 @@ def scrape_fb_comments(
     return result
 
 
+def run_thai_scrape_job(
+    scrape_task_id,
+    game_type,
+    dataset_name,
+    skip_discover,
+    seed_tags,
+    platforms,
+    days_back,
+    results_limit,
+    max_ai_comments,
+    discover_max_posts,
+    min_comments_for_actor,
+    boolean_rule,
+    re_raise=True,
+):
+    """泰国专题：发现帖子并抓取评论。供 Web 线程或 DB Worker 调用。
+
+    re_raise: Worker 模式应为 True，便于 task_queue 标记失败；进程内线程可传 False（与旧行为一致，异常仅写 scrape_tasks）。
+    """
+    try:
+        db.execute("UPDATE scrape_tasks SET status='running' WHERE id=%s", (scrape_task_id,))
+        if skip_discover:
+            db.execute(
+                "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                (f"正在加载数据集「{dataset_name}」中的帖子（跳过 Hashtag 发现）...", scrape_task_id),
+            )
+            rows = db.query_all("""
+                SELECT m.post_url, m.platform, m.author, m.post_date, m.post_content,
+                       m.thumbnail_url, m.views, m.shares, m.likes, m.comments_count, m.engagement
+                FROM fb_post_metrics m
+                INNER JOIN thai_report_datasets d
+                  ON d.post_url = m.post_url AND d.dataset_name = %s
+                ORDER BY m.engagement DESC NULLS LAST
+            """, (dataset_name,))
+            if not rows:
+                raise RuntimeError(
+                    f'数据集「{dataset_name}」中暂无帖子。请先在本页导入 JSON，'
+                    f'或取消勾选「仅抓评论」以运行 Hashtag 发现（会产生 Apify 费用）。'
+                )
+            seen_urls = set()
+            post_urls = []
+            discovered_posts = []
+            for r in rows:
+                u = r.get('post_url')
+                if not u or u in seen_urls:
+                    continue
+                seen_urls.add(u)
+                post_urls.append(u)
+                discovered_posts.append({
+                    'post_url': u,
+                    'platform': r.get('platform'),
+                    'author': r.get('author'),
+                    'post_date': r.get('post_date'),
+                    'post_content': r.get('post_content'),
+                    'thumbnail_url': r.get('thumbnail_url'),
+                    'views': r.get('views') or 0,
+                    'shares': r.get('shares') or 0,
+                    'likes': r.get('likes') or 0,
+                    'comments_count': r.get('comments_count') or 0,
+                    'engagement': r.get('engagement') or 0,
+                })
+            if len(post_urls) > discover_max_posts:
+                post_urls = post_urls[:discover_max_posts]
+                discovered_posts = discovered_posts[:discover_max_posts]
+            db.execute(
+                "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                (f"已加载 {len(post_urls)} 条本地帖子（未跑 Hashtag），开始抓取评论...", scrape_task_id),
+            )
+        else:
+            db.execute(
+                "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                (f"正在通过 Hashtag 发现 {game_type} 帖子...", scrape_task_id),
+            )
+            discover_result = discover_posts_by_tags(
+                seed_tags=seed_tags,
+                platforms=platforms,
+                days_back=days_back,
+                max_posts=discover_max_posts,
+                boolean_rule=boolean_rule or None,
+                post_language_filter='th',
+            )
+            if discover_result.get('status') != 'success':
+                raise RuntimeError(f"discover 失败: {discover_result.get('message')}")
+
+            post_urls = discover_result.get('post_urls') or []
+            discovered_posts = discover_result.get('posts') or []
+            db.execute(
+                "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                (f"Hashtag 发现完成，共 {len(post_urls)} 条帖子，开始抓取评论...", scrape_task_id),
+            )
+
+        scrape_fb_comments(
+            post_urls=post_urls,
+            discovered_posts=discovered_posts,
+            days_back=days_back,
+            task_id=scrape_task_id,
+            results_limit=results_limit,
+            enable_ai_analysis=True,
+            max_ai_comments=max_ai_comments,
+            allow_fallback_to_config=False,
+            language_filter='th',
+            dataset_name=dataset_name,
+            min_comments_for_actor=min_comments_for_actor or None,
+        )
+    except Exception as e:
+        logger.error(f"❌ 泰国专题抓取失败(task_id={scrape_task_id}): {e}")
+        try:
+            db.execute(
+                "UPDATE scrape_tasks SET status='failed', completed_at=NOW(), error_message=%s WHERE id=%s",
+                (str(e)[:500], scrape_task_id),
+            )
+        except Exception:
+            pass
+        if re_raise:
+            raise
+
+
 def analyze_comment_sentiment(content):
     """
     Analyze comment sentiment using Qwen

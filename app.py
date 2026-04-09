@@ -5991,112 +5991,74 @@ def thai_schedule():
             (f'thai_{game_type.lower()}_scrape', 'pending')
         )
 
-        def run_thai_scrape():
+        job_kw = dict(
+            scrape_task_id=task_id,
+            game_type=game_type,
+            dataset_name=dataset_name,
+            skip_discover=skip_discover,
+            seed_tags=seed_tags,
+            platforms=platforms,
+            days_back=days_back,
+            results_limit=results_limit,
+            max_ai_comments=max_ai_comments,
+            discover_max_posts=discover_max_posts,
+            min_comments_for_actor=min_comments_for_actor,
+            boolean_rule=boolean_rule,
+        )
+
+        if USE_DB_WORKER:
+            queue_task_id = str(uuid.uuid4())
+            user_id = session.get('user_id')
+            session_id = session.get('session_id', 'default')
+            create_task(queue_task_id, user_id, session_id, function_type='thai_scrape')
+            task_params = {
+                'source': 'thai_schedule',
+                'scrape_task_id': task_id,
+                'game_type': game_type,
+                'dataset_name': dataset_name,
+                'skip_discover': skip_discover,
+                'seed_tags': seed_tags,
+                'platforms': platforms,
+                'days_back': days_back,
+                'results_limit': results_limit,
+                'max_ai_comments': max_ai_comments,
+                'discover_max_posts': discover_max_posts,
+                'min_comments_for_actor': min_comments_for_actor,
+                'boolean_rule': boolean_rule,
+                'user_id': user_id,
+                'session_id': session_id,
+            }
             try:
-                db.execute("UPDATE scrape_tasks SET status='running' WHERE id=%s", (task_id,))
-                if skip_discover:
-                    # 仅从已导入数据集的帖子抓评论，不调用 Apify hashtag 发现
-                    db.execute(
-                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                        (f"正在加载数据集「{dataset_name}」中的帖子（跳过 Hashtag 发现）...", task_id)
-                    )
-                    rows = db.query_all("""
-                        SELECT m.post_url, m.platform, m.author, m.post_date, m.post_content,
-                               m.thumbnail_url, m.views, m.shares, m.likes, m.comments_count, m.engagement
-                        FROM fb_post_metrics m
-                        INNER JOIN thai_report_datasets d
-                          ON d.post_url = m.post_url AND d.dataset_name = %s
-                        ORDER BY m.engagement DESC NULLS LAST
-                    """, (dataset_name,))
-                    if not rows:
-                        raise RuntimeError(
-                            f'数据集「{dataset_name}」中暂无帖子。请先在本页导入 JSON，'
-                            f'或取消勾选「仅抓评论」以运行 Hashtag 发现（会产生 Apify 费用）。'
-                        )
-                    seen_urls = set()
-                    post_urls = []
-                    discovered_posts = []
-                    for r in rows:
-                        u = r.get('post_url')
-                        if not u or u in seen_urls:
-                            continue
-                        seen_urls.add(u)
-                        post_urls.append(u)
-                        discovered_posts.append({
-                            'post_url': u,
-                            'platform': r.get('platform'),
-                            'author': r.get('author'),
-                            'post_date': r.get('post_date'),
-                            'post_content': r.get('post_content'),
-                            'thumbnail_url': r.get('thumbnail_url'),
-                            'views': r.get('views') or 0,
-                            'shares': r.get('shares') or 0,
-                            'likes': r.get('likes') or 0,
-                            'comments_count': r.get('comments_count') or 0,
-                            'engagement': r.get('engagement') or 0,
-                        })
-                    if len(post_urls) > discover_max_posts:
-                        post_urls = post_urls[:discover_max_posts]
-                        discovered_posts = discovered_posts[:discover_max_posts]
-                    db.execute(
-                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                        (f"已加载 {len(post_urls)} 条本地帖子（未跑 Hashtag），开始抓取评论...", task_id)
-                    )
-                else:
-                    db.execute(
-                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                        (f"正在通过 Hashtag 发现 {game_type} 帖子...", task_id)
-                    )
-                    discover_result = tasks.discover_posts_by_tags(
-                        seed_tags=seed_tags,
-                        platforms=platforms,
-                        days_back=days_back,
-                        max_posts=discover_max_posts,
-                        boolean_rule=boolean_rule,
-                        post_language_filter='th',
-                    )
-                    if discover_result.get('status') != 'success':
-                        raise RuntimeError(f"discover 失败: {discover_result.get('message')}")
-
-                    post_urls = discover_result.get('post_urls') or []
-                    discovered_posts = discover_result.get('posts') or []
-                    db.execute(
-                        "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                        (f"Hashtag 发现完成，共 {len(post_urls)} 条帖子，开始抓取评论...", task_id)
-                    )
-
-                tasks.scrape_fb_comments(
-                    post_urls=post_urls,
-                    discovered_posts=discovered_posts,
-                    days_back=days_back,
-                    task_id=task_id,
-                    results_limit=results_limit,
-                    enable_ai_analysis=True,
-                    max_ai_comments=max_ai_comments,
-                    allow_fallback_to_config=False,
-                    language_filter='th',
-                    dataset_name=dataset_name,
-                    min_comments_for_actor=min_comments_for_actor or None,
+                db.execute(
+                    "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                    (json.dumps(task_params, ensure_ascii=False), queue_task_id),
                 )
             except Exception as e:
-                logger.error(f"❌ 泰国专题抓取失败(task_id={task_id}): {e}")
+                logger.error(f"❌ 泰国专题 task_params 写入失败: {e}")
                 try:
                     db.execute(
                         "UPDATE scrape_tasks SET status='failed', completed_at=NOW(), error_message=%s WHERE id=%s",
-                        (str(e)[:500], task_id)
+                        (f'队列参数写入失败: {e}'[:500], task_id),
                     )
                 except Exception:
                     pass
+                return jsonify({'status': 'error', 'message': '任务入队失败，请稍后重试'}), 500
+            logger.info(f"✅ 泰国专题任务已入队 (task_queue={queue_task_id}, scrape_tasks={task_id})")
+        else:
 
-        threading.Thread(target=run_thai_scrape, daemon=True).start()
+            def _run_in_web():
+                tasks.run_thai_scrape_job(**job_kw, re_raise=False)
+
+            threading.Thread(target=_run_in_web, daemon=True).start()
 
         return jsonify({
             'status': 'success',
-            'message': f'{game_type} 泰国抓取任务已启动',
+            'message': f'{game_type} 泰国抓取任务已启动' + ('（已入队，由 Worker 执行）' if USE_DB_WORKER else ''),
             'task_id': task_id,
             'dataset_name': dataset_name,
             'seed_tag_count': len(seed_tags),
             'skip_discover': skip_discover,
+            'queued': bool(USE_DB_WORKER),
         })
     except Exception as e:
         logger.error(f"❌ 泰国专题任务启动失败: {e}")

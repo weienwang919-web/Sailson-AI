@@ -4,7 +4,8 @@
 支持的任务类型：
   - sentiment   : 舆情分析（调用 process_analysis_task）
   - competitor  : 竞品监控（调用 process_competitor_task）
-  - fb_scrape   : FB 舆情看板抓取（调用 tasks.scrape_fb_comments）
+  - fb_scrape   : FB/SPD 舆情看板抓取（调用 tasks.scrape_fb_comments）
+  - thai_scrape : 泰国专题抓取（调用 tasks.run_thai_scrape_job）
 
 启动方式：
   python worker.py
@@ -125,6 +126,8 @@ def dispatch_task(task_row):
             _handle_competitor(task_id, params)
         elif func_type == 'fb_scrape':
             _handle_fb_scrape(task_id, params)
+        elif func_type == 'thai_scrape':
+            _handle_thai_scrape(task_id, params)
         else:
             logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
             update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
@@ -324,6 +327,38 @@ def _handle_fb_scrape(task_id, params):
                 )
             except:
                 pass
+
+
+def _handle_thai_scrape(task_id, params):
+    """泰国专题：数据集发现 + 评论抓取（与 Web 端 /api/thai_schedule 逻辑一致）。"""
+    scrape_task_id = params.get('scrape_task_id')
+    if not scrape_task_id:
+        logger.error("❌ thai_scrape 缺少 scrape_task_id")
+        update_task(task_id, status='failed', error='缺少 scrape_task_id')
+        return
+    try:
+        update_task(task_id, progress='泰国专题：Worker 执行中...')
+        tasks.run_thai_scrape_job(
+            scrape_task_id=scrape_task_id,
+            game_type=(params.get('game_type') or 'MLBB').strip().upper(),
+            dataset_name=(params.get('dataset_name') or '').strip(),
+            skip_discover=bool(params.get('skip_discover')),
+            seed_tags=params.get('seed_tags') or [],
+            platforms=params.get('platforms') or ['facebook', 'instagram'],
+            days_back=int(params.get('days_back', 7)),
+            results_limit=int(params.get('results_limit', 5000)),
+            max_ai_comments=int(params.get('max_ai_comments', 5000)),
+            discover_max_posts=int(params.get('discover_max_posts', 3000)),
+            min_comments_for_actor=int(params.get('min_comments_for_actor', 0)),
+            boolean_rule=(params.get('boolean_rule') or '').strip(),
+            re_raise=True,
+        )
+        update_task(task_id, status='completed', progress='泰国抓取完成')
+    except Exception as e:
+        logger.error(f"❌ 泰国专题 Worker 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
 
 
 # ============================================
