@@ -6147,23 +6147,24 @@ def thai_cleanup_non_thai():
         dry_run = dry_run_raw if isinstance(dry_run_raw, bool) else str(dry_run_raw).lower() in ('1', 'true', 'yes')
 
         # 找出 thai_report_datasets 里所有 post_content 不含泰文字符的帖子
-        # PostgreSQL 正则：[\x{0E00}-\x{0E7F}] 匹配泰文 Unicode 区段
+        # 使用泰文实际字符范围 ก-๛ 代替 Unicode 转义，避免 Python 解析歧义
+        THAI_RE = '[ก-๛]'
         non_thai_rows = db.query_all("""
             SELECT d.dataset_name, d.post_url,
                    LEFT(COALESCE(m.post_content,''), 80) AS preview,
                    m.platform
             FROM thai_report_datasets d
             LEFT JOIN fb_post_metrics m ON m.post_url = d.post_url
-            WHERE COALESCE(m.post_content, '') !~ '[\x{0E00}-\x{0E7F}]'
+            WHERE COALESCE(m.post_content, '') !~ %s
             ORDER BY d.dataset_name, d.post_url
             LIMIT 200
-        """)
+        """, (THAI_RE,))
         total_row = db.query_one("""
             SELECT COUNT(*) AS cnt
             FROM thai_report_datasets d
             LEFT JOIN fb_post_metrics m ON m.post_url = d.post_url
-            WHERE COALESCE(m.post_content, '') !~ '[\x{0E00}-\x{0E7F}]'
-        """)
+            WHERE COALESCE(m.post_content, '') !~ %s
+        """, (THAI_RE,))
         total_cnt = int((total_row or {}).get('cnt') or 0)
 
         if dry_run:
@@ -6184,11 +6185,11 @@ def thai_cleanup_non_thai():
                 DELETE FROM thai_report_datasets d
                 USING fb_post_metrics m
                 WHERE d.post_url = m.post_url
-                  AND COALESCE(m.post_content, '') !~ '[\x{0E00}-\x{0E7F}]'
+                  AND COALESCE(m.post_content, '') !~ %s
                 RETURNING d.post_url
             )
             SELECT COUNT(*) AS cnt FROM deleted
-        """)
+        """, (THAI_RE,))
         deleted_cnt = int((del_row or {}).get('cnt') or 0)
 
         # 同时删除孤立的 fb_post_metrics（不再属于任何数据集的帖子）
