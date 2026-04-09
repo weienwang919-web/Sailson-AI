@@ -946,25 +946,7 @@ def scrape_fb_comments(
                 existing_ids = {row['comment_id'] for row in rows}
                 logger.info(f"📊 Found {len(existing_ids)} existing comments out of {len(comment_ids)}")
 
-            # 语言过滤：在帖子级别过滤（用 discover 阶段存储的 post_content 或 items 第一条内容判断）
-            if language_filter == 'th':
-                # 尝试从 items 里取帖子正文
-                post_text = ''
-                for it in items[:3]:
-                    t = (it or {}).get('text') or (it or {}).get('caption') or (it or {}).get('description') or ''
-                    if t:
-                        post_text = t
-                        break
-                if not post_text:
-                    # 降级：用评论正文的语言多数投票
-                    sample_texts = [r['content'] for r in normalized_rows[:10] if r.get('content')]
-                    post_text = ' '.join(sample_texts)
-                if not _is_thai_content(post_text):
-                    total_skipped_language += 1
-                    logger.info(f"⏭️ 非泰语帖子跳过: {post_url[:60]}")
-                    continue
-
-            # 通过语言过滤后才计入平台统计（摘要数字准确）
+            # 平台统计
             if platform == "facebook":
                 fb_posts_count += 1
             else:
@@ -1180,7 +1162,6 @@ def run_thai_scrape_job(
             seen_urls = set()
             post_urls = []
             discovered_posts = []
-            filter_terms = _normalize_list_input(seed_tags)
             for r in rows:
                 u = r.get('post_url')
                 if not u or u in seen_urls:
@@ -1190,11 +1171,6 @@ def run_thai_scrape_job(
                     continue
                 if dataset_end and row_post_date and row_post_date > str(dataset_end):
                     continue
-                if filter_terms:
-                    post_text = str(r.get('post_content') or '')
-                    post_hashtags = re.findall(r'#([^\s#]+)', post_text.lower())
-                    if not _contains_any_tag_or_term(post_text, filter_terms, hashtags=post_hashtags):
-                        continue
                 seen_urls.add(u)
                 post_urls.append(u)
                 discovered_posts.append({

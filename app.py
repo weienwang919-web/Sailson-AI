@@ -5644,7 +5644,6 @@ def thai_schedule():
             return jsonify({'status': 'error', 'message': 'dataset_name 必填'}), 400
 
         try:
-            days_back = int(data.get('days_back', 7))
             results_limit = int(data.get('results_limit', 5000))
             max_ai_comments = int(data.get('max_ai_comments', 5000))
             discover_max_posts = int(data.get('discover_max_posts', 3000))
@@ -5658,7 +5657,6 @@ def thai_schedule():
         seed_tags = _norm_list(data.get('seed_tags'))
         platforms = _norm_list(data.get('platforms')) or ['facebook', 'instagram']
 
-        # 默认 seed_tags（仅在未跳过 discover 时使用）
         if not skip_discover and not seed_tags:
             if game_type == 'MLBB':
                 seed_tags = list(MLBB_DISCOVER_KEYWORDS)
@@ -5671,6 +5669,13 @@ def thai_schedule():
         dataset_cfg = _thai_datasets_config().get(dataset_name, {})
         dataset_start = dataset_cfg.get('start')
         dataset_end = dataset_cfg.get('end')
+
+        # days_back: cover the full dataset date range so no comments get dropped
+        if dataset_start:
+            delta = (datetime.date.today() - datetime.date.fromisoformat(dataset_start)).days
+            days_back = max(delta + 7, 30)
+        else:
+            days_back = int(data.get('days_back', 30))
 
         # SPD 统一走 MLBB 母池切片：不再独立 discover
         if game_type == 'SPD':
