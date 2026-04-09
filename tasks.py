@@ -100,6 +100,47 @@ def _normalize_list_input(values):
     return result
 
 
+def _normalize_tag_token(term):
+    t = (term or "").strip().strip('"').strip("'").lower()
+    return t
+
+
+def _contains_any_tag_or_term(text, terms, hashtags=None):
+    """OR 匹配：优先 hashtag 精确命中；未命中时降级 caption 词边界匹配。"""
+    base = (text or "").lower()
+    hashtag_set = {
+        str(h or "").strip().lstrip("#").lower()
+        for h in (hashtags or [])
+        if str(h or "").strip()
+    }
+    for raw in (terms or []):
+        t = _normalize_tag_token(raw)
+        if not t:
+            continue
+        wildcard = t.endswith("*")
+        t_core = (t[:-1] if wildcard else t).strip()
+        if not t_core:
+            continue
+        t_no_hash = t_core.lstrip("#")
+
+        # 1) hashtag 精确优先（或前缀匹配）
+        if wildcard:
+            if t_no_hash and any(h.startswith(t_no_hash) for h in hashtag_set):
+                return True
+        else:
+            if t_no_hash and t_no_hash in hashtag_set:
+                return True
+
+        # 2) caption 降级（词边界），避免纯子串误命中
+        if wildcard:
+            if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}\w*', base):
+                return True
+        else:
+            if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}(?!\w)', base):
+                return True
+    return False
+
+
 def _expand_seed_terms(raw_values):
     """支持把布尔表达式原文展开为 discover 可用词项。"""
     operators = {"AND", "OR", "NOT"}
@@ -1106,7 +1147,10 @@ def run_thai_scrape_job(
     max_ai_comments,
     discover_max_posts,
     min_comments_for_actor,
-    boolean_rule,
+    boolean_rule=None,
+    source_dataset_name=None,
+    dataset_start=None,
+    dataset_end=None,
     re_raise=True,
 ):
     """泰国专题：发现帖子并抓取评论。供 Web 线程或 DB Worker 调用。
@@ -1116,9 +1160,10 @@ def run_thai_scrape_job(
     try:
         db.execute("UPDATE scrape_tasks SET status='running' WHERE id=%s", (scrape_task_id,))
         if skip_discover:
+            source_ds = source_dataset_name or dataset_name
             db.execute(
                 "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
-                (f"正在加载数据集「{dataset_name}」中的帖子（跳过 Hashtag 发现）...", scrape_task_id),
+                (f"正在加载数据集「{source_ds}」中的帖子（跳过 Hashtag 发现）...", scrape_task_id),
             )
             rows = db.query_all("""
                 SELECT m.post_url, m.platform, m.author, m.post_date, m.post_content,
@@ -1127,19 +1172,30 @@ def run_thai_scrape_job(
                 INNER JOIN thai_report_datasets d
                   ON d.post_url = m.post_url AND d.dataset_name = %s
                 ORDER BY m.engagement DESC NULLS LAST
-            """, (dataset_name,))
+            """, (source_ds,))
             if not rows:
                 raise RuntimeError(
-                    f'数据集「{dataset_name}」中暂无帖子。请先在本页导入 JSON，'
+                    f'数据集「{source_ds}」中暂无帖子。请先在本页导入 JSON，'
                     f'或取消勾选「仅抓评论」以运行 Hashtag 发现（会产生 Apify 费用）。'
                 )
             seen_urls = set()
             post_urls = []
             discovered_posts = []
+            filter_terms = _normalize_list_input(seed_tags)
             for r in rows:
                 u = r.get('post_url')
                 if not u or u in seen_urls:
                     continue
+                row_post_date = str(r.get('post_date') or '')
+                if dataset_start and row_post_date and row_post_date < str(dataset_start):
+                    continue
+                if dataset_end and row_post_date and row_post_date > str(dataset_end):
+                    continue
+                if filter_terms:
+                    post_text = str(r.get('post_content') or '')
+                    post_hashtags = re.findall(r'#([^\s#]+)', post_text.lower())
+                    if not _contains_any_tag_or_term(post_text, filter_terms, hashtags=post_hashtags):
+                        continue
                 seen_urls.add(u)
                 post_urls.append(u)
                 discovered_posts.append({

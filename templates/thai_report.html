@@ -114,12 +114,24 @@
     <!-- MLBB -->
     <div class="scrape-card">
       <h3><span class="badge badge-mlbb">MLBB</span> 泰国区域 / 115泰国热点</h3>
-      <div class="label">Hashtags（每行一个，不含#）</div>
-      <textarea id="mlbb-tags" placeholder="mlbb&#10;mobilelegends&#10;mlbbth&#10;mobilelegendsbangbang">mlbb
+      <div class="label">Hashtags（每行一个，可带#）</div>
+      <textarea id="mlbb-tags" placeholder="mlbb&#10;mobilelegends&#10;mobilelegendsbangbang">#mlbb
+#mlbb*
+mlbb
+#mobilelegends
 mobilelegends
-mlbbth
-mobilelegendsbangbang
-moba55</textarea>
+MobileLegendsBangBang
+#MobileLegendsBangBang
+#MOBAlegends
+#moba55
+Mobile Legends
+MLBBxNARUTO
+MLBB NARUTO
+#MLBBNewSkin
+#MLBBFreeGaaraSkin
+#ValirFreeSkin
+#goldsongkran
+#GOLDHUNT</textarea>
       <div class="label">数据集名称</div>
       <input id="mlbb-dataset" type="text" value="泰国区域" style="width:100%;padding:6px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;outline:none;" />
       <button class="btn-start" onclick="startScrape('MLBB')">开始采集</button>
@@ -129,13 +141,14 @@ moba55</textarea>
     <!-- SPD -->
     <div class="scrape-card">
       <h3><span class="badge badge-spd">SPD</span> 26Y SPD泰国1 / 26Y SPD泰国2 / 25Y SPD泰国</h3>
-      <div class="label">Hashtags（每行一个）</div>
-      <textarea id="spd-tags" placeholder="mlbbxnaruto&#10;naruto&#10;mlbbnewskin&#10;ember">mlbbxnaruto
-naruto
-mlbbnewskin
-ember
-itachiuchiha
-uchiha</textarea>
+      <div class="label">Hashtags（每行一个，可带#）</div>
+      <textarea id="spd-tags" placeholder="MLBBxNARUTO&#10;MLBB NARUTO&#10;#MLBBNewSkin">MLBBxNARUTO
+MLBB NARUTO
+#MLBBNewSkin
+#MLBBFreeGaaraSkin
+#ValirFreeSkin
+#goldsongkran
+#GOLDHUNT</textarea>
       <div class="label">数据集名称</div>
       <input id="spd-dataset" type="text" value="26Y SPD泰国1" style="width:100%;padding:6px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;outline:none;" />
       <button class="btn-start" onclick="startScrape('SPD')">开始采集</button>
@@ -145,14 +158,15 @@ uchiha</textarea>
     <!-- ROV -->
     <div class="scrape-card">
       <h3><span class="badge badge-rov">ROV</span> ROV泰国</h3>
-      <div class="label">Hashtags（每行一个）</div>
-      <textarea id="rov-tags" placeholder="ROVThailand&#10;GarenaROV&#10;RealmOfValor">ROVThailand
-GarenaROV
-RealmOfValor
-GarenaRoVThailand
-AmbassadorOfValor
-MissRoV2026
-MissRoVTournament</textarea>
+      <div class="label">Hashtags（每行一个，可带#）</div>
+      <textarea id="rov-tags" placeholder="#ROV&#10;#RealmOfValor&#10;#GarenaROV">#ROV
+#RealmOfValor
+#GarenaROV
+#ROVThailand
+#ROVVietnam
+#อาโอวี
+#GarenaRoVThailand
+#AmbassadorOfValor</textarea>
       <div class="label">数据集名称</div>
       <input id="rov-dataset" type="text" value="ROV泰国" style="width:100%;padding:6px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;outline:none;" />
       <button class="btn-start" onclick="startScrape('ROV')">开始采集</button>
@@ -783,7 +797,7 @@ async function loadReport() {
     const d = await res.json();
     if (d.status !== 'success') { console.error('thai_report_data error', d); return; }
 
-    const ds = augmentPresentation(d.datasets);
+    const ds = d.datasets;
 
     // 互动量图 A
     buildChart('chartEngA',
@@ -841,11 +855,11 @@ async function loadReport() {
       ]
     );
 
-    // 峰值下钻（补全无帖子的数据集）
-    renderPeaks(augmentPeakData(d.peak_data, ds));
+    // 峰值下钻（真实数据）
+    renderPeaks(d.peak_data);
 
-    // Top5（优先库内真实数据，不足再补 mock；并与峰值评论数对齐）
-    renderTop5(augmentTop5(d.top5, ds));
+    // Top5（真实数据）
+    renderTop5(d.top5);
 
   } catch(e) {
     console.error('loadReport error', e);

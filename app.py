@@ -1287,25 +1287,21 @@ def sentiment_tool():
     return render_template('analysis.html', has_used_sentiment=has_used_sentiment)
 
 
-SPD_KEYWORDS = [
-    "naruto", "火影", "疾风传", "itachi", "julian", "valir", "ember gaze", "mlbbxnaruto",
-    "#mlbbxnaruto", "#mlbbnewskin", "uchiha", "晓组织",
-    "minato", "gusion", "sasuke", "sakura", "kakashi", "gaara", "madara", "lukas", "kalea",
-    "suyou", "hayabusa", "vale",
-    "#goldsongkran", "#goldhunt",
-]
-
 MLBB_DISCOVER_KEYWORDS = [
-    "#mlbb", "mlbb", "#mobilelegends", "mobile legends", "mobilelegendsbangbang",
-    "#MobileLegendsBangBang", "#MOBAlegends", "#moba55", "#mobalegends",
+    "#mlbb", "#mlbb*", "mlbb", "#mobilelegends", "mobilelegends", "mobilelegendsbangbang",
+    "#mobilelegendsbangbang", "#mobalegends", "#moba55", "mobile legends",
+    "mlbbxnaruto", "mlbb naruto", "#mlbbnewskin", "#mlbbfreegaaraskin",
+    "#valirfreeskin", "#goldsongkran", "#goldhunt",
 ]
 
+SPD_KEYWORDS = [
+    "mlbbxnaruto", "mlbb naruto", "#mlbbnewskin", "#mlbbfreegaaraskin",
+    "#valirfreeskin", "#goldsongkran", "#goldhunt",
+]
 
 ROV_DISCOVER_KEYWORDS = [
-    "ROV",     "ROVThailand", "ROVVietnam", "GarenaROV", "RealmOfValor", "GarenaRealmOfValor",
-    "GarenaRoVThailand", "AmbassadorOfValor",
-    "MissRoV2026", "MissRoVTournament", "RoVxTOURBILLION",
-    "อาโอวี", "RoVLnWสาด",
+    "#rov", "#realmofvalor", "#garenarov", "#rovthailand",
+    "#rovvietnam", "#อาโอวี", "#garenarovthailand", "#ambassadorofvalor",
 ]
 
 # 布尔规则：后端 _eval_boolean_expr 匹配（小写归一），非 AI。
@@ -5551,8 +5547,58 @@ def _thai_datasets_config():
 THAI_DATASETS_CONFIG = _thai_datasets_config()
 
 
+def _normalize_tag_token(term: str) -> str:
+    t = (term or '').strip().strip('"').strip("'").lower()
+    if not t:
+        return ''
+    return t
+
+
+def _contains_any_tag_or_term(text: str, terms, hashtags=None) -> bool:
+    """OR 匹配：优先 hashtag 精确命中；未命中时降级到 caption 词边界匹配。"""
+    base = (text or '').lower()
+    hashtag_set = {
+        str(h or '').strip().lstrip('#').lower()
+        for h in (hashtags or [])
+        if str(h or '').strip()
+    }
+    for raw in (terms or []):
+        t = _normalize_tag_token(raw)
+        if not t:
+            continue
+        wildcard = t.endswith('*')
+        t_core = t[:-1] if wildcard else t
+        t_core = t_core.strip()
+        if not t_core:
+            continue
+        t_no_hash = t_core.lstrip('#')
+        # 1) hashtag 精确优先（或前缀匹配）
+        if wildcard:
+            if t_no_hash and any(h.startswith(t_no_hash) for h in hashtag_set):
+                return True
+        else:
+            if t_no_hash and t_no_hash in hashtag_set:
+                return True
+
+        # 2) caption 降级（词边界），避免纯子串误命中
+        if wildcard:
+            if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}\w*', base):
+                return True
+            continue
+        if t_no_hash and re.search(rf'(?<!\w){re.escape(t_no_hash)}(?!\w)', base):
+            return True
+    return False
+
+
+THAI_GAME_TAGS = {
+    'MLBB': MLBB_DISCOVER_KEYWORDS,
+    'SPD': SPD_KEYWORDS,
+    'ROV': ROV_DISCOVER_KEYWORDS,
+}
+
+
 def _thai_matching_datasets(post_date_str, caption, hashtags):
-    """根据发帖日期 + 正文/hashtag 判定帖子属于哪些泰国专题数据集（可命中多个）。"""
+    """根据发帖日期 + 正文/hashtag 做 OR tag 匹配判定数据集（可命中多个）。"""
     cfg = _thai_datasets_config()
     hashtag_text = ' '.join(f'#{h}' for h in (hashtags or []) if h is not None and str(h).strip())
     full_text = re.sub(r'\s+', ' ', f'{caption or ""} {hashtag_text}'.lower()).strip()
@@ -5562,9 +5608,10 @@ def _thai_matching_datasets(post_date_str, caption, hashtags):
         if post_date_str < start or post_date_str > end:
             continue
         game = meta.get('game') or 'MLBB'
-        rule = TASK_BOOLEAN_RULES.get(game, '')
-        if rule and _eval_boolean_expr(full_text, rule):
+        terms = THAI_GAME_TAGS.get(game, [])
+        if _contains_any_tag_or_term(full_text, terms, hashtags=hashtags):
             matched.append(ds_name)
+
     return matched
 
 
@@ -5942,12 +5989,12 @@ def import_thai_json():
                         skipped_date += 1
                         continue
     
-                    # 游戏类型布尔规则过滤
-                    rule = TASK_BOOLEAN_RULES.get(game_type, '')
-                    if rule:
+                    # 游戏类型 OR tags 过滤（不再走布尔规则）
+                    terms = THAI_GAME_TAGS.get(game_type, [])
+                    if terms:
                         hashtag_text = ' '.join(f'#{h}' for h in hashtags)
                         full_text = re.sub(r'\s+', ' ', f"{caption} {hashtag_text}".lower()).strip()
-                        if not _eval_boolean_expr(full_text, rule):
+                        if not _contains_any_tag_or_term(full_text, terms, hashtags=hashtags):
                             skipped_lang += 1
                             continue
     
@@ -6264,7 +6311,15 @@ def thai_schedule():
             else:
                 seed_tags = list(ROV_DISCOVER_KEYWORDS)
 
-        boolean_rule = (data.get('boolean_rule') or TASK_BOOLEAN_RULES.get(game_type, '')).strip()
+        source_dataset_name = None
+        dataset_cfg = _thai_datasets_config().get(dataset_name, {})
+        dataset_start = dataset_cfg.get('start')
+        dataset_end = dataset_cfg.get('end')
+
+        # SPD 统一走 MLBB 母池切片：不再独立 discover
+        if game_type == 'SPD':
+            skip_discover = True
+            source_dataset_name = '泰国区域'
 
         task_id = db.execute_and_fetch_id(
             "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
@@ -6283,7 +6338,10 @@ def thai_schedule():
             max_ai_comments=max_ai_comments,
             discover_max_posts=discover_max_posts,
             min_comments_for_actor=min_comments_for_actor,
-            boolean_rule=boolean_rule,
+            boolean_rule=None,
+            source_dataset_name=source_dataset_name,
+            dataset_start=dataset_start,
+            dataset_end=dataset_end,
         )
 
         if USE_DB_WORKER:
@@ -6304,7 +6362,10 @@ def thai_schedule():
                 'max_ai_comments': max_ai_comments,
                 'discover_max_posts': discover_max_posts,
                 'min_comments_for_actor': min_comments_for_actor,
-                'boolean_rule': boolean_rule,
+                'boolean_rule': None,
+                'source_dataset_name': source_dataset_name,
+                'dataset_start': dataset_start,
+                'dataset_end': dataset_end,
                 'user_id': user_id,
                 'session_id': session_id,
             }
@@ -6423,11 +6484,10 @@ def thai_report_data():
             eng = int(row.get('engagement') or 0)
             eng_k = f"{eng/1000:.1f}k" if eng >= 1000 else str(eng)
             raw_content = row.get('post_content') or ''
-            topic = _generate_post_topic(raw_content)
             return {
                 'author': row.get('author') or '',
                 'summary': raw_content[:60],
-                'topic': topic,
+                'topic': '',
                 'engagement': eng,
                 'engagement_label': eng_k,
             }
@@ -6453,22 +6513,12 @@ def thai_report_data():
                 post_url = r.get('post_url') or ''
                 raw_content = r.get('post_content') or ''
 
-                # AI 帖文摘要
-                topic = _generate_post_topic(raw_content)
-
-                # 查询评论做情感分析（最多 50 条）
-                cmt_rows = db.query_all(
-                    "SELECT content, language AS region FROM fb_comments WHERE post_url = %s ORDER BY created_at LIMIT 50",
-                    (post_url,)
-                )
-                sentiment_data = _ai_analyze_single_post(cmt_rows, len(cmt_rows)) if cmt_rows else None
-
                 result.append({
                     'author': r.get('author') or '',
                     'platform': (r.get('platform') or 'FACEBOOK').upper(),
                     'region': dataset_name,
                     'post_content': {
-                        'topic': topic,
+                        'topic': '',
                         'text': raw_content[:120],
                     },
                     'url': post_url,
@@ -6477,8 +6527,8 @@ def thai_report_data():
                     'comments': int(r.get('comments_count') or 0),
                     'engagement': eng,
                     'engagement_label': f"{eng/1000:.1f}k" if eng >= 1000 else str(eng),
-                    'sentiment_ratio': (sentiment_data or {}).get('sentiment_ratio') or {'positive': 0, 'neutral': 0, 'negative': 0},
-                    'top_sentiments': (sentiment_data or {}).get('sentiments') or [],
+                    'sentiment_ratio': {'positive': 0, 'neutral': 0, 'negative': 0},
+                    'top_sentiments': [],
                 })
             return result
 

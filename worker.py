@@ -351,6 +351,9 @@ def _handle_thai_scrape(task_id, params):
             discover_max_posts=int(params.get('discover_max_posts', 3000)),
             min_comments_for_actor=int(params.get('min_comments_for_actor', 0)),
             boolean_rule=(params.get('boolean_rule') or '').strip(),
+            source_dataset_name=(params.get('source_dataset_name') or '').strip() or None,
+            dataset_start=(params.get('dataset_start') or '').strip() or None,
+            dataset_end=(params.get('dataset_end') or '').strip() or None,
             re_raise=True,
         )
         update_task(task_id, status='completed', progress='泰国抓取完成')
