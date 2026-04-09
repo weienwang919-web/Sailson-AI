@@ -5670,6 +5670,7 @@ def import_thai_json():
         dataset_tag_counts = {name: 0 for name in _thai_datasets_config().keys()}
         posts_with_tags = 0
         skipped_no_dataset = 0
+        skipped_non_thai = 0
         skipped_bad_row = 0
         errors = 0
         files_used = 0
@@ -5733,6 +5734,10 @@ def import_thai_json():
                         # 无赞评字段时用 play_count 作为互动近似值
                         engagement_val = likes + comments_cnt
 
+                    if caption and not tasks._is_thai_content(caption):
+                        skipped_non_thai += 1
+                        continue
+
                     matching = _thai_matching_datasets(post_date, caption, hashtags)
                     if not matching:
                         skipped_no_dataset += 1
@@ -5779,6 +5784,7 @@ def import_thai_json():
             'dataset_tag_counts': dataset_tag_counts,
             'total_dataset_tags': total_tags,
             'skipped_no_dataset': skipped_no_dataset,
+            'skipped_non_thai': skipped_non_thai,
             'skipped_bad_row': skipped_bad_row,
             'errors': errors,
             'files_processed': files_used,
@@ -5790,6 +5796,7 @@ def import_thai_json():
 
     imported = 0
     skipped_lang = 0
+    skipped_non_thai = 0
     skipped_date = 0
     errors = 0
 
@@ -5833,6 +5840,10 @@ def import_thai_json():
                         skipped_lang += 1
                         continue
 
+                if caption and not tasks._is_thai_content(caption):
+                    skipped_non_thai += 1
+                    continue
+
                 # 写入 fb_post_metrics
                 try:
                     db.execute("""
@@ -5872,6 +5883,7 @@ def import_thai_json():
         'mode': 'single',
         'imported': imported,
         'skipped_not_match_rule': skipped_lang,
+        'skipped_non_thai': skipped_non_thai,
         'skipped_out_of_range': skipped_date,
         'errors': errors,
         'files_processed': len(files),
@@ -5906,8 +5918,12 @@ def thai_schedule():
             results_limit = int(data.get('results_limit', 5000))
             max_ai_comments = int(data.get('max_ai_comments', 5000))
             discover_max_posts = int(data.get('discover_max_posts', 3000))
+            _min_raw = data.get('min_comments_for_actor', 3)
+            min_comments_for_actor = int(_min_raw) if _min_raw is not None and str(_min_raw).strip() != '' else 0
         except (TypeError, ValueError):
             return jsonify({'status': 'error', 'message': '数值参数格式错误'}), 400
+        if min_comments_for_actor < 0:
+            min_comments_for_actor = 0
 
         seed_tags = _norm_list(data.get('seed_tags'))
         platforms = _norm_list(data.get('platforms')) or ['facebook', 'instagram']
@@ -5989,7 +6005,8 @@ def thai_schedule():
                         platforms=platforms,
                         days_back=days_back,
                         max_posts=discover_max_posts,
-                        boolean_rule=boolean_rule
+                        boolean_rule=boolean_rule,
+                        post_language_filter='th',
                     )
                     if discover_result.get('status') != 'success':
                         raise RuntimeError(f"discover 失败: {discover_result.get('message')}")
@@ -6012,6 +6029,7 @@ def thai_schedule():
                     allow_fallback_to_config=False,
                     language_filter='th',
                     dataset_name=dataset_name,
+                    min_comments_for_actor=min_comments_for_actor or None,
                 )
             except Exception as e:
                 logger.error(f"❌ 泰国专题抓取失败(task_id={task_id}): {e}")

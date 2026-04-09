@@ -440,6 +440,25 @@ def _extract_discover_text(item):
     return " ".join(parts).lower().strip()
 
 
+def _extract_discover_text_for_lang(item):
+    """与 _extract_discover_text 相同字段，保留大小写供语言检测。"""
+    if not isinstance(item, dict):
+        return ""
+    parts = []
+    candidate_keys = [
+        "text", "caption", "description", "title", "content",
+        "message", "postText", "post_text", "postCaption"
+    ]
+    for key in candidate_keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    hashtags = item.get("hashtags")
+    if isinstance(hashtags, list):
+        parts.extend([str(x).strip() for x in hashtags if str(x).strip()])
+    return " ".join(parts).strip()
+
+
 def _parse_created_at(value):
     if value is None:
         return datetime.datetime.now(BEIJING_TZ)
@@ -523,8 +542,11 @@ def _run_actor_with_inputs(actor_id, inputs, timeout_secs=600):
     raise RuntimeError(last_error or "actor call failed")
 
 
-def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200, boolean_rule=None):
-    """按标签/关键词发现帖子 URL（按平台调用 hashtag actors）。"""
+def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200, boolean_rule=None, post_language_filter=None):
+    """按标签/关键词发现帖子 URL（按平台调用 hashtag actors）。
+
+    post_language_filter: 若为 'th'，仅保留帖文/话题合并后能通过泰语检测的条目（无正文则不过滤）。
+    """
     if not apify_client:
         return {"status": "error", "message": "Apify not configured", "post_urls": []}
 
@@ -654,6 +676,10 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
                     text = _extract_discover_text(item)
                     if text and (not _eval_boolean_expr(text, boolean_rule)):
                         continue
+                if post_language_filter == 'th':
+                    lang_text = _extract_discover_text_for_lang(item)
+                    if lang_text and not _is_thai_content(lang_text):
+                        continue
                 url = _extract_post_url(item)
                 if not url:
                     continue
@@ -703,7 +729,8 @@ def scrape_fb_comments(
     max_ai_comments=1200,
     allow_fallback_to_config=True,
     language_filter=None,
-    dataset_name=None
+    dataset_name=None,
+    min_comments_for_actor=None,
 ):
     """
     Scrape FB/IG comments from post URLs
@@ -718,6 +745,8 @@ def scrape_fb_comments(
         allow_fallback_to_config: If True, fallback to fb_monitor_config when post_urls is None
         language_filter: 语言过滤，'th' 表示只入库泰语内容（基于帖子正文）
         dataset_name: 数据集名称，入库时写入 thai_report_datasets 表
+        min_comments_for_actor: 若为正整数，仅当 fb_post_metrics.comments_count 已存在且
+            大于等于该值时才调用评论 Actor；用于跳过 0～2 条评论的帖子以省 Apify。
 
     Returns:
         dict with status and stats
@@ -773,6 +802,7 @@ def scrape_fb_comments(
     total_skipped_unsupported = 0
     total_timeout_urls = 0
     total_skipped_language = 0
+    total_skipped_low_comments = 0
     ai_processed_total = 0
     fb_posts_count = 0
     ins_posts_count = 0
@@ -780,6 +810,29 @@ def scrape_fb_comments(
 
     # 先落 discover 阶段的帖子级指标，供报告口径使用
     discovered_count = upsert_post_metrics(discovered_posts or [])
+
+    min_cm = None
+    try:
+        if min_comments_for_actor is not None:
+            min_cm = int(min_comments_for_actor)
+            if min_cm <= 0:
+                min_cm = None
+    except (TypeError, ValueError):
+        min_cm = None
+
+    url_comment_counts = {}
+    if min_cm and post_urls:
+        ph = ','.join(['%s'] * len(post_urls))
+        try:
+            cm_rows = db.query_all(
+                f"SELECT post_url, comments_count FROM fb_post_metrics WHERE post_url IN ({ph})",
+                tuple(post_urls),
+            )
+            url_comment_counts = {
+                (r.get('post_url') or ''): int(r.get('comments_count') or 0) for r in (cm_rows or [])
+            }
+        except Exception as _e:
+            logger.warning(f"⚠️ 批量读取 comments_count 失败，将不跳过低评论帖: {_e}")
 
     def _update_progress(msg):
         if task_id:
@@ -805,6 +858,13 @@ def scrape_fb_comments(
                 continue
 
             logger.info(f"📥 Scraping comments from: {post_url}")
+
+            if min_cm:
+                known = url_comment_counts.get(post_url)
+                if known is not None and known < min_cm:
+                    total_skipped_low_comments += 1
+                    logger.info(f"⏭️ 评论数不足({known}<{min_cm})，跳过 Actor: {post_url[:80]}")
+                    continue
 
             if platform == "facebook":
                 actor_id = os.environ.get("APIFY_FB_COMMENTS_ACTOR_ID", DEFAULT_FB_COMMENTS_ACTOR).strip()
@@ -993,6 +1053,7 @@ def scrape_fb_comments(
         "skipped_non_facebook": total_skipped_unsupported,  # backward compatibility
         "skipped_unsupported_urls": total_skipped_unsupported,
         "skipped_language": total_skipped_language,
+        "skipped_low_comment_posts": total_skipped_low_comments,
         "timed_out_urls": total_timeout_urls,
         "discovered_posts_upserted": discovered_count,
         "ai_processed_total": ai_processed_total,
@@ -1012,6 +1073,8 @@ def scrape_fb_comments(
             )
             if total_skipped_language:
                 summary += f"，跳过非目标语言 {total_skipped_language} 条帖子"
+            if total_skipped_low_comments:
+                summary += f"，跳过低评论帖 {total_skipped_low_comments} 条"
             db.execute(
                 "UPDATE scrape_tasks SET status = 'completed', completed_at = NOW(), result_summary = %s WHERE id = %s",
                 (summary, task_id)

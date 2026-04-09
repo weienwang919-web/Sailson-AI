@@ -195,6 +195,7 @@ def _handle_fb_scrape(task_id, params):
     max_ai_comments = params.get('max_ai_comments', 1200)
     skip_discover = params.get('skip_discover', False)
     top_n = max(1, min(int(params.get('top_n', 5)), 20))
+    min_comments_for_actor = params.get('min_comments_for_actor')
 
     def _set_scrape_summary(message):
         if not scrape_task_id:
@@ -289,7 +290,8 @@ def _handle_fb_scrape(task_id, params):
             results_limit=results_limit,
             enable_ai_analysis=enable_ai_analysis,
             max_ai_comments=max_ai_comments,
-            allow_fallback_to_config=False
+            allow_fallback_to_config=False,
+            min_comments_for_actor=min_comments_for_actor,
         )
         if result.get('status') != 'success':
             raise RuntimeError(result.get('message') or 'fb scrape failed')
