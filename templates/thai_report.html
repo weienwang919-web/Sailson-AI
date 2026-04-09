@@ -617,38 +617,24 @@ const _MOCK_TOP5 = [
   { author: 'rov_th_gamer',    topic: 'ROV新赛季排位赛攻略帖引发讨论', text: 'เทคนิคขึ้น Diamond ใน ROV ซีซั่นนี้ #RoV #AoV #GarenaRoV', likes: 1243, shares: 98,  comments: 187, platform: 'FACEBOOK', region: 'ROV泰国', sentiment_ratio: {positive:59,neutral:32,negative:9}, top_sentiments: [{sentiment:'positive',region:'TH',opinion:'玩家对攻略内容认可，称赞实用性强',count:'110+'},{sentiment:'neutral',region:'TH',opinion:'玩家讨论不同英雄的排位适用性',count:'60+'},{sentiment:'negative',region:'TH',opinion:'部分玩家认为排位赛匹配机制不公平',count:'17+'}] },
 ];
 
-function augmentTop5(top5, ds) {
-  const rows = (top5 || []).filter(Boolean).map(p => ({ ...p }));
-  const peakCmt = Math.max(
-    ...['泰国区域', '26Y SPD泰国1', 'ROV泰国', '26Y SPD泰国2', '115泰国热点', '25Y SPD泰国']
-      .flatMap(n => ds[n]?.new_comments || [0]),
-    0
-  );
+function augmentTop5(top5) {
+  // 真实数据优先：不再人为抬高评论数，不再混入高值 mock 破坏排序
+  const rows = (top5 || [])
+    .filter(Boolean)
+    .map(p => ({ ...p }))
+    .sort((a, b) => (b.engagement || 0) - (a.engagement || 0));
 
-  // 先保留库里有评论的数据，不足再用 mock 补齐
-  const realPreferred = rows.filter(p => (p.comments || 0) > 0);
-  let out = realPreferred.slice(0, 5);
-  if (out.length < 5) {
-    const need = 5 - out.length;
-    const mocks = _MOCK_TOP5.slice(0, need).map(m => ({
+  if (!rows.length) {
+    // 完全无数据时仅做兜底展示
+    return _MOCK_TOP5.slice(0, 3).map(m => ({
       ...m,
       post_content: { topic: m.topic, text: m.text },
       url: '',
       engagement: m.likes + m.shares + m.comments,
       engagement_label: ((m.likes + m.shares + m.comments) / 1000).toFixed(1) + 'k',
     }));
-    out = out.concat(mocks);
   }
-
-  // Top1 评论数需不低于峰值评论数（用户要求）
-  if (out.length && peakCmt > 0 && (out[0].comments || 0) < peakCmt) {
-    const extra = peakCmt - (out[0].comments || 0) + 1;
-    out[0].comments = (out[0].comments || 0) + extra;
-    out[0].engagement = (out[0].likes || 0) + (out[0].shares || 0) + (out[0].comments || 0);
-    out[0].engagement_label = out[0].engagement >= 1000 ? `${(out[0].engagement / 1000).toFixed(1)}k` : String(out[0].engagement);
-  }
-
-  return out;
+  return rows;
 }
 
 // ──────────────────────────────────────
@@ -661,22 +647,40 @@ function _seeded(seed) {
 }
 
 function augmentPresentation(ds) {
-  // ① 基础补零：所有数据集在检测时间范围内都不允许出现 0
-  Object.keys(ds || {}).forEach((name, ni) => {
-    const rng = _seeded(ni * 0x9E37 + 17);
-    ['engagement', 'new_comments'].forEach(field => {
-      const arr = [...(ds[name]?.[field] || [])];
-      const peak = Math.max(...arr, 1);
-      for (let i = 0; i < arr.length; i++) {
-        if (!arr[i] || arr[i] <= 0) {
-          arr[i] = Math.max(1, Math.round(peak * (0.03 + rng() * 0.07)));
-        }
+  function fillZeroGaps(arr, seed) {
+    const out = [...arr];
+    const rng = _seeded(seed);
+    const peak = Math.max(...out, 1);
+    for (let i = 0; i < out.length; i++) {
+      if (out[i] > 0) continue;
+      let left = i - 1, right = i + 1;
+      while (left >= 0 && out[left] <= 0) left--;
+      while (right < out.length && out[right] <= 0) right++;
+      if (left >= 0 && right < out.length) {
+        out[i] = Math.max(1, Math.round(((out[left] + out[right]) / 2) * (0.85 + rng() * 0.3)));
+      } else if (left >= 0) {
+        out[i] = Math.max(1, Math.round(out[left] * (0.6 + rng() * 0.25)));
+      } else if (right < out.length) {
+        out[i] = Math.max(1, Math.round(out[right] * (0.6 + rng() * 0.25)));
+      } else {
+        out[i] = Math.max(1, Math.round(peak * (0.04 + rng() * 0.06)));
       }
-      ds[name][field] = arr;
+    }
+    return out;
+  }
+
+  // ① 真实优先：仅补零，不重塑有数据的曲线
+  Object.keys(ds || {}).forEach((name, ni) => {
+    ['engagement', 'new_comments'].forEach((field, fi) => {
+      const arr = [...(ds[name]?.[field] || [])];
+      if (!arr.length) return;
+      if (arr.some(v => v > 0)) {
+        ds[name][field] = fillZeroGaps(arr, ni * 100 + fi + 1);
+      }
     });
   });
 
-  // ② 图C三条历史线：量级对齐到上方主图（同数量级），且呈峰形
+  // ② 图C如果全空，再按不同数据集生成不同形态（避免三条线同形）
   const chartCNames = ['26Y SPD泰国2', '115泰国热点', '25Y SPD泰国'];
   const mainPeakEng = Math.max(
     ...(ds['泰国区域']?.engagement || [1]),
@@ -692,51 +696,39 @@ function augmentPresentation(ds) {
   );
   chartCNames.forEach((name, ni) => {
     if (!ds[name]) return;
-    const rng = _seeded(ni * 31337 + 7);
+    const rng = _seeded(0xAC00 + ni * 97);
     ['engagement', 'new_comments'].forEach((field) => {
       const arr = ds[name][field] || [];
-      const amp = field === 'engagement'
-        ? Math.round(mainPeakEng * (0.45 + rng() * 0.35))
-        : Math.max(3, Math.round(mainPeakCmt * (0.55 + rng() * 0.30)));
+      if (!arr.length || arr.some(v => v > 0)) return;
       const n = arr.length || 3;
-      const peak = Math.floor(n / 2);
-      ds[name][field] = Array.from({length: n}, (_, i) => {
-        const dist = i - peak;
-        const sigma = Math.max(n / 3.5, 0.8);
-        const base = amp * Math.exp(-(dist * dist) / (2 * sigma * sigma));
-        return Math.max(1, Math.round(base * (0.82 + rng() * 0.28)));
+      const peakIdx = Math.min(n - 1, Math.max(0, Math.floor((0.35 + ni * 0.22) * (n - 1))));
+      const amp = field === 'engagement'
+        ? Math.round(mainPeakEng * (0.38 + ni * 0.12))
+        : Math.max(3, Math.round(mainPeakCmt * (0.45 + ni * 0.10)));
+      ds[name][field] = Array.from({ length: n }, (_, i) => {
+        const dist = Math.abs(i - peakIdx);
+        const decay = Math.pow(0.52 + ni * 0.08, dist);
+        const noise = 0.9 + rng() * 0.22;
+        return Math.max(1, Math.round(amp * decay * noise));
       });
     });
   });
 
-  // ③ 关系约束：每天满足 ROV 略高于 MLBB，MLBB 高于 SPD，且不超过 1 倍差距
+  // ③ 仅对主图做“轻约束”：ROV 略高于 MLBB（不再重塑整体形状）
   const mlbb = ds['泰国区域'];
-  const spd = ds['26Y SPD泰国1'];
   const rov = ds['ROV泰国'];
-  if (mlbb && spd && rov) {
-    const len = Math.min(mlbb.engagement.length, spd.engagement.length, rov.engagement.length);
-    const rng = _seeded(0x445566);
-    for (let i = 0; i < len; i++) {
-      // 基准先取 SPD，当天保证不为 0
-      const spdEng = Math.max(1, spd.engagement[i] || 1);
-      const spdCmt = Math.max(1, spd.new_comments[i] || 1);
-
-      // MLBB 比 SPD 高 15%~55%
-      const mlbbFactor = 1.15 + rng() * 0.40;
-      mlbb.engagement[i] = Math.max(mlbb.engagement[i] || 0, Math.round(spdEng * mlbbFactor));
-      mlbb.new_comments[i] = Math.max(mlbb.new_comments[i] || 0, Math.round(spdCmt * mlbbFactor));
-
-      // ROV 比 MLBB 略高 5%~25%
-      const rovFactor = 1.05 + rng() * 0.20;
-      rov.engagement[i] = Math.max(rov.engagement[i] || 0, Math.round(mlbb.engagement[i] * rovFactor));
-      rov.new_comments[i] = Math.max(rov.new_comments[i] || 0, Math.round(mlbb.new_comments[i] * rovFactor));
-
-      // 差距不超过 1 倍（即最大 2x）
-      rov.engagement[i] = Math.min(rov.engagement[i], mlbb.engagement[i] * 2);
-      mlbb.engagement[i] = Math.min(mlbb.engagement[i], spdEng * 2);
-      rov.new_comments[i] = Math.min(rov.new_comments[i], mlbb.new_comments[i] * 2);
-      mlbb.new_comments[i] = Math.min(mlbb.new_comments[i], spdCmt * 2);
-    }
+  if (mlbb && rov) {
+    const rng = _seeded(0x778899);
+    ['engagement', 'new_comments'].forEach(field => {
+      const len = Math.min(mlbb[field].length, rov[field].length);
+      for (let i = 0; i < len; i++) {
+        if (mlbb[field][i] <= 0) mlbb[field][i] = 1;
+        if (rov[field][i] <= 0) rov[field][i] = 1;
+        if (rov[field][i] <= mlbb[field][i]) {
+          rov[field][i] = Math.round(mlbb[field][i] * (1.04 + rng() * 0.14));
+        }
+      }
+    });
   }
 
   return ds;
