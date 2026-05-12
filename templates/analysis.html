@@ -94,12 +94,13 @@
         <div class="glass-card">
             <div id="linkArea">
                 <label class="small text-muted mb-1" for="urlsInput">社媒主贴链接（每行一个，可混合平台）</label>
-                <textarea id="urlsInput" class="url-textarea" placeholder="支持 Facebook / Instagram / TikTok / YouTube&#10;一行一个链接，例如：&#10;https://www.facebook.com/gaming/posts/...&#10;https://www.instagram.com/p/.../&#10;https://www.tiktok.com/@user/video/...&#10;https://www.youtube.com/watch?v=..."></textarea>
+                <textarea id="urlsInput" class="url-textarea" placeholder="支持 Facebook / Instagram / TikTok / YouTube / X(Twitter)&#10;一行一个链接，例如：&#10;https://www.facebook.com/gaming/posts/...&#10;https://www.instagram.com/p/.../&#10;https://www.tiktok.com/@user/video/...&#10;https://www.youtube.com/watch?v=...&#10;https://x.com/user/status/..."></textarea>
                 <div class="platform-badges">
                     <span class="badge">FB</span>
                     <span class="badge">IG</span>
                     <span class="badge">TT</span>
                     <span class="badge">YTB</span>
+                    <span class="badge">X</span>
                     <span style="margin-left:auto;color:#999;">FB 评论无时间戳时自动留空</span>
                 </div>
                 <div class="example-hint">
@@ -147,12 +148,13 @@ function fillExample() {
         'https://www.facebook.com/gaming/posts/123456789',
         'https://www.instagram.com/p/Cxxxxxxxxxx/',
         'https://www.tiktok.com/@user/video/7000000000000000000',
-        'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://x.com/PUBGMOBILE/status/1700000000000000000'
     ].join('\n');
 }
 
 function showTutorial() {
-    alert('使用教程：\n\n1. 每行粘贴一个社媒主贴链接（FB / IG / TT / YouTube 均可混合）\n2. 点击"立即分析"，平台自动识别\n3. 等待 Apify 抓取 + AI 翻译/情感/分类\n4. 表格输出 12 列（与线下模板一致），可导出 Excel\n\n注：Facebook 评论时间戳通常缺失，会自动留空。');
+    alert('使用教程：\n\n1. 每行粘贴一个社媒主贴链接（FB / IG / TT / YouTube / X 均可混合）\n2. 点击"立即分析"，平台自动识别\n3. 等待 Apify 抓取 + AI 翻译/情感/分类\n4. 表格输出 12 列（与线下模板一致），可导出 Excel\n\n注：Facebook 评论时间戳通常缺失，会自动留空。');
 }
 
 function applyTimeFilter(items) {

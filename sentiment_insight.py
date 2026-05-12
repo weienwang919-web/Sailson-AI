@@ -56,6 +56,7 @@ DEFAULT_ACTORS = {
     "IG": os.environ.get("APIFY_IG_COMMENTS_ACTOR_ID", "apify/instagram-comment-scraper"),
     "TT": os.environ.get("APIFY_TT_COMMENTS_ACTOR_ID", "clockworks/tiktok-comments-scraper"),
     "YTB": os.environ.get("APIFY_YT_COMMENTS_ACTOR_ID", "streamers/youtube-comments-scraper"),
+    "X": os.environ.get("APIFY_X_TWEET_ACTOR_ID", "apidojo/tweet-scraper"),
 }
 
 # 单个 actor 最长等待时间（秒）
@@ -125,6 +126,7 @@ _FB_HOSTS = ("facebook.com", "fb.com", "fb.watch", "m.facebook.com", "web.facebo
 _IG_HOSTS = ("instagram.com",)
 _TT_HOSTS = ("tiktok.com", "vm.tiktok.com", "m.tiktok.com")
 _YT_HOSTS = ("youtube.com", "youtu.be", "m.youtube.com")
+_X_HOSTS = ("twitter.com", "x.com", "mobile.twitter.com", "mobile.x.com")
 
 
 def detect_platform(url: str) -> str:
@@ -147,6 +149,8 @@ def detect_platform(url: str) -> str:
         return "TT"
     if any(h in u for h in _YT_HOSTS):
         return "YTB"
+    if any(h in u for h in _X_HOSTS):
+        return "X"
     return "UNKNOWN"
 
 
@@ -228,11 +232,25 @@ def _first_str(item: dict, keys: Iterable[str]) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
         if isinstance(v, dict):
-            for sub in ("name", "username", "text", "title"):
+            for sub in ("name", "username", "userName", "screen_name", "screenName", "text", "title"):
                 vv = v.get(sub)
                 if isinstance(vv, str) and vv.strip():
                     return vv.strip()
     return ""
+
+
+def _is_x_original_tweet(item: dict) -> bool:
+    """判断 X 平台一条记录是否是原帖（主推文），用于在评论列表里剔除。"""
+    if not isinstance(item, dict):
+        return False
+    tid = item.get("id") or item.get("tweetId") or item.get("rest_id")
+    conv = item.get("conversationId") or item.get("conversation_id") or item.get("conversationIdStr")
+    if tid and conv and str(tid) == str(conv):
+        return True
+    if item.get("isReply") is False and item.get("inReplyToId") is None:
+        # 严格条件：明确不是回复
+        return True
+    return False
 
 
 def _to_beijing_dt(value) -> datetime.datetime | None:
@@ -288,37 +306,47 @@ def _extract_post_meta(items: list[dict], platform: str, fallback_url: str) -> d
     """从 dataset items 里尽量抽出主贴标题/发布时间。"""
     title = ""
     post_dt = None
-    for it in items:
+
+    title_keys = [
+        "postTitle",
+        "postText",
+        "postCaption",
+        "caption",
+        "videoCaption",
+        "videoDescription",
+        "videoTitle",
+        "title",
+        "description",
+        "postContent",
+    ]
+    date_keys = [
+        "postPublishedAt",
+        "postDate",
+        "postPublishedTime",
+        "videoCreateTime",
+        "videoCreateTimeISO",
+        "publishedTime",
+        "publishedAt",
+        "publishedTimeText",
+        "createTimeOfPost",
+    ]
+
+    # X 平台：标题取「原推文 text」、发布时间取「原推文 createdAt」
+    iter_items = items
+    if platform == "X":
+        originals = [it for it in items if isinstance(it, dict) and _is_x_original_tweet(it)]
+        if originals:
+            iter_items = originals + [it for it in items if it not in originals]
+        title_keys = ["text", "fullText", "full_text"] + title_keys
+        date_keys = ["createdAt", "created_at", "createdAtTimestamp"] + date_keys
+
+    for it in iter_items:
         if not isinstance(it, dict):
             continue
         if not title:
-            title = _first_str(
-                it,
-                [
-                    "postTitle",
-                    "postText",
-                    "postCaption",
-                    "caption",
-                    "videoCaption",
-                    "videoDescription",
-                    "videoTitle",
-                    "title",
-                    "description",
-                    "postContent",
-                ],
-            )
+            title = _first_str(it, title_keys)
         if not post_dt:
-            for k in (
-                "postPublishedAt",
-                "postDate",
-                "postPublishedTime",
-                "videoCreateTime",
-                "videoCreateTimeISO",
-                "publishedTime",
-                "publishedAt",
-                "publishedTimeText",
-                "createTimeOfPost",
-            ):
+            for k in date_keys:
                 cand = _to_beijing_dt(it.get(k))
                 if cand:
                     post_dt = cand
@@ -337,11 +365,15 @@ def _extract_post_meta(items: list[dict], platform: str, fallback_url: str) -> d
 
 
 def _extract_comment(item: dict, platform: str) -> dict | None:
-    """统一抽出评论字段。返回 None 表示这条不是评论。"""
+    """统一抽出评论字段。返回 None 表示这条不是评论（或要跳过）。"""
     if not isinstance(item, dict):
         return None
 
-    text = _first_str(item, ["text", "content", "comment", "message", "commentText"])
+    # X 平台：原推文当作"主贴"，不进评论列表
+    if platform == "X" and _is_x_original_tweet(item):
+        return None
+
+    text = _first_str(item, ["text", "fullText", "full_text", "content", "comment", "message", "commentText"])
     if not text:
         return None
 
@@ -444,11 +476,34 @@ def _scrape_youtube(url: str, apify_token: str) -> dict:
     return {"items": items, "platform": "YTB", "url": url}
 
 
+def _scrape_x(url: str, apify_token: str) -> dict:
+    """X（Twitter）回复抓取。
+
+    默认 actor 是 apidojo/tweet-scraper，它通过 startUrls 直接抓主贴 + 回复。
+    """
+    actor = DEFAULT_ACTORS["X"]
+    candidates = [
+        {
+            "startUrls": [url],
+            "maxItems": COMMENTS_PER_POST_LIMIT,
+            "onlyImage": False,
+            "onlyVerifiedUsers": False,
+        },
+        {"startUrls": [{"url": url}], "maxItems": COMMENTS_PER_POST_LIMIT},
+        {"tweetUrls": [url], "maxItems": COMMENTS_PER_POST_LIMIT},
+        {"conversationIds": [url], "maxItems": COMMENTS_PER_POST_LIMIT},
+        {"searchTerms": [url], "maxItems": COMMENTS_PER_POST_LIMIT},
+    ]
+    items = _call_actor(actor, candidates, apify_token)
+    return {"items": items, "platform": "X", "url": url}
+
+
 PLATFORM_SCRAPERS: dict[str, Callable[[str, str], dict]] = {
     "FB": _scrape_facebook,
     "IG": _scrape_instagram,
     "TT": _scrape_tiktok,
     "YTB": _scrape_youtube,
+    "X": _scrape_x,
 }
 
 
