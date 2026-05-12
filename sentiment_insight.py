@@ -848,11 +848,27 @@ def build_html_table(rows: list[dict]) -> str:
     )
 
 
-def build_excel(rows: list[dict]) -> Workbook:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "舆情洞察"
+_INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
 
+
+def _sanitize_sheet_name(name: str, used: set[str]) -> str:
+    """Excel sheet 名约束：≤31 字符，且不含 [ ] : * ? / \\，且全工作簿唯一。"""
+    cleaned = _INVALID_SHEET_CHARS.sub("·", name or "").strip()
+    if not cleaned:
+        cleaned = "Sheet"
+    cleaned = cleaned[:31]
+    base = cleaned
+    suffix = 2
+    while cleaned in used:
+        tail = f" ({suffix})"
+        cleaned = (base[: 31 - len(tail)] + tail)
+        suffix += 1
+    used.add(cleaned)
+    return cleaned
+
+
+def _write_insight_sheet(ws, rows: list[dict]) -> None:
+    """把若干行写入一个 worksheet：表头 + 内容 + 样式。"""
     header_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     header_font = Font(bold=True)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -865,22 +881,20 @@ def build_excel(rows: list[dict]) -> Workbook:
         cell.alignment = center
 
     for r in rows:
-        ws.append(
-            [
-                r.get("platform", ""),
-                r.get("post_date", ""),
-                r.get("post_url", ""),
-                r.get("post_title", ""),
-                r.get("comment_time", ""),
-                r.get("time_bucket", ""),
-                r.get("author", ""),
-                r.get("content", ""),
-                r.get("translation_zh", ""),
-                r.get("sentiment_ai", ""),
-                r.get("sentiment_manual", ""),
-                r.get("category", ""),
-            ]
-        )
+        ws.append([
+            r.get("platform", ""),
+            r.get("post_date", ""),
+            r.get("post_url", ""),
+            r.get("post_title", ""),
+            r.get("comment_time", ""),
+            r.get("time_bucket", ""),
+            r.get("author", ""),
+            r.get("content", ""),
+            r.get("translation_zh", ""),
+            r.get("sentiment_ai", ""),
+            r.get("sentiment_manual", ""),
+            r.get("category", ""),
+        ])
 
     widths = [8, 18, 50, 30, 18, 12, 18, 50, 50, 18, 18, 16]
     for i, w in enumerate(widths, 1):
@@ -891,6 +905,48 @@ def build_excel(rows: list[dict]) -> Workbook:
             cell.alignment = wrap
 
     ws.freeze_panes = "A2"
+
+
+def build_excel(rows: list[dict]) -> Workbook:
+    """生成 Excel：每个帖文一个 sheet，按出现顺序排列。
+
+    Sheet 命名：`{平台}-{序号} {标题前几个字}`，自动截到 31 字符且唯一。
+    """
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    if not rows:
+        ws = wb.create_sheet("舆情洞察")
+        _write_insight_sheet(ws, [])
+        return wb
+
+    # 按帖子分组，保留首次出现的顺序
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for r in rows:
+        key = r.get("post_url") or f"_no_url_{len(order)}"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+
+    used_names: set[str] = set()
+    platform_counter: dict[str, int] = {}
+    for key in order:
+        post_rows = groups[key]
+        first = post_rows[0]
+        platform = (first.get("platform") or "POST").strip() or "POST"
+        platform_counter[platform] = platform_counter.get(platform, 0) + 1
+        seq = platform_counter[platform]
+        title = (first.get("post_title") or "").strip()
+        # 去掉换行/制表，截一段当 sheet 名后缀
+        short_title = re.sub(r"\s+", " ", title)[:18]
+        base = f"{platform}-{seq}"
+        raw_name = f"{base} {short_title}".strip() if short_title else base
+        sheet_name = _sanitize_sheet_name(raw_name, used_names)
+        ws = wb.create_sheet(sheet_name)
+        _write_insight_sheet(ws, post_rows)
+
     return wb
 
 
