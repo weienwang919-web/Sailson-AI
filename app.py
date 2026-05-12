@@ -609,14 +609,18 @@ if not _IS_WORKER:
     recover_interrupted_tasks()
 
 
-def call_gemini(prompt, image=None, timeout=60):
-    """调用通义千问 API"""
+def call_gemini(prompt, image=None, timeout=60, model=None, temperature=0.7):
+    """调用通义千问 API
+
+    Args:
+        model: 显式指定模型；若 None，按 QWEN_DEFAULT_MODEL 环境变量，默认 qwen-turbo。
+    """
     if not qwen_client:
         error_msg = "❌ 错误：DASHSCOPE_API_KEY 未配置"
         logger.error(error_msg)
         return error_msg, 0
 
-    model_name = 'qwen-turbo'
+    model_name = model or os.environ.get('QWEN_DEFAULT_MODEL') or 'qwen-turbo'
 
     try:
         logger.info(f"🤖 正在调用通义千问模型: {model_name}")
@@ -627,7 +631,7 @@ def call_gemini(prompt, image=None, timeout=60):
             messages=[
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7
+            temperature=temperature
         )
 
         result = response.choices[0].message.content
@@ -862,10 +866,15 @@ def process_analysis_task(task_id, url=None, file_data=None, session_id='default
                 def _progress(msg):
                     update_task(task_id, progress=msg)
 
+                insight_model = os.environ.get('INSIGHT_AI_MODEL') or 'qwen-plus'
+
+                def _ai_call(p, t=60):
+                    return call_gemini(p, timeout=t, model=insight_model, temperature=0.3)
+
                 pipeline_result = sentiment_insight.run_insight_pipeline(
                     urls=urls,
                     apify_token=APIFY_TOKEN,
-                    ai_call=lambda p, t=60: call_gemini(p, timeout=t),
+                    ai_call=_ai_call,
                     progress=_progress,
                 )
 

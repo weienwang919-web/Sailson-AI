@@ -79,6 +79,43 @@ CATEGORY_LABELS = {
     "其他",
 }
 
+# 用于预处理：剥离 [Sticker] / [贴图] 等元标记
+_STICKER_PREFIX_RE = re.compile(r"^\s*\[(?:sticker|贴图|表情|emoji)\]\s*", re.IGNORECASE)
+# 用于识别"无实质内容"评论（纯 emoji / 重复字符 / 单符号）
+_EMOJI_OR_PUNCT_RE = re.compile(
+    r"[\u2600-\u27BF\U0001F300-\U0001FAFF\U0001F000-\U0001F2FF\u2300-\u23FF\u2B00-\u2BFF\s\W_]+",
+    re.UNICODE,
+)
+
+
+def _preprocess_comment(text: str) -> tuple[str, str]:
+    """评论预处理。返回 (送给 AI 的净化文本, 调用方应直接使用的翻译占位)。
+
+    - 占位为非空时，跳过 AI 翻译，直接落库。
+    - 净化文本去除了 [Sticker] 这类元标记。
+    """
+    if not text:
+        return "", ""
+    cleaned = text.strip()
+    # 剥离前缀的元标记，比如 "[Sticker] 真好玩" -> "真好玩"
+    cleaned = _STICKER_PREFIX_RE.sub("", cleaned).strip()
+
+    # 如果剥离后是空的，说明原文本身只是个表情贴图
+    if not cleaned:
+        return "", "（贴图/无文字内容）"
+
+    # 纯 emoji / 标点 / 单字母重复（长度短 + 没有有意义字母字数）
+    letters = re.sub(r"[\W_0-9]+", "", cleaned, flags=re.UNICODE)
+    if not letters:
+        return cleaned, "（仅表情/符号）"
+    # 灌水识别：同一个字母连续重复 ≥5 次（aaaaa / pubgggggg / hahahaha）
+    if re.search(r"(.)\1{4,}", cleaned, flags=re.IGNORECASE | re.UNICODE):
+        return cleaned, cleaned
+    # 极端单字母重复：去重后只有 1-2 个字符
+    if len(set(letters.lower())) <= 2 and len(cleaned) <= 60:
+        return cleaned, cleaned
+    return cleaned, ""
+
 
 # ============================================
 # 平台识别
@@ -460,22 +497,56 @@ def _normalize_ai_label(value: str, allowed: set[str], fallback: str) -> str:
 
 def _build_ai_prompt(batch_lines: str) -> str:
     return (
-        "你是社媒舆情分析助手。下面是若干条评论，请输出 JSON 数组（不要 markdown），\n"
+        "你是中国头部手游社区的资深玩家与舆情分析师，同时负责把海外社媒评论翻成"
+        "「中国玩家圈口语化中文」。请逐条处理下面的评论，并输出 JSON 数组（不要 markdown），\n"
         "每条评论一个对象，字段：\n"
         "  - idx: 编号（与输入一致，整数）\n"
-        "  - translation_zh: 该评论翻译成中文的结果；若原文已是中文则保留原文\n"
-        "  - sentiment: 必须严格是 正向 / 中立 / 负面 三个之一\n"
-        "  - category: 必须严格从 [产品体验, 功能建议, 账号&充值, 外挂作弊, 活动运营, 客服投诉, 其他] 中选一个\n\n"
-        "分类口径：\n"
-        "  - 产品体验：画质、卡顿、闪退、操作体验、平衡性等使用感受\n"
-        "  - 功能建议：希望新增/调整模式、地图、英雄、玩法等建议\n"
-        "  - 账号&充值：登录、充值、退款、皮肤、礼包、商城\n"
-        "  - 外挂作弊：举报外挂、脚本、代练、开挂\n"
-        "  - 活动运营：联动、节日、福利、赛事、宣传活动\n"
-        "  - 客服投诉：客服响应、官方处理态度\n"
-        "  - 其他：无法归入上面，含纯表情/灌水\n\n"
-        f"评论列表：\n{batch_lines}\n\n"
-        "只输出 JSON 数组，例如：[{\"idx\":0,\"translation_zh\":\"...\",\"sentiment\":\"正向\",\"category\":\"产品体验\"}]\n"
+        "  - translation_zh: 中文译文，按下面《翻译规范》执行；若原文已是中文，直接照搬，不要再润色\n"
+        "  - sentiment: 严格三选一：正向 / 中立 / 负面\n"
+        "  - category: 严格七选一：产品体验 / 功能建议 / 账号&充值 / 外挂作弊 / 活动运营 / 客服投诉 / 其他\n\n"
+        "《翻译规范（重要，全部遵守）》\n"
+        "1. 目标语感：像中国玩家在贴吧/B站/微博/TapTap 上聊天，自然口语、可短可碎，不要书面腔。\n"
+        "2. 严禁逐字直译。要把英语/阿拉伯语/西语等的语序、虚词重组成符合中文习惯的表达。\n"
+        "3. 专有名词保留英文：PUBG / PUBG Mobile / UC / Royale Pass / Erangle / Miramar / Rondo 等不要翻成中文俗称。\n"
+        "4. 玩家黑话本土化：bruh→老哥/兄弟、pls/please→求/拜托、reply me→求回复/官方回个话、"
+        "thx→谢谢/感谢、compensation→补偿/赔偿、skin→皮肤、event→活动、bug→BUG/卡顿、laggy→卡爆/掉帧。\n"
+        "5. 抱怨/讽刺/反话要传达情绪，不要翻成中性。例：'nice, now give us 1000UC as compensation' "
+        "→ '行行行，那赔1000UC吧'；'where is the update bruh😭' → '更新呢老哥😭'。\n"
+        "6. 请求类要保留请求感：'please add X' → '求加X'；'we want X back' → '把X弄回来吧'。\n"
+        "7. emoji / 表情贴纸照抄原位，不要描述。\n"
+        "8. 评论里出现的话题标签（如 #cancel_card）需译成中文话题：'#取消该卡牌'。\n"
+        "9. 极短或灌水内容（'Hi'、'Reply'、'Pubgggg'、纯 emoji）：分类一律「其他」，情感按字面取中立"
+        "（除非含明显情绪词）。\n"
+        "10. 文本里不要出现「我作为AI…」「以下是翻译…」之类说明语，只给纯净的中文译文。\n\n"
+        "《翻译示例（务必按此风格）》\n"
+        "  原: Give me the glacier and we Are all good Bro\n"
+        "  译: 把冰川效果还给我们就行，老哥\n"
+        "  原: please pubg mobile add tha flag\n"
+        "  译: 求 PUBG Mobile 加一下那个国旗\n"
+        "  原: nice,now give us 1000uc as compensation\n"
+        "  译: 行行行，那赔我们 1000UC 吧\n"
+        "  原: where is the update bruh 😭😭\n"
+        "  译: 更新呢老哥 😭😭\n"
+        "  原: low device\n"
+        "  译: 我这设备配置低\n"
+        "  原: i want 50 material and i will apologise\n"
+        "  译: 给我 50 个材料我就当没事\n"
+        "  原: PUBG Mobile please make a good one emulator for pc player 🙏🏻\n"
+        "  译: 求 PUBG Mobile 给 PC 玩家做一个好用的模拟器 🙏🏻\n"
+        "  原: Thanks for listening to us !\n"
+        "  译: 谢谢你们能听玩家的意见！\n"
+        "  原: Remove the promotion thing\n"
+        "  译: 把那个推广的东西撤了吧\n\n"
+        "《分类口径》\n"
+        "  - 产品体验：画质、卡顿、闪退、操作手感、平衡性、设备兼容\n"
+        "  - 功能建议：希望新增/调整模式、地图、英雄、玩法\n"
+        "  - 账号&充值：登录、充值、退款、UC、皮肤、礼包、商城\n"
+        "  - 外挂作弊：外挂、脚本、代练、开挂、举报无果\n"
+        "  - 活动运营：联动、节日、福利、赛事、宣传、推广物料\n"
+        "  - 客服投诉：客服响应、官方处理态度、申诉、邮件无回复\n"
+        "  - 其他：无法归类、纯灌水、纯表情、宗教/文化敏感诉求等\n\n"
+        f"《待处理评论》\n{batch_lines}\n\n"
+        '只输出 JSON 数组，例如：[{"idx":0,"translation_zh":"...","sentiment":"正向","category":"产品体验"}]\n'
     )
 
 
@@ -483,20 +554,32 @@ def _run_ai_for_comments(
     comments: list[dict],
     ai_call: Callable[[str, int], tuple[str, int]],
 ) -> tuple[list[dict], int]:
-    """对评论调用 AI；返回 (按原顺序对齐的 AI 结果列表, 累计 token 数)。"""
+    """对评论调用 AI；返回 (按原顺序对齐的 AI 结果列表, 累计 token 数)。
+
+    会先做预处理：剥离 [Sticker] 标记 + 识别灌水/纯表情类评论直接给占位翻译，
+    剩余的才发给 AI，能显著降低机翻噪声 + 节省 token。
+    """
     n = len(comments)
     results: list[dict] = [None] * n  # type: ignore
     total_tokens = 0
     if not comments:
         return [], 0
 
-    batches = []
-    for i in range(0, n, AI_BATCH_SIZE):
-        batches.append((i, comments[i : i + AI_BATCH_SIZE]))
+    # 预处理：为每条评论计算 (净化文本, 占位翻译, 是否需要 AI)
+    preprocessed: list[tuple[str, str, bool]] = []
+    for c in comments:
+        cleaned, placeholder = _preprocess_comment(c.get("text", ""))
+        # 占位非空 → 不送 AI，直接用占位作为译文
+        needs_ai = not bool(placeholder)
+        preprocessed.append((cleaned, placeholder, needs_ai))
 
-    for batch_start, batch in batches:
+    # 把需要 AI 的部分按 batch 处理
+    ai_indexes = [i for i, p in enumerate(preprocessed) if p[2]]
+    for start in range(0, len(ai_indexes), AI_BATCH_SIZE):
+        idx_chunk = ai_indexes[start : start + AI_BATCH_SIZE]
         lines = "\n".join(
-            f"{j}. {c.get('text','').replace(chr(10),' ')[:1000]}" for j, c in enumerate(batch)
+            f"{k}. {preprocessed[i][0].replace(chr(10), ' ')[:1000]}"
+            for k, i in enumerate(idx_chunk)
         )
         prompt = _build_ai_prompt(lines)
         try:
@@ -511,24 +594,32 @@ def _run_ai_for_comments(
             if not isinstance(obj, dict):
                 continue
             try:
-                idx = int(obj.get("idx"))
+                k = int(obj.get("idx"))
             except Exception:
                 continue
-            idx_map[idx] = obj
-        for j, _c in enumerate(batch):
-            obj = idx_map.get(j) or {}
+            idx_map[k] = obj
+        for k, i in enumerate(idx_chunk):
+            obj = idx_map.get(k) or {}
             tr = obj.get("translation_zh") or obj.get("translation") or ""
             sent = _normalize_ai_label(obj.get("sentiment"), SENTIMENT_LABELS, "中立")
             cat = _normalize_ai_label(obj.get("category"), CATEGORY_LABELS, "其他")
-            results[batch_start + j] = {
+            results[i] = {
                 "translation_zh": str(tr).strip(),
                 "sentiment": sent,
                 "category": cat,
             }
-    # 兜底
-    for k, r in enumerate(results):
-        if r is None:
-            results[k] = {"translation_zh": "", "sentiment": "中立", "category": "其他"}
+
+    # 填充不需要 AI 的占位结果（灌水、纯表情等）
+    for i, (cleaned, placeholder, needs_ai) in enumerate(preprocessed):
+        if needs_ai and results[i] is not None:
+            continue
+        if results[i] is not None:
+            continue
+        results[i] = {
+            "translation_zh": placeholder or "",
+            "sentiment": "中立",
+            "category": "其他",
+        }
     return results, total_tokens
 
 
