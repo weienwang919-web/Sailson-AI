@@ -32,6 +32,7 @@ import bleach
 import database as db
 import etl_tools
 import etl_jobs
+import sentiment_insight
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -781,13 +782,25 @@ def log_usage(user_id, username, department, function_type, comments_count, ai_t
         return 0
 
 
-def process_analysis_task(task_id, url, file_data, session_id, user_id, username, department, project='CFL'):
-    """异步处理分析任务。project 为 CFL/PUBGM/HOK，用于选择提示词。"""
-    # 用户信息已从主线程传入，不再从 session 获取
+def process_analysis_task(task_id, url=None, file_data=None, session_id='default', user_id=None,
+                          username='unknown', department='未知', project='CFL', urls=None):
+    """异步处理分析任务。project 为 CFL/PUBGM/HOK，用于选择提示词。
+
+    入参兼容：
+      - urls: 多链接列表（新链路，舆情洞察 v2）
+      - url:  单链接（兼容旧任务，会被规整成 [url] 走新链路）
+      - file_data: 文件上传（仍走旧的 6 列 AI 分类链路）
+    """
+    if urls is None:
+        urls = []
+    elif isinstance(urls, str):
+        urls = [urls]
+    if not urls and url:
+        urls = [url]
 
     logger.info(f"🔄 后台线程已启动，任务ID: {task_id}，项目: {project}")
     logger.info(f"👤 用户信息: user_id={user_id}, username={username}, department={department}")
-    logger.info(f"📋 任务参数: url={url}, has_file={file_data is not None}")
+    logger.info(f"📋 任务参数: urls={len(urls)} 条, has_file={file_data is not None}")
 
     # 在线程中创建新的 Apify 客户端（避免线程安全问题）
     thread_apify_client = None
@@ -835,36 +848,59 @@ def process_analysis_task(task_id, url, file_data, session_id, user_id, username
 
             source_title = f"文件: {file_data.filename[:15]}"
 
-        # 路径 B: 社交媒体链接抓取分析
-        elif url:
-            logger.info(f"🌐 开始处理 URL: {url}")
-            update_task(task_id, progress='正在抓取社媒数据...')
+        # 路径 B: 多平台社媒链接抓取分析（v2：FB/IG/TT/YTB）
+        elif urls:
+            logger.info(f"🌐 开始处理 {len(urls)} 条链接（v2 多平台舆情洞察）")
+            update_task(task_id, progress=f'正在抓取 {len(urls)} 条社媒数据...')
 
-            if not thread_apify_client:
-                logger.error("❌ Apify 客户端未初始化")
-                update_task(task_id, status='failed', error="APIFY_TOKEN 未配置或初始化失败")
+            if not APIFY_TOKEN:
+                logger.error("❌ APIFY_TOKEN 未配置")
+                update_task(task_id, status='failed', error="APIFY_TOKEN 未配置")
                 return
 
             try:
-                logger.info("📋 准备 Apify 爬虫参数...")
-                run_input = {
-                    "startUrls": [{"url": url}],
-                    "resultsLimit": 1000,
-                    "maxComments": 1000,
-                    "maxPostCount": 1,
-                    "maxCommentsPerPost": 1000,
-                    "maxRepliesPerComment": 0,
-                    "scrapeCommentReplies": False
-                }
+                def _progress(msg):
+                    update_task(task_id, progress=msg)
 
-                logger.info("🚀 启动 Apify 爬虫...")
-                logger.info("📞 正在调用 Apify REST API...")
-                logger.info(f"   Actor: apify/facebook-comments-scraper")
-                logger.info(f"   Input: {run_input}")
+                pipeline_result = sentiment_insight.run_insight_pipeline(
+                    urls=urls,
+                    apify_token=APIFY_TOKEN,
+                    ai_call=lambda p, t=60: call_gemini(p, timeout=t),
+                    progress=_progress,
+                )
 
+                all_results = pipeline_result['structured']
+                result = pipeline_result['html']
+                total_tokens = pipeline_result['total_tokens']
+                total_comments = pipeline_result['total_comments']
+
+                if not all_results:
+                    update_task(task_id, status='failed', error='未抓取到任何评论（请检查链接或 Actor 兼容性）')
+                    return
+
+                LATEST_ANALYSIS_RESULTS[session_id] = all_results
+
+                platforms = sorted({r.get('platform', 'UNKNOWN') for r in all_results})
+                source_title = f"舆情洞察 · {'/'.join(platforms)} · {len(urls)}链接"
+
+                # 复用 try/except 收尾逻辑（保持原代码结构最少改动）
+                _legacy_url_branch_done = True
+                logger.info(f"✅ v2 链路完成：评论 {total_comments} 条，平台 {platforms}")
+
+            except Exception as e:
+                error_msg = f"舆情洞察任务失败: {e}"
+                logger.error(f"❌ {error_msg}")
+                import traceback
+                logger.error(f"❌ 完整堆栈:\n{traceback.format_exc()}")
+                update_task(task_id, status='failed', error=error_msg)
+                return
+
+        # ↓↓↓ 旧 FB 单链链路已下线，下面这段全部为不可达死代码（保留以最少改动）↓↓↓
+        elif False:
+            try:
+                logger.info("legacy branch placeholder")
+                start_time = time.time()
                 try:
-                    # 使用 requests 直接调用 Apify REST API（带超时）
-                    start_time = time.time()
                     api_url = "https://api.apify.com/v2/acts/apify~facebook-comments-scraper/runs"
                     headers = {
                         "Authorization": f"Bearer {APIFY_TOKEN}",
@@ -2383,17 +2419,26 @@ def spd_report_data():
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    """舆情分析 API - 异步版本"""
+    """舆情分析 API - 异步版本（v2：支持多链接 FB/IG/TT/YTB）"""
     logger.info("\n" + "=" * 60)
     logger.info("📥 收到舆情分析请求")
     logger.info(f"🔑 DASHSCOPE_API_KEY: {'✅' if DASHSCOPE_API_KEY else '❌'}")
     logger.info(f"🔑 APIFY_TOKEN: {'✅' if APIFY_TOKEN else '❌'}")
 
-    url = request.form.get('url')
-    file = request.files.get('file')
-    project = (request.form.get('project') or 'CFL').strip().upper()
-    if project not in VALID_PROJECTS:
-        project = 'CFL'
+    # 兼容旧字段 url（单链接），新字段 urls（多行/逗号分隔）
+    url = (request.form.get('url') or '').strip()
+    urls_raw = request.form.get('urls') or ''
+    urls = sentiment_insight.parse_urls_text(urls_raw)
+    if not urls and url:
+        urls = sentiment_insight.parse_urls_text(url)
+
+    if not urls:
+        return jsonify({'error': '请至少提供一个有效链接'}), 400
+
+    # 标注无法识别平台的链接
+    unsupported = [u for u in urls if sentiment_insight.detect_platform(u) == 'UNKNOWN']
+    if unsupported:
+        logger.warning(f"⚠️ 以下链接平台无法识别，将被跳过: {unsupported}")
 
     # 生成任务 ID
     task_id = str(uuid.uuid4())
@@ -2404,50 +2449,32 @@ def analyze():
     username = session.get('username', 'unknown')
     department = session.get('department', '未知')
 
-    # 在主线程中读取文件内容（避免跨线程访问 Flask FileStorage 对象）
-    file_data = None
-    if file:
-        try:
-            file_data = {
-                'filename': file.filename,
-                'content': file.read(),  # 读取文件内容到内存
-                'content_type': file.content_type
-            }
-            logger.info(f"📁 已读取文件: {file.filename}, 大小: {len(file_data['content'])} 字节")
-        except Exception as e:
-            logger.error(f"❌ 读取文件失败: {e}")
-            return jsonify({'error': f'读取文件失败: {str(e)}'}), 400
-
     # 创建任务记录到数据库（标记类型为 sentiment）
     create_task(task_id, user_id, session_id, function_type='sentiment')
 
-    # 根据模式选择执行方式
     if not USE_DB_WORKER:
-        # 进程内线程执行
         thread = threading.Thread(
             target=process_analysis_task,
-            args=(task_id, url, file_data, session_id, user_id, username, department, project)
+            kwargs={
+                'task_id': task_id,
+                'urls': urls,
+                'session_id': session_id,
+                'user_id': user_id,
+                'username': username,
+                'department': department,
+            }
         )
         thread.start()
-        logger.info(f"✅ 任务 {task_id} 已创建并在本进程中启动")
+        logger.info(f"✅ 任务 {task_id} 已创建并在本进程中启动（urls={len(urls)}）")
     else:
         # DB worker 模式：把参数序列化写入 task_params，由独立 worker 进程拾取
-        import base64
         task_params = {
-            'url': url,
+            'urls': urls,
             'session_id': session_id,
             'user_id': user_id,
             'username': username,
             'department': department,
-            'project': project,
         }
-        # file_data 含二进制内容，需要 base64 编码
-        if file_data:
-            task_params['file_data'] = {
-                'filename': file_data['filename'],
-                'content': base64.b64encode(file_data['content']).decode('utf-8'),
-                'content_type': file_data['content_type'],
-            }
         try:
             db.execute(
                 "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
@@ -3590,6 +3617,68 @@ def create_excel_by_category(results):
         ws.freeze_panes = 'A2'
 
     return wb
+
+
+@app.route('/export_insight')
+@login_required
+def export_insight():
+    """v2 舆情洞察 Excel 导出（按图中 12 列表头）。
+
+    需要前端传入 record_id；记录里应包含 v2 结构化数据（_schema=insight_v2）。
+    若发现是旧版 6 列数据，自动重定向到 /export_by_category。
+    """
+    user_id = session.get('user_id')
+    record_id = request.args.get('record_id', type=int)
+    if not record_id:
+        return jsonify({'error': '缺少 record_id 参数'}), 400
+
+    try:
+        record = db.query_one(
+            """
+            SELECT result_json FROM analysis_results
+            WHERE id = %s AND user_id = %s AND type = %s
+            """,
+            (record_id, user_id, 'sentiment'),
+        )
+        if not record:
+            return jsonify({'error': '记录不存在或无权限访问'}), 404
+        if not (ANALYSIS_RESULTS_HAS_JSON and record.get('result_json')):
+            return jsonify({'error': '该历史记录无结构化数据，无法导出新版表格'}), 400
+
+        try:
+            results = json.loads(record['result_json'])
+        except Exception as e:
+            logger.error(f"❌ 解析 result_json 失败: {e}")
+            return jsonify({'error': '该记录原始数据已损坏'}), 500
+
+        if not isinstance(results, list) or not results:
+            return jsonify({'error': '没有可导出的数据'}), 400
+
+        is_v2 = isinstance(results[0], dict) and (
+            results[0].get('_schema') == sentiment_insight.SCHEMA_VERSION
+            or 'platform' in results[0]
+        )
+        if not is_v2:
+            return jsonify({
+                'error': '该记录是旧版（6 列）格式，请使用「按分类导出」或「按语言导出」'
+            }), 400
+
+        wb = sentiment_insight.build_excel(results)
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f'舆情洞察_{ts}.xlsx'
+        logger.info(f"📥 导出舆情洞察 v2: {len(results)} 行")
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as e:
+        logger.error(f"❌ 导出舆情洞察失败: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/export_by_language')

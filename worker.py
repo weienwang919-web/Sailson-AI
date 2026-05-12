@@ -163,6 +163,7 @@ def _handle_sentiment(task_id, params):
     process_analysis_task(
         task_id=task_id,
         url=params.get('url'),
+        urls=params.get('urls'),
         file_data=file_data,
         session_id=params.get('session_id', 'worker'),
         user_id=params.get('user_id'),
