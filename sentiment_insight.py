@@ -62,7 +62,7 @@ DEFAULT_ACTORS = {
 ACTOR_TIMEOUT_SECS = int(os.environ.get("INSIGHT_ACTOR_TIMEOUT_SECS", "420"))
 ACTOR_POLL_INTERVAL = int(os.environ.get("INSIGHT_ACTOR_POLL_INTERVAL", "5"))
 COMMENTS_PER_POST_LIMIT = int(os.environ.get("INSIGHT_COMMENTS_PER_POST", "500"))
-AI_BATCH_SIZE = int(os.environ.get("INSIGHT_AI_BATCH_SIZE", "30"))
+AI_BATCH_SIZE = int(os.environ.get("INSIGHT_AI_BATCH_SIZE", "15"))
 MAX_AI_COMMENTS = int(os.environ.get("INSIGHT_MAX_AI_COMMENTS", "1500"))
 
 BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
@@ -475,6 +475,33 @@ def _safe_json_array(text: str) -> list:
         return []
 
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _post_check_translation(translation: str, original: str) -> str:
+    """检测 AI 摆烂：当原文非中文，但译文与原文几乎一致（AI 没翻就照抄），
+    返回空字符串以暴露问题，避免误导。
+    """
+    tr = (translation or "").strip()
+    orig = (original or "").strip()
+    if not tr:
+        return ""
+    # 原文已有中文 → 直接返回
+    if _CJK_RE.search(orig):
+        return tr
+    # 译文没有任何中文字符 → 视为没翻
+    if not _CJK_RE.search(tr):
+        # 但如果原文+译文完全一致（比如 "Pubgggg" 这种灌水），允许
+        if tr == orig:
+            return tr
+        # 否则记一次警告并清空，让导出表里那一格留空，比错位/原样照抄要好
+        logger.warning(
+            f"⚠️ 译文疑似未翻译（无中文字符）：原文={orig[:60]!r} 译文={tr[:60]!r}"
+        )
+        return ""
+    return tr
+
+
 def _normalize_ai_label(value: str, allowed: set[str], fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
@@ -495,12 +522,15 @@ def _normalize_ai_label(value: str, allowed: set[str], fallback: str) -> str:
     return fallback
 
 
-def _build_ai_prompt(batch_lines: str) -> str:
+def _build_ai_prompt(batch_lines: str, expected_count: int) -> str:
     return (
         "你是中国头部手游社区的资深玩家与舆情分析师，同时负责把海外社媒评论翻成"
-        "「中国玩家圈口语化中文」。请逐条处理下面的评论，并输出 JSON 数组（不要 markdown），\n"
-        "每条评论一个对象，字段：\n"
-        "  - idx: 编号（与输入一致，整数）\n"
+        "「中国玩家圈口语化中文」。请逐条处理下面的评论，并输出 JSON 数组（不要 markdown）。\n\n"
+        f"⚠ 极重要：输入正好 {expected_count} 条评论（编号 0 ~ {expected_count - 1}），\n"
+        f"   你必须严格输出 {expected_count} 个对象，按输入顺序排列，一条不能漏、一条不能加，\n"
+        "   idx 必须等于输入编号，且 translation_zh 必须是中文（非中文原文绝对不要原样照抄到译文）。\n\n"
+        "每个对象字段：\n"
+        "  - idx: 整数，等于输入编号\n"
         "  - translation_zh: 中文译文，按下面《翻译规范》执行；若原文已是中文，直接照搬，不要再润色\n"
         "  - sentiment: 严格三选一：正向 / 中立 / 负面\n"
         "  - category: 严格七选一：产品体验 / 功能建议 / 账号&充值 / 外挂作弊 / 活动运营 / 客服投诉 / 其他\n\n"
@@ -577,11 +607,12 @@ def _run_ai_for_comments(
     ai_indexes = [i for i, p in enumerate(preprocessed) if p[2]]
     for start in range(0, len(ai_indexes), AI_BATCH_SIZE):
         idx_chunk = ai_indexes[start : start + AI_BATCH_SIZE]
+        expected = len(idx_chunk)
         lines = "\n".join(
             f"{k}. {preprocessed[i][0].replace(chr(10), ' ')[:1000]}"
             for k, i in enumerate(idx_chunk)
         )
-        prompt = _build_ai_prompt(lines)
+        prompt = _build_ai_prompt(lines, expected)
         try:
             text, tokens = ai_call(prompt, 90)
             total_tokens += int(tokens or 0)
@@ -589,22 +620,35 @@ def _run_ai_for_comments(
             logger.error(f"❌ AI 调用失败: {e}")
             text = ""
         parsed = _safe_json_array(text)
-        idx_map = {}
-        for obj in parsed:
-            if not isinstance(obj, dict):
-                continue
-            try:
-                k = int(obj.get("idx"))
-            except Exception:
-                continue
-            idx_map[k] = obj
+        parsed_objs = [o for o in parsed if isinstance(o, dict)]
+        if len(parsed_objs) != expected:
+            logger.warning(
+                f"⚠️ AI 返回数量不匹配：期望 {expected}，实际 {len(parsed_objs)}；将按位置对齐+空缺留白"
+            )
+
         for k, i in enumerate(idx_chunk):
-            obj = idx_map.get(k) or {}
+            # 主对齐方式：位置；若 AI 返回 idx 且与 k 一致 → 用之；否则用同位置项
+            obj = {}
+            if k < len(parsed_objs):
+                cand = parsed_objs[k]
+                try:
+                    cand_idx = int(cand.get("idx"))
+                except Exception:
+                    cand_idx = None
+                # idx 不一致时，仍以位置对齐为准（避免 AI 错号导致整批后段错位）
+                obj = cand
+                if cand_idx is not None and cand_idx != k:
+                    logger.debug(
+                        f"AI 返回 idx={cand_idx} 与位置 {k} 不一致，按位置对齐"
+                    )
+
             tr = obj.get("translation_zh") or obj.get("translation") or ""
+            original = preprocessed[i][0]
+            tr_clean = _post_check_translation(tr, original)
             sent = _normalize_ai_label(obj.get("sentiment"), SENTIMENT_LABELS, "中立")
             cat = _normalize_ai_label(obj.get("category"), CATEGORY_LABELS, "其他")
             results[i] = {
-                "translation_zh": str(tr).strip(),
+                "translation_zh": tr_clean,
                 "sentiment": sent,
                 "category": cat,
             }
