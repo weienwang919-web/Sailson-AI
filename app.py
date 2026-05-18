@@ -33,6 +33,7 @@ import database as db
 import etl_tools
 import etl_jobs
 import sentiment_insight
+import competitor_radar
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -2558,18 +2559,41 @@ def monitor_competitors():
 
     try:
         data = request.json or {}
-        target_url = data.get('competitor_name')
+        target_url = data.get('competitor_name')  # 兼容老前端
+        # 新前端：urls 数组 / urls_text 多行文本
+        urls_input = data.get('urls')
+        urls_text = data.get('urls_text') or data.get('urlsText')
+        urls: list[str] = []
+        if isinstance(urls_input, list):
+            for u in urls_input:
+                if isinstance(u, str) and u.strip():
+                    urls.append(u.strip())
+        if urls_text:
+            urls.extend(competitor_radar.parse_urls_text(urls_text))
+        if not urls and target_url:
+            urls = [target_url.strip()]
+        # 去重
+        urls = list(dict.fromkeys(urls))
+
         start_dt_str = data.get('startDate')
         end_dt_str = data.get('endDate')
         project = (data.get('project') or 'CFL').strip().upper()
-        generate_report = bool(data.get('generateReport', True))
+        generate_report = bool(data.get('generateReport', False))
         enable_video_vision = bool(data.get('enableVideoVision', False))
         if project not in VALID_PROJECTS:
             project = 'CFL'
 
-        logger.info(f"🎯 目标 URL: {target_url}")
+        logger.info(f"🎯 目标 URLs: {urls}")
         logger.info(f"📅 时间段: {start_dt_str} ~ {end_dt_str}，项目: {project}")
         logger.info(f"📊 生成分析报告: {generate_report}，启用看视频分析: {enable_video_vision}")
+
+        if not urls:
+            return jsonify({'error': '请至少提供一个 TikTok / Instagram 主页链接'}), 400
+
+        # 平台校验
+        unsupported = [u for u in urls if competitor_radar.detect_platform(u) == 'UNKNOWN']
+        if unsupported:
+            return jsonify({'error': f'仅支持 TikTok / Instagram 主页，以下链接无法识别：{unsupported[0]}'}), 400
 
         if not APIFY_TOKEN:
             error_msg = "❌ 错误：APIFY_TOKEN 未配置，无法使用爬虫功能"
@@ -2593,14 +2617,28 @@ def monitor_competitors():
             # 进程内线程执行
             thread = threading.Thread(
                 target=process_competitor_task,
-                args=(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project, generate_report, enable_video_vision)
+                kwargs=dict(
+                    task_id=task_id,
+                    target_url=urls[0] if urls else None,  # 兼容旧签名
+                    start_dt_str=start_dt_str,
+                    end_dt_str=end_dt_str,
+                    user_id=user_id,
+                    username=username,
+                    department=department,
+                    session_id=session_id,
+                    project=project,
+                    generate_report=generate_report,
+                    enable_video_vision=enable_video_vision,
+                    urls=urls,
+                ),
             )
             thread.start()
             logger.info(f"✅ 竞品监控任务 {task_id} 已创建并在本进程中启动")
         else:
             # DB worker 模式
             task_params = {
-                'target_url': target_url,
+                'target_url': urls[0] if urls else None,
+                'urls': urls,
                 'start_dt_str': start_dt_str,
                 'end_dt_str': end_dt_str,
                 'user_id': user_id,
@@ -2635,13 +2673,184 @@ def monitor_competitors():
         return jsonify({'error': error_msg}), 500
 
 
-def process_competitor_task(task_id, target_url, start_dt_str, end_dt_str, user_id, username, department, session_id, project='CFL', generate_report=True, enable_video_vision=False):
+def _run_competitor_radar_task(task_id, urls, start_dt_str, end_dt_str,
+                               user_id, username, department, session_id,
+                               project='CFL', enable_video_vision=False):
+    """新版竞品雷达流程：多主页 TT/IG 视频采集 + 可选视觉分析 + 12 列表格输出。"""
+    logger.info(f"🔄 [Radar] 开始处理任务 {task_id} | urls={urls} | project={project}")
+    update_task(task_id, status='processing', progress='正在初始化雷达任务...')
+
+    if not APIFY_TOKEN:
+        update_task(task_id, status='failed', error='APIFY_TOKEN 未配置，无法启动爬虫')
+        return
+
+    start_date = None
+    end_date = None
+    try:
+        if start_dt_str:
+            start_date = datetime.datetime.strptime(start_dt_str, '%Y-%m-%d').date()
+        if end_dt_str:
+            end_date = datetime.datetime.strptime(end_dt_str, '%Y-%m-%d').date()
+    except Exception as e:
+        update_task(task_id, status='failed', error=f'日期解析失败: {e}')
+        return
+
+    def _progress(msg):
+        try:
+            update_task(task_id, progress=msg)
+        except Exception:
+            pass
+
+    # 视觉分析函数（按需启用）
+    vision_call = None
+    if enable_video_vision:
+        try:
+            import video_vision
+
+            # 收集所有视频，统一批量分析，避免在 pipeline 内逐个 API 调用
+            def _build_lazy_vision_call(_proj):
+                _result_cache = {}
+                _resolved = {"done": False}
+
+                def _do_resolve(all_videos):
+                    if _resolved["done"]:
+                        return
+                    _resolved["done"] = True
+                    try:
+                        mapping = video_vision.analyze_videos_for_radar(all_videos, project=_proj)
+                        _result_cache.update(mapping or {})
+                    except Exception as e:
+                        logger.error(f"❌ 批量视觉分析失败: {e}")
+
+                return _do_resolve, _result_cache
+
+            # 由于 pipeline 内部是逐视频回调，这里改为：先跑一次抓取，再在调用端做视觉分析
+            vision_call = None
+        except Exception as e:
+            logger.warning(f"⚠️ 加载 video_vision 失败，跳过视觉分析: {e}")
+            vision_call = None
+
+    # 第一步：先做不带视觉分析的抓取
+    try:
+        structured = competitor_radar.run_radar_pipeline(
+            urls=urls,
+            apify_token=APIFY_TOKEN,
+            start_date=start_date,
+            end_date=end_date,
+            enable_vision=False,
+            vision_call=None,
+            progress=_progress,
+        )
+    except Exception as e:
+        logger.error(f"❌ 雷达抓取失败: {e}")
+        update_task(task_id, status='failed', error=f'抓取失败: {e}')
+        return
+
+    # 第二步：可选视觉分析（批量 + 写回）
+    if enable_video_vision:
+        try:
+            import video_vision
+            all_videos = []
+            for prof in structured.get('profiles', []):
+                for v in prof.get('videos', []) or []:
+                    all_videos.append(v)
+            if all_videos:
+                _progress(f'正在做视频内容分析（{len(all_videos)} 条）...')
+                logger.info(f"🎬 [Radar] 开始批量视觉分析，共 {len(all_videos)} 条视频")
+                mapping = video_vision.analyze_videos_for_radar(all_videos, project=project)
+                vis_done = 0
+                for prof in structured.get('profiles', []):
+                    for v in prof.get('videos', []) or []:
+                        info = mapping.get(v.get('video_url') or '') or {}
+                        if info.get('marketing_type'):
+                            v['marketing_type'] = info['marketing_type']
+                        if info.get('vision_summary'):
+                            v['vision_summary'] = info['vision_summary']
+                        if info.get('marketing_type') or info.get('vision_summary'):
+                            vis_done += 1
+                structured['total_vision_done'] = vis_done
+                logger.info(f"✅ [Radar] 视觉分析完成 {vis_done}/{len(all_videos)}")
+        except Exception as e:
+            logger.error(f"❌ 视觉分析整体失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    # 兜底字段
+    for prof in structured.get('profiles', []):
+        for v in prof.get('videos', []) or []:
+            v.setdefault('marketing_type', '')
+            v.setdefault('vision_summary', '')
+
+    # 构造 HTML
+    summary_html = competitor_radar.build_html_table(structured)
+    period_text = ''
+    if start_dt_str and end_dt_str:
+        period_text = f"<div style='color:#999;font-size:0.9rem;margin-bottom:8px;'>时间范围：{html.escape(start_dt_str)} ~ {html.escape(end_dt_str)}</div>"
+    full_html = (
+        f"<div style='font-family:sans-serif;'>"
+        f"<h3 style='color:#D32F2F;border-bottom:2px solid #eee;padding-bottom:8px;'>📡 竞品雷达 · 数据明细</h3>"
+        f"{period_text}{summary_html}</div>"
+    )
+
+    # 保存历史记录（含结构化数据，供导出使用）
+    title_url = urls[0] if urls else ''
+    title = f"竞品雷达:{title_url[20:50]}" if title_url else '竞品雷达'
+    structured_payload = {
+        'version': competitor_radar.SCHEMA_VERSION,
+        'profiles': structured.get('profiles', []),
+        'total_videos': structured.get('total_videos', 0),
+        'total_vision_done': structured.get('total_vision_done', 0),
+        'urls': urls,
+        'start_date': start_dt_str,
+        'end_date': end_dt_str,
+        'project': project,
+        'enable_video_vision': enable_video_vision,
+    }
+    record_id = save_history(user_id, title, full_html, 'competitor', structured=structured_payload)
+
+    # 记录使用成本（按视频条数计）
+    if user_id:
+        try:
+            log_usage(user_id, username, department, 'competitor',
+                      structured.get('total_videos', 0), 0)
+        except Exception:
+            pass
+
+    update_task(task_id, status='completed', result=full_html, progress='分析完成', record_id=record_id)
+    logger.info(f"✅ [Radar] 任务 {task_id} 完成")
+
+
+def process_competitor_task(task_id, target_url=None, start_dt_str=None, end_dt_str=None,
+                            user_id=None, username='unknown', department='未知', session_id='default',
+                            project='CFL', generate_report=False, enable_video_vision=False,
+                            urls=None):
     """后台处理竞品监控任务。
 
-    project: CFL/PUBGM/HOK，用于选择提示词。
-    generate_report: 是否生成 AI 解读报告；关闭时仅输出数据看板（总览 + 明细）。
-    enable_video_vision: 预留开关，后续用于启用「看视频」分析，仅在 generate_report 为 True 时生效。
+    新版（urls 参数）走 competitor_radar 流程（TT + IG）；旧版（target_url）保留 TikTok 单链路径。
     """
+    # ===== 新路径：竞品雷达 v2（TT + IG 多主页） =====
+    if urls:
+        try:
+            _run_competitor_radar_task(
+                task_id=task_id,
+                urls=urls,
+                start_dt_str=start_dt_str,
+                end_dt_str=end_dt_str,
+                user_id=user_id,
+                username=username,
+                department=department,
+                session_id=session_id,
+                project=project,
+                enable_video_vision=enable_video_vision,
+            )
+        except Exception as e:
+            logger.error(f"❌ 竞品雷达任务失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            update_task(task_id, status='failed', error=str(e))
+        return
+
+    # ===== 旧路径（保留，向后兼容） =====
     try:
         logger.info(f"🔄 开始处理竞品监控任务 {task_id}")
         update_task(task_id, status='processing', progress='正在初始化...')
@@ -3424,8 +3633,29 @@ def competitor_dashboard_data(record_id):
 
     try:
         data = json.loads(record['result_json'])
-        # 兼容新旧格式
-        if isinstance(data, dict):
+        # 兼容三种格式：雷达 v2 / 旧版 dict / 旧版 list
+        if isinstance(data, dict) and data.get('version') == competitor_radar.SCHEMA_VERSION:
+            cleaned = []
+            video_analysis = []
+            for prof in data.get('profiles', []) or []:
+                for v in prof.get('videos', []) or []:
+                    cleaned.append({
+                        'date': v.get('post_date') or (v.get('post_time') or '')[:10],
+                        'views': v.get('views', 0),
+                        'likes': v.get('likes', 0),
+                        'comments': v.get('comments', 0),
+                        'collects': v.get('collects', 0),
+                        'shares': v.get('shares', 0),
+                        'desc': v.get('caption', ''),
+                        'url': v.get('video_url', ''),
+                    })
+                    if v.get('marketing_type') or v.get('vision_summary'):
+                        video_analysis.append({
+                            'emotion': v.get('marketing_type', '') or '其他',
+                            'summary': v.get('vision_summary', ''),
+                            'url': v.get('video_url', ''),
+                        })
+        elif isinstance(data, dict):
             cleaned = data.get("cleaned", [])
             video_analysis = data.get("video_analysis", [])
         else:
@@ -3466,6 +3696,42 @@ def competitor_dashboard_data(record_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/export_radar_excel/<int:record_id>')
+@login_required
+def export_radar_excel(record_id):
+    """导出竞品雷达 Excel：12 列表头，按主页分 sheet。"""
+    user_id = session.get('user_id')
+    record = db.query_one(
+        "SELECT id, title, result_json, type FROM analysis_results WHERE id = %s AND user_id = %s",
+        (record_id, user_id)
+    )
+    if not record or record['type'] != 'competitor':
+        return jsonify({'error': '记录不存在或无权导出'}), 404
+    result_json = record.get('result_json')
+    if not result_json:
+        return jsonify({'error': '该记录不含结构化数据，无法导出 Excel'}), 400
+    try:
+        structured = json.loads(result_json)
+        if not isinstance(structured, dict) or structured.get('version') != competitor_radar.SCHEMA_VERSION:
+            return jsonify({'error': '该记录为旧版数据，请使用「旧版导出」按钮'}), 400
+        wb = competitor_radar.build_excel(structured)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"竞品雷达_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return send_file(
+            buf,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as e:
+        logger.error(f"❌ 导出雷达 Excel 失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/export_competitor_excel/<int:record_id>')
 @login_required
 def export_competitor_excel(record_id):
@@ -3484,6 +3750,9 @@ def export_competitor_excel(record_id):
 
     try:
         video_results = json.loads(result_json)
+        # 新版雷达：转发到雷达导出
+        if isinstance(video_results, dict) and video_results.get('version') == competitor_radar.SCHEMA_VERSION:
+            return export_radar_excel(record_id)
         # 兼容新格式（dict 含 cleaned + video_analysis）和旧格式（直接是 list）
         if isinstance(video_results, dict):
             video_results = video_results.get("video_analysis", [])

@@ -178,6 +178,7 @@ def _handle_competitor(task_id, params):
     process_competitor_task(
         task_id=task_id,
         target_url=params.get('target_url'),
+        urls=params.get('urls'),
         start_dt_str=params.get('start_dt_str'),
         end_dt_str=params.get('end_dt_str'),
         user_id=params.get('user_id'),
@@ -185,7 +186,7 @@ def _handle_competitor(task_id, params):
         department=params.get('department', '未知'),
         session_id=params.get('session_id', 'worker'),
         project=params.get('project', 'CFL'),
-        generate_report=params.get('generate_report', True),
+        generate_report=params.get('generate_report', False),
         enable_video_vision=params.get('enable_video_vision', False),
     )
 

@@ -216,6 +216,152 @@ def _classify_video_with_vision(frames_b64: List[bytes], desc: str, project: str
         return {}
 
 
+_RADAR_MARKETING_TYPES = (
+    "游戏实录",
+    "赛事预热",
+    "版本更新预告",
+    "KOL合作/开箱",
+    "福利/抽奖活动",
+    "品牌形象宣传",
+    "UGC互动征集",
+    "其他",
+)
+
+
+def _classify_video_for_radar(
+    frames_b64: List[bytes], caption: str, platform: str, project: str
+) -> Dict:
+    """雷达专用：输出 营销类型 + 20-30 字内容概述。"""
+    if not _vision_client or not frames_b64:
+        return {}
+
+    import json as _json
+
+    project_name = project or "CFL"
+    platform_label = {"TT": "TikTok", "IG": "Instagram"}.get(platform, platform or "短视频")
+    types_text = "、".join(_RADAR_MARKETING_TYPES)
+    user_text = (
+        f"你是项目「{project_name}」的竞品情报分析师，正在审看一条 {platform_label} 视频。\n"
+        f"下面是该视频的若干关键帧截图。请输出：\n\n"
+        f"1. marketing_type：从以下类型中选一个最贴近的（严格使用列出的字面）：\n   {types_text}\n"
+        f"2. vision_summary：用 20-30 个中文字概括视频画面与核心信息，避免抄文案、避免泛泛而谈。\n\n"
+        f"严格输出 JSON：{{\"marketing_type\":\"...\",\"vision_summary\":\"...\"}}\n"
+        f"不要输出任何其他文字、注释或思考过程。\n\n"
+        f"原始视频文案（仅供参考，不要直接照抄）：{(caption or '')[:200]}\n"
+    )
+
+    content: List[Dict] = [{"type": "text", "text": user_text}]
+    for b64 in frames_b64[:4]:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64," + b64.decode("utf-8")},
+        })
+
+    try:
+        resp = _vision_client.chat.completions.create(
+            model="qwen3-vl-plus",
+            messages=[{"role": "user", "content": content}],
+            temperature=0.3,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        import re as _re
+        raw = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        data = _json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        mtype = (data.get("marketing_type") or "").strip()
+        if mtype not in _RADAR_MARKETING_TYPES:
+            # 容错：模糊匹配
+            for cand in _RADAR_MARKETING_TYPES:
+                if cand and cand in mtype:
+                    mtype = cand
+                    break
+            else:
+                mtype = "其他"
+        summary = (data.get("vision_summary") or "").strip()
+        # 截到 30 字
+        if len(summary) > 32:
+            summary = summary[:32]
+        return {"marketing_type": mtype, "vision_summary": summary}
+    except Exception as e:
+        logger.error(f"❌ 雷达视觉分析失败: {e}")
+        return {}
+
+
+def _resolve_radar_direct_urls(videos: List[Dict]) -> Dict[str, str]:
+    """根据每个视频已带的 direct_video_url；对于 TT 缺直链的，再批量调 TikTok downloader。
+
+    返回 page_url -> direct_url 映射。
+    """
+    mapping: Dict[str, str] = {}
+    tt_need_resolve: List[str] = []
+    for v in videos:
+        page_url = v.get("video_url") or ""
+        direct = (v.get("direct_video_url") or "").strip()
+        if not page_url:
+            continue
+        if direct:
+            mapping[page_url] = direct
+        elif (v.get("platform") or "").upper() == "TT":
+            tt_need_resolve.append(page_url)
+
+    if tt_need_resolve:
+        items = _run_tiktok_video_downloader(tt_need_resolve)
+        sub_map = _build_input_to_storage_map(items)
+        for k, v in sub_map.items():
+            mapping.setdefault(k, v)
+    return mapping
+
+
+def analyze_videos_for_radar(
+    videos: List[Dict], project: str = "CFL"
+) -> Dict[str, Dict]:
+    """竞品雷达入口：批量为视频做营销类型 + 内容概述分析。
+
+    videos: [{"video_url": page_url, "direct_video_url": optional, "caption": str, "platform": "TT"/"IG"}]
+    返回：{ page_url: {"marketing_type": str, "vision_summary": str} }
+    """
+    if not videos:
+        return {}
+
+    mapping = _resolve_radar_direct_urls(videos)
+    if not mapping:
+        logger.warning("⚠️ 雷达未获得任何视频直链，跳过视觉分析")
+        return {}
+
+    out: Dict[str, Dict] = {}
+    for v in videos:
+        page_url = v.get("video_url") or ""
+        direct = mapping.get(page_url)
+        if not page_url or not direct:
+            continue
+
+        tmp_video = _download_video(direct)
+        if not tmp_video:
+            continue
+        try:
+            frames_b64 = _extract_frames(tmp_video, max_frames=4)
+            classification = _classify_video_for_radar(
+                frames_b64,
+                caption=v.get("caption") or "",
+                platform=(v.get("platform") or "").upper(),
+                project=project,
+            )
+            if classification:
+                out[page_url] = classification
+        finally:
+            try:
+                if os.path.exists(tmp_video):
+                    os.remove(tmp_video)
+            except Exception:
+                pass
+
+    logger.info(f"✅ 雷达视觉分析完成 {len(out)}/{len(videos)} 条")
+    return out
+
+
 def analyze_all_videos_for_export(
     cleaned_videos: List[Dict], project: str = "CFL"
 ) -> List[Dict]:

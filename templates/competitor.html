@@ -76,33 +76,35 @@
             <div class="col-lg-4">
                 <div class="glass-card" style="display:flex; flex-direction:column;">
                     <div class="config-section-title">基本配置</div>
-                    <label class="small text-muted mb-1" for="projectSelect">项目</label>
+                    <label class="small text-muted mb-1" for="projectSelect">项目（用于视觉分析口径）</label>
                     <select id="projectSelect" class="form-control form-select">
                         <option value="CFL" selected>CFL</option>
                         <option value="PUBGM">PUBGM</option>
                         <option value="HOK">HOK</option>
                     </select>
-                    <label class="small text-muted mb-1" for="urlInput">竞品 TikTok 主页</label>
-                    <input type="text" id="urlInput" class="form-control" placeholder="https://www.tiktok.com/@...">
+                    <label class="small text-muted mb-1" for="urlsInput">竞品主页链接（TT / IG，一行一个）</label>
+                    <textarea id="urlsInput" class="form-control" rows="5" placeholder="https://www.tiktok.com/@username&#10;https://www.instagram.com/username/&#10;..." style="font-family:'Inter', sans-serif; font-size:0.85rem; resize:vertical;"></textarea>
                     <div class="example-hint">
-                        <span>示例：https://www.tiktok.com/@username</span>
-                        <a href="#" onclick="fillExample(); return false;">填充</a>
+                        <span>支持 TikTok 主页 / Instagram 个人主页，可混合粘贴</span>
+                        <a href="#" onclick="fillExample(); return false;">填充示例</a>
                     </div>
-                    <label class="small text-muted mb-1">时间范围</label>
+                    <div style="display:flex; gap:8px; margin-bottom:10px;">
+                        <span style="padding:2px 8px;background:#FFEBEE;color:#D32F2F;border-radius:6px;font-size:0.75rem;font-weight:600;">TT</span>
+                        <span style="padding:2px 8px;background:#FFEBEE;color:#D32F2F;border-radius:6px;font-size:0.75rem;font-weight:600;">IG</span>
+                        <span style="margin-left:auto;color:#999;font-size:0.75rem;">IG 公开数据无转发/收藏，留空显示 0</span>
+                    </div>
+                    <label class="small text-muted mb-1">时间范围（按视频发布日过滤）</label>
                     <div class="row g-2 mb-2">
                         <div class="col-6"><input type="date" id="startDate" class="form-control mb-0"></div>
                         <div class="col-6"><input type="date" id="endDate" class="form-control mb-0"></div>
                     </div>
                     <hr class="config-divider">
-                    <div class="config-section-title">报告选项</div>
-                    <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" id="generateReport" checked>
-                        <label class="form-check-label small" for="generateReport">生成分析报告</label>
-                    </div>
+                    <div class="config-section-title">分析选项</div>
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="enableVideoVision" checked>
-                        <label class="form-check-label small" for="enableVideoVision">启用看视频分析 (全量)</label>
+                        <label class="form-check-label small" for="enableVideoVision">启用视频内容分析（营销类型 + 内容概述）</label>
                     </div>
+                    <input type="hidden" id="generateReport" value="false">
                     <div style="margin-top:auto;">
                         <button onclick="startMonitor()" id="runBtn" class="btn-submit">启动云端探测</button>
                     </div>
@@ -128,7 +130,7 @@
                     <div id="emptyState" class="empty-state" style="margin:auto;"{% if has_used_competitor %} style="display:none;"{% endif %}>
                         <div class="empty-state-icon" aria-hidden="true">📡</div>
                         <h3>开始竞品监控</h3>
-                        <p>在左侧输入竞品 TikTok 主页链接和时间范围，点击「启动云端探测」即可生成竞品分析报告。</p>
+                        <p>在左侧粘贴 TikTok / Instagram 主页链接（可多行），选择时间范围后启动探测；输出表头：达人名称 · 视频链接 · 时长 · 发布时间 · 播放/点赞/转发/收藏/评论 · 文案 · 营销类型 · 内容概述。</p>
                     </div>
                     <div id="reportOutput" style="display:none; flex:1;"></div>
                     <div id="dashboardView" style="display:none; flex:1; overflow-y:auto;">
@@ -163,7 +165,12 @@ let allHistory = [];
 let currentFilter = 'all';
 let currentRecordId = null;
 
-function fillExample() { document.getElementById('urlInput').value = 'https://www.tiktok.com/@username'; }
+function fillExample() {
+    document.getElementById('urlsInput').value = [
+        'https://www.tiktok.com/@pubgmobile',
+        'https://www.instagram.com/pubgmobile/'
+    ].join('\n');
+}
 
 function filterHistory() {
     const term = document.getElementById('searchBox').value.toLowerCase();
@@ -229,9 +236,13 @@ function showReport(htmlContent, recordId) {
         document.getElementById('exportExcelBtn').onclick = async function(e) {
             e.preventDefault();
             try {
-                const resp = await fetch('/export_competitor_excel/' + recordId);
+                // 优先尝试雷达 v2 导出（新版数据）；失败则回退旧版
+                let resp = await fetch('/export_radar_excel/' + recordId);
                 if (!resp.ok) {
-                    const err = await resp.json();
+                    resp = await fetch('/export_competitor_excel/' + recordId);
+                }
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({error: '导出失败'}));
                     alert(err.error || '导出失败');
                     return;
                 }
@@ -239,7 +250,7 @@ function showReport(htmlContent, recordId) {
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = '竞品分析.xlsx';
+                a.download = '竞品雷达.xlsx';
                 a.click();
                 URL.revokeObjectURL(url);
             } catch(err) {
@@ -268,21 +279,17 @@ window.onload = () => {
     document.getElementById('endDate').value = end.toISOString().split('T')[0];
     document.getElementById('startDate').value = start.toISOString().split('T')[0];
     loadHistory();
-    const gen = document.getElementById('generateReport');
-    const vis = document.getElementById('enableVideoVision');
-    vis.disabled = !gen.checked;
-    gen.addEventListener('change', () => {
-        if (!gen.checked) { vis.checked = false; vis.disabled = true; }
-        else { vis.disabled = false; }
-    });
 };
 
 async function startMonitor() {
-    const url = document.getElementById('urlInput').value;
+    const urlsText = document.getElementById('urlsInput').value || '';
+    const urls = urlsText.split(/[\s,;\n]+/).map(s => s.trim()).filter(s => s.startsWith('http'));
     const startD = document.getElementById('startDate').value;
     const endD = document.getElementById('endDate').value;
     const btn = document.getElementById('runBtn');
-    if (!url) return alert("请输入主页链接");
+    if (urls.length === 0) return alert('请至少粘贴一个 TikTok 或 Instagram 主页链接');
+    const invalid = urls.filter(u => !/tiktok\.com|instagram\.com/.test(u));
+    if (invalid.length) return alert('仅支持 TT / IG 主页链接，无法识别：' + invalid[0]);
     document.getElementById('reportOutput').style.display = 'none';
     document.getElementById('reportHeader').style.display = 'none';
     document.getElementById('emptyState').style.display = 'none';
@@ -293,11 +300,11 @@ async function startMonitor() {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                competitor_name: url,
+                urls: urls,
                 startDate: startD,
                 endDate: endD,
                 project: document.getElementById('projectSelect').value,
-                generateReport: document.getElementById('generateReport').checked,
+                generateReport: false,
                 enableVideoVision: document.getElementById('enableVideoVision').checked
             })
         });
