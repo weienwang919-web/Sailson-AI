@@ -2770,9 +2770,19 @@ def _run_competitor_radar_task(task_id, urls, start_dt_str, end_dt_str,
                 for v in prof.get('videos', []) or []:
                     all_videos.append(v)
             if all_videos:
-                _progress(f'正在做视频内容分析（{len(all_videos)} 条）...')
-                logger.info(f"🎬 [Radar] 开始批量视觉分析，共 {len(all_videos)} 条视频")
-                mapping = video_vision.analyze_videos_for_radar(all_videos, project=project)
+                total_v = len(all_videos)
+                _progress(f'正在做视频内容分析（0/{total_v}）...')
+                logger.info(f"🎬 [Radar] 开始批量视觉分析，共 {total_v} 条视频")
+
+                def _vision_progress(done, total):
+                    try:
+                        _progress(f'正在做视频内容分析（{done}/{total}）...')
+                    except Exception:
+                        pass
+
+                mapping = video_vision.analyze_videos_for_radar(
+                    all_videos, project=project, progress=_vision_progress,
+                )
                 vis_done = 0
                 for prof in structured.get('profiles', []):
                     for v in prof.get('videos', []) or []:

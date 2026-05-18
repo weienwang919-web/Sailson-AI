@@ -119,7 +119,7 @@
                     <div id="loading" class="text-center py-5" style="display:none; margin:auto;" role="status" aria-live="polite">
                         <div class="spinner-border text-danger" style="width: 2.5rem; height: 2.5rem;"></div>
                         <h6 class="mt-3 fw-bold" style="color:#555;">正在云端同步数据...</h6>
-                        <p class="text-muted small">正在通过 Apify 抓取该时间段内的视频指标</p>
+                        <p class="text-muted small" id="loadingProgress">正在通过 Apify 抓取该时间段内的视频指标</p>
                     </div>
                     <div id="emptyState" class="empty-state" style="margin:auto;"{% if has_used_competitor %} style="display:none;"{% endif %}>
                         <div class="empty-state-icon" aria-hidden="true">📡</div>
@@ -312,7 +312,7 @@ async function startMonitor() {
     }
 }
 
-const POLL_MAX = 120;
+const POLL_MAX = 360;    // 30 min（5s × 360）
 const POLL_INTERVAL = 5000;
 
 async function pollCompetitorTask(taskId, attempt) {
@@ -321,6 +321,10 @@ async function pollCompetitorTask(taskId, attempt) {
     try {
         const r = await fetch('/task_status/' + taskId);
         const d = await r.json();
+        if (d.progress) {
+            const p = document.getElementById('loadingProgress');
+            if (p) p.textContent = d.progress;
+        }
         if (d.status === 'completed') {
             btn.disabled = false;
             const list = await loadHistory();
@@ -333,7 +337,7 @@ async function pollCompetitorTask(taskId, attempt) {
         } else if (attempt >= POLL_MAX) {
             document.getElementById('loading').style.display = 'none';
             btn.disabled = false;
-            alert('任务超时，请稍后在历史记录中查看');
+            alert('前端轮询已达 30 分钟上限，任务可能仍在后台运行，请稍后在历史记录中刷新查看');
         } else {
             setTimeout(() => pollCompetitorTask(taskId, attempt + 1), POLL_INTERVAL);
         }

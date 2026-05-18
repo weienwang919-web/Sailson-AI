@@ -315,13 +315,47 @@ def _resolve_radar_direct_urls(videos: List[Dict]) -> Dict[str, str]:
     return mapping
 
 
+def _analyze_one_radar_video(v: Dict, direct_url: str, project: str) -> Tuple[str, Dict]:
+    """单条视频的视觉分析：下载 -> 抽帧 -> Qwen-VL。线程安全。"""
+    page_url = v.get("video_url") or ""
+    if not page_url or not direct_url:
+        return page_url, {}
+
+    tmp_video = _download_video(direct_url)
+    if not tmp_video:
+        return page_url, {}
+    try:
+        frames_b64 = _extract_frames(tmp_video, max_frames=4)
+        classification = _classify_video_for_radar(
+            frames_b64,
+            caption=v.get("caption") or "",
+            platform=(v.get("platform") or "").upper(),
+            project=project,
+        )
+        return page_url, (classification or {})
+    except Exception as e:
+        logger.warning(f"⚠️ 单条视频分析异常 {page_url}: {e}")
+        return page_url, {}
+    finally:
+        try:
+            if os.path.exists(tmp_video):
+                os.remove(tmp_video)
+        except Exception:
+            pass
+
+
 def analyze_videos_for_radar(
-    videos: List[Dict], project: str = "CFL"
+    videos: List[Dict],
+    project: str = "CFL",
+    progress: callable = None,
 ) -> Dict[str, Dict]:
-    """竞品雷达入口：批量为视频做营销类型 + 内容概述分析。
+    """竞品雷达入口：批量为视频做营销类型 + 内容概述分析（多线程并发）。
 
     videos: [{"video_url": page_url, "direct_video_url": optional, "caption": str, "platform": "TT"/"IG"}]
+    progress: 可选回调 (done, total) -> None
     返回：{ page_url: {"marketing_type": str, "vision_summary": str} }
+
+    并发度由环境变量 RADAR_VISION_CONCURRENCY 控制，默认 5。
     """
     if not videos:
         return {}
@@ -331,34 +365,49 @@ def analyze_videos_for_radar(
         logger.warning("⚠️ 雷达未获得任何视频直链，跳过视觉分析")
         return {}
 
-    out: Dict[str, Dict] = {}
+    pairs: List[Tuple[Dict, str]] = []
     for v in videos:
-        page_url = v.get("video_url") or ""
-        direct = mapping.get(page_url)
-        if not page_url or not direct:
-            continue
+        direct = mapping.get(v.get("video_url") or "")
+        if direct:
+            pairs.append((v, direct))
 
-        tmp_video = _download_video(direct)
-        if not tmp_video:
-            continue
-        try:
-            frames_b64 = _extract_frames(tmp_video, max_frames=4)
-            classification = _classify_video_for_radar(
-                frames_b64,
-                caption=v.get("caption") or "",
-                platform=(v.get("platform") or "").upper(),
-                project=project,
-            )
-            if classification:
-                out[page_url] = classification
-        finally:
+    if not pairs:
+        return {}
+
+    try:
+        concurrency = int(os.environ.get("RADAR_VISION_CONCURRENCY", "5"))
+    except Exception:
+        concurrency = 5
+    concurrency = max(1, min(concurrency, 10))
+
+    out: Dict[str, Dict] = {}
+    total = len(pairs)
+    done = 0
+    logger.info(f"🎬 雷达视觉分析启动：共 {total} 条 · 并发 {concurrency}")
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="radar-vision") as ex:
+        futures = {
+            ex.submit(_analyze_one_radar_video, v, direct, project): v.get("video_url") or ""
+            for v, direct in pairs
+        }
+        for fut in as_completed(futures):
             try:
-                if os.path.exists(tmp_video):
-                    os.remove(tmp_video)
-            except Exception:
-                pass
+                page_url, info = fut.result()
+            except Exception as e:
+                logger.warning(f"⚠️ 视觉分析 future 异常: {e}")
+                page_url, info = "", {}
+            done += 1
+            if page_url and info:
+                out[page_url] = info
+            if progress:
+                try:
+                    progress(done, total)
+                except Exception:
+                    pass
 
-    logger.info(f"✅ 雷达视觉分析完成 {len(out)}/{len(videos)} 条")
+    logger.info(f"✅ 雷达视觉分析完成 {len(out)}/{total} 条")
     return out
 
 
