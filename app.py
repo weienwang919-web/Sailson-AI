@@ -472,24 +472,39 @@ rag.ensure_tables()
 
 
 def recover_interrupted_tasks():
-    """恢复被中断的任务"""
+    """恢复被中断的任务。
+
+    判定规则：
+    - status='processing' 且 updated_at 已超过 5 分钟没更新（worker 大概率已挂）
+    - 同时把同样停滞的 'claimed' 任务回退为 pending，让 worker 重新捡起
+    - 不再限制 created_at 窗口，避免老孤儿永远卡在 processing
+    """
     try:
-        # 查找所有 processing 状态的任务（说明被中断了）
+        # 1. 把停滞 >5min 的 processing 标 failed
         interrupted_tasks = db.query_all("""
             SELECT task_id FROM task_queue
             WHERE status = 'processing'
-            AND created_at > NOW() - INTERVAL '1 hour'
+              AND updated_at < NOW() - INTERVAL '5 minutes'
         """)
-
         if interrupted_tasks:
-            logger.warning(f"⚠️ 发现 {len(interrupted_tasks)} 个被中断的任务，标记为失败")
+            logger.warning(f"⚠️ 发现 {len(interrupted_tasks)} 个停滞的 processing 任务，标记为失败")
             for task in interrupted_tasks:
                 update_task(
                     task['task_id'],
                     status='failed',
-                    error='服务重启导致任务中断',
+                    error='服务重启或 worker 中断导致任务停滞',
                     progress='任务已中断'
                 )
+        # 2. 把停滞 >2min 的 claimed 回退为 pending（worker 抢到但还没开始执行就死了）
+        try:
+            db.execute("""
+                UPDATE task_queue
+                SET status = 'pending', updated_at = NOW()
+                WHERE status = 'claimed'
+                  AND updated_at < NOW() - INTERVAL '2 minutes'
+            """)
+        except Exception as e:
+            logger.warning(f"⚠️ 回退 claimed 任务失败: {e}")
     except Exception as e:
         logger.error(f"❌ 恢复任务失败: {e}")
 

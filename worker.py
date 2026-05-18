@@ -66,11 +66,26 @@ logger.info("✅ app 模块加载完成")
 # 优雅退出
 # ============================================
 _shutdown = False
+_current_task_id = None  # 当前正在处理的 task_id，用于 SIGTERM 时回写状态
 
 def _signal_handler(signum, frame):
     global _shutdown
     logger.info(f"📛 收到信号 {signum}，准备优雅退出...")
     _shutdown = True
+    # 收到 SIGTERM 时（通常是 Render 重新部署）立即把当前任务标为 failed，
+    # 避免前端被卡在「正在分析」状态等到永远
+    cur = _current_task_id
+    if cur:
+        try:
+            update_task(
+                cur,
+                status='failed',
+                error='Worker 因服务重启被中断（部署/扩缩容），请重新发起请求',
+                progress='已中断',
+            )
+            logger.warning(f"⚠️ 当前任务 {cur} 已标记为 failed（worker 退出）")
+        except Exception as e:
+            logger.error(f"❌ SIGTERM 时回写任务状态失败: {e}")
 
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
@@ -108,6 +123,7 @@ def claim_task():
 
 def dispatch_task(task_row):
     """根据 function_type 分发到对应的处理函数。"""
+    global _current_task_id
     task_id = task_row['task_id']
     func_type = task_row['function_type']
     raw_params = task_row['task_params']
@@ -120,6 +136,7 @@ def dispatch_task(task_row):
         return
 
     logger.info(f"🚀 开始处理任务 {task_id}  type={func_type}")
+    _current_task_id = task_id
 
     try:
         if func_type == 'sentiment':
@@ -142,6 +159,8 @@ def dispatch_task(task_row):
         import traceback
         traceback.print_exc()
         update_task(task_id, status='failed', error=f'Worker 异常: {str(e)[:500]}')
+    finally:
+        _current_task_id = None
 
 
 # ============================================
@@ -416,6 +435,23 @@ def main():
             logger.info(f"♻️ 重置了 {reset_count} 个 claimed 状态的残留任务")
     except Exception as e:
         logger.warning(f"⚠️ 重置 claimed 任务失败: {e}")
+
+    # 启动时把 processing 状态且超过 5 分钟没更新的孤儿任务标为 failed
+    # （worker 进程被 SIGTERM 中断时，可能没来得及把状态改回 pending/failed）
+    try:
+        orphan_count = db.execute("""
+            UPDATE task_queue
+            SET status = 'failed',
+                error = COALESCE(error, '') || ' | Worker 启动时检测到任务孤儿态（疑似服务重启中断），自动标记失败',
+                progress = '已中断',
+                updated_at = NOW()
+            WHERE status = 'processing'
+              AND updated_at < NOW() - INTERVAL '5 minutes'
+        """)
+        if orphan_count:
+            logger.info(f"🪦 标记了 {orphan_count} 个孤儿 processing 任务为 failed")
+    except Exception as e:
+        logger.warning(f"⚠️ 清理孤儿 processing 任务失败: {e}")
 
     idle_count = 0
 
