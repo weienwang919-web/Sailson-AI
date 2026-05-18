@@ -76,12 +76,6 @@
             <div class="col-lg-4">
                 <div class="glass-card" style="display:flex; flex-direction:column;">
                     <div class="config-section-title">基本配置</div>
-                    <label class="small text-muted mb-1" for="projectSelect">项目（用于视觉分析口径）</label>
-                    <select id="projectSelect" class="form-control form-select">
-                        <option value="CFL" selected>CFL</option>
-                        <option value="PUBGM">PUBGM</option>
-                        <option value="HOK">HOK</option>
-                    </select>
                     <label class="small text-muted mb-1" for="urlsInput">竞品主页链接（TT / IG，一行一个）</label>
                     <textarea id="urlsInput" class="form-control" rows="5" placeholder="https://www.tiktok.com/@username&#10;https://www.instagram.com/username/&#10;..." style="font-family:'Inter', sans-serif; font-size:0.85rem; resize:vertical;"></textarea>
                     <div class="example-hint">
@@ -303,7 +297,6 @@ async function startMonitor() {
                 urls: urls,
                 startDate: startD,
                 endDate: endD,
-                project: document.getElementById('projectSelect').value,
                 generateReport: false,
                 enableVideoVision: document.getElementById('enableVideoVision').checked
             })
