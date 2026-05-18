@@ -48,6 +48,12 @@
     .chart-card h4 { font-size:0.9rem; color:#555; margin:0 0 12px 0; font-weight:600; }
     .chart-card canvas { width:100% !important; max-height:220px; }
     #reportOutput tr:hover { background-color: #FFF9F9; }
+    /* 竞品雷达表格 */
+    #reportOutput .radar-table { width: 100%; border-collapse: collapse; margin: 6px 0 18px; font-size: 0.82rem; table-layout: auto; }
+    #reportOutput .radar-table th { background: #F8F9FA; padding: 8px 6px; border-bottom: 2px solid #eee; color: #666; font-weight: 600; text-align: center; white-space: nowrap; }
+    #reportOutput .radar-table td { padding: 8px 6px; border-bottom: 1px solid #F1F3F5; vertical-align: top; text-align: center; }
+    #reportOutput .radar-table td.cell-link a { color: #D32F2F; text-decoration: none; word-break: break-all; }
+    #reportOutput .radar-table td.cell-caption, #reportOutput .radar-table td.cell-vision { max-width: 320px; white-space: normal; word-break: break-word; text-align: left; }
     .fade-in { animation: fadeIn 0.4s ease-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 </style>

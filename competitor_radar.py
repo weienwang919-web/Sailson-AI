@@ -664,17 +664,8 @@ def build_html_table(structured: dict) -> str:
             parts.append("</tr>")
         parts.append("</tbody></table>")
 
-    # 嵌入一小段样式（前端样式如未生效兜底）
-    style = (
-        "<style>"
-        ".radar-table{width:100%;border-collapse:collapse;margin:6px 0 18px;font-size:0.85rem;}"
-        ".radar-table th{background:#F8F9FA;padding:8px 6px;border-bottom:2px solid #eee;color:#666;font-weight:600;text-align:center;}"
-        ".radar-table td{padding:8px 6px;border-bottom:1px solid #F1F3F5;vertical-align:top;}"
-        ".radar-table td.cell-link a{color:#D32F2F;text-decoration:none;word-break:break-all;}"
-        ".radar-table td.cell-caption,.radar-table td.cell-vision{max-width:320px;white-space:normal;word-break:break-word;}"
-        "</style>"
-    )
-    return style + "".join(parts)
+    # 样式由前端模板提供（templates/competitor.html 中 .radar-table 系列）
+    return "".join(parts)
 
 
 # ============================================
