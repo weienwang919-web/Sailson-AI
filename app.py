@@ -14,7 +14,7 @@ import threading
 import requests
 from io import BytesIO
 from PIL import Image
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file, Response
 from flask_bcrypt import Bcrypt
 from apify_client import ApifyClient
 from dotenv import load_dotenv
@@ -148,6 +148,9 @@ if not secret_key:
 
 app.secret_key = secret_key
 bcrypt = Bcrypt(app)
+KOL_STATIC_DIR = os.path.join(app.root_path, 'static', 'kol')
+KOL_API_BASE_URL = os.environ.get('KOL_API_BASE_URL', '').rstrip('/')
+KOL_PROXY_TOKEN = os.environ.get('KOL_PROXY_TOKEN', '')
 
 # ============================================
 # APScheduler 初始化
@@ -1231,6 +1234,86 @@ def logout():
 def home():
     """首页"""
     return render_template('index.html', user=session)
+
+
+@app.route('/kol-tool')
+@login_required
+def kol_tool():
+    """KOL 名单管理工具"""
+    index_path = os.path.join(KOL_STATIC_DIR, 'index.html')
+    if not os.path.exists(index_path):
+        logger.error(f"KOL 前端资源不存在: {index_path}")
+        return "KOL 前端资源尚未构建", 503
+    return send_file(index_path)
+
+
+@app.route('/kol-api', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+@app.route('/kol-api/<path:path>', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+@login_required
+def kol_api_proxy(path):
+    """登录保护的 KOL FastAPI 代理"""
+    if not KOL_API_BASE_URL:
+        return jsonify({'error': 'KOL_API_BASE_URL 未配置'}), 503
+
+    api_base = KOL_API_BASE_URL.rstrip('/')
+    if not api_base.startswith(('http://', 'https://')):
+        api_base = f"http://{api_base}"
+    if not api_base.endswith('/api'):
+        api_base = f"{api_base}/api"
+    target_url = f"{api_base}/{path}" if path else api_base
+
+    excluded_headers = {'host', 'content-length', 'connection', 'accept-encoding'}
+    if request.files:
+        excluded_headers.add('content-type')
+    headers = {
+        key: value
+        for key, value in request.headers
+        if key.lower() not in excluded_headers
+    }
+    if KOL_PROXY_TOKEN:
+        headers['X-KOL-Proxy-Token'] = KOL_PROXY_TOKEN
+
+    files = None
+    data = None
+    if request.files:
+        files = []
+        for field_name in request.files:
+            for storage in request.files.getlist(field_name):
+                files.append((
+                    field_name,
+                    (storage.filename, storage.stream, storage.mimetype or 'application/octet-stream')
+                ))
+        data = request.form
+    elif request.method not in {'GET', 'HEAD'}:
+        data = request.get_data()
+
+    try:
+        upstream = requests.request(
+            request.method,
+            target_url,
+            params=request.args,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=300,
+            allow_redirects=False
+        )
+    except requests.RequestException as e:
+        logger.error(f"KOL 服务代理失败: {e}")
+        return jsonify({'error': 'KOL 服务暂时不可用'}), 502
+
+    excluded_response_headers = {
+        'content-encoding',
+        'content-length',
+        'transfer-encoding',
+        'connection'
+    }
+    response_headers = [
+        (key, value)
+        for key, value in upstream.headers.items()
+        if key.lower() not in excluded_response_headers
+    ]
+    return Response(upstream.content, status=upstream.status_code, headers=response_headers)
 
 
 @app.route('/dashboard_stats')

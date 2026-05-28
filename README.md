@@ -7,11 +7,13 @@
 ### 核心功能
 - 🔍 **舆情分析** - Facebook 评论智能分类和情感分析
 - 📊 **竞品监控** - TikTok 数据抓取和报表生成
+- 🧑‍💼 **KOL 名单管理** - KOL 导入、筛选、编辑、导出和平台数据更新
 - 👥 **用户管理** - 多用户、多部门权限管理
 - 💰 **成本追踪** - 实时统计 API 消费和使用情况
 
 ### 技术栈
 - **后端**: Flask + PostgreSQL
+- **KOL 子服务**: FastAPI + SQLite/Render Disk + React/Vite
 - **AI**: 阿里云通义千问 (qwen-turbo)
 - **爬虫**: Apify (Facebook + TikTok)
 - **部署**: Render
@@ -29,6 +31,12 @@ DATABASE_URL=postgresql://xxxxx
 PORT=5001
 SECRET_KEY=your_secret_key_here
 ```
+
+### KOL 功能部署
+
+KOL 功能在 Render 中作为私有服务 `flaskproject-kol` 运行，主 Flask 服务通过 `/kol-api` 代理访问它。`render.yaml` 会自动把 KOL 服务的内部地址注入到主站的 `KOL_API_BASE_URL`。
+
+KOL 服务使用 `/var/data/kol/kol.db` 作为默认 SQLite 数据库，并挂载 Render Disk 持久化数据。若要调用 Apify 更新 KOL 平台数据，请在 `flaskproject-kol` 服务里配置同一个 `APIFY_TOKEN`。
 
 ### 数据库初始化
 

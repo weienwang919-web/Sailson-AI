@@ -1,0 +1,8 @@
+backend/.venv/
+backend/data/kol.db
+backend/data/raw/
+backend/data/uploads/
+backend/data/templates/
+backend/.env
+frontend/node_modules/
+frontend/dist/

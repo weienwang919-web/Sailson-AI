@@ -11,6 +11,11 @@ services:
         value: "5000"
       - key: USE_DB_WORKER
         value: "true"
+      - key: KOL_API_BASE_URL
+        fromService:
+          type: pserv
+          name: flaskproject-kol
+          property: hostport
       # DashScope API Key（用于大模型和向量）
       - key: DASHSCOPE_API_KEY
         sync: false
@@ -33,6 +38,28 @@ services:
         sync: false
       - key: FEEDBACK_EMAIL_FROM
         sync: false
+
+  # ---- KOL 后端（Render 内网私有服务）----
+  - type: pserv
+    name: flaskproject-kol
+    env: python
+    plan: starter
+    rootDir: kol_web/backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}"
+    disk:
+      name: kol-data
+      mountPath: /var/data/kol
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: "8001"
+      - key: DATABASE_URL
+        value: "sqlite:////var/data/kol/kol.db"
+      - key: APIFY_TOKEN
+        sync: false
+      - key: VIDEOS_PER_PROFILE
+        value: "10"
 
   # ---- Background Worker（独立进程处理长任务）----
   - type: worker
