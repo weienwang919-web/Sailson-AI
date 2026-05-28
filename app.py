@@ -149,7 +149,10 @@ if not secret_key:
 app.secret_key = secret_key
 bcrypt = Bcrypt(app)
 KOL_STATIC_DIR = os.path.join(app.root_path, 'static', 'kol')
-KOL_API_BASE_URL = os.environ.get('KOL_API_BASE_URL', '').rstrip('/')
+KOL_API_BASE_URL = os.environ.get('KOL_API_BASE_URL', '')
+if not KOL_API_BASE_URL and os.environ.get('RENDER'):
+    KOL_API_BASE_URL = 'http://flaskproject-kol:8001'
+KOL_API_BASE_URL = KOL_API_BASE_URL.rstrip('/')
 KOL_PROXY_TOKEN = os.environ.get('KOL_PROXY_TOKEN', '')
 
 # ============================================

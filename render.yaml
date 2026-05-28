@@ -12,10 +12,7 @@ services:
       - key: USE_DB_WORKER
         value: "true"
       - key: KOL_API_BASE_URL
-        fromService:
-          type: pserv
-          name: flaskproject-kol
-          property: hostport
+        value: "http://flaskproject-kol:8001"
       # DashScope API Key（用于大模型和向量）
       - key: DASHSCOPE_API_KEY
         sync: false
