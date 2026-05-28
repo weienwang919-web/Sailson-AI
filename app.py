@@ -6,6 +6,8 @@ import logging
 import re
 import smtplib
 import json
+import atexit
+import subprocess
 from collections import Counter, defaultdict
 from email.mime.text import MIMEText
 import pandas as pd
@@ -160,6 +162,45 @@ KOL_PROXY_TOKEN = os.environ.get('KOL_PROXY_TOKEN', '')
 # Worker 进程不需要启动定时调度器
 # ============================================
 _IS_WORKER = os.environ.get('_IS_WORKER', 'false').lower() == 'true'
+
+
+def start_kol_api_if_needed():
+    """Render Dashboard 若仍使用旧 start command，也能随 Flask 自动拉起 KOL API。"""
+    if _IS_WORKER:
+        return None
+    if not os.environ.get('RENDER'):
+        return None
+    if os.environ.get('KOL_AUTOSTART', 'true').lower() != 'true':
+        return None
+    if not KOL_API_BASE_URL.startswith(('http://127.0.0.1', 'http://localhost')):
+        return None
+
+    kol_backend_dir = os.path.join(app.root_path, 'kol_web', 'backend')
+    if not os.path.isdir(kol_backend_dir):
+        logger.error(f"KOL 后端目录不存在: {kol_backend_dir}")
+        return None
+
+    kol_port = os.environ.get('KOL_PORT', '8001')
+    logger.info(f"🚀 自动启动 KOL FastAPI: 127.0.0.1:{kol_port}")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            '-m',
+            'uvicorn',
+            'app.main:app',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            kol_port
+        ],
+        cwd=kol_backend_dir,
+        env=os.environ.copy()
+    )
+    atexit.register(process.terminate)
+    return process
+
+
+_kol_api_process = start_kol_api_if_needed()
 
 if not _IS_WORKER:
     jobstores = {
