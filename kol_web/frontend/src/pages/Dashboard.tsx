@@ -317,7 +317,7 @@ export default function Dashboard() {
 
   const importProps = {
     name: "file",
-    action: `/api/kols/import?scrape=${excelScrape}`,
+    action: `/kol-api/kols/import?scrape=${excelScrape}`,
     accept: ".xlsx",
     showUploadList: false,
     onChange(info: any) {
@@ -327,7 +327,8 @@ export default function Dashboard() {
         load();
         loadJobs();
       } else if (info.file.status === "error") {
-        message.error("导入失败 Import failed");
+        const detail = info.file.response?.detail || info.file.response?.error || "Import failed";
+        message.error(`导入失败 ${detail}`);
       }
     },
   };
