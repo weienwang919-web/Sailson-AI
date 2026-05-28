@@ -34,9 +34,9 @@ SECRET_KEY=your_secret_key_here
 
 ### KOL 功能部署
 
-KOL 功能在 Render 中作为私有服务 `flaskproject-kol` 运行，主 Flask 服务通过 `/kol-api` 代理访问它。`render.yaml` 会自动把 KOL 服务的内部地址注入到主站的 `KOL_API_BASE_URL`。
+KOL 功能在 Render 的主 Web 服务中随 Flask 一起启动：`start_render.sh` 会先在 `127.0.0.1:8001` 拉起 KOL FastAPI，再启动 Gunicorn。主 Flask 服务通过 `/kol-api` 代理访问它。
 
-KOL 服务使用 `/var/data/kol/kol.db` 作为默认 SQLite 数据库，并挂载 Render Disk 持久化数据。若要调用 Apify 更新 KOL 平台数据，请在 `flaskproject-kol` 服务里配置同一个 `APIFY_TOKEN`。
+KOL 服务默认复用主站的 `DATABASE_URL`，因此会把 KOL 表建在同一个 PostgreSQL 数据库里。若要调用 Apify 更新 KOL 平台数据，请确保主服务里已配置 `APIFY_TOKEN`。
 
 ### 数据库初始化
 
