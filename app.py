@@ -874,11 +874,7 @@ def process_analysis_task(task_id, url=None, file_data=None, session_id='default
     if APIFY_TOKEN:
         try:
             logger.info("🔧 在后台线程中初始化 Apify 客户端...")
-            thread_apify_client = ApifyClient(
-                token=APIFY_TOKEN,
-                max_retries=3,
-                min_delay_between_retries_millis=500
-            )
+            thread_apify_client = ApifyClient(APIFY_TOKEN)
             logger.info("✅ 线程 Apify 客户端初始化成功")
         except Exception as e:
             logger.error(f"❌ 线程 Apify 客户端初始化失败: {e}")
