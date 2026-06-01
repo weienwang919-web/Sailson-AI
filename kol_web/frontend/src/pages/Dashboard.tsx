@@ -122,10 +122,15 @@ export default function Dashboard() {
   const [manualPricingSaving, setManualPricingSaving] = useState(false);
   const [exportUpdating, setExportUpdating] = useState(false);
 
-  const load = async () => {
+  const load = async (overrides?: { page?: number; search?: string }) => {
     setLoading(true);
     try {
-      const data = await listKols({ page, pageSize, search, filters });
+      const data = await listKols({
+        page: overrides?.page ?? page,
+        pageSize,
+        search: overrides?.search ?? search,
+        filters,
+      });
       setItems(data.items);
       setTotal(data.total);
       setStats(await getStats());
@@ -582,7 +587,7 @@ export default function Dashboard() {
             onSearch={(value) => {
               setSearch(value);
               setPage(1);
-              load();
+              load({ page: 1, search: value });
             }}
           />
           <Button onClick={() => setFilterOpen(true)}>高级筛选 Advanced Filter</Button>
