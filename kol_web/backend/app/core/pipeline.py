@@ -80,6 +80,10 @@ def sanitize_instagram_username(user: str) -> str:
 
 def normalize_link(platform: str, url: Any) -> str:
     value = _extract_platform_url(platform, clean_text(url).strip("\\"))
+    if value.lower().startswith("www."):
+        value = f"https://{value}"
+    if value.lower().startswith(("tiktok.com", "instagram.com", "youtube.com", "youtu.be")):
+        value = f"https://{value}"
     if is_empty_value(value) or not value.lower().startswith("http"):
         return ""
     platform = platform.lower()

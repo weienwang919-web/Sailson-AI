@@ -154,7 +154,7 @@ CONSUMED_HEADERS = {
 
 
 def build_platform_extra_fields(row: dict[str, Any], platform: str) -> dict[str, str]:
-    label = PLATFORM_LABELS.get(platform, "YouTube")
+    label = PLATFORM_LABELS.get(platform, "Other")
     extra: dict[str, str] = {}
     for standard, field in STANDARD_PLATFORM_FIELDS.items():
         value = first_standard_value(row, standard)

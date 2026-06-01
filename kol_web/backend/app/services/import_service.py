@@ -204,14 +204,15 @@ def import_flat_sheet(db: Session, df: pd.DataFrame, sheet: str, filename: str) 
         if headers is None:
             skipped += 1
             continue
-        row = {headers[col]: df.iloc[row_idx, col] for col in range(min(len(headers), len(values)))}
+        row_headers = _align_flat_headers(headers, values)
+        row = {row_headers[col]: df.iloc[row_idx, col] for col in range(min(len(row_headers), len(values)))}
         payload = flat_row_to_payload(row, sheet, filename)
         if payload.get("category") == sheet and last_category:
             payload["category"] = last_category
             payload["normalized_category"] = normalize_category(last_category)
         elif payload.get("category") and payload.get("category") != sheet:
             last_category = clean_text(payload["category"])
-        if not payload.get("name") or not any(payload.get(x) for x in ("tt_link", "ins_link", "yt_link")):
+        if not payload.get("name"):
             skipped += 1
             continue
         was_update, record_id = upsert_record(db, payload)
@@ -330,6 +331,17 @@ def find_record_by_link(db: Session, payload: dict[str, Any]) -> KOLRecord | Non
     if payload.get("yt_link"):
         clauses.append(KOLRecord.yt_link == payload["yt_link"])
     if not clauses:
+        if payload.get("source_file") and payload.get("name"):
+            return (
+                db.query(KOLRecord)
+                .filter(
+                    KOLRecord.source_file == payload["source_file"],
+                    KOLRecord.name == payload["name"],
+                    KOLRecord.platform_text == payload.get("platform_text"),
+                )
+                .order_by(KOLRecord.id.asc())
+                .first()
+            )
         return None
     return db.query(KOLRecord).filter(or_(*clauses)).order_by(KOLRecord.id.asc()).first()
 
@@ -340,6 +352,73 @@ def _looks_like_flat_header(values: list[Any]) -> bool:
     has_name = bool(labels & {"渠道名", "资源名称", "creator", "kol name", "name"})
     has_metric = bool(labels & {"粉丝数\n(自然数)", "followers", "➡️ followers"})
     return has_link and (has_name or has_metric)
+
+
+def _align_flat_headers(headers: list[str], values: list[Any]) -> list[str]:
+    """Some source sheets include section headers shifted right while data starts at platform/name/link."""
+    alternate = _alternate_flat_headers(headers, values)
+    if alternate:
+        return alternate
+
+    try:
+        platform_idx = headers.index("平台")
+        name_idx = next(i for i, header in enumerate(headers) if header in {"渠道名", "资源名称", "Creator", "KOL Name", "Name"})
+        link_idx = next(i for i, header in enumerate(headers) if header in {"链接", "➡️ LINK", "Link", "URL", "Channel link", "Channel"})
+    except StopIteration:
+        return headers
+    except ValueError:
+        return headers
+
+    if platform_idx <= 0 or name_idx != platform_idx + 1 or link_idx != platform_idx + 2:
+        return headers
+
+    first = clean_text(_value_at(values, 0)).lower()
+    second = clean_text(_value_at(values, 1))
+    third = clean_text(_value_at(values, 2)).lower()
+    if _looks_like_platform_value(first) and second and (
+        third.startswith("http") or third.startswith("www.") or ".com" in third
+    ):
+        return headers[platform_idx:]
+    return headers
+
+
+def _alternate_flat_headers(headers: list[str], values: list[Any]) -> list[str] | None:
+    """Handle embedded list sections shaped as name/category/platform/tag/link/... without a header row."""
+    if len(values) < 5:
+        return None
+    if headers[:4] != ["类目", "平台", "渠道名", "链接"]:
+        return None
+    name = clean_text(_value_at(values, 0))
+    category = clean_text(_value_at(values, 1))
+    platform = clean_text(_value_at(values, 2)).lower()
+    link = clean_text(_value_at(values, 4)).lower()
+    if not name or not category or not _looks_like_platform_value(platform):
+        return None
+    if not (link.startswith("http") or link.startswith("www.") or ".com" in link):
+        return None
+    return [
+        "渠道名",
+        "类目",
+        "平台",
+        "➡️ 内容标签",
+        "链接",
+        "粉丝数\n(自然数)",
+        "均观看量\n(自然数)",
+        "合作模式",
+        "备注",
+        "推荐理由",
+        "国家",
+        "国家占比",
+        "性别占比",
+        "年龄占比",
+    ]
+
+
+def _looks_like_platform_value(value: str) -> bool:
+    text = value.lower()
+    tokens = {token for token in text.replace("/", " ").replace(",", " ").replace("&", " ").split() if token}
+    platform_tokens = {"tt", "tiktok", "ytb", "yt", "youtube", "ins", "ig", "instagram", "twitch", "fb", "kick"}
+    return bool(tokens & platform_tokens) or any(token in text for token in ("tiktok", "youtube", "instagram"))
 
 
 def _value_at(values: list[Any], idx: int) -> Any:
@@ -392,8 +471,13 @@ def _cell(value: Any) -> str:
 
 def _flat_extra_fields(row: dict[str, Any], platform: str) -> dict[str, str]:
     """Flat source sheets describe one platform per row, so business/audience fields belong under that platform."""
-    label = PLATFORM_LABELS.get(platform, "YouTube")
+    label = PLATFORM_LABELS.get(platform, "Other")
     extra = build_platform_extra_fields(row, platform)
+    if label == "Other":
+        for header in ("平台", "链接", "Link", "URL", "Channel link", "Channel"):
+            value = _cell(row.get(header))
+            if value:
+                extra[f"{label} - {header}"] = value
     for key, value in row.items():
         header = clean_text(key)
         if header in FLAT_CORE_HEADERS or header in CONSUMED_HEADERS:
