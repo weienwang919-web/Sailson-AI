@@ -1276,6 +1276,17 @@ def home():
     return render_template('index.html', user=session)
 
 
+@app.route('/tiktok/callback/')
+def tiktok_callback():
+    """公开 TikTok OAuth 回调占位页，用于开发者后台 URL 校验。"""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    if code:
+        logger.info(f"TikTok OAuth callback received: state={state or '-'}")
+        return "TikTok callback received. You can close this page.", 200
+    return "TikTok callback ready", 200
+
+
 @app.route('/kol-tool')
 @login_required
 def kol_tool():
@@ -6593,12 +6604,17 @@ def thai_report_top5():
 # ============================================
 
 ETL_COMMENTS_MAX_URLS = int(os.environ.get('ETL_COMMENTS_MAX_URLS', '200'))
+ETL_VIDEO_METRICS_MAX_URLS = int(os.environ.get('ETL_VIDEO_METRICS_MAX_URLS', '500'))
 
 
 @app.route('/data-etl')
 @login_required
 def data_etl_tool():
-    return render_template('data_etl.html', max_urls=ETL_COMMENTS_MAX_URLS)
+    return render_template(
+        'data_etl.html',
+        max_urls=ETL_COMMENTS_MAX_URLS,
+        max_video_urls=ETL_VIDEO_METRICS_MAX_URLS,
+    )
 
 
 @app.route('/api/etl/preview_columns', methods=['POST'])
@@ -6762,6 +6778,73 @@ def etl_comments_start():
 
         def _run():
             etl_jobs.run_etl_comments_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return jsonify({'status': 'queued', 'task_id': queue_task_id, 'url_count': len(urls)})
+
+
+@app.route('/api/etl/video_metrics_start', methods=['POST'])
+@login_required
+def etl_video_metrics_start():
+    """功能5：上传含视频链接的 Excel，批量拉取播放量等指标并写回。"""
+    try:
+        f = request.files.get('file')
+        if not f or not f.filename:
+            return jsonify({'status': 'error', 'message': '请上传 Excel'}), 400
+        url_col = (request.form.get('url_column') or '').strip() or None
+        raw = f.read()
+        urls = etl_tools.read_urls_from_excel(raw, url_col)
+        if len(urls) > ETL_VIDEO_METRICS_MAX_URLS:
+            return jsonify({
+                'status': 'error',
+                'message': f'链接数超过上限 {ETL_VIDEO_METRICS_MAX_URLS}，请分批上传',
+            }), 400
+        if not urls:
+            return jsonify({'status': 'error', 'message': '未解析到有效 http(s) 链接'}), 400
+
+        selected_raw = (request.form.get('selected_fields') or '').strip()
+        if selected_raw:
+            selected_fields = [x.strip() for x in selected_raw.split(',') if x.strip()]
+        else:
+            selected_fields = ['views', 'likes', 'comments']
+    except (TypeError, ValueError) as e:
+        return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+
+    input_row = db.execute_and_fetch_one(
+        """
+        INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (queue_task_id, user_id, '_input_video_metrics.xlsx', raw),
+    )
+    input_file_id = input_row['id'] if input_row else None
+    if not input_file_id:
+        return jsonify({'status': 'error', 'message': '保存输入文件失败'}), 500
+
+    params = {
+        'input_file_id': input_file_id,
+        'url_column': url_col,
+        'selected_fields': selected_fields,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+
+    create_task(queue_task_id, user_id, session_id, function_type='etl_video_metrics')
+    if USE_DB_WORKER:
+        db.execute(
+            "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+            (json.dumps({'source': 'etl_video_metrics', **params}, ensure_ascii=False), queue_task_id),
+        )
+    else:
+
+        def _run():
+            etl_jobs.run_etl_video_metrics_task(queue_task_id, params, update_task)
 
         threading.Thread(target=_run, daemon=True).start()
 

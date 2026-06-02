@@ -8,6 +8,7 @@ from datetime import date
 import database as db
 import etl_tools
 import tasks
+import video_metrics_etl
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,91 @@ def run_etl_comments_task(task_id: str, params: dict, update_task_fn) -> None:
                 "download_id": rid,
                 "filename": "comments_export.xlsx",
                 "comment_rows": len(rows),
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
+def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> None:
+    """
+    params: input_file_id, url_column, selected_fields, user_id
+    """
+    user_id = params.get("user_id")
+    input_file_id = params.get("input_file_id")
+    url_column = (params.get("url_column") or "").strip() or None
+    selected_fields = params.get("selected_fields") or ["views", "likes", "comments"]
+
+    if not input_file_id:
+        update_task_fn(task_id, status="failed", error="缺少输入文件")
+        return
+
+    row = db.query_one(
+        "SELECT content, filename FROM etl_file_outputs WHERE id = %s AND user_id = %s",
+        (input_file_id, user_id),
+    )
+    if not row or not row.get("content"):
+        update_task_fn(task_id, status="failed", error="输入文件不存在或已过期")
+        return
+
+    file_bytes = row["content"]
+    if isinstance(file_bytes, memoryview):
+        file_bytes = file_bytes.tobytes()
+
+    try:
+        urls = etl_tools.read_urls_from_excel(file_bytes, url_column)
+    except Exception as e:
+        update_task_fn(task_id, status="failed", error=f"解析链接失败: {e}")
+        return
+
+    if not urls:
+        update_task_fn(task_id, status="failed", error="未解析到有效 http(s) 链接")
+        return
+
+    apify_token = tasks.APIFY_TOKEN
+    if not apify_token:
+        update_task_fn(task_id, status="failed", error="Apify 未配置")
+        return
+
+    def hook(msg):
+        update_task_fn(task_id, progress=msg)
+
+    update_task_fn(task_id, progress=f"共 {len(urls)} 条链接，开始调用 Apify...")
+    try:
+        metrics_map = video_metrics_etl.fetch_video_metrics(urls, apify_token, progress_hook=hook)
+    except Exception as e:
+        update_task_fn(task_id, status="failed", error=str(e)[:500])
+        return
+
+    update_task_fn(task_id, progress="正在写回 Excel...")
+    try:
+        xbytes = video_metrics_etl.merge_metrics_into_excel(
+            file_bytes, url_column, metrics_map, selected_fields
+        )
+    except Exception as e:
+        update_task_fn(task_id, status="failed", error=f"写回 Excel 失败: {e}")
+        return
+
+    ok_count = sum(1 for m in metrics_map.values() if m and not m.get("_error"))
+    out_row = db.execute_and_fetch_one(
+        """
+        INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (task_id, user_id, "video_metrics.xlsx", xbytes),
+    )
+    rid = out_row["id"] if out_row else None
+    update_task_fn(
+        task_id,
+        status="completed",
+        progress="完成",
+        result=json.dumps(
+            {
+                "download_id": rid,
+                "filename": "video_metrics.xlsx",
+                "url_count": len(urls),
+                "success_count": ok_count,
             },
             ensure_ascii=False,
         ),
