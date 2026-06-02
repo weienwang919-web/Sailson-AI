@@ -1312,13 +1312,36 @@ def _render_tiktok_oauth_callback(callback_type: str):
         <p><strong>description:</strong> <code>{html.escape(error_description or '')}</code></p>
         """
     elif code:
-        body = f"""
-        <p style="color:#166534;">授权成功，复制下面的 code 给开发者换取 access token。</p>
-        <p><strong>type:</strong> <code>{html.escape(callback_type)}</code></p>
-        <p><strong>code:</strong></p>
-        <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
-        <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
-        """
+        if callback_type == 'account':
+            try:
+                public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root).rstrip('/')
+                redirect_uri = f'{public_base}/tiktok/account/callback/'
+                token_data = tiktok_official_service.exchange_account_code(code, redirect_uri)
+                open_id = token_data.get('open_id') or ''
+                scope = token_data.get('scope') or ''
+                body = f"""
+                <p style="color:#166534;">授权成功，access token 已自动保存。</p>
+                <p><strong>open_id / business_id:</strong> <code>{html.escape(open_id)}</code></p>
+                <p><strong>scope:</strong> <code>{html.escape(str(scope))}</code></p>
+                <p><a href="/tiktok-official" style="color:#1a7fd4;">返回 TikTok 官号监控</a></p>
+                """
+            except Exception as e:
+                logger.error(f"TikTok account token exchange failed: {e}")
+                body = f"""
+                <p style="color:#b91c1c;">收到 code，但自动换 token 失败。</p>
+                <p><strong>错误：</strong><code>{html.escape(str(e))}</code></p>
+                <p><strong>code:</strong></p>
+                <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
+                <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
+                """
+        else:
+            body = f"""
+            <p style="color:#166534;">授权成功，复制下面的 code 给开发者换取 access token。</p>
+            <p><strong>type:</strong> <code>{html.escape(callback_type)}</code></p>
+            <p><strong>code:</strong></p>
+            <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
+            <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
+            """
     else:
         body = f"""
         <p>TikTok callback ready.</p>
