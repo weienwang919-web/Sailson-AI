@@ -9,6 +9,7 @@ from urllib.parse import unquote
 
 import requests
 from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
 
 import database as db
 
@@ -784,55 +785,53 @@ def list_profile_metrics(business_id: str | None = None, days: int = 30) -> list
 def build_export() -> bytes:
     wb = Workbook()
     ws = wb.active
-    ws.title = "Videos"
+    ws.title = "视频明细"
     video_headers = [
-        "账号",
-        "视频ID",
-        "媒体类型",
-        "是否广告视频",
+        "caption",
         "发布时间",
+        "官号小时获赞情况",
         "视频链接",
-        "视频标题/描述",
-        "播放量",
-        "覆盖人数",
+        "视频观看次数",
+        "平均观看时长(s)",
         "点赞数",
         "评论数",
-        "分享数",
+        "分享次数",
         "收藏数",
-        "新增粉丝",
-        "平均观看时长(s)",
-        "总观看时长(s)",
-        "完播率",
-        "视频时长(s)",
-        "抓取时间",
+        "单条带来新粉",
+        "视频时长",
+        "三秒完播率",
+        "首日完播率",
+        "互动点赞数",
     ]
     ws.append(video_headers)
     for row in list_videos(page=1, page_size=10000)["items"]:
+        retention = _loads(row.get("video_view_retention"))
+        engagement_likes = _loads(row.get("engagement_likes"))
         ws.append(
             [
-                row.get("display_name") or row.get("account_name") or row.get("business_id"),
-                row.get("item_id"),
-                row.get("media_type"),
-                row.get("is_ad"),
-                row.get("create_time"),
-                row.get("share_url"),
                 row.get("caption"),
+                row.get("create_time"),
+                _format_series_summary(engagement_likes),
+                row.get("share_url"),
                 row.get("video_views"),
-                row.get("reach"),
+                row.get("average_time_watched"),
                 row.get("likes"),
                 row.get("comments"),
                 row.get("shares"),
                 row.get("favorites"),
                 row.get("new_followers"),
-                row.get("average_time_watched"),
-                row.get("total_time_watched"),
-                row.get("full_video_watched_rate"),
                 row.get("video_duration"),
-                row.get("fetched_at"),
+                _series_value_at_second(retention, 3),
+                row.get("full_video_watched_rate"),
+                _format_series_summary(engagement_likes),
             ]
         )
-    _append_array_sheet(wb, "Engagement Likes", "engagement_likes", ["item_id", "second", "percentage"])
-    _append_array_sheet(wb, "Retention", "video_view_retention", ["item_id", "second", "percentage"])
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+    _append_array_sheet(wb, "互动点赞明细", "engagement_likes", ["item_id", "second", "value"])
+    _append_array_sheet(wb, "每秒留存明细", "video_view_retention", ["item_id", "second", "value"])
+    _append_series_chart_sheet(wb, "互动点赞折线图", "engagement_likes", "互动点赞")
+    _append_series_chart_sheet(wb, "留存折线图", "video_view_retention", "留存率")
 
     ws_metrics = wb.create_sheet("Profile Daily Metrics")
     metric_headers = [
@@ -892,7 +891,126 @@ def _append_array_sheet(wb: Workbook, title: str, field: str, headers: list[str]
             continue
         for item in values:
             if isinstance(item, dict):
-                ws.append([row.get("item_id"), item.get("second"), item.get("percentage") or item.get("percent")])
+                ws.append([row.get("item_id"), _series_second(item), _series_value(item)])
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+
+
+def _append_series_chart_sheet(wb: Workbook, title: str, field: str, value_title: str) -> None:
+    ws = wb.create_sheet(title)
+    rows = db.query_all(
+        f"""
+        SELECT item_id, caption, {field}
+        FROM tiktok_official_video_snapshots
+        WHERE {field} IS NOT NULL
+        ORDER BY create_time DESC NULLS LAST, updated_at DESC
+        LIMIT 8
+        """
+    )
+    series: list[tuple[str, dict[int, float]]] = []
+    seconds: set[int] = set()
+    for row in rows or []:
+        values = _loads(row.get(field)) or []
+        if not isinstance(values, list):
+            continue
+        points: dict[int, float] = {}
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            second = _series_second(item)
+            value = _series_value(item)
+            if second is None or value is None:
+                continue
+            points[int(second)] = float(value)
+            seconds.add(int(second))
+        if points:
+            series.append((_chart_label(row), points))
+
+    ws.append(["second"] + [label for label, _points in series])
+    for second in sorted(seconds):
+        ws.append([second] + [points.get(second) for _label, points in series])
+    if not series or not seconds:
+        ws["A2"] = f"暂无 {value_title} 分布数据"
+        return
+
+    chart = LineChart()
+    chart.title = title
+    chart.y_axis.title = value_title
+    chart.x_axis.title = "second"
+    data = Reference(ws, min_col=2, max_col=1 + len(series), min_row=1, max_row=1 + len(seconds))
+    cats = Reference(ws, min_col=1, min_row=2, max_row=1 + len(seconds))
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
+    chart.height = 14
+    chart.width = 28
+    ws.add_chart(chart, "H2")
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+
+
+def _series_second(item: dict[str, Any]) -> int | None:
+    for key in ("second", "seconds", "time", "time_second"):
+        value = item.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(float(value))
+        except Exception:
+            continue
+    return None
+
+
+def _series_value(item: dict[str, Any]) -> float | None:
+    for key in ("percentage", "percent", "value", "likes", "like_count", "count", "rate"):
+        value = item.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return None
+
+
+def _series_value_at_second(values, second: int) -> float | None:
+    if not isinstance(values, list):
+        return None
+    for item in values:
+        if isinstance(item, dict) and _series_second(item) == second:
+            return _series_value(item)
+    return None
+
+
+def _format_series_summary(values) -> str | None:
+    if not isinstance(values, list) or not values:
+        return None
+    points = []
+    for item in values[:20]:
+        if not isinstance(item, dict):
+            continue
+        second = _series_second(item)
+        value = _series_value(item)
+        if second is not None and value is not None:
+            points.append(f"{second}s:{value:g}")
+    return "; ".join(points) if points else None
+
+
+def _chart_label(row: dict[str, Any]) -> str:
+    caption = str(row.get("caption") or "").strip()
+    item_id = str(row.get("item_id") or "").strip()
+    label = caption[:18] if caption else item_id
+    return label or "video"
+
+
+def _autosize_columns(ws) -> None:
+    for column_cells in ws.columns:
+        letter = column_cells[0].column_letter
+        max_len = 0
+        for cell in column_cells[:80]:
+            value = cell.value
+            if value is not None:
+                max_len = max(max_len, len(str(value)))
+        ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 36)
 
 
 def _normalize_account(raw: dict[str, Any]) -> dict[str, Any]:
