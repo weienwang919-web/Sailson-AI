@@ -73,18 +73,17 @@ def _signal_handler(signum, frame):
     global _shutdown
     logger.info(f"📛 收到信号 {signum}，准备优雅退出...")
     _shutdown = True
-    # 收到 SIGTERM 时（通常是 Render 重新部署）立即把当前任务标为 failed，
-    # 避免前端被卡在「正在分析」状态等到永远
+    # Render 重新部署时会发 SIGTERM：把当前任务回退到 pending，新 Worker 会自动重试
     cur = _current_task_id
     if cur:
         try:
             update_task(
                 cur,
-                status='failed',
-                error='Worker 因服务重启被中断（部署/扩缩容），请重新发起请求',
-                progress='已中断',
+                status='pending',
+                error='',
+                progress='服务重启，任务已重新排队',
             )
-            logger.warning(f"⚠️ 当前任务 {cur} 已标记为 failed（worker 退出）")
+            logger.warning(f"⚠️ 当前任务 {cur} 已回退为 pending（等待新 Worker 重试）")
         except Exception as e:
             logger.error(f"❌ SIGTERM 时回写任务状态失败: {e}")
 
@@ -138,6 +137,7 @@ def dispatch_task(task_row):
 
     logger.info(f"🚀 开始处理任务 {task_id}  type={func_type}")
     _current_task_id = task_id
+    update_task(task_id, status='processing', progress='Worker 执行中...')
 
     try:
         if func_type == 'sentiment':
@@ -439,34 +439,20 @@ def main():
     logger.info(f"   轮询间隔: {POLL_INTERVAL}s")
     logger.info("=" * 60)
 
-    # 启动时把残留的 claimed 状态任务重置为 pending（上一次 worker 崩溃遗留）
+    # 启动时把残留的 claimed / processing 回退为 pending，部署后自动重试
     try:
         reset_count = db.execute("""
             UPDATE task_queue
-            SET status = 'pending', updated_at = NOW()
-            WHERE status = 'claimed'
+            SET status = 'pending',
+                error = NULL,
+                progress = COALESCE(progress, '等待 Worker 重试'),
+                updated_at = NOW()
+            WHERE status IN ('claimed', 'processing')
         """)
         if reset_count:
-            logger.info(f"♻️ 重置了 {reset_count} 个 claimed 状态的残留任务")
+            logger.info(f"♻️ 回退了 {reset_count} 个 claimed/processing 任务到 pending")
     except Exception as e:
-        logger.warning(f"⚠️ 重置 claimed 任务失败: {e}")
-
-    # 启动时把 processing 状态且超过 5 分钟没更新的孤儿任务标为 failed
-    # （worker 进程被 SIGTERM 中断时，可能没来得及把状态改回 pending/failed）
-    try:
-        orphan_count = db.execute("""
-            UPDATE task_queue
-            SET status = 'failed',
-                error = COALESCE(error, '') || ' | Worker 启动时检测到任务孤儿态（疑似服务重启中断），自动标记失败',
-                progress = '已中断',
-                updated_at = NOW()
-            WHERE status = 'processing'
-              AND updated_at < NOW() - INTERVAL '5 minutes'
-        """)
-        if orphan_count:
-            logger.info(f"🪦 标记了 {orphan_count} 个孤儿 processing 任务为 failed")
-    except Exception as e:
-        logger.warning(f"⚠️ 清理孤儿 processing 任务失败: {e}")
+        logger.warning(f"⚠️ 回退残留任务失败: {e}")
 
     idle_count = 0
 
