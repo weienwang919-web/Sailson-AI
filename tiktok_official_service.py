@@ -880,13 +880,30 @@ def _append_video_detail_sheet(wb: Workbook, row: dict[str, Any], index: int) ->
     ws["A4"] = "链接"
     ws["B4"] = row.get("share_url") or row.get("item_id")
 
-    engagement_likes = _series_points(_loads(row.get("engagement_likes")) or [])
+    engagement_likes = _like_points(_loads(row.get("engagement_likes")) or [], row.get("likes"))
     retention = _series_points(_loads(row.get("video_view_retention")) or [])
-    likes_count = _write_series_table(ws, 26, 1, "互动点赞明细", engagement_likes, "互动点赞")
-    retention_count = _write_series_table(ws, 26, 5, "每秒留存明细", retention, "留存率")
-    _add_series_chart(ws, 26, 1, likes_count, "互动点赞折线图", "互动点赞", "A6")
-    _add_series_chart(ws, 26, 5, retention_count, "留存折线图", "留存率", "I6")
+    likes_count = _write_like_table(ws, 30, 1, engagement_likes)
+    retention_count = _write_series_table(ws, 30, 6, "每秒留存明细", retention, "留存率")
+    _add_series_chart(ws, 30, 1, likes_count, "估算每秒点赞量", "估算点赞数", "A6", value_offset=2)
+    _add_series_chart(ws, 30, 6, retention_count, "留存折线图", "留存率", "I6")
     _autosize_columns(ws)
+
+
+def _write_like_table(ws, start_row: int, start_col: int, values) -> int:
+    ws.cell(row=start_row, column=start_col, value="点赞时间分布")
+    ws.cell(row=start_row + 1, column=start_col, value="second")
+    ws.cell(row=start_row + 1, column=start_col + 1, value="点赞分布比例")
+    ws.cell(row=start_row + 1, column=start_col + 2, value="估算点赞数")
+    if not isinstance(values, list) or not values:
+        ws.cell(row=start_row + 2, column=start_col, value="暂无数据")
+        return 0
+    out_row = start_row + 2
+    for second, ratio, estimated_likes in values:
+        ws.cell(row=out_row, column=start_col, value=second)
+        ws.cell(row=out_row, column=start_col + 1, value=ratio)
+        ws.cell(row=out_row, column=start_col + 2, value=estimated_likes)
+        out_row += 1
+    return len(values)
 
 
 def _write_series_table(ws, start_row: int, start_col: int, title: str, values, value_header: str) -> int:
@@ -924,7 +941,21 @@ def _series_points(values) -> list[tuple[int, float]]:
     return sorted(points.items())
 
 
-def _add_series_chart(ws, start_row: int, start_col: int, source_len: int, title: str, value_title: str, anchor: str) -> None:
+def _like_points(values, total_likes) -> list[tuple[int, float, float]]:
+    likes = _to_float(total_likes) or 0.0
+    return [(second, ratio, ratio * likes) for second, ratio in _series_points(values)]
+
+
+def _add_series_chart(
+    ws,
+    start_row: int,
+    start_col: int,
+    source_len: int,
+    title: str,
+    value_title: str,
+    anchor: str,
+    value_offset: int = 1,
+) -> None:
     if source_len <= 0:
         return
     data_start = start_row + 1
@@ -935,7 +966,8 @@ def _add_series_chart(ws, start_row: int, start_col: int, source_len: int, title
     chart.title = title
     chart.y_axis.title = value_title
     chart.x_axis.title = "second"
-    data = Reference(ws, min_col=start_col + 1, max_col=start_col + 1, min_row=data_start, max_row=data_end)
+    data_col = start_col + value_offset
+    data = Reference(ws, min_col=data_col, max_col=data_col, min_row=data_start, max_row=data_end)
     cats = Reference(ws, min_col=start_col, min_row=data_start + 1, max_row=data_end)
     chart.add_data(data, titles_from_data=True)
     chart.set_categories(cats)
