@@ -345,11 +345,16 @@ def merge_metrics_into_excel(
     header_map = {f: METRIC_FIELDS[f] for f in selected}
     status_col = "抓取状态"
     if status_col not in df.columns:
-        df[status_col] = ""
+        df[status_col] = None
+    df[status_col] = df[status_col].astype(object)
 
     for field, header in header_map.items():
         if header not in df.columns:
-            df[header] = ""
+            df[header] = None
+        # 原表列可能是 string dtype，直接写 int 会报错，统一转为 object
+        df[header] = df[header].astype(object)
+
+    numeric_fields = {"views", "likes", "comments", "shares", "collects", "engagement"}
 
     for idx, val in df[col].items():
         raw = etl_tools._normalize_url_cell(val)
@@ -365,7 +370,13 @@ def merge_metrics_into_excel(
             df.at[idx, status_col] = metrics["_error"]
             continue
         for field, header in header_map.items():
-            df.at[idx, header] = metrics.get(field, "")
+            value = metrics.get(field, "")
+            if field in numeric_fields and value not in ("", None):
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    pass
+            df.at[idx, header] = value
         df.at[idx, status_col] = "成功"
 
     buf = io.BytesIO()
