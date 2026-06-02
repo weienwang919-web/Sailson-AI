@@ -5,6 +5,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
+from urllib.parse import unquote
 
 import requests
 from openpyxl import Workbook
@@ -392,20 +393,21 @@ def exchange_account_code(code: str, redirect_uri: str) -> dict[str, Any]:
     payload = {
         "client_key": app_id,
         "client_secret": app_secret,
-        "code": code,
+        "code": unquote(code),
         "grant_type": "authorization_code",
         "redirect_uri": redirect_uri,
     }
-    token_url = f"{API_BASE}/tt_user/oauth2/token/"
-    resp = requests.post(token_url, json=payload, timeout=60)
-    try:
-        data = _parse_token_response(resp)
-    except RuntimeError as json_error:
-        form_resp = requests.post(token_url, data=payload, timeout=60)
-        try:
-            data = _parse_token_response(form_resp)
-        except RuntimeError as form_error:
-            raise RuntimeError(f"{form_error}; JSON 方式错误: {json_error}") from form_error
+    token_url = "https://open.tiktokapis.com/v2/oauth/token/"
+    resp = requests.post(
+        token_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cache-Control": "no-cache",
+        },
+        timeout=60,
+    )
+    data = _parse_token_response(resp)
     if not data.get("access_token") or not data.get("open_id"):
         # Some TikTok endpoints wrap token payload in data.
         wrapped = data.get("data") if isinstance(data.get("data"), dict) else {}
@@ -496,8 +498,9 @@ def _parse_token_response(resp: requests.Response) -> dict[str, Any]:
         data = resp.json()
     except Exception as exc:
         raise RuntimeError(f"TikTok token 返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from exc
-    if resp.status_code >= 400 or data.get("code") not in (0, "0", None):
-        raise RuntimeError(f"TikTok token 错误: {data.get('message') or resp.text[:300]}")
+    if resp.status_code >= 400 or data.get("error") or data.get("code") not in (0, "0", None):
+        message = data.get("error_description") or data.get("message") or data.get("error") or resp.text[:300]
+        raise RuntimeError(f"TikTok token 错误: {message}")
     return data
 
 
