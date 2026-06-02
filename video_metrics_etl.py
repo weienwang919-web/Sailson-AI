@@ -27,6 +27,7 @@ METRIC_FIELDS: Dict[str, str] = {
     "shares": "转发量",
     "collects": "收藏量",
     "engagement": "互动量",
+    "followers": "主页粉丝数",
     "author": "作者",
     "post_date": "发布日期",
     "caption": "视频文案",
@@ -83,6 +84,52 @@ def normalize_url(url: str) -> str:
         return s.rstrip("/")
 
 
+def _tiktok_username(url: str) -> str:
+    match = re.search(r"tiktok\.com/@([^/?#]+)", url, re.I)
+    return match.group(1).strip() if match else ""
+
+
+def _instagram_username(url: str) -> str:
+    try:
+        first = urlparse(url).path.strip("/").split("/")[0]
+    except Exception:
+        return ""
+    if first.lower() in {"p", "reel", "reels", "tv", "stories", "explore"}:
+        return ""
+    return first.strip()
+
+
+def _profile_url_from_url(url: str, platform: str) -> str:
+    """从视频/帖子链接推导主页链接；无法可靠推导时返回空。"""
+    u = normalize_url(url)
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+        host = (p.netloc or "").lower()
+        parts = [x for x in (p.path or "").strip("/").split("/") if x]
+    except Exception:
+        return ""
+    if platform == "TT":
+        user = _tiktok_username(u)
+        return f"https://www.tiktok.com/@{user}" if user else ""
+    if platform == "IG":
+        user = _instagram_username(u)
+        return f"https://www.instagram.com/{user}" if user else ""
+    if platform == "YTB":
+        if len(parts) >= 2 and parts[0] in {"@", "channel", "c", "user"}:
+            return f"https://{host}/{'/'.join(parts[:2])}"
+        if parts and parts[0].startswith("@"):
+            return f"https://{host}/{parts[0]}"
+        return ""
+    if platform == "FB":
+        if host in {"fb.watch", "www.fb.watch"}:
+            return ""
+        if parts and parts[0].lower() not in {"watch", "reel", "videos", "photo", "posts"}:
+            return f"https://{host}/{parts[0]}"
+    return ""
+
+
 def _item_url_keys(item: dict) -> List[str]:
     keys = (
         "webVideoUrl", "url", "postUrl", "postURL", "inputUrl", "videoUrl",
@@ -98,6 +145,49 @@ def _item_url_keys(item: dict) -> List[str]:
     return out
 
 
+def _extract_followers(item: dict, platform: str) -> int:
+    if platform == "TT":
+        author_meta = item.get("authorMeta") or {}
+        return tasks._safe_int(
+            (author_meta.get("fans") if isinstance(author_meta, dict) else None)
+            or (author_meta.get("followers") if isinstance(author_meta, dict) else None)
+            or item.get("authorMeta.fans")
+            or item.get("authorMeta.followers")
+            or item.get("followers")
+            or item.get("followersCount")
+        )
+    if platform == "IG":
+        owner = item.get("owner") or {}
+        return tasks._safe_int(
+            item.get("followersCount")
+            or item.get("ownerFollowersCount")
+            or (owner.get("followers") if isinstance(owner, dict) else None)
+            or (owner.get("followersCount") if isinstance(owner, dict) else None)
+        )
+    if platform == "YTB":
+        return tasks._safe_int(
+            item.get("numberOfSubscribers")
+            or item.get("subscriberCount")
+            or item.get("channelSubscriberCount")
+            or item.get("subscribers")
+        )
+    if platform == "FB":
+        return tasks._safe_int(
+            item.get("pageFollowers")
+            or item.get("followers")
+            or item.get("followersCount")
+            or item.get("pageLikes")
+        )
+    return tasks._safe_int(item.get("followers") or item.get("followersCount"))
+
+
+def _followers_only_metrics(item: dict, platform: str) -> dict:
+    followers = _extract_followers(item, platform)
+    if followers:
+        return {"followers": followers}
+    return {}
+
+
 def _extract_youtube(item: dict) -> dict:
     create_dt = radar._to_beijing_dt(
         item.get("date") or item.get("uploadDate") or item.get("publishedAt")
@@ -109,6 +199,7 @@ def _extract_youtube(item: dict) -> dict:
     )
     views = tasks._safe_int(item.get("viewCount") or item.get("views"))
     shares = tasks._safe_int(item.get("shares") or item.get("shareCount"))
+    followers = _extract_followers(item, "YTB")
     return {
         "views": views,
         "likes": likes,
@@ -116,6 +207,7 @@ def _extract_youtube(item: dict) -> dict:
         "shares": shares,
         "collects": tasks._safe_int(item.get("favoriteCount") or item.get("collectCount")),
         "engagement": likes + comments + shares,
+        "followers": followers,
         "author": (item.get("channelName") or item.get("channelUsername") or "").strip(),
         "post_date": create_dt.date().isoformat() if create_dt else "",
         "caption": (item.get("title") or item.get("description") or "").strip()[:2000],
@@ -130,6 +222,7 @@ def _extract_facebook(item: dict) -> dict:
     likes = row.get("likes") or 0
     comments = row.get("comments_count") or 0
     shares = row.get("shares") or 0
+    followers = _extract_followers(item, "FB")
     return {
         "views": row.get("views") or 0,
         "likes": likes,
@@ -137,6 +230,7 @@ def _extract_facebook(item: dict) -> dict:
         "shares": shares,
         "collects": 0,
         "engagement": likes + comments + shares,
+        "followers": followers,
         "author": row.get("author") or "",
         "post_date": row.get("post_date") or "",
         "caption": (row.get("post_content") or "")[:2000],
@@ -147,6 +241,7 @@ def _extract_facebook(item: dict) -> dict:
 def _extract_metrics(item: dict, platform: str) -> dict:
     if platform == "TT":
         row = radar._extract_tiktok_video(item)
+        followers = _extract_followers(item, "TT")
         return {
             "views": row.get("views") or 0,
             "likes": row.get("likes") or 0,
@@ -154,6 +249,7 @@ def _extract_metrics(item: dict, platform: str) -> dict:
             "shares": row.get("shares") or 0,
             "collects": row.get("collects") or 0,
             "engagement": (row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0),
+            "followers": followers,
             "author": row.get("author") or "",
             "post_date": row.get("post_date") or "",
             "caption": (row.get("caption") or "")[:2000],
@@ -168,6 +264,7 @@ def _extract_metrics(item: dict, platform: str) -> dict:
                 "comments": tasks._safe_int(item.get("commentsCount") or item.get("comments")),
                 "shares": 0,
                 "collects": 0,
+                "followers": _extract_followers(item, "IG"),
                 "author": item.get("ownerUsername") or item.get("username") or "",
                 "post_date": "",
                 "caption": (item.get("caption") or item.get("text") or "")[:2000],
@@ -180,6 +277,7 @@ def _extract_metrics(item: dict, platform: str) -> dict:
             "shares": row.get("shares") or 0,
             "collects": row.get("collects") or 0,
             "engagement": (row.get("likes") or 0) + (row.get("comments") or 0),
+            "followers": row.get("followers") or _extract_followers(item, "IG"),
             "author": row.get("author") or "",
             "post_date": row.get("post_date") or "",
             "caption": (row.get("caption") or "")[:2000],
@@ -202,6 +300,7 @@ def _extract_metrics(item: dict, platform: str) -> dict:
         "shares": shares,
         "collects": 0,
         "engagement": likes + comments + shares,
+        "followers": _extract_followers(item, platform),
         "author": row.get("author") or "",
         "post_date": row.get("post_date") or "",
         "caption": (row.get("post_content") or "")[:2000],
@@ -240,11 +339,53 @@ def _actor_inputs(platform: str, urls: List[str]) -> List[dict]:
     return [{"startUrls": [{"url": u} for u in urls]}]
 
 
+def _profile_actor_inputs(platform: str, profile_url: str) -> List[dict]:
+    if platform == "TT":
+        user = _tiktok_username(profile_url)
+        profile_seed = user or profile_url
+        return [
+            {
+                "profiles": [profile_seed],
+                "resultsPerPage": 20,
+                "shouldDownloadVideos": False,
+                "shouldDownloadCovers": False,
+                "shouldDownloadSubtitles": False,
+            },
+            {
+                "profileUrls": [profile_url],
+                "resultsPerPage": 20,
+                "shouldDownloadVideos": False,
+            },
+        ]
+    if platform == "IG":
+        return [
+            {"directUrls": [profile_url], "resultsType": "posts", "resultsLimit": 20, "searchType": "user"},
+            {"startUrls": [{"url": profile_url}], "resultsLimit": 20},
+        ]
+    if platform == "YTB":
+        return [
+            {"startUrls": [{"url": profile_url}], "maxResults": 20},
+        ]
+    if platform == "FB":
+        return [
+            {"startUrls": [{"url": profile_url}], "maxPosts": 20},
+            {"startUrls": [profile_url], "resultsLimit": 20},
+        ]
+    return [{"startUrls": [{"url": profile_url}]}]
+
+
 def _scrape_batch(platform: str, urls: List[str], apify_token: str) -> List[dict]:
     actor = VIDEO_ACTORS.get(platform)
     if not actor:
         raise RuntimeError(f"不支持的平台: {platform}")
     return radar._call_actor(actor, _actor_inputs(platform, urls), apify_token)
+
+
+def _scrape_profile(platform: str, profile_url: str, apify_token: str) -> List[dict]:
+    actor = VIDEO_ACTORS.get(platform)
+    if not actor:
+        raise RuntimeError(f"不支持的平台: {platform}")
+    return radar._call_actor(actor, _profile_actor_inputs(platform, profile_url), apify_token)
 
 
 def _index_items(items: Iterable[dict]) -> Dict[str, dict]:
@@ -255,6 +396,23 @@ def _index_items(items: Iterable[dict]) -> Dict[str, dict]:
         for u in _item_url_keys(item):
             out.setdefault(u, item)
     return out
+
+
+def _fallback_via_profile(platform: str, url: str, apify_token: str) -> dict:
+    profile_url = _profile_url_from_url(url, platform)
+    if not profile_url:
+        return {}
+    profile_items = _scrape_profile(platform, profile_url, apify_token)
+    indexed = _index_items(profile_items)
+    matched = indexed.get(normalize_url(url))
+    if matched:
+        return _extract_metrics(matched, platform)
+    for item in profile_items:
+        if isinstance(item, dict):
+            follower_metrics = _followers_only_metrics(item, platform)
+            if follower_metrics:
+                return follower_metrics
+    return {}
 
 
 def fetch_video_metrics(
@@ -304,11 +462,27 @@ def fetch_video_metrics(
                     if item:
                         results[u] = _extract_metrics(item, platform)
                     else:
-                        results[u] = {"_error": "Apify 未返回该链接数据"}
+                        try:
+                            fallback_metrics = _fallback_via_profile(platform, u, apify_token)
+                        except Exception as e:
+                            logger.warning("主页兜底失败 %s: %s", u, e)
+                            fallback_metrics = {}
+                        if fallback_metrics:
+                            results[u] = fallback_metrics
+                        else:
+                            results[u] = {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
             except Exception as e:
                 logger.error("批次抓取失败 platform=%s: %s", platform, e)
                 for u in batch:
-                    results[u] = {"_error": str(e)[:200]}
+                    try:
+                        fallback_metrics = _fallback_via_profile(platform, u, apify_token)
+                    except Exception as fallback_exc:
+                        logger.warning("批次失败后的主页兜底失败 %s: %s", u, fallback_exc)
+                        fallback_metrics = {}
+                    if fallback_metrics:
+                        results[u] = fallback_metrics
+                    else:
+                        results[u] = {"_error": str(e)[:200]}
             done += len(batch)
 
     return results
@@ -354,7 +528,7 @@ def merge_metrics_into_excel(
         # 原表列可能是 string dtype，直接写 int 会报错，统一转为 object
         df[header] = df[header].astype(object)
 
-    numeric_fields = {"views", "likes", "comments", "shares", "collects", "engagement"}
+    numeric_fields = {"views", "likes", "comments", "shares", "collects", "engagement", "followers"}
 
     for idx, val in df[col].items():
         raw = etl_tools._normalize_url_cell(val)
