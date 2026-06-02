@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import pandas as pd
 
 import competitor_radar as radar
+import etl_tools
 import tasks
 
 logger = logging.getLogger(__name__)
@@ -321,14 +322,7 @@ def merge_metrics_into_excel(
 ) -> bytes:
     """在原 Excel 上追加/更新所选指标列。"""
     df = pd.read_excel(io.BytesIO(file_bytes))
-    col = url_column or "post_url"
-    if col not in df.columns:
-        for c in ("url", "link", "视频链接", "帖子链接", "URL", "permalink", "video_url"):
-            if c in df.columns:
-                col = c
-                break
-        else:
-            raise ValueError("未找到链接列，请指定列名")
+    col = etl_tools.resolve_url_column(df, url_column)
 
     selected = [f for f in selected_fields if f in METRIC_FIELDS]
     if not selected:
@@ -344,8 +338,8 @@ def merge_metrics_into_excel(
             df[header] = ""
 
     for idx, val in df[col].items():
-        raw = "" if val is None or (isinstance(val, float) and pd.isna(val)) else str(val).strip()
-        if not raw or raw.lower() == "nan":
+        raw = etl_tools._normalize_url_cell(val)
+        if not raw:
             df.at[idx, status_col] = "无链接"
             continue
         key = normalize_url(raw)

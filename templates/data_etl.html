@@ -122,9 +122,10 @@
       上传含视频链接的 Excel，通过 Apify 批量拉取基础数据并写回原表。支持 TikTok / Instagram / YouTube / Facebook。
       链接列默认识别 <code>post_url</code>、<code>url</code>、<code>视频链接</code> 等。每批最多 {{ max_video_urls }} 条链接。会产生 Apify 费用。
     </div>
-    <input type="file" id="f5-file" accept=".xlsx,.xls">
-    <label>链接列名（可选）</label>
-    <input type="text" id="f5-col" placeholder="post_url">
+    <input type="file" id="f5-file" accept=".xlsx,.xls" onchange="previewF5Columns()">
+    <label>链接列名（可选，留空自动识别）</label>
+    <input type="text" id="f5-col" placeholder="留空则自动识别含链接的列">
+    <div class="status" id="f5-cols" style="margin-top:6px;"></div>
     <label>勾选要写回的列</label>
     <div class="chk-row" id="f5-fields">
       <label><input type="checkbox" name="f5-metric" value="views" checked> 播放量</label>
@@ -332,6 +333,30 @@ async function doSumEngagement() {
   } catch (e) {
     st.textContent = String(e);
     st.className = 'status err';
+  }
+}
+
+async function previewF5Columns() {
+  const el = document.getElementById('f5-cols');
+  const f = document.getElementById('f5-file').files[0];
+  if (!f) { el.textContent = ''; return; }
+  el.textContent = '正在读取表头...';
+  el.className = 'status';
+  try {
+    const fd = new FormData();
+    fd.append('file', f);
+    const res = await fetch('/api/etl/preview_columns', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (d.status === 'success' && d.columns && d.columns.length) {
+      el.textContent = '检测到列: ' + d.columns.join(' | ');
+      el.className = 'status ok';
+    } else {
+      el.textContent = d.message || '未能读取列名';
+      el.className = 'status err';
+    }
+  } catch (e) {
+    el.textContent = String(e);
+    el.className = 'status err';
   }
 }
 

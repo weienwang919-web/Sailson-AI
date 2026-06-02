@@ -17,6 +17,72 @@ ENGAGEMENT_ALIASES = ("engagement", "互动量", "互动", "total_engagement")
 
 MAX_SYNC_EXCEL_ROWS = 50000
 
+URL_COLUMN_ALIASES = (
+    "post_url", "url", "link", "video_url", "permalink", "URL", "Link",
+    "帖子链接", "视频链接", "链接", "作品链接", "主页链接", "短链",
+    "Video URL", "video link", "Video Link", "tt_link", "ins_link", "yt_link",
+)
+
+
+def _looks_like_url(value) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return False
+    lower = s.lower()
+    if lower.startswith("http://") or lower.startswith("https://"):
+        return True
+    if lower.startswith("www."):
+        return True
+    domains = (
+        "tiktok.com", "instagram.com", "youtube.com", "youtu.be",
+        "facebook.com", "fb.watch", "fb.com", "twitter.com", "x.com",
+    )
+    return any(d in lower for d in domains)
+
+
+def resolve_url_column(df: pd.DataFrame, url_column: Optional[str] = None) -> str:
+    """解析 Excel 中的链接列：显式列名 > 常见别名 > 按内容自动推断。"""
+    if url_column:
+        key = url_column.strip()
+        if key in df.columns:
+            return key
+        for col in df.columns:
+            if str(col).strip() == key or str(col).strip().lower() == key.lower():
+                return col
+
+    for alias in URL_COLUMN_ALIASES:
+        for col in df.columns:
+            name = str(col).strip()
+            if name == alias or name.lower() == alias.lower():
+                return col
+
+    best_col = None
+    best_score = -1
+    for col in df.columns:
+        score = sum(1 for v in df[col] if _looks_like_url(v))
+        if score > best_score:
+            best_score = score
+            best_col = col
+    if best_col is not None and best_score > 0:
+        return best_col
+
+    headers = ", ".join(str(c) for c in df.columns[:25])
+    raise ValueError(f"未找到链接列，请在「链接列名」填写正确列名。当前表头: {headers}")
+
+
+def _normalize_url_cell(value) -> str:
+    s = "" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    if not s.lower().startswith("http"):
+        if s.lower().startswith("www.") or any(
+            d in s.lower() for d in ("tiktok.com", "instagram.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch")
+        ):
+            s = "https://" + s.lstrip("/")
+    return s
+
 
 def _normalize_date_col(df: pd.DataFrame) -> pd.DataFrame:
     for a in DATE_ALIASES:
@@ -138,22 +204,14 @@ def posts_metrics_to_excel_bytes(rows: List[dict], start_date: str, end_date: st
 
 def read_urls_from_excel(file_bytes: bytes, url_column: Optional[str]) -> List[str]:
     df = pd.read_excel(io.BytesIO(file_bytes))
-    col = url_column or "post_url"
-    if col not in df.columns:
-        # try common names
-        for c in ("url", "link", "帖子链接", "URL", "permalink"):
-            if c in df.columns:
-                col = c
-                break
-        else:
-            raise ValueError("未找到链接列，请使用 post_url 或指定列名")
+    col = resolve_url_column(df, url_column)
     urls = []
     seen = set()
-    for v in df[col].astype(str):
-        s = (v or "").strip()
-        if not s or s == "nan":
+    for v in df[col]:
+        s = _normalize_url_cell(v)
+        if not s:
             continue
-        if s.lower().startswith("http") and s not in seen:
+        if _looks_like_url(s) and s not in seen:
             seen.add(s)
             urls.append(s)
     return urls
