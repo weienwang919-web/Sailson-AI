@@ -374,7 +374,7 @@ def build_account_auth_url(public_base: str, state: str | None = None) -> str:
         "client_key": app_id,
         "scope": ",".join(scopes),
         "response_type": "code",
-        "redirect_uri": f"{public_base.rstrip('/')}/tiktok/account/callback/",
+        "redirect_uri": f"{public_base.rstrip('/')}/tiktok/account/callback",
         "state": state or "tiktok_account",
     }
     return "https://www.tiktok.com/v2/auth/authorize?" + urlencode(params)

@@ -1279,19 +1279,19 @@ def home():
     return render_template('index.html', user=session)
 
 
-@app.route('/tiktok/callback/')
+@app.route('/tiktok/callback/', strict_slashes=False)
 def tiktok_callback():
     """公开 TikTok OAuth 回调占位页，用于开发者后台 URL 校验。"""
     return _render_tiktok_oauth_callback('legacy')
 
 
-@app.route('/tiktok/business/callback/')
+@app.route('/tiktok/business/callback/', strict_slashes=False)
 def tiktok_business_callback():
     """公开 TikTok 广告主授权回调页。不要加登录保护，供 TikTok 校验和 OAuth 返回。"""
     return _render_tiktok_oauth_callback('business')
 
 
-@app.route('/tiktok/account/callback/')
+@app.route('/tiktok/account/callback/', strict_slashes=False)
 def tiktok_account_callback():
     """公开 TikTok 账号持有人授权回调页。不要加登录保护，供 TikTok 校验和 OAuth 返回。"""
     return _render_tiktok_oauth_callback('account')
@@ -1322,7 +1322,7 @@ def _render_tiktok_oauth_callback(callback_type: str):
         if callback_type == 'account':
             try:
                 public_base = _tiktok_public_base_url()
-                redirect_uri = f'{public_base}/tiktok/account/callback/'
+                redirect_uri = f'{public_base}/tiktok/account/callback'
                 token_data = tiktok_official_service.exchange_account_code(code, redirect_uri)
                 open_id = token_data.get('open_id') or ''
                 scope = token_data.get('scope') or ''
@@ -7023,8 +7023,8 @@ def api_tiktok_official_auth_urls():
     if not app_id:
         return jsonify({'status': 'error', 'message': 'TIKTOK_APP_ID 未配置'}), 400
     public_base = _tiktok_public_base_url()
-    account_redirect = f'{public_base}/tiktok/account/callback/'
-    business_redirect = f'{public_base}/tiktok/business/callback/'
+    account_redirect = f'{public_base}/tiktok/account/callback'
+    business_redirect = f'{public_base}/tiktok/business/callback'
     scopes = [
         'user.info.basic',
         'user.info.username',
