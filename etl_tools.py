@@ -3,6 +3,8 @@ Excel ETL helpers: Thai row filter, engagement aggregation, DataFrame export.
 """
 import io
 import logging
+import re
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -70,6 +72,182 @@ def resolve_url_column(df: pd.DataFrame, url_column: Optional[str] = None) -> st
 
     headers = ", ".join(str(c) for c in df.columns[:25])
     raise ValueError(f"未找到链接列，请在「链接列名」填写正确列名。当前表头: {headers}")
+
+
+def _column_url_score(df: pd.DataFrame, col) -> int:
+    score = sum(1 for v in df[col] if _looks_like_url(v))
+    name = str(col).strip().lower()
+    if any(k in name for k in ("链接", "link", "url", "video", "视频", "permalink", "post")):
+        score += 2
+    return score
+
+
+def _collect_hyperlink_urls(file_bytes: bytes) -> List[str]:
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        return []
+    urls: List[str] = []
+    seen = set()
+    try:
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=False)
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    target = None
+                    if getattr(cell, "hyperlink", None) is not None:
+                        target = getattr(cell.hyperlink, "target", None)
+                    if target and _looks_like_url(target):
+                        norm = _normalize_url_cell(target)
+                        if norm and norm not in seen:
+                            seen.add(norm)
+                            urls.append(norm)
+                        continue
+                    val = cell.value
+                    if isinstance(val, str) and val.strip().upper().startswith("=HYPERLINK("):
+                        m = re.search(r"https?://[^\"')\\s]+", val, re.I)
+                        if m:
+                            norm = _normalize_url_cell(m.group(0))
+                            if norm and norm not in seen:
+                                seen.add(norm)
+                                urls.append(norm)
+        wb.close()
+    except Exception as e:
+        logger.warning("读取 Excel 超链接失败: %s", e)
+    return urls
+
+
+@dataclass
+class ExcelUrlParseResult:
+    df: pd.DataFrame
+    url_column: str
+    sheet_name: str
+    header_row: int
+    urls: List[str]
+
+
+def _hyperlink_rows_by_excel_row(file_bytes: bytes, sheet_name: str) -> dict:
+    """返回 Excel 行号(1-based) -> 规范化 URL。"""
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        return {}
+    out: dict = {}
+    try:
+        wb = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=False)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+        for row in ws.iter_rows():
+            for cell in row:
+                target = None
+                if getattr(cell, "hyperlink", None) is not None:
+                    target = getattr(cell.hyperlink, "target", None)
+                if target and _looks_like_url(target):
+                    out[cell.row] = _normalize_url_cell(target)
+                    break
+                val = cell.value
+                if isinstance(val, str) and val.strip().upper().startswith("=HYPERLINK("):
+                    m = re.search(r"https?://[^\"')\\s]+", val, re.I)
+                    if m:
+                        out[cell.row] = _normalize_url_cell(m.group(0))
+                        break
+        wb.close()
+    except Exception as e:
+        logger.warning("读取 Sheet 超链接失败: %s", e)
+    return out
+
+
+def _inject_row_hyperlinks(df: pd.DataFrame, col: str, header_row: int, row_links: dict) -> pd.DataFrame:
+    if not row_links:
+        return df
+    out = df.copy()
+    for idx in out.index:
+        try:
+            pandas_pos = int(idx) if isinstance(idx, (int, float)) else list(out.index).index(idx)
+        except Exception:
+            pandas_pos = 0
+        excel_row = header_row + 2 + pandas_pos
+        link = row_links.get(excel_row)
+        if link and not _looks_like_url(out.at[idx, col]):
+            out.at[idx, col] = link
+    return out
+
+def load_best_excel_table(
+    file_bytes: bytes,
+    url_column: Optional[str] = None,
+) -> Tuple[pd.DataFrame, str, str, int]:
+    """扫描多 Sheet / 多表头行，返回最可能含链接的数据表。"""
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    best_df = None
+    best_col = None
+    best_sheet = xl.sheet_names[0] if xl.sheet_names else "Sheet1"
+    best_header = 0
+    best_score = -1
+
+    for sheet in xl.sheet_names:
+        for header_row in range(0, 8):
+            try:
+                df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet, header=header_row)
+            except Exception:
+                continue
+            if df is None or df.empty:
+                continue
+            df = df.dropna(axis=1, how="all")
+            if df.empty:
+                continue
+            try:
+                col = resolve_url_column(df, url_column)
+                score = _column_url_score(df, col)
+            except ValueError:
+                if url_column:
+                    raise
+                score = max((_column_url_score(df, c) for c in df.columns), default=0)
+                if score <= 0:
+                    continue
+                col = max(df.columns, key=lambda c: _column_url_score(df, c))
+            if score > best_score:
+                best_score = score
+                best_df = df
+                best_col = col
+                best_sheet = sheet
+                best_header = header_row
+
+    if best_df is not None and best_col is not None and best_score > 0:
+        return best_df, best_col, best_sheet, best_header
+
+    df = pd.read_excel(io.BytesIO(file_bytes))
+    col = resolve_url_column(df, url_column)
+    return df, col, xl.sheet_names[0] if xl.sheet_names else "Sheet1", 0
+
+
+def parse_excel_urls(file_bytes: bytes, url_column: Optional[str] = None) -> ExcelUrlParseResult:
+    df, col, sheet_name, header_row = load_best_excel_table(file_bytes, url_column)
+    row_links = _hyperlink_rows_by_excel_row(file_bytes, sheet_name)
+    df = _inject_row_hyperlinks(df, col, header_row, row_links)
+    urls: List[str] = []
+    seen = set()
+    for v in df[col]:
+        s = _normalize_url_cell(v)
+        if s and _looks_like_url(s) and s not in seen:
+            seen.add(s)
+            urls.append(s)
+
+    if not urls:
+        for link in _collect_hyperlink_urls(file_bytes):
+            if link not in seen:
+                seen.add(link)
+                urls.append(link)
+
+    if not urls:
+        headers = ", ".join(str(c) for c in df.columns[:25])
+        raise ValueError(f"未找到有效链接，请确认表格中有 URL 或超链接。当前表头: {headers}")
+
+    return ExcelUrlParseResult(
+        df=df,
+        url_column=str(col),
+        sheet_name=sheet_name,
+        header_row=header_row,
+        urls=urls,
+    )
 
 
 def _normalize_url_cell(value) -> str:
@@ -203,18 +381,7 @@ def posts_metrics_to_excel_bytes(rows: List[dict], start_date: str, end_date: st
 
 
 def read_urls_from_excel(file_bytes: bytes, url_column: Optional[str]) -> List[str]:
-    df = pd.read_excel(io.BytesIO(file_bytes))
-    col = resolve_url_column(df, url_column)
-    urls = []
-    seen = set()
-    for v in df[col]:
-        s = _normalize_url_cell(v)
-        if not s:
-            continue
-        if _looks_like_url(s) and s not in seen:
-            seen.add(s)
-            urls.append(s)
-    return urls
+    return parse_excel_urls(file_bytes, url_column).urls
 
 
 def comments_to_excel_bytes(
@@ -254,5 +421,10 @@ def comments_to_excel_bytes(
 
 
 def list_text_columns_preview(file_bytes: bytes) -> List[str]:
-    df = pd.read_excel(io.BytesIO(file_bytes), nrows=0)
-    return [str(c) for c in df.columns]
+    try:
+        _, _, sheet_name, header_row = load_best_excel_table(file_bytes)
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header_row, nrows=0)
+        return [str(c) for c in df.columns]
+    except Exception:
+        df = pd.read_excel(io.BytesIO(file_bytes), nrows=0)
+        return [str(c) for c in df.columns]

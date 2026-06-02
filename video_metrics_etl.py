@@ -319,10 +319,24 @@ def merge_metrics_into_excel(
     url_column: Optional[str],
     metrics_by_url: Dict[str, dict],
     selected_fields: List[str],
+    *,
+    sheet_name: Optional[str] = None,
+    header_row: Optional[int] = None,
+    resolved_url_column: Optional[str] = None,
 ) -> bytes:
     """在原 Excel 上追加/更新所选指标列。"""
-    df = pd.read_excel(io.BytesIO(file_bytes))
-    col = etl_tools.resolve_url_column(df, url_column)
+    if sheet_name is not None and header_row is not None:
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header_row)
+        col = resolved_url_column or url_column
+        if not col or col not in df.columns:
+            df, col, sheet_name, header_row = etl_tools.load_best_excel_table(
+                file_bytes, resolved_url_column or url_column
+            )
+    else:
+        df, col, sheet_name, header_row = etl_tools.load_best_excel_table(file_bytes, url_column)
+
+    row_links = etl_tools._hyperlink_rows_by_excel_row(file_bytes, sheet_name or "Sheet1")
+    df = etl_tools._inject_row_hyperlinks(df, col, header_row or 0, row_links)
 
     selected = [f for f in selected_fields if f in METRIC_FIELDS]
     if not selected:

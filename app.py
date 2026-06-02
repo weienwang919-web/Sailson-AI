@@ -6794,7 +6794,8 @@ def etl_video_metrics_start():
             return jsonify({'status': 'error', 'message': '请上传 Excel'}), 400
         url_col = (request.form.get('url_column') or '').strip() or None
         raw = f.read()
-        urls = etl_tools.read_urls_from_excel(raw, url_col)
+        parsed = etl_tools.parse_excel_urls(raw, url_col)
+        urls = parsed.urls
         if len(urls) > ETL_VIDEO_METRICS_MAX_URLS:
             return jsonify({
                 'status': 'error',
@@ -6830,6 +6831,10 @@ def etl_video_metrics_start():
     params = {
         'input_file_id': input_file_id,
         'url_column': url_col,
+        'resolved_url_column': parsed.url_column,
+        'sheet_name': parsed.sheet_name,
+        'header_row': parsed.header_row,
+        'urls': urls,
         'selected_fields': selected_fields,
         'user_id': user_id,
         'session_id': session_id,

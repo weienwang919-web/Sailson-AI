@@ -173,7 +173,11 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
     user_id = params.get("user_id")
     input_file_id = params.get("input_file_id")
     url_column = (params.get("url_column") or "").strip() or None
+    resolved_url_column = (params.get("resolved_url_column") or "").strip() or None
+    sheet_name = params.get("sheet_name")
+    header_row = params.get("header_row")
     selected_fields = params.get("selected_fields") or ["views", "likes", "comments"]
+    urls = params.get("urls") or []
 
     if not input_file_id:
         update_task_fn(task_id, status="failed", error="缺少输入文件")
@@ -192,7 +196,12 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
         file_bytes = file_bytes.tobytes()
 
     try:
-        urls = etl_tools.read_urls_from_excel(file_bytes, url_column)
+        if not urls:
+            parsed = etl_tools.parse_excel_urls(file_bytes, url_column)
+            urls = parsed.urls
+            resolved_url_column = parsed.url_column
+            sheet_name = parsed.sheet_name
+            header_row = parsed.header_row
     except Exception as e:
         update_task_fn(task_id, status="failed", error=f"解析链接失败: {e}")
         return
@@ -219,7 +228,13 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
     update_task_fn(task_id, progress="正在写回 Excel...")
     try:
         xbytes = video_metrics_etl.merge_metrics_into_excel(
-            file_bytes, url_column, metrics_map, selected_fields
+            file_bytes,
+            url_column,
+            metrics_map,
+            selected_fields,
+            sheet_name=sheet_name,
+            header_row=header_row,
+            resolved_url_column=resolved_url_column,
         )
     except Exception as e:
         update_task_fn(task_id, status="failed", error=f"写回 Excel 失败: {e}")
