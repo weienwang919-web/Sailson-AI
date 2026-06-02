@@ -782,80 +782,161 @@ def list_profile_metrics(business_id: str | None = None, days: int = 30) -> list
     ) or []
 
 
-def build_export() -> bytes:
+def build_export(videos: list[dict[str, Any]] | None = None) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "视频明细"
     video_headers = [
-        "caption",
         "发布时间",
-        "官号小时获赞情况",
-        "视频链接",
-        "视频观看次数",
-        "平均观看时长(s)",
-        "点赞数",
-        "评论数",
-        "分享次数",
-        "收藏数",
-        "单条带来新粉",
-        "视频时长",
-        "三秒完播率",
-        "首日完播率",
-        "互动点赞数",
+        "账号",
+        "视频",
+        "播放",
+        "覆盖",
+        "点赞",
+        "评论",
+        "分享",
+        "收藏",
+        "平均观看",
+        "完播率",
+        "新增粉",
+        "详情",
     ]
     ws.append(video_headers)
-    for row in list_videos(page=1, page_size=10000)["items"]:
-        retention = _loads(row.get("video_view_retention"))
-        engagement_likes = _loads(row.get("engagement_likes"))
+    rows = _export_video_rows(videos)
+    for row in rows:
         ws.append(
             [
-                row.get("caption"),
                 row.get("create_time"),
-                _format_series_summary(engagement_likes),
-                row.get("share_url"),
+                row.get("display_name") or row.get("account_name") or row.get("username") or row.get("business_id"),
+                row.get("caption"),
                 row.get("video_views"),
-                row.get("average_time_watched"),
+                row.get("reach"),
                 row.get("likes"),
                 row.get("comments"),
                 row.get("shares"),
                 row.get("favorites"),
-                row.get("new_followers"),
-                row.get("video_duration"),
-                _series_value_at_second(retention, 3),
+                row.get("average_time_watched"),
                 row.get("full_video_watched_rate"),
-                _format_series_summary(engagement_likes),
+                row.get("new_followers"),
+                row.get("share_url") or row.get("item_id"),
             ]
         )
     ws.freeze_panes = "A2"
     _autosize_columns(ws)
-    _append_array_sheet(wb, "互动点赞明细", "engagement_likes", ["item_id", "second", "value"])
-    _append_array_sheet(wb, "每秒留存明细", "video_view_retention", ["item_id", "second", "value"])
-    _append_series_chart_sheet(wb, "互动点赞折线图", "engagement_likes", "互动点赞")
-    _append_series_chart_sheet(wb, "留存折线图", "video_view_retention", "留存率")
-
-    ws_metrics = wb.create_sheet("Profile Daily Metrics")
-    metric_headers = [
-        "business_id",
-        "date",
-        "followers_count",
-        "video_views",
-        "unique_video_views",
-        "profile_views",
-        "likes",
-        "comments",
-        "shares",
-        "daily_new_followers",
-        "daily_lost_followers",
-        "engaged_audience",
-    ]
-    ws_metrics.append(metric_headers)
-    for row in list_profile_metrics(days=60):
-        ws_metrics.append([row.get(h if h != "date" else "metric_date") for h in metric_headers])
+    for idx, row in enumerate(rows, start=1):
+        _append_video_detail_sheet(wb, row, idx)
 
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf.read()
+
+
+def _export_video_rows(videos: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    selected: list[tuple[str, str | None]] = []
+    for item in videos or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("item_id") or "").strip()
+        business_id = str(item.get("business_id") or "").strip() or None
+        if item_id:
+            selected.append((item_id, business_id))
+    if not selected:
+        return list_videos(page=1, page_size=10000)["items"]
+
+    clauses = []
+    params: list[Any] = []
+    for item_id, business_id in selected:
+        if business_id:
+            clauses.append("(v.item_id = %s AND v.business_id = %s)")
+            params.extend([item_id, business_id])
+        else:
+            clauses.append("v.item_id = %s")
+            params.append(item_id)
+    rows = db.query_all(
+        f"""
+        SELECT v.*, a.account_name, a.display_name, a.username
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {" OR ".join(clauses)}
+        ORDER BY v.create_time DESC NULLS LAST, v.updated_at DESC
+        """,
+        tuple(params),
+    )
+    return rows or []
+
+
+def _append_video_detail_sheet(wb: Workbook, row: dict[str, Any], index: int) -> None:
+    title = _unique_sheet_title(wb, f"{index}-{_chart_label(row)}")
+    ws = wb.create_sheet(title)
+    account = row.get("display_name") or row.get("account_name") or row.get("username") or row.get("business_id")
+    ws["A1"] = f"{account or ''} {row.get('caption') or row.get('item_id') or ''}".strip()
+    ws["A2"] = row.get("share_url") or row.get("item_id")
+
+    engagement_likes = _loads(row.get("engagement_likes")) or []
+    retention = _loads(row.get("video_view_retention")) or []
+    likes_count = _write_series_table(ws, 4, 1, "互动点赞明细", engagement_likes, "互动点赞")
+    retention_count = _write_series_table(ws, 4, 5, "每秒留存明细", retention, "留存率")
+    _add_series_chart(ws, 4, 1, likes_count, "互动点赞折线图", "互动点赞", "I4")
+    _add_series_chart(ws, 4, 5, retention_count, "留存折线图", "留存率", "I22")
+    _autosize_columns(ws)
+
+
+def _write_series_table(ws, start_row: int, start_col: int, title: str, values, value_header: str) -> int:
+    ws.cell(row=start_row, column=start_col, value=title)
+    ws.cell(row=start_row + 1, column=start_col, value="second")
+    ws.cell(row=start_row + 1, column=start_col + 1, value=value_header)
+    if not isinstance(values, list) or not values:
+        ws.cell(row=start_row + 2, column=start_col, value="暂无数据")
+        return 0
+    out_row = start_row + 2
+    count = 0
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        second = _series_second(item)
+        value = _series_value(item)
+        if second is None or value is None:
+            continue
+        ws.cell(row=out_row, column=start_col, value=second)
+        ws.cell(row=out_row, column=start_col + 1, value=value)
+        out_row += 1
+        count += 1
+    if count == 0:
+        ws.cell(row=start_row + 2, column=start_col, value="暂无数据")
+    return count
+
+
+def _add_series_chart(ws, start_row: int, start_col: int, source_len: int, title: str, value_title: str, anchor: str) -> None:
+    if source_len <= 0:
+        return
+    data_start = start_row + 1
+    data_end = start_row + 1 + source_len
+    if data_end <= data_start:
+        return
+    chart = LineChart()
+    chart.title = title
+    chart.y_axis.title = value_title
+    chart.x_axis.title = "second"
+    data = Reference(ws, min_col=start_col + 1, max_col=start_col + 1, min_row=data_start, max_row=data_end)
+    cats = Reference(ws, min_col=start_col, min_row=data_start + 1, max_row=data_end)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
+    chart.height = 12
+    chart.width = 24
+    ws.add_chart(chart, anchor)
+
+
+def _unique_sheet_title(wb: Workbook, raw: str) -> str:
+    safe = "".join("_" if ch in '[]:*?/\\' else ch for ch in str(raw or "video")).strip() or "video"
+    base = safe[:31]
+    title = base
+    n = 2
+    while title in wb.sheetnames:
+        suffix = f"_{n}"
+        title = base[: 31 - len(suffix)] + suffix
+        n += 1
+    return title
 
 
 def run_refresh_task(task_id: str, params: dict[str, Any], update_task_fn) -> None:

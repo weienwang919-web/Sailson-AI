@@ -18,6 +18,7 @@
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
     label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
     input, select { padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 13px; min-width: 140px; }
+    input[type="checkbox"] { min-width: auto; padding: 0; }
     .btn { padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
     .btn-primary { background: #111827; color: #fff; }
     .btn-secondary { background: #e5e7eb; color: #111827; }
@@ -69,7 +70,7 @@
       <button class="btn btn-primary" id="refresh-btn" onclick="refreshOfficial()">刷新官方数据</button>
       <button class="btn btn-secondary" onclick="openAccountAuth()">TikTok 账号授权</button>
       <button class="btn btn-secondary" onclick="openBusinessAuth()">广告主授权</button>
-      <button class="btn btn-secondary" onclick="exportOfficial()">导出 Excel</button>
+      <button class="btn btn-secondary" onclick="exportOfficial()">导出所选视频</button>
       <button class="btn btn-secondary" onclick="loadAll()">重新加载</button>
     </div>
     <div class="status" id="refresh-status"></div>
@@ -100,7 +101,7 @@
       <table>
         <thead>
           <tr>
-            <th>发布时间</th><th>账号</th><th>视频</th><th>播放</th><th>覆盖</th><th>点赞</th><th>评论</th><th>分享</th><th>收藏</th><th>平均观看</th><th>完播率</th><th>新增粉</th><th>详情</th>
+            <th><input type="checkbox" id="select-current-videos" onchange="toggleCurrentPageVideos(this.checked)"></th><th>发布时间</th><th>账号</th><th>视频</th><th>播放</th><th>覆盖</th><th>点赞</th><th>评论</th><th>分享</th><th>收藏</th><th>平均观看</th><th>完播率</th><th>新增粉</th><th>详情</th>
           </tr>
         </thead>
         <tbody id="videos-body"></tbody>
@@ -119,6 +120,8 @@
 let accounts = [];
 let currentTask = null;
 let authUrls = null;
+let currentVideoRows = [];
+const selectedExportVideos = new Map();
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
@@ -131,6 +134,45 @@ function pct(v) {
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);
   return (n * 100).toFixed(2) + '%';
+}
+
+function videoKey(row) {
+  return String(row.business_id || '') + '::' + String(row.item_id || '');
+}
+
+function updateSelectedCount() {
+  const st = document.getElementById('videos-status');
+  const total = st.dataset.total || '0';
+  const shown = st.dataset.shown || '0';
+  st.textContent = '共 ' + fmt(total) + ' 条视频，当前显示前 ' + shown + ' 条，已选择 ' + selectedExportVideos.size + ' 条导出';
+  const selectAll = document.getElementById('select-current-videos');
+  if (selectAll) {
+    selectAll.checked = currentVideoRows.length > 0 && currentVideoRows.every(r => selectedExportVideos.has(videoKey(r)));
+  }
+}
+
+function toggleVideoSelection(key, checked) {
+  const row = currentVideoRows.find(r => videoKey(r) === key);
+  if (!row) return;
+  if (checked) {
+    selectedExportVideos.set(key, { item_id: row.item_id, business_id: row.business_id });
+  } else {
+    selectedExportVideos.delete(key);
+  }
+  updateSelectedCount();
+}
+
+function toggleCurrentPageVideos(checked) {
+  currentVideoRows.forEach(row => {
+    const key = videoKey(row);
+    if (checked) {
+      selectedExportVideos.set(key, { item_id: row.item_id, business_id: row.business_id });
+    } else {
+      selectedExportVideos.delete(key);
+    }
+  });
+  document.querySelectorAll('.video-export-check').forEach(cb => { cb.checked = checked; });
+  updateSelectedCount();
 }
 
 async function fetchJson(url, opts) {
@@ -214,9 +256,13 @@ async function loadVideos() {
   if (bid) qs.set('business_id', bid);
   const data = await fetchJson('/api/tiktok-official/videos?' + qs.toString());
   const rows = data.items || [];
-  document.getElementById('videos-status').textContent = '共 ' + fmt(data.total || 0) + ' 条视频，当前显示前 ' + rows.length + ' 条';
+  currentVideoRows = rows;
+  const status = document.getElementById('videos-status');
+  status.dataset.total = data.total || 0;
+  status.dataset.shown = rows.length;
   document.getElementById('videos-body').innerHTML = rows.map(r => `
     <tr>
+      <td><input class="video-export-check" type="checkbox" ${selectedExportVideos.has(videoKey(r)) ? 'checked' : ''} onchange="toggleVideoSelection('${videoKey(r)}', this.checked)"></td>
       <td>${fmt(r.create_time)}</td>
       <td>${fmt(r.display_name || r.account_name || r.username || r.business_id)}</td>
       <td style="max-width:320px;">
@@ -228,7 +274,8 @@ async function loadVideos() {
       <td>${pct(r.full_video_watched_rate)}</td><td>${fmt(r.new_followers)}</td>
       <td><button class="btn btn-secondary" onclick="showDetail('${r.item_id}', '${r.business_id}')">详情</button></td>
     </tr>
-  `).join('') || '<tr><td colspan="13" class="muted">暂无视频数据</td></tr>';
+  `).join('') || '<tr><td colspan="14" class="muted">暂无视频数据</td></tr>';
+  updateSelectedCount();
 }
 
 async function loadAll() {
@@ -329,7 +376,16 @@ async function showDetail(itemId, businessId) {
 
 async function exportOfficial() {
   try {
-    const res = await fetch('/api/tiktok-official/export', { method: 'POST' });
+    const videos = Array.from(selectedExportVideos.values());
+    if (!videos.length) {
+      alert('请先勾选要导出的视频');
+      return;
+    }
+    const res = await fetch('/api/tiktok-official/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videos }),
+    });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
       throw new Error(d.message || ('HTTP ' + res.status));

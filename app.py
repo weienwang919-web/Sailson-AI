@@ -7151,7 +7151,11 @@ def api_tiktok_official_profile_metrics():
 @login_required
 def api_tiktok_official_export():
     try:
-        out = tiktok_official_service.build_export()
+        data = request.get_json(silent=True) or {}
+        videos = data.get('videos') or []
+        if not isinstance(videos, list):
+            return jsonify({'status': 'error', 'message': 'videos 必须是数组'}), 400
+        out = tiktok_official_service.build_export(videos=videos)
         buf = BytesIO(out)
         buf.seek(0)
         return send_file(
