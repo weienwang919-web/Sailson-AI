@@ -797,6 +797,7 @@ def build_export(videos: list[dict[str, Any]] | None = None) -> bytes:
         "分享",
         "收藏",
         "平均观看",
+        "视频时长",
         "完播率",
         "新增粉",
         "详情",
@@ -816,6 +817,7 @@ def build_export(videos: list[dict[str, Any]] | None = None) -> bytes:
                 row.get("shares"),
                 row.get("favorites"),
                 row.get("average_time_watched"),
+                row.get("video_duration"),
                 row.get("full_video_watched_rate"),
                 row.get("new_followers"),
                 row.get("share_url") or row.get("item_id"),
@@ -870,15 +872,20 @@ def _append_video_detail_sheet(wb: Workbook, row: dict[str, Any], index: int) ->
     title = _unique_sheet_title(wb, f"{index}-{_chart_label(row)}")
     ws = wb.create_sheet(title)
     account = row.get("display_name") or row.get("account_name") or row.get("username") or row.get("business_id")
-    ws["A1"] = f"{account or ''} {row.get('caption') or row.get('item_id') or ''}".strip()
-    ws["A2"] = row.get("share_url") or row.get("item_id")
+    ws["A1"] = "视频详情"
+    ws["A2"] = "账号"
+    ws["B2"] = account
+    ws["A3"] = "视频"
+    ws["B3"] = row.get("caption")
+    ws["A4"] = "链接"
+    ws["B4"] = row.get("share_url") or row.get("item_id")
 
-    engagement_likes = _loads(row.get("engagement_likes")) or []
-    retention = _loads(row.get("video_view_retention")) or []
-    likes_count = _write_series_table(ws, 4, 1, "互动点赞明细", engagement_likes, "互动点赞")
-    retention_count = _write_series_table(ws, 4, 5, "每秒留存明细", retention, "留存率")
-    _add_series_chart(ws, 4, 1, likes_count, "互动点赞折线图", "互动点赞", "I4")
-    _add_series_chart(ws, 4, 5, retention_count, "留存折线图", "留存率", "I22")
+    engagement_likes = _series_points(_loads(row.get("engagement_likes")) or [])
+    retention = _series_points(_loads(row.get("video_view_retention")) or [])
+    likes_count = _write_series_table(ws, 26, 1, "互动点赞明细", engagement_likes, "互动点赞")
+    retention_count = _write_series_table(ws, 26, 5, "每秒留存明细", retention, "留存率")
+    _add_series_chart(ws, 26, 1, likes_count, "互动点赞折线图", "互动点赞", "A6")
+    _add_series_chart(ws, 26, 5, retention_count, "留存折线图", "留存率", "I6")
     _autosize_columns(ws)
 
 
@@ -892,12 +899,7 @@ def _write_series_table(ws, start_row: int, start_col: int, title: str, values, 
     out_row = start_row + 2
     count = 0
     for item in values:
-        if not isinstance(item, dict):
-            continue
-        second = _series_second(item)
-        value = _series_value(item)
-        if second is None or value is None:
-            continue
+        second, value = item
         ws.cell(row=out_row, column=start_col, value=second)
         ws.cell(row=out_row, column=start_col + 1, value=value)
         out_row += 1
@@ -905,6 +907,21 @@ def _write_series_table(ws, start_row: int, start_col: int, title: str, values, 
     if count == 0:
         ws.cell(row=start_row + 2, column=start_col, value="暂无数据")
     return count
+
+
+def _series_points(values) -> list[tuple[int, float]]:
+    if not isinstance(values, list):
+        return []
+    points: dict[int, float] = {}
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        second = _series_second(item)
+        value = _series_value(item)
+        if second is None or value is None:
+            continue
+        points[int(second)] = float(value)
+    return sorted(points.items())
 
 
 def _add_series_chart(ws, start_row: int, start_col: int, source_len: int, title: str, value_title: str, anchor: str) -> None:
