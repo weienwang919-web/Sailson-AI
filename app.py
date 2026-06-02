@@ -1299,8 +1299,8 @@ def tiktok_account_callback():
 
 def _tiktok_public_base_url():
     public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root).rstrip('/')
-    if public_base == 'https://www.sailson.com':
-        return 'https://sailson.com'
+    if public_base in {'https://www.sailson.com', 'https://sailson.com'}:
+        return 'https://sailson-ai.onrender.com'
     return public_base
 
 
