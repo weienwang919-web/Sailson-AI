@@ -21,6 +21,17 @@ services:
       # Apify Token（用于爬取 TikTok 等）
       - key: APIFY_TOKEN
         sync: false
+      # TikTok Business API（官号监控）
+      - key: TIKTOK_APP_ID
+        sync: false
+      - key: TIKTOK_APP_SECRET
+        sync: false
+      - key: TIKTOK_BUSINESS_ACCESS_TOKEN
+        sync: false
+      - key: TIKTOK_OFFICIAL_ACCOUNTS_JSON
+        sync: false
+      - key: PUBLIC_BASE_URL
+        value: "https://www.sailson.com"
       # PostgreSQL 数据库地址（Render 创建的数据库会自动提供 DATABASE_URL）
       - key: DATABASE_URL
         sync: false
@@ -53,6 +64,10 @@ services:
       - key: DASHSCOPE_API_KEY
         sync: false
       - key: APIFY_TOKEN
+        sync: false
+      - key: TIKTOK_BUSINESS_ACCESS_TOKEN
+        sync: false
+      - key: TIKTOK_OFFICIAL_ACCOUNTS_JSON
         sync: false
       - key: DATABASE_URL
         sync: false

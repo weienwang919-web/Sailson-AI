@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TikTok 官号监控</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
+    .page-header { background: linear-gradient(135deg, #111827, #0f172a); color: #fff; padding: 22px 28px; }
+    .page-header h1 { font-size: 20px; font-weight: 700; }
+    .page-header .subtitle { font-size: 12px; color: rgba(255,255,255,0.68); margin-top: 6px; line-height: 1.6; }
+    .page-header a { color: #8ec5ff; font-size: 13px; }
+    .container { max-width: 1240px; margin: 0 auto; padding: 20px 18px 48px; }
+    .card { background: #fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 12px; border-left: 4px solid #111827; padding-left: 10px; }
+    .hint { font-size: 12px; color: #666; line-height: 1.55; margin-bottom: 12px; background: #f8f9fa; padding: 10px 12px; border-radius: 8px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+    label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+    input, select { padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 13px; min-width: 140px; }
+    .btn { padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn-primary { background: #111827; color: #fff; }
+    .btn-secondary { background: #e5e7eb; color: #111827; }
+    .btn:disabled { background: #aaa; cursor: not-allowed; }
+    .status { margin-top: 10px; font-size: 12px; color: #666; min-height: 18px; word-break: break-all; }
+    .status.err { color: #c0392b; }
+    .status.ok { color: #2d7a2d; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .account { border: 1px solid #eef0f3; border-radius: 12px; padding: 12px; background: #fbfbfc; }
+    .account-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
+    .metric-line { color: #555; font-size: 12px; line-height: 1.8; }
+    .pill { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; background: #e5e7eb; color: #374151; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px 6px; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; color: #374151; font-weight: 700; position: sticky; top: 0; z-index: 1; }
+    .table-wrap { overflow: auto; max-height: 540px; border: 1px solid #eee; border-radius: 10px; }
+    .muted { color: #777; }
+    .link { color: #1a7fd4; text-decoration: none; }
+    .detail { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0f172a; color: #dbeafe; border-radius: 10px; padding: 12px; max-height: 360px; overflow: auto; font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="page-header">
+  <h1>TikTok 官号监控</h1>
+  <div class="subtitle">通过 TikTok Business API 拉取已授权官号的视频表现、主页趋势和粉丝画像。洞察字段通常有 T+24-48 小时延迟。</div>
+  <div style="margin-top:10px;"><a href="/">← 返回首页</a></div>
+</div>
+
+<div class="container">
+  <div class="card">
+    <h2>刷新与导出</h2>
+    <div class="hint">
+      需要先在 Render 环境变量配置 <code>TIKTOK_BUSINESS_ACCESS_TOKEN</code> 和 <code>TIKTOK_OFFICIAL_ACCOUNTS_JSON</code>。
+      账号 JSON 示例：<code>[{"name":"Brand TH","business_id":"OAuth 返回的 open_id"}]</code>。
+    </div>
+    <div class="toolbar">
+      <div>
+        <label>账号</label>
+        <select id="account-select"><option value="">全部账号</option></select>
+      </div>
+      <div>
+        <label>主页趋势天数</label>
+        <input id="profile-days" type="number" min="1" max="60" value="30">
+      </div>
+      <div>
+        <label>视频页数（每页最多20）</label>
+        <input id="max-pages" type="number" min="1" max="50" value="5">
+      </div>
+      <button class="btn btn-primary" id="refresh-btn" onclick="refreshOfficial()">刷新官方数据</button>
+      <button class="btn btn-secondary" onclick="openAccountAuth()">TikTok 账号授权</button>
+      <button class="btn btn-secondary" onclick="openBusinessAuth()">广告主授权</button>
+      <button class="btn btn-secondary" onclick="exportOfficial()">导出 Excel</button>
+      <button class="btn btn-secondary" onclick="loadAll()">重新加载</button>
+    </div>
+    <div class="status" id="refresh-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>官号总览</h2>
+    <div class="grid" id="accounts"></div>
+  </div>
+
+  <div class="card">
+    <h2>主页每日趋势</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>日期</th><th>账号</th><th>粉丝数</th><th>播放</th><th>触达</th><th>主页访问</th><th>点赞</th><th>评论</th><th>分享</th><th>新增粉</th><th>掉粉</th>
+          </tr>
+        </thead>
+        <tbody id="metrics-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>视频明细</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>发布时间</th><th>账号</th><th>视频</th><th>播放</th><th>覆盖</th><th>点赞</th><th>评论</th><th>分享</th><th>收藏</th><th>平均观看</th><th>完播率</th><th>新增粉</th><th>详情</th>
+          </tr>
+        </thead>
+        <tbody id="videos-body"></tbody>
+      </table>
+    </div>
+    <div class="status" id="videos-status"></div>
+  </div>
+
+  <div class="card" id="detail-card" style="display:none;">
+    <h2>视频详情原始分布</h2>
+    <div class="detail" id="detail-json"></div>
+  </div>
+</div>
+
+<script>
+let accounts = [];
+let currentTask = null;
+let authUrls = null;
+
+function fmt(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  if (typeof v === 'number') return v.toLocaleString();
+  return String(v);
+}
+
+function pct(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return (n * 100).toFixed(2) + '%';
+}
+
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status === 'error') throw new Error(data.message || ('HTTP ' + res.status));
+  return data;
+}
+
+async function loadAccounts() {
+  const data = await fetchJson('/api/tiktok-official/accounts');
+  accounts = data.accounts || [];
+  const sel = document.getElementById('account-select');
+  sel.innerHTML = '<option value="">全部账号</option>' + accounts.map(a => (
+    '<option value="' + a.business_id + '">' + (a.display_name || a.account_name || a.business_id) + '</option>'
+  )).join('');
+  const wrap = document.getElementById('accounts');
+  if (!accounts.length) {
+    wrap.innerHTML = '<div class="hint">暂无账号配置。请配置 TIKTOK_OFFICIAL_ACCOUNTS_JSON。</div>';
+    return;
+  }
+  wrap.innerHTML = accounts.map(a => `
+    <div class="account">
+      <div class="account-title">
+        <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
+        <span class="pill">${a.enabled ? '启用' : '停用'}</span>
+      </div>
+      <div class="metric-line">用户名：${fmt(a.username)}</div>
+      <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总赞：${fmt(a.total_likes)} ｜ 视频：${fmt(a.videos_count)}</div>
+      <div class="metric-line">企业号：${a.is_business_account === true ? '是' : a.is_business_account === false ? '否' : '-' } ｜ 认证：${a.is_verified === true ? '是' : a.is_verified === false ? '否' : '-'}</div>
+      <div class="metric-line">最近刷新：${fmt(a.last_refreshed_at)}</div>
+      ${a.profile_deep_link ? `<a class="link" href="${a.profile_deep_link}" target="_blank">打开主页</a>` : ''}
+    </div>
+  `).join('');
+}
+
+async function loadAuthUrls() {
+  try {
+    authUrls = await fetchJson('/api/tiktok-official/auth-urls');
+  } catch (e) {
+    authUrls = null;
+    const st = document.getElementById('refresh-status');
+    st.textContent = '授权入口暂不可用：' + String(e.message || e);
+    st.className = 'status err';
+  }
+}
+
+async function openAccountAuth() {
+  if (!authUrls) await loadAuthUrls();
+  if (authUrls && authUrls.account_url) {
+    window.open(authUrls.account_url, '_blank', 'noopener,noreferrer');
+  }
+}
+
+async function openBusinessAuth() {
+  if (!authUrls) await loadAuthUrls();
+  if (authUrls && authUrls.business_url) {
+    window.open(authUrls.business_url, '_blank', 'noopener,noreferrer');
+  }
+}
+
+async function loadMetrics() {
+  const bid = document.getElementById('account-select').value;
+  const days = document.getElementById('profile-days').value || 30;
+  const qs = new URLSearchParams({ days });
+  if (bid) qs.set('business_id', bid);
+  const data = await fetchJson('/api/tiktok-official/profile-metrics?' + qs.toString());
+  const rows = data.items || [];
+  document.getElementById('metrics-body').innerHTML = rows.map(r => `
+    <tr>
+      <td>${fmt(r.metric_date)}</td><td>${fmt(r.business_id)}</td><td>${fmt(r.followers_count)}</td><td>${fmt(r.video_views)}</td>
+      <td>${fmt(r.unique_video_views)}</td><td>${fmt(r.profile_views)}</td><td>${fmt(r.likes)}</td><td>${fmt(r.comments)}</td>
+      <td>${fmt(r.shares)}</td><td>${fmt(r.daily_new_followers)}</td><td>${fmt(r.daily_lost_followers)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="11" class="muted">暂无趋势数据</td></tr>';
+}
+
+async function loadVideos() {
+  const bid = document.getElementById('account-select').value;
+  const qs = new URLSearchParams({ page: '1', page_size: '100' });
+  if (bid) qs.set('business_id', bid);
+  const data = await fetchJson('/api/tiktok-official/videos?' + qs.toString());
+  const rows = data.items || [];
+  document.getElementById('videos-status').textContent = '共 ' + fmt(data.total || 0) + ' 条视频，当前显示前 ' + rows.length + ' 条';
+  document.getElementById('videos-body').innerHTML = rows.map(r => `
+    <tr>
+      <td>${fmt(r.create_time)}</td>
+      <td>${fmt(r.display_name || r.account_name || r.username || r.business_id)}</td>
+      <td style="max-width:320px;">
+        <div>${fmt(r.caption).slice(0, 90)}</div>
+        ${r.share_url ? `<a class="link" href="${r.share_url}" target="_blank">打开视频</a>` : ''}
+      </td>
+      <td>${fmt(r.video_views)}</td><td>${fmt(r.reach)}</td><td>${fmt(r.likes)}</td><td>${fmt(r.comments)}</td>
+      <td>${fmt(r.shares)}</td><td>${fmt(r.favorites)}</td><td>${fmt(r.average_time_watched)}</td>
+      <td>${pct(r.full_video_watched_rate)}</td><td>${fmt(r.new_followers)}</td>
+      <td><button class="btn btn-secondary" onclick="showDetail('${r.item_id}', '${r.business_id}')">详情</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="13" class="muted">暂无视频数据</td></tr>';
+}
+
+async function loadAll() {
+  const st = document.getElementById('refresh-status');
+  st.className = 'status';
+  st.textContent = '加载中...';
+  try {
+    await loadAuthUrls();
+    await loadAccounts();
+    await loadMetrics();
+    await loadVideos();
+    st.textContent = '已加载';
+    st.className = 'status ok';
+  } catch (e) {
+    st.textContent = String(e.message || e);
+    st.className = 'status err';
+  }
+}
+
+async function refreshOfficial() {
+  const btn = document.getElementById('refresh-btn');
+  const st = document.getElementById('refresh-status');
+  const bid = document.getElementById('account-select').value;
+  btn.disabled = true;
+  st.className = 'status';
+  st.textContent = '提交刷新任务...';
+  try {
+    const payload = {
+      business_ids: bid ? [bid] : [],
+      profile_days: Number(document.getElementById('profile-days').value || 30),
+      max_pages: Number(document.getElementById('max-pages').value || 5),
+    };
+    const data = await fetchJson('/api/tiktok-official/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    currentTask = data.task_id;
+    pollRefresh(currentTask);
+  } catch (e) {
+    st.textContent = String(e.message || e);
+    st.className = 'status err';
+    btn.disabled = false;
+  }
+}
+
+function pollRefresh(taskId) {
+  const btn = document.getElementById('refresh-btn');
+  const st = document.getElementById('refresh-status');
+  let n = 0;
+  const timer = setInterval(async () => {
+    n++;
+    try {
+      const data = await fetchJson('/api/tiktok-official/refresh-status/' + encodeURIComponent(taskId));
+      st.textContent = data.progress || data.status || '';
+      if (data.status === 'completed') {
+        clearInterval(timer);
+        st.textContent = '刷新完成';
+        st.className = 'status ok';
+        btn.disabled = false;
+        await loadAll();
+      } else if (data.status === 'failed') {
+        clearInterval(timer);
+        st.textContent = data.error || '刷新失败';
+        st.className = 'status err';
+        btn.disabled = false;
+      } else if (n > 1200) {
+        clearInterval(timer);
+        st.textContent = '轮询超时，请稍后刷新页面查看';
+        btn.disabled = false;
+      }
+    } catch (e) {
+      st.textContent = String(e.message || e);
+    }
+  }, 2000);
+}
+
+async function showDetail(itemId, businessId) {
+  try {
+    const qs = new URLSearchParams({ business_id: businessId });
+    const data = await fetchJson('/api/tiktok-official/videos/' + encodeURIComponent(itemId) + '?' + qs.toString());
+    document.getElementById('detail-card').style.display = '';
+    document.getElementById('detail-json').textContent = JSON.stringify({
+      engagement_likes: data.video.engagement_likes,
+      video_view_retention: data.video.video_view_retention,
+      impression_sources: data.video.impression_sources,
+      audience_countries: data.video.audience_countries,
+      audience_genders: data.video.audience_genders,
+      audience_types: data.video.audience_types,
+      request_id: data.video.request_id,
+      log_id: data.video.log_id,
+    }, null, 2);
+    document.getElementById('detail-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    alert(String(e.message || e));
+  }
+}
+
+async function exportOfficial() {
+  try {
+    const res = await fetch('/api/tiktok-official/export', { method: 'POST' });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.message || ('HTTP ' + res.status));
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tiktok_official_monitor.xlsx';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert(String(e.message || e));
+  }
+}
+
+document.getElementById('account-select').addEventListener('change', () => {
+  loadMetrics();
+  loadVideos();
+});
+
+loadAll();
+</script>
+</body>
+</html>

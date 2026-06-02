@@ -10,6 +10,7 @@ import atexit
 import subprocess
 from collections import Counter, defaultdict
 from email.mime.text import MIMEText
+from urllib.parse import urlencode
 import pandas as pd
 import uuid
 import threading
@@ -36,6 +37,7 @@ import etl_tools
 import etl_jobs
 import sentiment_insight
 import competitor_radar
+import tiktok_official_service
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -515,6 +517,7 @@ ensure_task_queue_schema()
 ensure_analysis_results_schema()
 ensure_etl_file_outputs_schema()
 ensure_fb_post_metrics_schema()
+tiktok_official_service.ensure_schema()
 rag.ensure_tables()
 
 
@@ -1279,12 +1282,64 @@ def home():
 @app.route('/tiktok/callback/')
 def tiktok_callback():
     """公开 TikTok OAuth 回调占位页，用于开发者后台 URL 校验。"""
+    return _render_tiktok_oauth_callback('legacy')
+
+
+@app.route('/tiktok/business/callback/')
+def tiktok_business_callback():
+    """公开 TikTok 广告主授权回调页。不要加登录保护，供 TikTok 校验和 OAuth 返回。"""
+    return _render_tiktok_oauth_callback('business')
+
+
+@app.route('/tiktok/account/callback/')
+def tiktok_account_callback():
+    """公开 TikTok 账号持有人授权回调页。不要加登录保护，供 TikTok 校验和 OAuth 返回。"""
+    return _render_tiktok_oauth_callback('account')
+
+
+def _render_tiktok_oauth_callback(callback_type: str):
+    """渲染 TikTok OAuth 回调结果，便于复制 code 换 token。"""
     code = request.args.get('code')
     state = request.args.get('state')
-    if code:
-        logger.info(f"TikTok OAuth callback received: state={state or '-'}")
-        return "TikTok callback received. You can close this page.", 200
-    return "TikTok callback ready", 200
+    error = request.args.get('error')
+    error_description = request.args.get('error_description')
+    logger.info(f"TikTok OAuth callback received: type={callback_type}, state={state or '-'}, has_code={bool(code)}")
+    title = f"TikTok {callback_type} callback"
+    if error:
+        body = f"""
+        <p style="color:#b91c1c;">授权失败</p>
+        <p><strong>error:</strong> <code>{html.escape(error)}</code></p>
+        <p><strong>description:</strong> <code>{html.escape(error_description or '')}</code></p>
+        """
+    elif code:
+        body = f"""
+        <p style="color:#166534;">授权成功，复制下面的 code 给开发者换取 access token。</p>
+        <p><strong>type:</strong> <code>{html.escape(callback_type)}</code></p>
+        <p><strong>code:</strong></p>
+        <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
+        <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
+        """
+    else:
+        body = f"""
+        <p>TikTok callback ready.</p>
+        <p>当前回调类型：<code>{html.escape(callback_type)}</code></p>
+        """
+    return f"""
+    <!doctype html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>{html.escape(title)}</title>
+    </head>
+    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;color:#111827;padding:32px;">
+      <div style="max-width:760px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.08);">
+        <h1 style="font-size:20px;margin-bottom:16px;">{html.escape(title)}</h1>
+        {body}
+      </div>
+    </body>
+    </html>
+    """, 200
 
 
 @app.route('/kol-tool')
@@ -6904,6 +6959,194 @@ def etl_download(output_id):
         download_name=row.get('filename') or 'export.xlsx',
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
+
+
+# ============================================
+# TikTok 官号监控（官方 API）
+# ============================================
+
+@app.route('/tiktok-official')
+@login_required
+def tiktok_official_page():
+    return render_template('tiktok_official.html')
+
+
+@app.route('/api/tiktok-official/accounts')
+@login_required
+def api_tiktok_official_accounts():
+    try:
+        accounts = tiktok_official_service.sync_configured_accounts()
+        return jsonify({'status': 'success', 'accounts': _json_safe_rows(accounts)})
+    except Exception as e:
+        logger.error(f"tiktok_official accounts failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/auth-urls')
+@login_required
+def api_tiktok_official_auth_urls():
+    app_id = (
+        os.environ.get('TIKTOK_APP_ID')
+        or os.environ.get('TIKTOK_CLIENT_KEY')
+        or ''
+    ).strip()
+    if not app_id:
+        return jsonify({'status': 'error', 'message': 'TIKTOK_APP_ID 未配置'}), 400
+    public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root).rstrip('/')
+    account_redirect = f'{public_base}/tiktok/account/callback/'
+    business_redirect = f'{public_base}/tiktok/business/callback/'
+    scopes = [
+        'user.info.basic',
+        'user.info.username',
+        'user.info.stats',
+        'user.info.profile',
+        'user.account.type',
+        'user.insights',
+        'video.list',
+        'video.insights',
+    ]
+    account_params = {
+        'client_key': app_id,
+        'scope': ','.join(scopes),
+        'response_type': 'code',
+        'redirect_uri': account_redirect,
+        'state': f'tiktok_account_{uuid.uuid4().hex[:12]}',
+    }
+    business_params = {
+        'app_id': app_id,
+        'state': f'tiktok_business_{uuid.uuid4().hex[:12]}',
+        'redirect_uri': business_redirect,
+    }
+    return jsonify({
+        'status': 'success',
+        'account_url': 'https://www.tiktok.com/v2/auth/authorize?' + urlencode(account_params),
+        'business_url': 'https://business-api.tiktok.com/portal/auth?' + urlencode(business_params),
+        'account_redirect_uri': account_redirect,
+        'business_redirect_uri': business_redirect,
+    })
+
+
+@app.route('/api/tiktok-official/refresh', methods=['POST'])
+@login_required
+def api_tiktok_official_refresh():
+    try:
+        data = request.get_json(silent=True) or {}
+        business_ids = data.get('business_ids') or []
+        if isinstance(business_ids, str):
+            business_ids = [business_ids]
+        profile_days = int(data.get('profile_days') or 30)
+        max_pages = int(data.get('max_pages') or 5)
+        profile_days = max(1, min(profile_days, 60))
+        max_pages = max(1, min(max_pages, 50))
+    except (TypeError, ValueError) as e:
+        return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    params = {
+        'business_ids': business_ids,
+        'profile_days': profile_days,
+        'max_pages': max_pages,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+
+    create_task(queue_task_id, user_id, session_id, function_type='tiktok_official_refresh')
+    if USE_DB_WORKER:
+        db.execute(
+            "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+            (json.dumps({'source': 'tiktok_official_refresh', **params}, ensure_ascii=False), queue_task_id),
+        )
+    else:
+
+        def _run():
+            tiktok_official_service.run_refresh_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return jsonify({'status': 'queued', 'task_id': queue_task_id})
+
+
+@app.route('/api/tiktok-official/refresh-status/<task_id>')
+@login_required
+def api_tiktok_official_refresh_status(task_id):
+    return api_etl_task_status(task_id)
+
+
+@app.route('/api/tiktok-official/videos')
+@login_required
+def api_tiktok_official_videos():
+    try:
+        business_id = (request.args.get('business_id') or '').strip() or None
+        page = int(request.args.get('page') or 1)
+        page_size = int(request.args.get('page_size') or 50)
+        page = max(1, page)
+        page_size = max(1, min(page_size, 200))
+        result = tiktok_official_service.list_videos(business_id=business_id, page=page, page_size=page_size)
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official videos failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/videos/<item_id>')
+@login_required
+def api_tiktok_official_video_detail(item_id):
+    try:
+        business_id = (request.args.get('business_id') or '').strip() or None
+        row = tiktok_official_service.get_video(item_id, business_id)
+        if not row:
+            return jsonify({'status': 'error', 'message': '视频不存在'}), 404
+        return jsonify({'status': 'success', 'video': _json_safe(row)})
+    except Exception as e:
+        logger.error(f"tiktok_official video detail failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/profile-metrics')
+@login_required
+def api_tiktok_official_profile_metrics():
+    try:
+        business_id = (request.args.get('business_id') or '').strip() or None
+        days = int(request.args.get('days') or 30)
+        rows = tiktok_official_service.list_profile_metrics(business_id=business_id, days=days)
+        return jsonify({'status': 'success', 'items': _json_safe_rows(rows)})
+    except Exception as e:
+        logger.error(f"tiktok_official profile metrics failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/export', methods=['POST'])
+@login_required
+def api_tiktok_official_export():
+    try:
+        out = tiktok_official_service.build_export()
+        buf = BytesIO(out)
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name='tiktok_official_monitor.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        logger.error(f"tiktok_official export failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+def _json_safe_rows(rows):
+    return [_json_safe(dict(row)) for row in (rows or [])]
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    return value
 
 
 # ============================================
