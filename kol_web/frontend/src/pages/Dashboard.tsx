@@ -112,6 +112,7 @@ export default function Dashboard() {
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
   const [excelScrape, setExcelScrape] = useState(true);
+  const [excelImporting, setExcelImporting] = useState(false);
   const [pureRefreshRunning, setPureRefreshRunning] = useState(false);
   const [pureRefreshStatus, setPureRefreshStatus] = useState("");
   const [linkImportOpen, setLinkImportOpen] = useState(false);
@@ -326,14 +327,26 @@ export default function Dashboard() {
     accept: ".xlsx",
     showUploadList: false,
     onChange(info: any) {
+      if (info.file.status === "uploading") {
+        if (!excelImporting) {
+          message.loading({ content: "正在上传并导入 Excel，请稍候...", key: "excel-import", duration: 0 });
+        }
+        setExcelImporting(true);
+        return;
+      }
       if (info.file.status === "done") {
+        setExcelImporting(false);
         const jobText = info.file.response.job ? `，已创建粉丝/AVV拉取任务 Job #${info.file.response.job.id}` : "";
-        message.success(`导入完成 added=${info.file.response.added}, updated=${info.file.response.updated}${jobText}`);
+        message.success({
+          content: `导入完成 added=${info.file.response.added}, updated=${info.file.response.updated}, skipped=${info.file.response.skipped}${jobText}`,
+          key: "excel-import",
+        });
         load();
         loadJobs();
       } else if (info.file.status === "error") {
+        setExcelImporting(false);
         const detail = info.file.response?.detail || info.file.response?.error || "Import failed";
-        message.error(`导入失败 ${detail}`);
+        message.error({ content: `导入失败 ${detail}`, key: "excel-import" });
       }
     },
   };
@@ -534,9 +547,11 @@ export default function Dashboard() {
           <div className="work-desc">先识别报价、合作模式、受众等人工字段；勾选后只拉取粉丝数和 AVV，不覆盖报价。</div>
           <Space>
             <Upload {...importProps}>
-              <Button type="primary" icon={<UploadOutlined />}>上传 Excel</Button>
+              <Button type="primary" icon={<UploadOutlined />} loading={excelImporting} disabled={excelImporting}>
+                {excelImporting ? "导入中..." : "上传 Excel"}
+              </Button>
             </Upload>
-            <Switch checked={excelScrape} onChange={setExcelScrape} />
+            <Switch checked={excelScrape} onChange={setExcelScrape} disabled={excelImporting} />
             <span>导入后拉粉丝/AVV</span>
           </Space>
         </Card>
