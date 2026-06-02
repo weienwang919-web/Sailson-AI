@@ -1297,6 +1297,13 @@ def tiktok_account_callback():
     return _render_tiktok_oauth_callback('account')
 
 
+def _tiktok_public_base_url():
+    public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root).rstrip('/')
+    if public_base == 'https://www.sailson.com':
+        return 'https://sailson.com'
+    return public_base
+
+
 def _render_tiktok_oauth_callback(callback_type: str):
     """渲染 TikTok OAuth 回调结果，便于复制 code 换 token。"""
     code = request.args.get('code')
@@ -1314,7 +1321,7 @@ def _render_tiktok_oauth_callback(callback_type: str):
     elif code:
         if callback_type == 'account':
             try:
-                public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root).rstrip('/')
+                public_base = _tiktok_public_base_url()
                 redirect_uri = f'{public_base}/tiktok/account/callback/'
                 token_data = tiktok_official_service.exchange_account_code(code, redirect_uri)
                 open_id = token_data.get('open_id') or ''
@@ -7015,7 +7022,7 @@ def api_tiktok_official_auth_urls():
     ).strip()
     if not app_id:
         return jsonify({'status': 'error', 'message': 'TIKTOK_APP_ID 未配置'}), 400
-    public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root).rstrip('/')
+    public_base = _tiktok_public_base_url()
     account_redirect = f'{public_base}/tiktok/account/callback/'
     business_redirect = f'{public_base}/tiktok/business/callback/'
     scopes = [

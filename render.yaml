@@ -31,7 +31,7 @@ services:
       - key: TIKTOK_OFFICIAL_ACCOUNTS_JSON
         sync: false
       - key: PUBLIC_BASE_URL
-        value: "https://www.sailson.com"
+        value: "https://sailson.com"
       # PostgreSQL 数据库地址（Render 创建的数据库会自动提供 DATABASE_URL）
       - key: DATABASE_URL
         sync: false
