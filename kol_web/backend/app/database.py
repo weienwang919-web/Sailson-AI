@@ -47,7 +47,7 @@ def ensure_usage_columns() -> None:
         "usage_detail_json": "TEXT",
     }
     with engine.begin() as conn:
-        for table in ("scrape_jobs", "official_monitor_jobs"):
+        for table in ("scrape_jobs",):
             existing = set()
             try:
                 if DATABASE_URL.startswith("sqlite"):

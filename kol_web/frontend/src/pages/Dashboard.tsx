@@ -16,8 +16,8 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { UploadOutlined } from "@ant-design/icons";
-import type { FieldCatalog, FilterPayload, KolRecord, OfficialAccount, OfficialProfileMetric, OfficialVideo, ScrapeJob } from "../api";
-import { api, exportKols, exportOfficialVideos, getFields, getFilterOptions, getJob, getJobs, getKolsByIds, getStats, importExcel, importLinks, listKols, listOfficialAccounts, listOfficialProfileMetrics, listOfficialVideos, refreshOfficialAccounts, scrapeKols, updateKol } from "../api";
+import type { FieldCatalog, FilterPayload, KolRecord, ScrapeJob } from "../api";
+import { api, exportKols, getFields, getFilterOptions, getJob, getJobs, getKolsByIds, getStats, importExcel, importLinks, listKols, scrapeKols, updateKol } from "../api";
 import { FilterBuilder } from "../components/FilterBuilder";
 
 const { TextArea } = Input;
@@ -122,15 +122,6 @@ export default function Dashboard() {
   const [manualPricingRows, setManualPricingRows] = useState<KolRecord[]>([]);
   const [manualPricingSaving, setManualPricingSaving] = useState(false);
   const [exportUpdating, setExportUpdating] = useState(false);
-  const [officialAccounts, setOfficialAccounts] = useState<OfficialAccount[]>([]);
-  const [officialVideos, setOfficialVideos] = useState<OfficialVideo[]>([]);
-  const [officialTotal, setOfficialTotal] = useState(0);
-  const [officialPage, setOfficialPage] = useState(1);
-  const [officialPageSize, setOfficialPageSize] = useState(20);
-  const [officialMetrics, setOfficialMetrics] = useState<OfficialProfileMetric[]>([]);
-  const [officialLoading, setOfficialLoading] = useState(false);
-  const [officialRefreshing, setOfficialRefreshing] = useState(false);
-  const [officialDetail, setOfficialDetail] = useState<OfficialVideo | null>(null);
 
   const load = async (overrides?: { page?: number; search?: string }) => {
     setLoading(true);
@@ -156,28 +147,9 @@ export default function Dashboard() {
   const loadJobs = async () => {
     setJobs(await getJobs());
   };
-  const loadOfficial = async (pageOverride?: number) => {
-    setOfficialLoading(true);
-    try {
-      const accounts = await listOfficialAccounts();
-      setOfficialAccounts(accounts);
-      const videos = await listOfficialVideos({ page: pageOverride ?? officialPage, pageSize: officialPageSize });
-      setOfficialVideos(videos.items);
-      setOfficialTotal(videos.total);
-      setOfficialMetrics(await listOfficialProfileMetrics(accounts[0]?.id));
-    } finally {
-      setOfficialLoading(false);
-    }
-  };
-
-
   useEffect(() => {
     load();
   }, [page, pageSize]);
-
-  useEffect(() => {
-    loadOfficial();
-  }, [officialPage, officialPageSize]);
 
   const saveCell = async (record: KolRecord, field: keyof KolRecord | `extra:${string}`, raw: string) => {
     const value = numberFields.has(field as string) ? (raw === "" ? null : Number(raw)) : raw;
@@ -513,46 +485,6 @@ export default function Dashboard() {
       },
     });
   };
-  const handleOfficialRefresh = async () => {
-    setOfficialRefreshing(true);
-    try {
-      const job = await refreshOfficialAccounts(undefined, 30);
-      if (job.status === "failed") {
-        message.error(`官号刷新失败：${job.error || "未知错误"}`);
-      } else {
-        message.success(`官号刷新完成：${job.done}/${job.total}`);
-      }
-      await loadOfficial(1);
-      setOfficialPage(1);
-    } finally {
-      setOfficialRefreshing(false);
-    }
-  };
-
-  const handleOfficialExport = async () => {
-    const blob = await exportOfficialVideos();
-    downloadBlob(blob, `official_tiktok_monitor_${timestampForFile()}.xlsx`);
-  };
-
-
-  const officialVideoColumns: ColumnsType<OfficialVideo> = [
-    { title: "发布时间", dataIndex: "create_time", width: 150, render: (value: string | null) => (value ? new Date(value).toLocaleString() : "") },
-    { title: "caption", dataIndex: "caption", width: 260, ellipsis: true },
-    { title: "播放", dataIndex: "video_views", width: 100, render: format },
-    { title: "平均观看(s)", dataIndex: "average_time_watched", width: 120, render: format },
-    { title: "完播率", dataIndex: "full_video_watched_rate", width: 100, render: percentFormat },
-    { title: "赞", dataIndex: "likes", width: 90, render: format },
-    { title: "评", dataIndex: "comments", width: 90, render: format },
-    { title: "转", dataIndex: "shares", width: 90, render: format },
-    { title: "收藏", dataIndex: "favorites", width: 90, render: format },
-    { title: "新增粉", dataIndex: "new_followers", width: 100, render: format },
-    {
-      title: "操作",
-      width: 120,
-      render: (_: unknown, record: OfficialVideo) => <Button size="small" onClick={() => setOfficialDetail(record)}>详情</Button>,
-    },
-  ];
-
   const manualPricingColumns: ColumnsType<KolRecord> = [
     {
       title: "平台",
@@ -607,51 +539,6 @@ export default function Dashboard() {
         <Stat label="Instagram" value={stats.instagram} />
         <Stat label="YouTube" value={stats.youtube} />
       </div>
-      <Card className="official-card" title="TikTok 官号监控 / Official Account Monitor">
-        <Space direction="vertical" style={{ width: "100%" }}>
-          <div className="official-summary">
-            {officialAccounts.map((account) => (
-              <div className="official-account" key={account.id}>
-                <div className="official-account-name">{account.display_name || account.username || account.business_id}</div>
-                <div className="official-account-meta">
-                  粉丝 {format(account.followers_count)} · 视频 {format(account.videos_count)} · {account.is_business_account ? "企业号" : "账号"}
-                </div>
-                <div className="official-account-meta">最近刷新 {account.last_refreshed_at ? new Date(account.last_refreshed_at).toLocaleString() : "暂无"}</div>
-              </div>
-            ))}
-            {!officialAccounts.length && <div className="official-account-meta">暂无账号配置，将使用后端 mock 账号预览。</div>}
-          </div>
-          <Space wrap>
-            <Button type="primary" loading={officialRefreshing} onClick={handleOfficialRefresh}>刷新官方数据</Button>
-            <Button onClick={handleOfficialExport}>导出官号 Excel</Button>
-            <span className="official-hint">无 token 时后端会返回 mock 数据；真实联调需配置 TIKTOK_BUSINESS_ACCESS_TOKEN 和账号 open_id。</span>
-          </Space>
-          <div className="official-metrics">
-            <Stat label="官号视频" value={officialTotal} />
-            <Stat label="近日报表" value={officialMetrics.length} />
-            <Stat label="总播放" value={sumOfficial(officialVideos, "video_views")} />
-            <Stat label="总互动" value={sumOfficial(officialVideos, "likes") + sumOfficial(officialVideos, "comments") + sumOfficial(officialVideos, "shares")} />
-          </div>
-          <Table
-            rowKey="id"
-            loading={officialLoading}
-            columns={officialVideoColumns}
-            dataSource={officialVideos}
-            size="small"
-            scroll={{ x: 1400 }}
-            pagination={{
-              total: officialTotal,
-              current: officialPage,
-              pageSize: officialPageSize,
-              showSizeChanger: true,
-              onChange: (p, ps) => {
-                setOfficialPage(p);
-                setOfficialPageSize(ps);
-              },
-            }}
-          />
-        </Space>
-      </Card>
       <div className="workbench">
         <Card className="work-card">
           <div className="work-title">1. 导入带报价 Excel</div>
@@ -839,20 +726,6 @@ export default function Dashboard() {
           <Table rowKey="id" columns={jobColumns} dataSource={jobs} pagination={false} size="small" />
         </Space>
       </Drawer>
-      <Drawer title="官号视频详情" open={!!officialDetail} onClose={() => setOfficialDetail(null)} width={720}>
-        {officialDetail && (
-          <Space direction="vertical" style={{ width: "100%" }}>
-            <div style={{ fontWeight: 700 }}>{officialDetail.caption || officialDetail.item_id}</div>
-            <div>链接：{officialDetail.share_url || "暂无"}</div>
-            <div>Request ID：{officialDetail.request_id || "暂无"}</div>
-            <div>Log ID：{officialDetail.log_id || "暂无"}</div>
-            <Distribution title="互动点赞分布" rows={officialDetail.engagement_likes} />
-            <Distribution title="视频留存分布" rows={officialDetail.video_view_retention} />
-            <Distribution title="流量来源" rows={officialDetail.impression_sources} />
-            <Distribution title="受众国家" rows={officialDetail.audience_countries} />
-          </Space>
-        )}
-      </Drawer>
       <Modal
         title="只上传链接 / Link-only Import"
         open={linkImportOpen}
@@ -929,39 +802,6 @@ function format(value: unknown) {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") return value.toLocaleString();
   return String(value);
-}
-
-function percentFormat(value: unknown) {
-  if (value === null || value === undefined || value === "") return "";
-  const n = Number(value);
-  if (Number.isNaN(n)) return String(value);
-  return `${(n * 100).toFixed(1)}%`;
-}
-
-function sumOfficial(rows: OfficialVideo[], field: keyof OfficialVideo) {
-  return rows.reduce((sum, row) => {
-    const value = Number(row[field] ?? 0);
-    return sum + (Number.isNaN(value) ? 0 : value);
-  }, 0);
-}
-
-function Distribution({ title, rows }: { title: string; rows: Record<string, unknown>[] }) {
-  return (
-    <div>
-      <div style={{ fontWeight: 700, margin: "12px 0 6px" }}>{title}</div>
-      {rows?.length ? (
-        <Table
-          size="small"
-          pagination={false}
-          rowKey={(_, idx) => String(idx)}
-          dataSource={rows}
-          columns={Object.keys(rows[0] || {}).map((key) => ({ title: key, dataIndex: key }))}
-        />
-      ) : (
-        <div style={{ color: "#98a2b3" }}>暂无数据/权限不足/数据延迟</div>
-      )}
-    </div>
-  );
 }
 
 function hasValue(value: unknown) {
