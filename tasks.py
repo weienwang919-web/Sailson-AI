@@ -1244,7 +1244,7 @@ def run_thai_scrape_job(
                 (f"Hashtag 发现完成，共 {len(post_urls)} 条帖子，开始抓取评论...", scrape_task_id),
             )
 
-        scrape_fb_comments(
+        return scrape_fb_comments(
             post_urls=post_urls,
             discovered_posts=discovered_posts,
             days_back=days_back,

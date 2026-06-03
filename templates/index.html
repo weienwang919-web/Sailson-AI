@@ -229,6 +229,19 @@
 
         .footer { text-align: center; padding: 60px 0; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 40px; }
 
+
+        .task-queue-panel { max-width: 1100px; margin: -36px auto 44px; padding: 0 20px; }
+        .task-queue-card { background: #fff; border: 1px solid rgba(0,0,0,0.05); border-radius: 20px; padding: 22px 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.03); }
+        .task-queue-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 14px; }
+        .task-queue-title { font-weight: 700; font-size: 1.05rem; }
+        .task-queue-meta { color: var(--text-secondary); font-size: 0.88rem; }
+        .task-queue-stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+        .task-pill { background: #f5f7fb; border-radius: 999px; padding: 6px 12px; font-size: 0.88rem; color: #344054; }
+        .task-pill strong { color: #1d1d1f; }
+        .task-list { display: grid; gap: 8px; }
+        .task-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 12px; background: #fafafa; font-size: 0.88rem; }
+        .task-row small { color: var(--text-secondary); }
+
         /* 移动端适配微调 */
         @media (max-width: 768px) {
             .hero-title { font-size: 3rem; }
@@ -315,6 +328,25 @@
                 <div class="stat-value counter" id="stat-tokens" data-target="0">0</div>
             </div>
             <div class="chart-wrapper"><canvas id="chart3"></canvas></div>
+        </div>
+    </div>
+
+
+    <div class="task-queue-panel">
+        <div class="task-queue-card">
+            <div class="task-queue-header">
+                <div>
+                    <div class="task-queue-title">任务队列状态</div>
+                    <div class="task-queue-meta" id="task-queue-meta">正在读取队列...</div>
+                </div>
+                <button class="btn btn-sm btn-outline-primary" type="button" onclick="loadTaskQueueStats()">刷新</button>
+            </div>
+            <div class="task-queue-stats" id="task-queue-stats">
+                <span class="task-pill">等待 <strong>0</strong></span>
+                <span class="task-pill">运行 <strong>0</strong></span>
+                <span class="task-pill">失败 <strong>0</strong></span>
+            </div>
+            <div class="task-list" id="task-running-list"></div>
         </div>
     </div>
 
@@ -447,6 +479,7 @@
 
             // 简单加载数据，不要任何动画
             loadDashboardStats();
+            loadTaskQueueStats();
 
             // 反馈表单提交
             document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
@@ -532,5 +565,48 @@
                 document.getElementById('stat-tokens').textContent = '0';
             }
         }
+
+        async function loadTaskQueueStats() {
+            const meta = document.getElementById('task-queue-meta');
+            const stats = document.getElementById('task-queue-stats');
+            const runningList = document.getElementById('task-running-list');
+            if (!meta || !stats || !runningList) return;
+            try {
+                const resp = await fetch('/api/tasks/summary', { signal: AbortSignal.timeout(5000) });
+                const data = await resp.json();
+                const totals = data.totals || {};
+                const pending = Number(totals.pending || 0);
+                const running = Number(totals.claimed || 0) + Number(totals.processing || 0);
+                const failed = Number(totals.failed || 0);
+                const completed = Number(totals.completed || 0);
+                stats.innerHTML = `
+                    <span class="task-pill">等待 <strong>${pending}</strong></span>
+                    <span class="task-pill">运行 <strong>${running}</strong></span>
+                    <span class="task-pill">完成(7天) <strong>${completed}</strong></span>
+                    <span class="task-pill">失败(7天) <strong>${failed}</strong></span>
+                `;
+                if (data.oldest_pending) {
+                    meta.textContent = `最早等待：${data.oldest_pending.function_type || 'unknown'} · ${formatTaskTime(data.oldest_pending.created_at)}`;
+                } else {
+                    meta.textContent = running ? '当前有任务运行中，没有等待任务' : '当前没有排队任务';
+                }
+                const rows = data.running || [];
+                runningList.innerHTML = rows.length ? rows.map((row) => `
+                    <div class="task-row">
+                        <div>${row.function_type || 'unknown'}<br><small>${row.progress || ''}</small></div>
+                        <div><small>${row.worker_id || ''}<br>${formatTaskTime(row.started_at || row.updated_at)}</small></div>
+                    </div>
+                `).join('') : '';
+            } catch (e) {
+                meta.textContent = '队列状态读取失败，请稍后刷新';
+                console.error('任务队列读取失败:', e);
+            }
+        }
+
+        function formatTaskTime(value) {
+            if (!value) return '';
+            try { return new Date(value).toLocaleString(); } catch (e) { return value; }
+        }
+
 </script>
 {% endblock %}

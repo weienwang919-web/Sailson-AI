@@ -22,6 +22,8 @@ from app.models import KOLRecord, ScrapeJob
 BASE_DIR = Path(__file__).resolve().parents[2]
 RAW_DIR = BASE_DIR / "data" / "raw"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
+USD_TO_CNY = 7.2
+CRAWLER_USD_PER_1000 = 3.0
 
 
 def create_scrape_job(db: Session, ids: list[int] | None = None) -> ScrapeJob:
@@ -69,8 +71,22 @@ def run_scrape_job(job_id: int, ids: list[int] | None = None, videos_per_profile
             "youtube": aggregate_youtube(raw.get("youtube", []), videos_per_profile),
         }
         update_records_with_metrics(db, records, metrics)
+        item_count = sum(len(items or []) for items in raw.values())
+        if not item_count:
+            item_count = len(records) * max(1, int(videos_per_profile or 1))
+        crawler_cost_usd = item_count * CRAWLER_USD_PER_1000 / 1000
         job.status = "completed"
         job.done = len(records)
+        job.item_count = item_count
+        job.crawler_items = item_count
+        job.api_calls = sum(1 for items in raw.values() if items)
+        job.crawler_cost_usd = crawler_cost_usd
+        job.crawler_cost_cny = crawler_cost_usd * USD_TO_CNY
+        job.total_cost_cny = job.crawler_cost_cny
+        job.usage_detail_json = json.dumps(
+            {"pricing": "crawler USD 3 / 1000 rows", "videos_per_profile": videos_per_profile},
+            ensure_ascii=False,
+        )
         job.updated_at = datetime.utcnow()
         db.commit()
     except Exception as exc:  # noqa: BLE001 - job error is returned to UI

@@ -38,6 +38,7 @@ import etl_jobs
 import sentiment_insight
 import competitor_radar
 import tiktok_official_service
+import usage_service
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -383,6 +384,21 @@ def ensure_task_queue_schema():
         logger.info("✅ 已确认 task_queue.task_params 列存在")
     except Exception as e:
         logger.warning(f"⚠️ 无法添加 task_queue.task_params 列: {e}")
+    for column_name, ddl in (
+        ("worker_id", "VARCHAR(128)"),
+        ("started_at", "TIMESTAMP"),
+        ("finished_at", "TIMESTAMP"),
+        ("attempts", "INTEGER DEFAULT 0"),
+    ):
+        try:
+            db.execute(f"ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS {column_name} {ddl}")
+            logger.info(f"✅ 已确认 task_queue.{column_name} 列存在")
+        except Exception as e:
+            logger.warning(f"⚠️ 无法添加 task_queue.{column_name} 列: {e}")
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_task_queue_status_created ON task_queue(status, created_at)")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法创建 task_queue 状态索引: {e}")
 
 
 def ensure_analysis_results_schema():
@@ -518,6 +534,7 @@ ensure_analysis_results_schema()
 ensure_etl_file_outputs_schema()
 ensure_fb_post_metrics_schema()
 tiktok_official_service.ensure_schema()
+usage_service.ensure_schema()
 rag.ensure_tables()
 
 
@@ -600,12 +617,12 @@ def create_task(task_id, user_id, session_id, function_type=None):
             db.execute("""
                 INSERT INTO task_queue (task_id, user_id, session_id, function_type, status, progress)
                 VALUES (%s, %s, %s, %s, %s, %s)
-            """, (task_id, user_id, session_id, function_type, 'pending', '任务已创建'))
+            """, (task_id, user_id, session_id, function_type, 'pending', '任务已创建，等待 worker 领取'))
         else:
             db.execute("""
                 INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
                 VALUES (%s, %s, %s, %s, %s)
-            """, (task_id, user_id, session_id, 'pending', '任务已创建'))
+            """, (task_id, user_id, session_id, 'pending', '任务已创建，等待 worker 领取'))
 
         logger.info(f"✅ 任务 {task_id} 已写入数据库（type={function_type}）")
     except Exception as e:
@@ -633,6 +650,11 @@ def update_task(task_id, status=None, progress=None, result=None, error=None, re
         if status is not None:
             updates.append("status = %s")
             params.append(status)
+            if status in {'processing', 'claimed'}:
+                updates.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
+                updates.append("finished_at = NULL")
+            elif status in {'completed', 'failed'}:
+                updates.append("finished_at = CURRENT_TIMESTAMP")
         if progress is not None:
             updates.append("progress = %s")
             params.append(progress)
@@ -659,14 +681,60 @@ def get_task(task_id):
     """获取任务状态"""
     try:
         task = db.query_one("""
-            SELECT task_id, status, progress, result, error, record_id
+            SELECT task_id, status, progress, result, error, record_id, function_type,
+                   user_id, session_id, worker_id, attempts, created_at, updated_at,
+                   started_at, finished_at
             FROM task_queue
             WHERE task_id = %s
         """, (task_id,))
+        if task:
+            task = dict(task)
+            task.update(get_task_queue_position(task_id, task.get('status')))
         return task
     except Exception as e:
         logger.error(f"❌ 获取任务状态失败: {e}")
         return None
+
+
+def get_task_queue_position(task_id, status=None):
+    """Return queue position information for one task."""
+    try:
+        if status != 'pending':
+            running = db.query_one("""
+                SELECT COUNT(*) AS count FROM task_queue
+                WHERE status IN ('claimed', 'processing')
+            """) or {}
+            pending = db.query_one("SELECT COUNT(*) AS count FROM task_queue WHERE status = 'pending'") or {}
+            return {
+                'queue_position': None,
+                'tasks_ahead': 0,
+                'pending_count': int(pending.get('count') or 0),
+                'running_count': int(running.get('count') or 0),
+            }
+        row = db.query_one("""
+            SELECT created_at FROM task_queue WHERE task_id = %s
+        """, (task_id,))
+        if not row:
+            return {}
+        ahead = db.query_one("""
+            SELECT COUNT(*) AS count FROM task_queue
+            WHERE status = 'pending' AND created_at < %s
+        """, (row.get('created_at'),)) or {}
+        pending = db.query_one("SELECT COUNT(*) AS count FROM task_queue WHERE status = 'pending'") or {}
+        running = db.query_one("""
+            SELECT COUNT(*) AS count FROM task_queue
+            WHERE status IN ('claimed', 'processing')
+        """) or {}
+        ahead_count = int(ahead.get('count') or 0)
+        return {
+            'queue_position': ahead_count + 1,
+            'tasks_ahead': ahead_count,
+            'pending_count': int(pending.get('count') or 0),
+            'running_count': int(running.get('count') or 0),
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ 计算任务排队位置失败: {e}")
+        return {}
 
 # ============================================
 # 启动时恢复被中断的任务（仅 Web 进程执行）
@@ -815,26 +883,17 @@ def call_veo_api(prompt):
     return "https://cdn.pixabay.com/video/2023/10/22/186115-877653483_large.mp4"
 
 
-def log_usage(user_id, username, department, function_type, comments_count, ai_tokens):
-    """记录使用情况和成本"""
+def log_usage(user_id, username, department, function_type, comments_count, ai_tokens, task_id=None, record_id=None):
+    """记录使用情况和成本。
+
+    兼容旧 usage_logs，同时写入 usage_events。爬虫费用统一按每 1000 条 3 美金计算。
+    """
     try:
-        # 计算成本
-        ai_cost = ai_tokens * 0.008 / 1000  # 通义千问定价
-
-        # 根据功能类型计算 Apify 成本
-        if function_type == 'sentiment':
-            # Facebook 评论：$2.50/1000条
-            apify_cost_usd = comments_count * 2.50 / 1000
-        elif function_type == 'competitor':
-            # TikTok 数据：$3.70/1000条
-            apify_cost_usd = comments_count * 3.70 / 1000
-        else:
-            apify_cost_usd = 0
-
-        apify_cost = apify_cost_usd * USD_TO_CNY  # 转换为人民币
+        ai_cost = ai_tokens * 0.008 / 1000  # 通义千问估算价：人民币/千 token
+        apify_cost_usd = comments_count * 3.00 / 1000
+        apify_cost = apify_cost_usd * USD_TO_CNY
         total_cost = ai_cost + apify_cost
 
-        # 保存到数据库
         db.execute("""
             INSERT INTO usage_logs
             (user_id, username, department, function_type, comments_count,
@@ -843,7 +902,21 @@ def log_usage(user_id, username, department, function_type, comments_count, ai_t
         """, (user_id, username, department, function_type, comments_count,
               ai_tokens, ai_cost, apify_cost, total_cost))
 
-        logger.info(f"💰 成本记录: AI={ai_cost:.4f}元 + Apify={apify_cost:.4f}元 = 总计{total_cost:.4f}元")
+        usage_service.record_usage_event(
+            module=function_type,
+            user_id=user_id,
+            username=username,
+            department=department,
+            task_id=task_id,
+            record_id=record_id,
+            item_count=comments_count,
+            crawler_items=comments_count,
+            ai_tokens=ai_tokens,
+            source='actual',
+            detail={'legacy_usage_logs': True, 'pricing_note': 'crawler USD 3 / 1000 rows'},
+        )
+
+        logger.info(f"💰 成本记录: AI={ai_cost:.4f}元 + 爬虫=${apify_cost_usd:.4f}/{apify_cost:.4f}元 = 总计{total_cost:.4f}元")
 
         return total_cost
 
@@ -1209,7 +1282,7 @@ def process_analysis_task(task_id, url=None, file_data=None, session_id='default
 
         # 记录使用成本
         if user_id:
-            log_usage(user_id, username, department, 'sentiment', total_comments, total_tokens)
+            log_usage(user_id, username, department, 'sentiment', total_comments, total_tokens, task_id=task_id, record_id=record_id)
 
         # 任务完成
         update_task(task_id, status='completed', result=result, progress='分析完成！', record_id=record_id)
@@ -1459,21 +1532,21 @@ def dashboard_stats():
     try:
         current_month = datetime.datetime.now().strftime('%Y-%m')
 
-        # 本月数据
+        # 本月数据：使用 usage_events 覆盖所有模块；若新表暂无记录，会自然返回 0。
         current_data = db.query_one("""
             SELECT
-                COALESCE(SUM(comments_count), 0) as total_comments,
+                COALESCE(SUM(item_count), 0) as total_comments,
                 COUNT(*) as total_analyses,
                 COALESCE(SUM(ai_tokens), 0) as total_tokens
-            FROM usage_logs
+            FROM usage_events
             WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
         """, (current_month,))
 
         # 上月数据（用于计算增长率）
         last_month = (datetime.datetime.now().replace(day=1) - datetime.timedelta(days=1)).strftime('%Y-%m')
         last_data = db.query_one("""
-            SELECT COALESCE(SUM(comments_count), 0) as total_comments
-            FROM usage_logs
+            SELECT COALESCE(SUM(item_count), 0) as total_comments
+            FROM usage_events
             WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
         """, (last_month,))
 
@@ -1498,6 +1571,78 @@ def dashboard_stats():
             'tokens': 0,
             'growth': 0
         })
+
+
+@app.route('/api/usage/summary')
+@login_required
+def usage_summary_api():
+    """统一消耗汇总。普通用户默认只看自己；管理员可传 all_users=1。"""
+    try:
+        include_estimated = request.args.get('include_estimated', '1') != '0'
+        month = request.args.get('month') or None
+        all_users = request.args.get('all_users') == '1' and session.get('role') == 'admin'
+        user_id = None if all_users else session.get('user_id')
+        rows = usage_service.get_usage_summary(user_id=user_id, include_estimated=include_estimated, month=month)
+        totals = {
+            'events': sum(int(row.get('events') or 0) for row in rows),
+            'item_count': sum(int(row.get('item_count') or 0) for row in rows),
+            'crawler_items': sum(int(row.get('crawler_items') or 0) for row in rows),
+            'ai_tokens': sum(int(row.get('ai_tokens') or 0) for row in rows),
+            'api_calls': sum(int(row.get('api_calls') or 0) for row in rows),
+            'crawler_cost_usd': round(sum(float(row.get('crawler_cost_usd') or 0) for row in rows), 4),
+            'crawler_cost_cny': round(sum(float(row.get('crawler_cost_cny') or 0) for row in rows), 4),
+            'ai_cost_cny': round(sum(float(row.get('ai_cost_cny') or 0) for row in rows), 4),
+            'total_cost_cny': round(sum(float(row.get('total_cost_cny') or 0) for row in rows), 4),
+        }
+        return jsonify({
+            'pricing': {
+                'crawler': 'USD 3 / 1000 crawler rows',
+                'ai': 'CNY 0.008 / 1000 tokens',
+                'official_api': 'tracked as api_calls, crawler cost not applied',
+            },
+            'totals': totals,
+            'rows': rows,
+        })
+    except Exception as e:
+        logger.error(f"❌ 获取消耗汇总失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/usage/events')
+@login_required
+def usage_events_api():
+    """统一消耗明细。"""
+    try:
+        include_estimated = request.args.get('include_estimated', '1') != '0'
+        all_users = request.args.get('all_users') == '1' and session.get('role') == 'admin'
+        user_id = None if all_users else session.get('user_id')
+        limit = int(request.args.get('limit') or 100)
+        return jsonify({
+            'rows': usage_service.get_usage_events(user_id=user_id, include_estimated=include_estimated, limit=limit)
+        })
+    except Exception as e:
+        logger.error(f"❌ 获取消耗明细失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/usage/history-estimates')
+@login_required
+def usage_history_estimates_api():
+    """历史消耗估算，不写库。用于说明哪些历史账只能回算。"""
+    try:
+        limit = int(request.args.get('limit') or 200)
+        rows = usage_service.estimate_history(limit=limit)
+        if session.get('role') != 'admin':
+            uid = session.get('user_id')
+            rows = [row for row in rows if row.get('user_id') == uid]
+        return jsonify({
+            'note': 'source=recorded_legacy 来自旧 usage_logs；source=estimated 来自历史结果/任务参数回算，无法代表实际 Apify 账单。',
+            'pricing': {'crawler': 'USD 3 / 1000 crawler rows'},
+            'rows': rows,
+        })
+    except Exception as e:
+        logger.error(f"❌ 获取历史消耗估算失败: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/debug')
@@ -2736,6 +2881,91 @@ def analyze():
     })
 
 
+@app.route('/api/tasks/summary')
+@login_required
+def tasks_summary_api():
+    """任务队列汇总：用于看当前到底是排队、运行还是失败。"""
+    try:
+        rows = db.query_all("""
+            SELECT status, function_type, COUNT(*) AS count
+            FROM task_queue
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+            GROUP BY status, function_type
+            ORDER BY status, function_type
+        """) or []
+        totals = {}
+        by_module = {}
+        for row in rows:
+            status = row.get('status') or 'unknown'
+            module = row.get('function_type') or 'unknown'
+            count = int(row.get('count') or 0)
+            totals[status] = totals.get(status, 0) + count
+            by_module.setdefault(module, {})[status] = count
+        oldest_pending = db.query_one("""
+            SELECT task_id, function_type, created_at, progress
+            FROM task_queue
+            WHERE status = 'pending'
+            ORDER BY created_at ASC
+            LIMIT 1
+        """)
+        running = db.query_all("""
+            SELECT task_id, function_type, progress, worker_id, started_at, updated_at
+            FROM task_queue
+            WHERE status IN ('claimed', 'processing')
+            ORDER BY COALESCE(started_at, updated_at, created_at) ASC
+            LIMIT 20
+        """) or []
+        return jsonify({
+            'totals': totals,
+            'by_module': by_module,
+            'oldest_pending': _serialize_task_row(oldest_pending) if oldest_pending else None,
+            'running': [_serialize_task_row(row) for row in running],
+        })
+    except Exception as e:
+        logger.error(f"❌ 获取任务队列汇总失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tasks')
+@login_required
+def tasks_list_api():
+    """任务队列明细。普通用户看自己的，管理员可 all_users=1。"""
+    try:
+        status = (request.args.get('status') or '').strip()
+        all_users = request.args.get('all_users') == '1' and session.get('role') == 'admin'
+        limit = max(1, min(int(request.args.get('limit') or 100), 500))
+        where = []
+        params = []
+        if status:
+            where.append('status = %s')
+            params.append(status)
+        if not all_users:
+            where.append('user_id = %s')
+            params.append(session.get('user_id'))
+        sql_where = 'WHERE ' + ' AND '.join(where) if where else ''
+        params.append(limit)
+        rows = db.query_all(f"""
+            SELECT task_id, user_id, function_type, status, progress, error, record_id,
+                   worker_id, attempts, created_at, updated_at, started_at, finished_at
+            FROM task_queue
+            {sql_where}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, tuple(params)) or []
+        return jsonify({'rows': [_serialize_task_row(row) for row in rows]})
+    except Exception as e:
+        logger.error(f"❌ 获取任务队列明细失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def _serialize_task_row(row):
+    data = dict(row or {})
+    for key in ('created_at', 'updated_at', 'started_at', 'finished_at'):
+        if data.get(key) and hasattr(data[key], 'isoformat'):
+            data[key] = data[key].isoformat()
+    return data
+
+
 @app.route('/task_status/<task_id>')
 def task_status(task_id):
     """查询任务状态"""
@@ -2748,13 +2978,24 @@ def task_status(task_id):
     if result and task['status'] == 'completed':
         result = sanitize_html(result)
     resp = {
+        'task_id': task.get('task_id'),
         'status': task['status'],
+        'function_type': task.get('function_type'),
         'progress': task['progress'],
         'result': result,
-        'error': task['error']
+        'error': task['error'],
+        'record_id': task.get('record_id'),
+        'queue_position': task.get('queue_position'),
+        'tasks_ahead': task.get('tasks_ahead', 0),
+        'pending_count': task.get('pending_count', 0),
+        'running_count': task.get('running_count', 0),
+        'worker_id': task.get('worker_id'),
+        'attempts': task.get('attempts') or 0,
+        'created_at': task.get('created_at').isoformat() if task.get('created_at') else None,
+        'updated_at': task.get('updated_at').isoformat() if task.get('updated_at') else None,
+        'started_at': task.get('started_at').isoformat() if task.get('started_at') else None,
+        'finished_at': task.get('finished_at').isoformat() if task.get('finished_at') else None,
     }
-    if task.get('record_id'):
-        resp['record_id'] = task['record_id']
     return jsonify(resp)
 
 # ============================================
@@ -3056,7 +3297,7 @@ def _run_competitor_radar_task(task_id, urls, start_dt_str, end_dt_str,
     if user_id:
         try:
             log_usage(user_id, username, department, 'competitor',
-                      structured.get('total_videos', 0), 0)
+                      structured.get('total_videos', 0), 0, task_id=task_id, record_id=record_id)
         except Exception:
             pass
 
@@ -3360,7 +3601,9 @@ def process_competitor_task(task_id, target_url=None, start_dt_str=None, end_dt_
                 department,
                 'competitor',
                 len(cleaned),  # TikTok 视频数量
-                tokens
+                tokens,
+                task_id=task_id,
+                record_id=record_id
             )
 
         # 更新任务状态为完成（含 record_id 供前端导出）

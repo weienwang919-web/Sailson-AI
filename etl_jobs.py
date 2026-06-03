@@ -9,6 +9,7 @@ import database as db
 import etl_tools
 import tasks
 import video_metrics_etl
+import usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -84,18 +85,25 @@ def run_etl_hashtag_task(task_id: str, params: dict, update_task_fn) -> None:
         (task_id, user_id, "hashtag_posts.xlsx", xbytes),
     )
     rid = row["id"] if row else None
+    result_payload = {
+        "download_id": rid,
+        "filename": "hashtag_posts.xlsx",
+        "row_count": len(raw_rows),
+    }
+    usage_service.record_usage_event(
+        module="etl_hashtag",
+        user_id=user_id,
+        task_id=task_id,
+        item_count=len(raw_rows),
+        crawler_items=len(raw_rows),
+        source="actual",
+        detail={"seed_tags": seed_tags, "platforms": platforms, "days_back": days_back, "max_posts": max_posts},
+    )
     update_task_fn(
         task_id,
         status="completed",
         progress="完成",
-        result=json.dumps(
-            {
-                "download_id": rid,
-                "filename": "hashtag_posts.xlsx",
-                "row_count": len(raw_rows),
-            },
-            ensure_ascii=False,
-        ),
+        result=json.dumps(result_payload, ensure_ascii=False),
     )
 
 
@@ -151,18 +159,25 @@ def run_etl_comments_task(task_id: str, params: dict, update_task_fn) -> None:
         (task_id, user_id, "comments_export.xlsx", xbytes),
     )
     rid = row["id"] if row else None
+    result_payload = {
+        "download_id": rid,
+        "filename": "comments_export.xlsx",
+        "comment_rows": len(rows),
+    }
+    usage_service.record_usage_event(
+        module="etl_comments",
+        user_id=user_id,
+        task_id=task_id,
+        item_count=len(rows),
+        crawler_items=len(rows),
+        source="actual",
+        detail={"post_url_count": len(urls), "days_back": days_back, "results_limit": results_limit},
+    )
     update_task_fn(
         task_id,
         status="completed",
         progress="完成",
-        result=json.dumps(
-            {
-                "download_id": rid,
-                "filename": "comments_export.xlsx",
-                "comment_rows": len(rows),
-            },
-            ensure_ascii=False,
-        ),
+        result=json.dumps(result_payload, ensure_ascii=False),
     )
 
 
@@ -250,17 +265,24 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
         (task_id, user_id, "video_metrics.xlsx", xbytes),
     )
     rid = out_row["id"] if out_row else None
+    result_payload = {
+        "download_id": rid,
+        "filename": "video_metrics.xlsx",
+        "url_count": len(urls),
+        "success_count": ok_count,
+    }
+    usage_service.record_usage_event(
+        module="etl_video_metrics",
+        user_id=user_id,
+        task_id=task_id,
+        item_count=len(urls),
+        crawler_items=len(urls),
+        source="actual",
+        detail={"success_count": ok_count, "selected_fields": selected_fields},
+    )
     update_task_fn(
         task_id,
         status="completed",
         progress="完成",
-        result=json.dumps(
-            {
-                "download_id": rid,
-                "filename": "video_metrics.xlsx",
-                "url_count": len(urls),
-                "success_count": ok_count,
-            },
-            ensure_ascii=False,
-        ),
+        result=json.dumps(result_payload, ensure_ascii=False),
     )

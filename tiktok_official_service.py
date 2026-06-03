@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
 
 import database as db
+import usage_service
 
 API_BASE = "https://business-api.tiktok.com/open_api/v1.3"
 
@@ -1000,6 +1001,16 @@ def run_refresh_task(task_id: str, params: dict[str, Any], update_task_fn) -> No
             profile_days=int(params.get("profile_days") or 30),
             max_pages=int(params.get("max_pages") or 5),
             progress_hook=hook,
+        )
+        usage_service.record_usage_event(
+            module="tiktok_official_refresh",
+            user_id=params.get("user_id"),
+            task_id=task_id,
+            item_count=int(result.get("videos") or 0),
+            crawler_items=0,
+            api_calls=int(result.get("accounts") or 0) * 2,
+            source="actual",
+            detail={"business_ids": params.get("business_ids") or [], "profile_days": params.get("profile_days"), "result": result},
         )
         update_task_fn(
             task_id,

@@ -25,6 +25,7 @@ import json
 import base64
 import logging
 import signal
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -44,12 +45,15 @@ logger = logging.getLogger(__name__)
 # ============================================
 POLL_INTERVAL = int(os.environ.get('WORKER_POLL_INTERVAL', '3'))  # 秒
 WORKER_MAX_IDLE = int(os.environ.get('WORKER_MAX_IDLE', '0'))     # 0 = 永不退出
+WORKER_CONCURRENCY = max(1, int(os.environ.get('WORKER_CONCURRENCY', '2')))
+WORKER_ID = os.environ.get('WORKER_ID') or f"worker-{os.getpid()}"
 
 # ============================================
 # 导入业务模块
 # ============================================
 import database as db
 import tasks
+import usage_service
 
 # 标记为 worker 进程，避免 app 模块启动 APScheduler
 os.environ['_IS_WORKER'] = 'true'
@@ -68,15 +72,14 @@ logger.info("✅ app 模块加载完成")
 # 优雅退出
 # ============================================
 _shutdown = False
-_current_task_id = None  # 当前正在处理的 task_id，用于 SIGTERM 时回写状态
+_running_task_ids = set()  # 当前正在处理的 task_id，用于 SIGTERM 时回写状态
 
 def _signal_handler(signum, frame):
     global _shutdown
     logger.info(f"📛 收到信号 {signum}，准备优雅退出...")
     _shutdown = True
     # Render 重新部署时会发 SIGTERM：把当前任务回退到 pending，新 Worker 会自动重试
-    cur = _current_task_id
-    if cur:
+    for cur in list(_running_task_ids):
         try:
             update_task(
                 cur,
@@ -84,6 +87,7 @@ def _signal_handler(signum, frame):
                 error='',
                 progress='服务重启，任务已重新排队',
             )
+            db.execute("UPDATE task_queue SET worker_id = NULL WHERE task_id = %s", (cur,))
             logger.warning(f"⚠️ 当前任务 {cur} 已回退为 pending（等待新 Worker 重试）")
         except Exception as e:
             logger.error(f"❌ SIGTERM 时回写任务状态失败: {e}")
@@ -97,15 +101,16 @@ signal.signal(signal.SIGINT, _signal_handler)
 # ============================================
 
 def claim_task():
-    """从 task_queue 中拾取一条 pending 任务（先进先出）。
-
-    使用 UPDATE ... RETURNING 实现原子性抢占，
-    避免多 worker 实例重复处理同一任务。
-    """
+    """从 task_queue 中拾取一条 pending 任务（先进先出）。"""
     try:
         row = db.execute_and_fetch_one("""
             UPDATE task_queue
-            SET status = 'claimed', updated_at = NOW()
+            SET status = 'claimed',
+                worker_id = %s,
+                attempts = COALESCE(attempts, 0) + 1,
+                started_at = COALESCE(started_at, NOW()),
+                finished_at = NULL,
+                updated_at = NOW()
             WHERE task_id = (
                 SELECT task_id FROM task_queue
                 WHERE status = 'pending'
@@ -115,7 +120,7 @@ def claim_task():
                 FOR UPDATE SKIP LOCKED
             )
             RETURNING task_id, function_type, task_params, user_id, session_id
-        """)
+        """, (WORKER_ID,))
         return row
     except Exception as e:
         logger.error(f"❌ 拾取任务失败: {e}")
@@ -124,7 +129,6 @@ def claim_task():
 
 def dispatch_task(task_row):
     """根据 function_type 分发到对应的处理函数。"""
-    global _current_task_id
     task_id = task_row['task_id']
     func_type = task_row['function_type']
     raw_params = task_row['task_params']
@@ -136,9 +140,9 @@ def dispatch_task(task_row):
         update_task(task_id, status='failed', error=f'参数解析失败: {e}')
         return
 
-    logger.info(f"🚀 开始处理任务 {task_id}  type={func_type}")
-    _current_task_id = task_id
-    update_task(task_id, status='processing', progress='Worker 执行中...')
+    logger.info(f"🚀 开始处理任务 {task_id}  type={func_type} worker={WORKER_ID}")
+    _running_task_ids.add(task_id)
+    update_task(task_id, status='processing', progress=f'Worker 执行中（{WORKER_ID}）')
 
     try:
         if func_type == 'sentiment':
@@ -166,7 +170,7 @@ def dispatch_task(task_row):
         traceback.print_exc()
         update_task(task_id, status='failed', error=f'Worker 异常: {str(e)[:500]}')
     finally:
-        _current_task_id = None
+        _running_task_ids.discard(task_id)
 
 
 # ============================================
@@ -347,6 +351,23 @@ def _handle_fb_scrape(task_id, params):
             except Exception as e:
                 logger.warning(f"⚠️ 写入完成摘要失败: {e}")
         logger.info(f"✅ FB 抓取完成: {result}")
+        usage_service.record_usage_event(
+            module='fb_scrape',
+            user_id=params.get('user_id'),
+            task_id=task_id,
+            item_count=int(result.get('new_comments') or 0) + int(result.get('existing_comments') or 0),
+            crawler_items=int(result.get('new_comments') or 0) + int(result.get('existing_comments') or 0),
+            ai_tokens=0,
+            source='actual',
+            detail={
+                'post_url_count': len(post_urls or []),
+                'new_comments': result.get('new_comments', 0),
+                'existing_comments': result.get('existing_comments', 0),
+                'ai_processed_total': result.get('ai_processed_total', 0),
+                'enable_ai_analysis': enable_ai_analysis,
+                'results_limit': results_limit,
+            },
+        )
         update_task(task_id, status='completed', progress='抓取完成')
     except Exception as e:
         logger.error(f"❌ FB 抓取失败: {e}")
@@ -371,7 +392,7 @@ def _handle_thai_scrape(task_id, params):
         return
     try:
         update_task(task_id, progress='泰国专题：Worker 执行中...')
-        tasks.run_thai_scrape_job(
+        result = tasks.run_thai_scrape_job(
             scrape_task_id=scrape_task_id,
             game_type=(params.get('game_type') or 'MLBB').strip().upper(),
             dataset_name=(params.get('dataset_name') or '').strip(),
@@ -387,6 +408,21 @@ def _handle_thai_scrape(task_id, params):
             dataset_start=(params.get('dataset_start') or '').strip() or None,
             dataset_end=(params.get('dataset_end') or '').strip() or None,
             re_raise=True,
+        ) or {}
+        usage_service.record_usage_event(
+            module='thai_scrape',
+            user_id=params.get('user_id'),
+            task_id=task_id,
+            item_count=int(result.get('new_comments') or 0) + int(result.get('existing_comments') or 0),
+            crawler_items=int(result.get('new_comments') or 0) + int(result.get('existing_comments') or 0),
+            source='actual',
+            detail={
+                'scrape_task_id': scrape_task_id,
+                'dataset_name': params.get('dataset_name'),
+                'skip_discover': bool(params.get('skip_discover')),
+                'ai_processed_total': result.get('ai_processed_total', 0),
+                'results_limit': params.get('results_limit'),
+            },
         )
         update_task(task_id, status='completed', progress='泰国抓取完成')
     except Exception as e:
@@ -452,38 +488,60 @@ def main():
     logger.info("=" * 60)
     logger.info("🏭 Worker 进程启动")
     logger.info(f"   轮询间隔: {POLL_INTERVAL}s")
+    logger.info(f"   Worker ID: {WORKER_ID}")
+    logger.info(f"   并发数: {WORKER_CONCURRENCY}")
     logger.info("=" * 60)
 
-    # 启动时把残留的 claimed / processing 回退为 pending，部署后自动重试
+    # 启动时只回退本 worker 上次残留的 claimed / processing，避免误抢其他实例正在跑的任务。
     try:
         reset_count = db.execute("""
             UPDATE task_queue
             SET status = 'pending',
+                worker_id = NULL,
                 error = NULL,
                 progress = COALESCE(progress, '等待 Worker 重试'),
                 updated_at = NOW()
             WHERE status IN ('claimed', 'processing')
-        """)
+              AND (worker_id = %s OR worker_id IS NULL OR updated_at < NOW() - INTERVAL '5 minutes')
+        """, (WORKER_ID,))
         if reset_count:
             logger.info(f"♻️ 回退了 {reset_count} 个 claimed/processing 任务到 pending")
     except Exception as e:
         logger.warning(f"⚠️ 回退残留任务失败: {e}")
 
     idle_count = 0
+    futures = set()
+    with ThreadPoolExecutor(max_workers=WORKER_CONCURRENCY, thread_name_prefix='task-worker') as executor:
+        while not _shutdown:
+            done = {future for future in futures if future.done()}
+            for future in done:
+                futures.discard(future)
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.error(f"❌ 并发任务 Future 异常: {exc}")
 
-    while not _shutdown:
-        task_row = claim_task()
+            claimed_any = False
+            while len(futures) < WORKER_CONCURRENCY:
+                task_row = claim_task()
+                if not task_row:
+                    break
+                claimed_any = True
+                futures.add(executor.submit(dispatch_task, task_row))
 
-        if task_row:
-            idle_count = 0
-            dispatch_task(task_row)
-        else:
-            idle_count += 1
-            # 每 20 次空轮询打一条日志（约 60 秒一次）
-            if idle_count % 20 == 0:
-                logger.info(f"💤 空闲中... (已空转 {idle_count * POLL_INTERVAL}s)")
+            if claimed_any:
+                idle_count = 0
+            elif futures:
+                wait(futures, timeout=POLL_INTERVAL, return_when=FIRST_COMPLETED)
+            else:
+                idle_count += 1
+                if idle_count % 20 == 0:
+                    logger.info(f"💤 空闲中... (已空转 {idle_count * POLL_INTERVAL}s)")
+                time.sleep(POLL_INTERVAL)
 
-        time.sleep(POLL_INTERVAL)
+        if futures:
+            logger.info(f"⏳ 正在等待 {len(futures)} 个运行中任务结束...")
+            wait(futures, timeout=30)
 
     logger.info("👋 Worker 进程已退出")
 

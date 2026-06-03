@@ -70,6 +70,33 @@ try:
     """)
     print("✅ 使用记录表创建成功")
 
+    print("\n📋 创建统一消耗明细表...")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id SERIAL PRIMARY KEY,
+            event_key VARCHAR(160) UNIQUE,
+            source VARCHAR(32) NOT NULL DEFAULT 'actual',
+            module VARCHAR(80) NOT NULL,
+            task_id VARCHAR(128),
+            record_id INTEGER,
+            user_id INTEGER REFERENCES users(id),
+            username VARCHAR(80),
+            department VARCHAR(80),
+            item_count INTEGER DEFAULT 0,
+            crawler_items INTEGER DEFAULT 0,
+            ai_tokens INTEGER DEFAULT 0,
+            api_calls INTEGER DEFAULT 0,
+            crawler_cost_usd DECIMAL(12, 4) DEFAULT 0,
+            crawler_cost_cny DECIMAL(12, 4) DEFAULT 0,
+            ai_cost_cny DECIMAL(12, 4) DEFAULT 0,
+            total_cost_cny DECIMAL(12, 4) DEFAULT 0,
+            pricing_json TEXT,
+            detail_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    print("✅ 统一消耗明细表创建成功")
+
     # 创建分析结果表
     print("\n📋 创建分析结果表...")
     cursor.execute("""
@@ -99,6 +126,10 @@ try:
             function_type VARCHAR(50),
             record_id INTEGER,
             task_params TEXT,
+            worker_id VARCHAR(128),
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            attempts INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -132,6 +163,15 @@ try:
         CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at);
     """)
     cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_usage_events_created_at ON usage_events(created_at);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_usage_events_module ON usage_events(module);
+    """)
+    cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_analysis_results_user_id ON analysis_results(user_id);
     """)
     cursor.execute("""
@@ -139,6 +179,9 @@ try:
     """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_task_queue_created_at ON task_queue(created_at);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_task_queue_status_created ON task_queue(status, created_at);
     """)
     print("✅ 索引创建成功")
 

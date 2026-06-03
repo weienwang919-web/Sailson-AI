@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.kols import router as kol_router
+from app.api.official_accounts import router as official_router
 from app.database import init_db
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -45,3 +46,4 @@ def health() -> dict[str, str]:
 
 
 app.include_router(kol_router)
+app.include_router(official_router)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -92,6 +92,12 @@ class JobOut(BaseModel):
     total: int
     done: int
     error: str | None = None
+    item_count: int = 0
+    crawler_items: int = 0
+    api_calls: int = 0
+    crawler_cost_usd: float = 0
+    crawler_cost_cny: float = 0
+    total_cost_cny: float = 0
     created_at: datetime
     updated_at: datetime
 
@@ -108,3 +114,115 @@ class ImportResponse(BaseModel):
 class LinkImportResponse(ImportResponse):
     ids: list[int]
     job: JobOut | None = None
+
+
+
+class OfficialAccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    business_id: str
+    username: str | None = None
+    display_name: str | None = None
+    profile_image: str | None = None
+    profile_deep_link: str | None = None
+    bio_description: str | None = None
+    is_business_account: bool | None = None
+    is_verified: bool | None = None
+    following_count: int | None = None
+    followers_count: int | None = None
+    total_likes: int | None = None
+    videos_count: int | None = None
+    enabled: bool
+    notes: str | None = None
+    last_refreshed_at: datetime | None = None
+    updated_at: datetime
+
+
+class OfficialVideoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    account_id: int
+    business_id: str
+    item_id: str
+    media_type: str | None = None
+    is_ad: bool | None = None
+    thumbnail_url: str | None = None
+    share_url: str | None = None
+    embed_url: str | None = None
+    caption: str | None = None
+    create_time: datetime | None = None
+    video_duration: float | None = None
+    reach: int | None = None
+    video_views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    favorites: int | None = None
+    total_time_watched: float | None = None
+    average_time_watched: float | None = None
+    full_video_watched_rate: float | None = None
+    new_followers: int | None = None
+    profile_views: int | None = None
+    engagement_likes: list[dict[str, Any]] = []
+    video_view_retention: list[dict[str, Any]] = []
+    impression_sources: list[dict[str, Any]] = []
+    audience_countries: list[dict[str, Any]] = []
+    request_id: str | None = None
+    log_id: str | None = None
+    fetched_at: datetime
+
+
+class OfficialVideoListResponse(BaseModel):
+    total: int
+    items: list[OfficialVideoOut]
+
+
+class OfficialProfileMetricOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    account_id: int
+    business_id: str
+    metric_date: date
+    followers_count: int | None = None
+    video_views: int | None = None
+    unique_video_views: int | None = None
+    profile_views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+    daily_total_followers: int | None = None
+    daily_new_followers: int | None = None
+    daily_lost_followers: int | None = None
+    engaged_audience: int | None = None
+
+
+class OfficialRefreshRequest(BaseModel):
+    account_ids: list[int] | None = None
+    days: int = 30
+
+
+class OfficialExportRequest(BaseModel):
+    account_ids: list[int] | None = None
+
+
+class OfficialJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    total: int
+    done: int
+    error: str | None = None
+    request_id: str | None = None
+    log_id: str | None = None
+    item_count: int = 0
+    crawler_items: int = 0
+    api_calls: int = 0
+    crawler_cost_usd: float = 0
+    crawler_cost_cny: float = 0
+    total_cost_cny: float = 0
+    created_at: datetime
+    updated_at: datetime

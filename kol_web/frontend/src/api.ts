@@ -145,3 +145,124 @@ export async function exportKols(ids: number[], updateMetrics = false, sourceFil
   );
   return data;
 }
+
+
+export type OfficialAccount = {
+  id: number;
+  business_id: string;
+  username?: string | null;
+  display_name?: string | null;
+  profile_image?: string | null;
+  profile_deep_link?: string | null;
+  bio_description?: string | null;
+  is_business_account?: boolean | null;
+  is_verified?: boolean | null;
+  following_count?: number | null;
+  followers_count?: number | null;
+  total_likes?: number | null;
+  videos_count?: number | null;
+  enabled: boolean;
+  notes?: string | null;
+  last_refreshed_at?: string | null;
+  updated_at: string;
+};
+
+export type OfficialVideo = {
+  id: number;
+  account_id: number;
+  business_id: string;
+  item_id: string;
+  media_type?: string | null;
+  is_ad?: boolean | null;
+  thumbnail_url?: string | null;
+  share_url?: string | null;
+  caption?: string | null;
+  create_time?: string | null;
+  video_duration?: number | null;
+  reach?: number | null;
+  video_views?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  shares?: number | null;
+  favorites?: number | null;
+  total_time_watched?: number | null;
+  average_time_watched?: number | null;
+  full_video_watched_rate?: number | null;
+  new_followers?: number | null;
+  profile_views?: number | null;
+  engagement_likes: Record<string, unknown>[];
+  video_view_retention: Record<string, unknown>[];
+  impression_sources: Record<string, unknown>[];
+  audience_countries: Record<string, unknown>[];
+  request_id?: string | null;
+  log_id?: string | null;
+  fetched_at: string;
+};
+
+export type OfficialVideoListResponse = {
+  total: number;
+  items: OfficialVideo[];
+};
+
+export type OfficialProfileMetric = {
+  id: number;
+  account_id: number;
+  business_id: string;
+  metric_date: string;
+  followers_count?: number | null;
+  video_views?: number | null;
+  unique_video_views?: number | null;
+  profile_views?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  shares?: number | null;
+  daily_total_followers?: number | null;
+  daily_new_followers?: number | null;
+  daily_lost_followers?: number | null;
+  engaged_audience?: number | null;
+};
+
+export type OfficialJob = {
+  id: number;
+  status: string;
+  total: number;
+  done: number;
+  error?: string | null;
+  request_id?: string | null;
+  log_id?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listOfficialAccounts(): Promise<OfficialAccount[]> {
+  const { data } = await api.get<OfficialAccount[]>("/official/accounts");
+  return data;
+}
+
+export async function refreshOfficialAccounts(accountIds?: number[], days = 30): Promise<OfficialJob> {
+  const { data } = await api.post<OfficialJob>("/official/refresh", { account_ids: accountIds, days });
+  return data;
+}
+
+export async function listOfficialVideos(params: {
+  page: number;
+  pageSize: number;
+  accountId?: number;
+}): Promise<OfficialVideoListResponse> {
+  const { data } = await api.get<OfficialVideoListResponse>("/official/videos", {
+    params: { page: params.page, page_size: params.pageSize, account_id: params.accountId },
+  });
+  return data;
+}
+
+export async function listOfficialProfileMetrics(accountId?: number): Promise<OfficialProfileMetric[]> {
+  const { data } = await api.get<OfficialProfileMetric[]>("/official/profile-metrics", {
+    params: { account_id: accountId },
+  });
+  return data;
+}
+
+export async function exportOfficialVideos(): Promise<Blob> {
+  const { data } = await api.post("/official/export", {}, { responseType: "blob" });
+  return data;
+}

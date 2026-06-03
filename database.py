@@ -24,7 +24,7 @@ def init_connection_pool():
     global connection_pool
     if not connection_pool:
         try:
-            connection_pool = psycopg2.pool.SimpleConnectionPool(
+            connection_pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
                 maxconn=10,
                 dsn=DATABASE_URL
