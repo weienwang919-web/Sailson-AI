@@ -1528,49 +1528,174 @@ def kol_api_proxy(path):
 @app.route('/dashboard_stats')
 @login_required
 def dashboard_stats():
-    """首页数据看板 API"""
+    """首页数据看板 API。
+
+    业务口径：
+    - Total Reviews：每条被处理的数据算一条，优先用 usage_events.item_count，老数据回退 usage_logs.comments_count。
+    - Total Analyses：每次任务算一次，优先用 task_queue，老数据回退 usage_logs。
+    - AI Tokens：只有触发 AI 分析且有 token 记录的任务才累计。
+    """
     try:
-        current_month = datetime.datetime.now().strftime('%Y-%m')
+        now = datetime.datetime.now()
+        current_month = now.strftime('%Y-%m')
+        last_month = (now.replace(day=1) - datetime.timedelta(days=1)).strftime('%Y-%m')
 
-        # 本月数据：使用 usage_events 覆盖所有模块；若新表暂无记录，会自然返回 0。
-        current_data = db.query_one("""
+        first_usage_event = db.query_one("SELECT MIN(created_at) AS first_at FROM usage_events") or {}
+        first_event_at = first_usage_event.get('first_at')
+
+        usage_total = db.query_one("""
+            SELECT COALESCE(SUM(item_count), 0) AS reviews,
+                   COALESCE(SUM(ai_tokens), 0) AS tokens,
+                   COUNT(*) AS events
+            FROM usage_events
+        """) or {}
+        usage_current = db.query_one("""
+            SELECT COALESCE(SUM(item_count), 0) AS reviews,
+                   COALESCE(SUM(ai_tokens), 0) AS tokens,
+                   COUNT(*) AS events
+            FROM usage_events
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        """, (current_month,)) or {}
+        usage_last = db.query_one("""
+            SELECT COALESCE(SUM(item_count), 0) AS reviews,
+                   COALESCE(SUM(ai_tokens), 0) AS tokens,
+                   COUNT(*) AS events
+            FROM usage_events
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        """, (last_month,)) or {}
+
+        legacy_where = ""
+        legacy_params = []
+        if first_event_at:
+            legacy_where = "WHERE created_at < %s"
+            legacy_params.append(first_event_at)
+        legacy_total = db.query_one(f"""
+            SELECT COALESCE(SUM(comments_count), 0) AS reviews,
+                   COALESCE(SUM(ai_tokens), 0) AS tokens,
+                   COUNT(*) AS events
+            FROM usage_logs
+            {legacy_where}
+        """, tuple(legacy_params)) or {}
+        legacy_current = db.query_one(f"""
+            SELECT COALESCE(SUM(comments_count), 0) AS reviews,
+                   COALESCE(SUM(ai_tokens), 0) AS tokens,
+                   COUNT(*) AS events
+            FROM usage_logs
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+            {('AND created_at < %s' if first_event_at else '')}
+        """, tuple([current_month] + ([first_event_at] if first_event_at else []))) or {}
+        legacy_last = db.query_one(f"""
+            SELECT COALESCE(SUM(comments_count), 0) AS reviews,
+                   COALESCE(SUM(ai_tokens), 0) AS tokens,
+                   COUNT(*) AS events
+            FROM usage_logs
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+            {('AND created_at < %s' if first_event_at else '')}
+        """, tuple([last_month] + ([first_event_at] if first_event_at else []))) or {}
+
+        task_total = db.query_one("SELECT COUNT(*) AS count FROM task_queue") or {}
+        task_current = db.query_one("""
+            SELECT COUNT(*) AS count FROM task_queue
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        """, (current_month,)) or {}
+        task_last = db.query_one("""
+            SELECT COUNT(*) AS count FROM task_queue
+            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
+        """, (last_month,)) or {}
+        queue = db.query_one("""
             SELECT
-                COALESCE(SUM(item_count), 0) as total_comments,
-                COUNT(*) as total_analyses,
-                COALESCE(SUM(ai_tokens), 0) as total_tokens
-            FROM usage_events
-            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
-        """, (current_month,))
+              COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+              COUNT(*) FILTER (WHERE status IN ('claimed', 'processing')) AS running,
+              COUNT(*) FILTER (WHERE status = 'failed') AS failed
+            FROM task_queue
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+        """) or {}
 
-        # 上月数据（用于计算增长率）
-        last_month = (datetime.datetime.now().replace(day=1) - datetime.timedelta(days=1)).strftime('%Y-%m')
-        last_data = db.query_one("""
-            SELECT COALESCE(SUM(item_count), 0) as total_comments
-            FROM usage_events
-            WHERE TO_CHAR(created_at, 'YYYY-MM') = %s
-        """, (last_month,))
+        total_reviews = int(usage_total.get('reviews') or 0) + int(legacy_total.get('reviews') or 0)
+        current_reviews = int(usage_current.get('reviews') or 0) + int(legacy_current.get('reviews') or 0)
+        last_reviews = int(usage_last.get('reviews') or 0) + int(legacy_last.get('reviews') or 0)
+        total_tokens = int(usage_total.get('tokens') or 0) + int(legacy_total.get('tokens') or 0)
+        current_tokens = int(usage_current.get('tokens') or 0) + int(legacy_current.get('tokens') or 0)
 
-        # 计算增长率
-        growth = 0
-        if last_data and last_data['total_comments'] > 0:
-            growth = ((current_data['total_comments'] - last_data['total_comments']) / last_data['total_comments']) * 100
+        task_count = int(task_total.get('count') or 0)
+        fallback_events = int(usage_total.get('events') or 0) + int(legacy_total.get('events') or 0)
+        total_analyses = task_count if task_count else fallback_events
+        current_analyses = int(task_current.get('count') or 0) if task_count else int(usage_current.get('events') or 0) + int(legacy_current.get('events') or 0)
+        last_analyses = int(task_last.get('count') or 0) if task_count else int(usage_last.get('events') or 0) + int(legacy_last.get('events') or 0)
+
+        growth = _percent_change(current_reviews, last_reviews)
+        analyses_growth = _percent_change(current_analyses, last_analyses)
+        running = int(queue.get('running') or 0)
+        pending = int(queue.get('pending') or 0)
+        failed = int(queue.get('failed') or 0)
 
         return jsonify({
-            'comments': int(current_data['total_comments']),
-            'analyses': int(current_data['total_analyses']),
-            'tokens': int(current_data['total_tokens']),
-            'growth': round(growth, 1)
+            'comments': total_reviews,
+            'analyses': total_analyses,
+            'tokens': total_tokens,
+            'growth': growth,
+            'current_month': {
+                'comments': current_reviews,
+                'analyses': current_analyses,
+                'tokens': current_tokens,
+            },
+            'queue': {
+                'pending': pending,
+                'running': running,
+                'failed': failed,
+            },
+            'badges': {
+                'reviews': _growth_badge(growth),
+                'analyses': _analyses_badge(running, pending, failed, analyses_growth),
+                'tokens': _tokens_badge(current_tokens),
+            }
         })
 
     except Exception as e:
         logger.error(f"❌ 获取数据看板失败: {e}")
-        # 返回默认值
         return jsonify({
             'comments': 0,
             'analyses': 0,
             'tokens': 0,
-            'growth': 0
+            'growth': 0,
+            'badges': {
+                'reviews': {'text': '0%', 'style': 'neutral'},
+                'analyses': {'text': 'Idle', 'style': 'neutral'},
+                'tokens': {'text': 'No AI', 'style': 'neutral'},
+            }
         })
+
+
+def _percent_change(current_value, last_value):
+    if not last_value:
+        return 100.0 if current_value else 0.0
+    return round(((current_value - last_value) / last_value) * 100, 1)
+
+
+def _growth_badge(growth):
+    if growth > 0:
+        return {'text': f'+{growth:g}%', 'style': 'positive'}
+    if growth < 0:
+        return {'text': f'{growth:g}%', 'style': 'negative'}
+    return {'text': '0%', 'style': 'neutral'}
+
+
+def _analyses_badge(running, pending, failed, growth):
+    if running:
+        return {'text': f'Running {running}', 'style': 'active'}
+    if pending:
+        return {'text': f'Queued {pending}', 'style': 'warning'}
+    if failed:
+        return {'text': f'Failed {failed}', 'style': 'negative'}
+    if growth > 0:
+        return {'text': f'+{growth:g}%', 'style': 'positive'}
+    return {'text': 'Idle', 'style': 'neutral'}
+
+
+def _tokens_badge(current_tokens):
+    if current_tokens > 0:
+        return {'text': 'AI Used', 'style': 'active'}
+    return {'text': 'No AI', 'style': 'neutral'}
 
 
 @app.route('/api/usage/summary')

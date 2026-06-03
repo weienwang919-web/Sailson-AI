@@ -545,6 +545,10 @@
                 const activeUsers = Math.max(1, Math.floor(data.analyses / 10));
                 document.getElementById('active-users-stat').textContent = activeUsers;
 
+                updateStatBadge('growth-indicator', data.badges?.reviews || { text: '0%', style: 'neutral' });
+                updateStatBadge('analyses-indicator', data.badges?.analyses || { text: 'Idle', style: 'neutral' });
+                updateStatBadge('tokens-indicator', data.badges?.tokens || { text: 'No AI', style: 'neutral' });
+
                 // 移除 loading 状态
                 document.querySelectorAll('.stat-card').forEach(card => {
                     card.classList.remove('loading');
@@ -564,6 +568,23 @@
                 document.getElementById('stat-analyses').textContent = '0';
                 document.getElementById('stat-tokens').textContent = '0';
             }
+        }
+
+
+        function updateStatBadge(id, badge) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = badge.text || '';
+            const palette = {
+                positive: { background: '#E8F5E9', color: '#2E7D32' },
+                negative: { background: '#FFEBEE', color: '#C62828' },
+                active: { background: '#DEEBFF', color: '#0747A6' },
+                warning: { background: '#FFF3E0', color: '#E65100' },
+                neutral: { background: '#F2F4F7', color: '#475467' },
+            };
+            const style = palette[badge.style] || palette.neutral;
+            el.style.background = style.background;
+            el.style.color = style.color;
         }
 
         async function loadTaskQueueStats() {
