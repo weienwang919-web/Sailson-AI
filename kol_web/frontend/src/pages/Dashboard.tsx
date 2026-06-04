@@ -99,15 +99,77 @@ export default function Dashboard() {
   }, [page, pageSize]);
 
   const columns: ColumnsType<KolRecord> = useMemo(() => {
-    const baseColumns = businessFields.list.map((field) => ({
-      title: field.label,
-      key: field.key,
-      width: columnWidth(field),
-      fixed: field.key === "name" ? ("left" as const) : undefined,
-      render: (_: unknown, record: KolRecord) => renderBusinessValue(record, field),
-    }));
+    const fieldMap = new Map(businessFields.list.map((field) => [field.key, field]));
+    const makeFieldColumn = (key: string, className?: string) => {
+      const field = fieldMap.get(key);
+      if (!field) return null;
+      return {
+        title: field.label.replace(/^TikTok |^Instagram |^YouTube /, ""),
+        key: field.key,
+        width: columnWidth(field),
+        className,
+        onHeaderCell: () => ({ className }),
+        render: (_: unknown, record: KolRecord) => renderBusinessValue(record, field),
+      };
+    };
+    const compact = (cols: Array<ReturnType<typeof makeFieldColumn>>) => cols.filter(Boolean) as ColumnsType<KolRecord>;
     return [
-      ...baseColumns,
+      {
+        title: "基础信息",
+        key: "base_group",
+        children: compact([
+          makeFieldColumn("name"),
+          makeFieldColumn("normalized_category"),
+          makeFieldColumn("platform_text"),
+          makeFieldColumn("country"),
+          makeFieldColumn("case_links"),
+          makeFieldColumn("notes"),
+        ]),
+      },
+      {
+        title: <span className="platform-title">TikTok</span>,
+        key: "tiktok_group",
+        className: "platform-group platform-tiktok",
+        onHeaderCell: () => ({ className: "platform-group platform-tiktok" }),
+        children: compact([
+          makeFieldColumn("tt_link", "platform-tiktok-sub"),
+          makeFieldColumn("tt_follower", "platform-tiktok-sub"),
+          makeFieldColumn("tt_avv", "platform-tiktok-sub"),
+          makeFieldColumn("tt_short_video_price", "platform-tiktok-sub"),
+          makeFieldColumn("tt_main_price", "platform-tiktok-sub"),
+          makeFieldColumn("tt_cpm", "platform-tiktok-sub"),
+          makeFieldColumn("tt_collaboration", "platform-tiktok-sub"),
+        ]),
+      },
+      {
+        title: <span className="platform-title">Instagram</span>,
+        key: "instagram_group",
+        className: "platform-group platform-instagram",
+        onHeaderCell: () => ({ className: "platform-group platform-instagram" }),
+        children: compact([
+          makeFieldColumn("ins_link", "platform-instagram-sub"),
+          makeFieldColumn("ins_follower", "platform-instagram-sub"),
+          makeFieldColumn("ins_post_price", "platform-instagram-sub"),
+          makeFieldColumn("ins_main_price", "platform-instagram-sub"),
+          makeFieldColumn("ins_cpm", "platform-instagram-sub"),
+          makeFieldColumn("ins_collaboration", "platform-instagram-sub"),
+        ]),
+      },
+      {
+        title: <span className="platform-title">YouTube</span>,
+        key: "youtube_group",
+        className: "platform-group platform-youtube",
+        onHeaderCell: () => ({ className: "platform-group platform-youtube" }),
+        children: compact([
+          makeFieldColumn("yt_link", "platform-youtube-sub"),
+          makeFieldColumn("yt_follower", "platform-youtube-sub"),
+          makeFieldColumn("yt_avv", "platform-youtube-sub"),
+          makeFieldColumn("yt_full_video_price", "platform-youtube-sub"),
+          makeFieldColumn("yt_main_price", "platform-youtube-sub"),
+          makeFieldColumn("yt_cpm", "platform-youtube-sub"),
+          makeFieldColumn("yt_collaboration", "platform-youtube-sub"),
+        ]),
+      },
       {
         title: "操作",
         key: "actions",
@@ -140,8 +202,9 @@ export default function Dashboard() {
 
   const inventoryColumns: ColumnsType<FieldInventoryItem> = [
     { title: "原始字段", dataIndex: "raw_field", width: 220, fixed: "left" },
-    { title: "建议合并", dataIndex: "suggested_standard_field", width: 150, render: (value?: string | null) => value || "未归类" },
-    { title: "平台", dataIndex: "platform", width: 110, render: (value?: string | null) => value || "-" },
+    { title: "平台", dataIndex: "platform", width: 110, render: (value?: string | null) => value || "未识别" },
+    { title: "处理方式", width: 190, render: (_: unknown, item: FieldInventoryItem) => item.platform ? "按平台归到商务字段" : "导出时放到兜底商务报价" },
+    { title: "建议合并", dataIndex: "suggested_standard_field", width: 150, render: (value?: string | null) => value || "商务报价兜底" },
     { title: "出现次数", dataIndex: "count", width: 100, sorter: (a, b) => a.count - b.count },
     { title: "来源", dataIndex: "sources", width: 240, render: (sources: string[]) => sources.join("\n") },
     { title: "样例值", dataIndex: "sample_values", render: (values: string[]) => values.join(" / ") },
@@ -369,14 +432,17 @@ export default function Dashboard() {
                   </Card>
                   <Card className="work-card">
                     <div className="work-title">字段盘点</div>
-                    <div className="work-desc">批量拉取原始字段、出现次数、样例值和建议合并字段。</div>
+                    <div className="work-desc">只要平台识别正确，报价字段会优先归到对应平台；识别不了的字段导出时统一追加到兜底商务报价。</div>
                     <Button onClick={loadFieldInventory}>生成字段盘点</Button>
                   </Card>
                 </div>
                 <Card title="任务中心">
                   <Table rowKey="id" loading={jobLoading} columns={jobColumns} dataSource={jobs} pagination={false} size="small" />
                 </Card>
-                <Card title={`字段盘点与合并候选（已沉淀别名 ${aliasRuleCount} 个）`}>
+                <Card title={`字段盘点与商务报价兜底（已沉淀别名 ${aliasRuleCount} 个）`}>
+                  <div style={{ color: "#667085", marginBottom: 12 }}>
+                    字段维护的核心是不要识别错平台。能识别平台的商务报价直接进入对应平台列；不能识别平台的报价、CPM、合作模式等字段不会丢，导出时会追加到“未识别商务报价”列。
+                  </div>
                   <Table rowKey="raw_field" columns={inventoryColumns} dataSource={inventory} size="small" scroll={{ x: 1200, y: 420 }} />
                 </Card>
               </Space>
@@ -505,6 +571,7 @@ function columnWidth(field: BusinessField) {
   if (field.data_type === "link") return 110;
   if (field.group === "business") return 130;
   if (field.key === "name") return 180;
+  if (["tt_main_price", "ins_main_price", "yt_main_price", "tt_collaboration", "ins_collaboration", "yt_collaboration"].includes(field.key)) return 140;
   return 140;
 }
 

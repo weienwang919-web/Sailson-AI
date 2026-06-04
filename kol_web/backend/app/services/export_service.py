@@ -302,15 +302,29 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
         "TikTok Link",
         "TT Follower",
         "TT AVV",
+        "TT Short Video Price",
+        "TT Main Price",
+        "TT CPM",
+        "TT Collaboration",
         "Instagram Link",
         "INS Follower",
+        "INS Post Price",
+        "INS Main Price",
+        "INS CPM",
+        "INS Collaboration",
         "YouTube Link",
         "YT Follower",
         "YT AVV",
+        "YT Full Video Price",
+        "YT Main Price",
+        "YT CPM",
+        "YT Collaboration",
+        "Unrecognized Business Quotes",
         "Notes",
     ]
     ws.append(headers)
     for record in records:
+        extra = _extra_fields(record)
         ws.append(
             [
                 record.name,
@@ -320,11 +334,57 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
                 record.tt_link,
                 record.tt_follower,
                 record.tt_avv,
+                record.tt_short_video_price,
+                extra.get("TikTok - 主报价"),
+                extra.get("TikTok - CPM"),
+                extra.get("TikTok - 合作模式"),
                 record.ins_link,
                 record.ins_follower,
+                record.ins_post_price,
+                extra.get("Instagram - 主报价"),
+                extra.get("Instagram - CPM"),
+                extra.get("Instagram - 合作模式"),
                 record.yt_link,
                 record.yt_follower,
                 record.yt_avv,
+                record.yt_full_video_price,
+                extra.get("YouTube - 主报价"),
+                extra.get("YouTube - CPM"),
+                extra.get("YouTube - 合作模式"),
+                _unrecognized_business_quotes(extra),
                 record.notes,
             ]
         )
+
+
+def _extra_fields(record: KOLRecord) -> dict[str, Any]:
+    if not record.extra_fields:
+        return {}
+    try:
+        obj = json.loads(record.extra_fields)
+    except json.JSONDecodeError:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _unrecognized_business_quotes(extra: dict[str, Any]) -> str:
+    recognized = {
+        "TikTok - 主报价",
+        "TikTok - CPM",
+        "TikTok - 合作模式",
+        "Instagram - 主报价",
+        "Instagram - CPM",
+        "Instagram - 合作模式",
+        "YouTube - 主报价",
+        "YouTube - CPM",
+        "YouTube - 合作模式",
+    }
+    business_tokens = ("报价", "price", "cpm", "合作", "collaboration", "商务", "授权", "直播")
+    rows: list[str] = []
+    for key, value in extra.items():
+        if key in recognized or value in (None, ""):
+            continue
+        lowered = str(key).lower()
+        if any(token in lowered for token in business_tokens):
+            rows.append(f"{key}: {value}")
+    return "\n".join(rows)

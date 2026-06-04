@@ -4,13 +4,13 @@ import type { FilterGroup, FilterNode, FilterPayload, FilterRule } from "../api"
 type FieldOption = { label: string; value: string; dataType?: string };
 
 const ops = [
-  { label: "包含 contains", value: "contains" },
-  { label: "= 等于", value: "eq" },
-  { label: "≠ 不等于", value: "neq" },
-  { label: ">= 大于等于", value: "gte" },
-  { label: "<= 小于等于", value: "lte" },
-  { label: "为空 empty", value: "is_empty" },
-  { label: "非空 not empty", value: "is_not_empty" },
+  { label: "包含", value: "contains" },
+  { label: "等于", value: "eq" },
+  { label: "不等于", value: "neq" },
+  { label: "大于等于", value: "gte" },
+  { label: "小于等于", value: "lte" },
+  { label: "为空", value: "is_empty" },
+  { label: "不为空", value: "is_not_empty" },
 ];
 
 type Props = {
@@ -30,7 +30,7 @@ export function FilterBuilder({ value, onChange, fields, valueOptions }: Props) 
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="middle">
       <div style={{ color: "#667085", lineHeight: 1.6 }}>
-        用条件组表达 AND / OR 混合筛选，例如“类目是游戏，并且国家是 US 或 CA”。主页面只显示入口，复杂规则在这里维护。
+        先选择字段，再填写条件。默认是“必须全部满足”；如果同一组里有多个备选值，比如国家是 US 或 CA，可以添加“备选条件组”。
       </div>
       <FilterGroupEditor
         group={root}
@@ -42,9 +42,9 @@ export function FilterBuilder({ value, onChange, fields, valueOptions }: Props) 
       />
       <Space>
         <Button onClick={() => commit({ logic: "and", children: [emptyRule(fields[0]?.value || "category")] })}>
-          重置为一个条件
+          保留一条条件
         </Button>
-        <Button onClick={() => commit({ logic: "and", children: [] })}>清空 Clear</Button>
+        <Button onClick={() => commit({ logic: "and", children: [] })}>清空条件</Button>
       </Space>
     </Space>
   );
@@ -72,18 +72,18 @@ function FilterGroupEditor({ group, fields, valueOptions, depth, onChange, onRem
     <Card size="small" style={{ marginLeft: depth * 16, borderStyle: depth ? "dashed" : "solid" }}>
       <Space direction="vertical" style={{ width: "100%" }}>
         <Space wrap>
-          <span>{depth === 0 ? "根条件组" : "条件组"}</span>
+          <span>{depth === 0 ? "这些条件" : "这组备选条件"}</span>
           <Select
             value={group.logic}
-            style={{ width: 120 }}
+            style={{ width: 150 }}
             onChange={(logic) => onChange({ ...group, logic })}
             options={[
-              { label: "AND", value: "and" },
-              { label: "OR", value: "or" },
+              { label: "必须全部满足", value: "and" },
+              { label: "满足任意一条", value: "or" },
             ]}
           />
           <Button onClick={() => onChange({ ...group, children: [...group.children, emptyRule(fallbackField)] })}>
-            添加条件
+            添加筛选条件
           </Button>
           <Button
             onClick={() =>
@@ -93,11 +93,11 @@ function FilterGroupEditor({ group, fields, valueOptions, depth, onChange, onRem
               })
             }
           >
-            添加 OR/AND 组
+            添加备选条件组
           </Button>
           {onRemove && (
             <Button danger onClick={onRemove}>
-              删除组
+              删除这组
             </Button>
           )}
         </Space>
@@ -123,7 +123,7 @@ function FilterGroupEditor({ group, fields, valueOptions, depth, onChange, onRem
             />
           ),
         )}
-        {!group.children.length && <div style={{ color: "#98a2b3" }}>当前条件组为空，应用后不会限制结果。</div>}
+        {!group.children.length && <div style={{ color: "#98a2b3" }}>还没有筛选条件，应用后会显示全部 KOL。</div>}
       </Space>
     </Card>
   );
@@ -146,10 +146,10 @@ function RuleEditor({ rule, fields, valueOptions, onChange, onRemove }: RuleEdit
         style={{ width: 260 }}
         options={fields}
         optionFilterProp="label"
-        placeholder="选择字段"
+        placeholder="选择要筛选的字段"
         onChange={(field) => onChange({ ...rule, field, value: "" })}
       />
-      <Select value={rule.op} style={{ width: 150 }} options={ops} onChange={(op) => onChange({ ...rule, op })} />
+      <Select value={rule.op} style={{ width: 130 }} options={ops} onChange={(op) => onChange({ ...rule, op })} />
       {!['is_empty', 'is_not_empty'].includes(rule.op) &&
         (valueOptions[rule.field]?.length ? (
           <Select
@@ -159,7 +159,7 @@ function RuleEditor({ rule, fields, valueOptions, onChange, onRemove }: RuleEdit
             style={{ width: 260 }}
             options={valueOptions[rule.field].map((item) => ({ label: item, value: item }))}
             optionFilterProp="label"
-            placeholder="选择筛选值"
+            placeholder="选择值"
             onChange={(next) => onChange({ ...rule, value: next || "" })}
           />
         ) : (
@@ -167,7 +167,7 @@ function RuleEditor({ rule, fields, valueOptions, onChange, onRemove }: RuleEdit
             value={String(rule.value ?? "")}
             style={{ width: 220 }}
             onChange={(event) => onChange({ ...rule, value: event.target.value })}
-            placeholder="输入筛选值"
+            placeholder="输入值"
           />
         ))}
       <Button danger onClick={onRemove}>
@@ -178,7 +178,7 @@ function RuleEditor({ rule, fields, valueOptions, onChange, onRemove }: RuleEdit
 }
 
 function toRootGroup(value: FilterPayload, fallbackField: string): FilterGroup {
-  if (value.children) {
+  if (value.children?.length) {
     return { logic: value.logic || "and", children: value.children };
   }
   if (value.rules?.length) {
