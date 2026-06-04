@@ -48,6 +48,32 @@ body {
   margin-bottom: 16px;
 }
 
+.governance-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.toolbar-minimal {
+  justify-content: flex-end;
+}
+
+.kol-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.kol-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #344054;
+  font-size: 13px;
+}
+
+.kol-form-field span {
+  font-weight: 600;
+}
+
 .work-card {
   border: 1px solid #eef2f7;
 }
@@ -88,7 +114,9 @@ body {
 }
 
 @media (max-width: 1100px) {
-  .workbench {
+  .workbench,
+  .governance-grid,
+  .kol-form-grid {
     grid-template-columns: 1fr;
   }
 }

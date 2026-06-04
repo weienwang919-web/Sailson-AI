@@ -2,23 +2,29 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import and_, desc, func
+from sqlalchemy import and_, desc, func, or_
 from sqlalchemy.orm import Session
 
+from app.core.business_fields import BUSINESS_FIELDS, field_payload, fields_for_usage
 from app.core.category import STANDARD_CATEGORIES, normalize_category
+from app.core.field_normalizer import STANDARD_PLATFORM_FIELDS
 from app.database import get_db
 from app.models import KOLRecord, ScrapeJob
 from app.schemas import (
     ExportRequest,
     FilterPayload,
+    FilterRule,
     ImportResponse,
     JobOut,
+    KOLCreate,
     KOLIdsRequest,
     KOLListResponse,
     KOLRecordOut,
@@ -39,6 +45,7 @@ EDITABLE_FIELDS = {
     for col in KOLRecord.__table__.columns
     if col.name not in {"id", "created_at", "updated_at", "last_scraped_at"}
 }
+CREATABLE_FIELDS = EDITABLE_FIELDS - {"raw_json"}
 CORE_FIELD_KEYS = {
     "KOL",
     "Name",
@@ -55,6 +62,26 @@ CORE_FIELD_KEYS = {
     "➡️ Avg View",
 }
 BUSINESS_EXTRA_SUFFIXES = {"合作模式", "主报价", "CPM", "直播报价", "授权报价"}
+TEXT_SEARCH_FIELDS = (
+    "name",
+    "category",
+    "normalized_category",
+    "platform_text",
+    "source_file",
+    "notes",
+    "country",
+    "language",
+    "content_tags",
+    "main_tag",
+    "channel_content",
+    "recommendation",
+    "case_links",
+    "email",
+    "tt_link",
+    "ins_link",
+    "yt_link",
+    "extra_fields",
+)
 
 
 @router.get("/kols", response_model=KOLListResponse)
@@ -68,27 +95,7 @@ def list_kols(
     query = db.query(KOLRecord)
     if search:
         like = f"%{search}%"
-        query = query.filter(
-            KOLRecord.name.ilike(like)
-            | KOLRecord.category.ilike(like)
-            | KOLRecord.normalized_category.ilike(like)
-            | KOLRecord.platform_text.ilike(like)
-            | KOLRecord.source_file.ilike(like)
-            | KOLRecord.notes.ilike(like)
-            | KOLRecord.country.ilike(like)
-            | KOLRecord.language.ilike(like)
-            | KOLRecord.content_tags.ilike(like)
-            | KOLRecord.main_tag.ilike(like)
-            | KOLRecord.channel_content.ilike(like)
-            | KOLRecord.recommendation.ilike(like)
-            | KOLRecord.case_links.ilike(like)
-            | KOLRecord.email.ilike(like)
-            | KOLRecord.tt_link.ilike(like)
-            | KOLRecord.ins_link.ilike(like)
-            | KOLRecord.yt_link.ilike(like)
-            | KOLRecord.extra_fields.ilike(like)
-            | KOLRecord.raw_json.ilike(like)
-        )
+        query = query.filter(or_(*(getattr(KOLRecord, field).ilike(like) for field in TEXT_SEARCH_FIELDS)))
     if filters:
         query = apply_filters(query, FilterPayload.model_validate(json.loads(filters)))
     total = query.count()
@@ -99,6 +106,23 @@ def list_kols(
         .all()
     )
     return KOLListResponse(total=total, items=[serialize_kol(x) for x in items])
+
+
+@router.post("/kols", response_model=KOLRecordOut)
+def create_kol(payload: KOLCreate, db: Session = Depends(get_db)) -> KOLRecordOut:
+    data = payload.model_dump(exclude_unset=True)
+    extra_fields = data.pop("extra_fields", {}) or {}
+    if not data.get("name"):
+        raise HTTPException(status_code=400, detail="KOL name is required")
+    if not data.get("normalized_category") and data.get("category"):
+        data["normalized_category"] = normalize_category(data["category"])
+    record = KOLRecord(**{key: value for key, value in data.items() if key in CREATABLE_FIELDS})
+    if extra_fields:
+        record.extra_fields = json.dumps(extra_fields, ensure_ascii=False)
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return serialize_kol(record)
 
 
 @router.get("/kols/categories")
@@ -132,9 +156,21 @@ def update_kol(kol_id: int, payload: KOLUpdate, db: Session = Depends(get_db)) -
         if field not in EDITABLE_FIELDS:
             raise HTTPException(status_code=400, detail=f"Field is not editable: {field}")
         setattr(record, field, value)
+    if not record.normalized_category and record.category:
+        record.normalized_category = normalize_category(record.category)
     db.commit()
     db.refresh(record)
     return serialize_kol(record)
+
+
+@router.delete("/kols/{kol_id}")
+def delete_kol(kol_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    record = db.get(KOLRecord, kol_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="KOL not found")
+    db.delete(record)
+    db.commit()
+    return {"deleted": True, "id": kol_id}
 
 
 @router.post("/kols/import", response_model=ImportResponse)
@@ -229,40 +265,73 @@ def export_kols(payload: ExportRequest, db: Session = Depends(get_db)) -> FileRe
 
 
 def apply_filters(query, payload: FilterPayload):
-    clauses = []
-    for rule in payload.rules:
-        if rule.field.startswith("extra:"):
-            extra_key = rule.field.split(":", 1)[1]
-            col = func.json_extract(KOLRecord.extra_fields, f'$."{extra_key}"')
-        elif hasattr(KOLRecord, rule.field):
-            col = getattr(KOLRecord, rule.field)
-        else:
-            continue
-        op = rule.op
-        value = rule.value
-        if op == "eq":
-            clauses.append(col == value)
-        elif op == "neq":
-            clauses.append(col != value)
-        elif op == "contains":
-            clauses.append(col.ilike(f"%{value}%"))
-        elif op == "gte":
-            clauses.append(col >= value)
-        elif op == "lte":
-            clauses.append(col <= value)
-        elif op == "between" and isinstance(value, list) and len(value) == 2:
-            clauses.append(col.between(value[0], value[1]))
-        elif op == "is_empty":
-            clauses.append((col.is_(None)) | (col == ""))
-        elif op == "is_not_empty":
-            clauses.append((col.is_not(None)) & (col != ""))
-    if not clauses:
-        return query
-    if payload.logic.lower() == "or":
-        from sqlalchemy import or_
+    clause = build_filter_clause(payload)
+    return query.filter(clause) if clause is not None else query
 
-        return query.filter(or_(*clauses))
-    return query.filter(and_(*clauses))
+
+def build_filter_clause(node: Any):
+    if isinstance(node, FilterPayload):
+        children = node.children or node.rules
+        return combine_filter_clauses(node.logic, [build_filter_clause(child) for child in children])
+    if isinstance(node, FilterRule):
+        return build_rule_clause(node)
+    if isinstance(node, dict):
+        if "children" in node:
+            return combine_filter_clauses(
+                str(node.get("logic", "and")),
+                [build_filter_clause(child) for child in node.get("children", [])],
+            )
+        if "rules" in node:
+            return combine_filter_clauses(
+                str(node.get("logic", "and")),
+                [build_filter_clause(child) for child in node.get("rules", [])],
+            )
+        if "field" in node:
+            return build_rule_clause(FilterRule.model_validate(node))
+    return None
+
+
+def combine_filter_clauses(logic: str, clauses: list[Any]):
+    valid = [clause for clause in clauses if clause is not None]
+    if not valid:
+        return None
+    if logic.lower() == "or":
+        return or_(*valid)
+    return and_(*valid)
+
+
+def build_rule_clause(rule: FilterRule):
+    col = column_for_filter_field(rule.field)
+    if col is None:
+        return None
+    op = rule.op
+    value = rule.value
+    if op == "eq":
+        return col == value
+    if op == "neq":
+        return col != value
+    if op == "contains":
+        return col.ilike(f"%{value}%")
+    if op == "gte":
+        return col >= value
+    if op == "lte":
+        return col <= value
+    if op == "between" and isinstance(value, list) and len(value) == 2:
+        return col.between(value[0], value[1])
+    if op == "is_empty":
+        return (col.is_(None)) | (col == "")
+    if op == "is_not_empty":
+        return (col.is_not(None)) & (col != "")
+    return None
+
+
+def column_for_filter_field(field: str):
+    if field.startswith("extra:"):
+        extra_key = field.split(":", 1)[1]
+        return func.json_extract(KOLRecord.extra_fields, f'$."{extra_key}"')
+    if hasattr(KOLRecord, field):
+        return getattr(KOLRecord, field)
+    return None
 
 
 @router.get("/kols/stats")
@@ -317,6 +386,18 @@ def serialize_kol(record: KOLRecord) -> KOLRecordOut:
     return KOLRecordOut(**data)
 
 
+@router.get("/kols/business-fields")
+def business_fields() -> dict[str, Any]:
+    return {
+        "list": [field_payload(field) for field in fields_for_usage("list")],
+        "filter": [field_payload(field) for field in fields_for_usage("filter")],
+        "detail": [field_payload(field) for field in fields_for_usage("detail")],
+        "export": [field_payload(field) for field in fields_for_usage("export")],
+        "create": [field_payload(field) for field in fields_for_usage("create")],
+        "update": [field_payload(field) for field in fields_for_usage("update")],
+    }
+
+
 @router.get("/kols/fields")
 def fields(db: Session = Depends(get_db)) -> dict[str, Any]:
     counts: dict[str, int] = {}
@@ -334,23 +415,73 @@ def fields(db: Session = Depends(get_db)) -> dict[str, Any]:
             if value not in (None, ""):
                 counts[key] = counts.get(key, 0) + 1
     return {
-        "core": [
-            {"key": "name", "label": "KOL / Name"},
-            {"key": "normalized_category", "label": "Standard Category / 标准类目"},
-            {"key": "category", "label": "Category / 类目"},
-            {"key": "source_file", "label": "Source / 来源"},
-            {"key": "country", "label": "Country / 国家"},
-            {"key": "language", "label": "Language / 语言"},
-            {"key": "platform_text", "label": "Platform / 平台"},
-            {"key": "tt_follower", "label": "TT Follower"},
-            {"key": "tt_avv", "label": "TT AVV"},
-            {"key": "ins_follower", "label": "INS Follower"},
-            {"key": "yt_follower", "label": "YT Follower"},
-            {"key": "yt_avv", "label": "YT AVV"},
-        ],
+        "core": [{"key": field.filter_key, "label": field.label} for field in fields_for_usage("filter")],
         "extra": [
             {"key": key, "label": key, "count": count}
             for key, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+        ],
+    }
+
+
+@router.get("/kols/field-inventory")
+def field_inventory(db: Session = Depends(get_db), limit: int = Query(300, ge=1, le=1000)) -> dict[str, Any]:
+    field_stats: dict[str, dict[str, Any]] = {}
+    rows = db.query(KOLRecord.source_file, KOLRecord.raw_json, KOLRecord.extra_fields).all()
+    for source_file, raw_json, extra_fields in rows:
+        for origin, raw in (("raw_json", raw_json), ("extra_fields", extra_fields)):
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            for key, value in obj.items():
+                text = "" if value is None else str(value).strip()
+                if not key or not text:
+                    continue
+                normalized = normalize_field_name(key)
+                bucket = field_stats.setdefault(
+                    key,
+                    {
+                        "raw_field": key,
+                        "normalized_field": normalized,
+                        "count": 0,
+                        "sources": set(),
+                        "origins": set(),
+                        "sample_values": [],
+                        "suggested_standard_field": suggest_standard_field(key),
+                        "platform": guess_platform(key),
+                    },
+                )
+                bucket["count"] += 1
+                if source_file:
+                    bucket["sources"].add(source_file)
+                bucket["origins"].add(origin)
+                if len(bucket["sample_values"]) < 5 and text not in bucket["sample_values"]:
+                    bucket["sample_values"].append(text[:160])
+    items = sorted(field_stats.values(), key=lambda x: (-x["count"], x["raw_field"]))[:limit]
+    for item in items:
+        item["sources"] = sorted(item["sources"])[:10]
+        item["origins"] = sorted(item["origins"])
+    grouped: dict[str, int] = defaultdict(int)
+    for item in items:
+        grouped[item["suggested_standard_field"] or "未归类"] += item["count"]
+    return {"items": items, "summary": dict(sorted(grouped.items(), key=lambda x: (-x[1], x[0])))}
+
+
+@router.get("/kols/field-alias-rules")
+def field_alias_rules() -> dict[str, Any]:
+    return {
+        "standard_business_fields": [field_payload(field) for field in BUSINESS_FIELDS],
+        "platform_alias_rules": [
+            {
+                "standard_field": standard,
+                "label": field.label,
+                "aliases": list(field.aliases),
+            }
+            for standard, field in STANDARD_PLATFORM_FIELDS.items()
         ],
     }
 
@@ -373,7 +504,7 @@ def filter_options(db: Session = Depends(get_db)) -> dict[str, list[str]]:
         except json.JSONDecodeError:
             continue
         for key, value in obj.items():
-            if key in CORE_FIELD_KEYS or _is_business_extra_key(key) or value in (None, ""):
+            if key in CORE_FIELD_KEYS or value in (None, ""):
                 continue
             text = str(value)
             if len(text) > 80:
@@ -384,6 +515,51 @@ def filter_options(db: Session = Depends(get_db)) -> dict[str, list[str]]:
         popular = sorted(values.items(), key=lambda x: (-x[1], x[0]))[:80]
         options[field] = [value for value, _count in popular]
     return options
+
+
+def normalize_field_name(value: str) -> str:
+    text = value.strip().lower()
+    text = re.sub(r"[\s\n\r\t_\-]+", " ", text)
+    return text.strip()
+
+
+def guess_platform(value: str) -> str | None:
+    text = value.lower()
+    if "tiktok" in text or text.startswith("tt"):
+        return "TikTok"
+    if "instagram" in text or "ins" in text or "ig" in text:
+        return "Instagram"
+    if "youtube" in text or text.startswith("yt"):
+        return "YouTube"
+    return None
+
+
+def suggest_standard_field(value: str) -> str | None:
+    text = normalize_field_name(value)
+    for field in BUSINESS_FIELDS:
+        if field.extra_key and normalize_field_name(field.extra_key) == text:
+            return field.label
+        if normalize_field_name(field.label) == text:
+            return field.label
+    for standard, field in STANDARD_PLATFORM_FIELDS.items():
+        aliases = [standard, field.label, *field.aliases]
+        if any(normalize_field_name(alias) == text for alias in aliases):
+            return field.label
+    if any(token in text for token in ("creator", "kol", "name", "渠道名", "资源名称")):
+        return "KOL 名称"
+    if any(token in text for token in ("link", "url", "链接", "channel")):
+        return "平台链接"
+    if any(token in text for token in ("follower", "粉丝")):
+        return "粉丝数"
+    if any(token in text for token in ("avg view", "avv", "ccv", "观看")):
+        return "AVV"
+    if any(token in text for token in ("price", "报价", "cpm")):
+        return "报价/CPM"
+    if any(token in text for token in ("audience", "受众", "gender", "age", "年龄", "性别")):
+        return "受众字段"
+    if any(token in text for token in ("feedback", "状态", "推进", "进展")):
+        return "跟进字段"
+    return None
 
 
 def _is_business_extra_key(key: str) -> bool:

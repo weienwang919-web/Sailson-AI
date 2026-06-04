@@ -10,8 +10,10 @@ export type KolRecord = {
   language?: string | null;
   platform_text?: string | null;
   notes?: string | null;
-  tt_link?: string | null;
+  content_tags?: string | null;
+  recommendation?: string | null;
   case_links?: string | null;
+  tt_link?: string | null;
   tt_follower?: number | null;
   tt_avv?: number | null;
   tt_short_video_price?: number | null;
@@ -54,12 +56,63 @@ export type FilterRule = {
   value?: unknown;
 };
 
+export type FilterGroup = {
+  logic: "and" | "or";
+  children: FilterNode[];
+};
+
+export type FilterNode = FilterRule | FilterGroup;
+
 export type FilterPayload = {
   logic: "and" | "or";
-  rules: FilterRule[];
+  rules?: FilterRule[];
+  children?: FilterNode[];
+};
+
+export type BusinessField = {
+  key: string;
+  filter_key: string;
+  label: string;
+  group: string;
+  data_type: "text" | "number" | "link" | "date";
+  source: "model" | "extra";
+};
+
+export type BusinessFieldCatalog = {
+  list: BusinessField[];
+  filter: BusinessField[];
+  detail: BusinessField[];
+  export: BusinessField[];
+  create: BusinessField[];
+  update: BusinessField[];
+};
+
+export type FieldInventoryItem = {
+  raw_field: string;
+  normalized_field: string;
+  count: number;
+  sources: string[];
+  origins: string[];
+  sample_values: string[];
+  suggested_standard_field?: string | null;
+  platform?: string | null;
+};
+
+export type FieldInventory = {
+  items: FieldInventoryItem[];
+  summary: Record<string, number>;
+};
+
+export type AliasRules = {
+  standard_business_fields: BusinessField[];
+  platform_alias_rules: { standard_field: string; label: string; aliases: string[] }[];
 };
 
 export const api = axios.create({ baseURL: "/kol-api" });
+
+export function hasFilterRules(filters?: FilterPayload) {
+  return Boolean(filters && ((filters.children?.length || 0) > 0 || (filters.rules?.length || 0) > 0));
+}
 
 export async function listKols(params: {
   page: number;
@@ -72,9 +125,29 @@ export async function listKols(params: {
       page: params.page,
       page_size: params.pageSize,
       search: params.search || undefined,
-      filters: params.filters?.rules.length ? JSON.stringify(params.filters) : undefined,
+      filters: hasFilterRules(params.filters) ? JSON.stringify(params.filters) : undefined,
     },
   });
+  return data;
+}
+
+export async function createKol(values: Record<string, unknown>): Promise<KolRecord> {
+  const { data } = await api.post<KolRecord>("/kols", values);
+  return data;
+}
+
+export async function updateKol(id: number, values: Record<string, unknown>): Promise<KolRecord> {
+  const { data } = await api.patch<KolRecord>(`/kols/${id}`, { values });
+  return data;
+}
+
+export async function deleteKol(id: number): Promise<{ deleted: boolean; id: number }> {
+  const { data } = await api.delete<{ deleted: boolean; id: number }>(`/kols/${id}`);
+  return data;
+}
+
+export async function getKolsByIds(ids: number[]): Promise<KolRecord[]> {
+  const { data } = await api.post<KolRecord[]>("/kols/by-ids", { ids });
   return data;
 }
 
@@ -87,23 +160,13 @@ export async function importExcel(file: File, scrape: boolean) {
   return data;
 }
 
-export async function updateKol(id: number, values: Record<string, unknown>): Promise<KolRecord> {
-  const { data } = await api.patch<KolRecord>(`/kols/${id}`, { values });
-  return data;
-}
-
-export async function getKolsByIds(ids: number[]): Promise<KolRecord[]> {
-  const { data } = await api.post<KolRecord[]>("/kols/by-ids", { ids });
+export async function importLinks(text: string, scrape: boolean) {
+  const { data } = await api.post("/kols/import-links", { text, scrape });
   return data;
 }
 
 export async function scrapeKols(ids?: number[]) {
   const { data } = await api.post("/kols/scrape", { ids });
-  return data;
-}
-
-export async function importLinks(text: string, scrape: boolean) {
-  const { data } = await api.post("/kols/import-links", { text, scrape });
   return data;
 }
 
@@ -132,15 +195,40 @@ export async function getFields(): Promise<FieldCatalog> {
   return data;
 }
 
+export async function getBusinessFields(): Promise<BusinessFieldCatalog> {
+  const { data } = await api.get<BusinessFieldCatalog>("/kols/business-fields");
+  return data;
+}
+
+export async function getFieldInventory(): Promise<FieldInventory> {
+  const { data } = await api.get<FieldInventory>("/kols/field-inventory");
+  return data;
+}
+
+export async function getFieldAliasRules(): Promise<AliasRules> {
+  const { data } = await api.get<AliasRules>("/kols/field-alias-rules");
+  return data;
+}
+
 export async function getFilterOptions(): Promise<Record<string, string[]>> {
   const { data } = await api.get<Record<string, string[]>>("/filters/options");
   return data;
 }
 
-export async function exportKols(ids: number[], updateMetrics = false, sourceFile?: string): Promise<Blob> {
+export async function exportKols(params: {
+  ids?: number[];
+  filters?: FilterPayload;
+  updateMetrics?: boolean;
+  sourceFile?: string;
+}): Promise<Blob> {
   const { data } = await api.post(
     "/kols/export",
-    { ids, update_metrics: updateMetrics, source_file: sourceFile },
+    {
+      ids: params.ids?.length ? params.ids : undefined,
+      filters: params.ids?.length ? undefined : params.filters,
+      update_metrics: params.updateMetrics || false,
+      source_file: params.sourceFile,
+    },
     { responseType: "blob" },
   );
   return data;
