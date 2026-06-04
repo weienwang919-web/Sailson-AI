@@ -1,0 +1,484 @@
+{% extends "base.html" %}
+{% block title %}Sailson AI Workbench{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+        :root { --bg-color: #FBFBFD; --text-primary: #1d1d1f; --text-secondary: #86868b; }
+        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; color: var(--text-primary); -webkit-font-smoothing: antialiased; }
+
+        /* 顶部导航 */
+        .navbar { padding: 20px 40px; background: rgba(251, 251, 253, 0.8); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .logo-img { height: 40px; width: auto; } /* 微调 Logo 高度，防止过大 */
+        .user-profile { font-size: 13px; font-weight: 500; padding: 6px 12px; background: rgba(0,0,0,0.05); border-radius: 18px; display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+        .user-avatar { width: 24px; height: 24px; background: #e5e5e5; border-radius: 50%; }
+
+        /* Hero 区域 */
+        .hero-section {
+            text-align: center;
+            padding: 100px 20px 60px;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+        }
+        .hero-section > * { position: relative; z-index: 1; }
+        .hero-title { font-size: 4.5rem; font-weight: 700; letter-spacing: -2px; line-height: 1.05; margin-bottom: 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2962FF 50%, #FF3B30 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .hero-subtitle { font-size: 1.35rem; color: var(--text-secondary); max-width: 650px; margin: 0 auto 40px; font-weight: 400; line-height: 1.5; }
+
+        /* CTA 按钮组 */
+        .cta-buttons { display: flex; gap: 16px; justify-content: center; align-items: center; margin-bottom: 30px; flex-wrap: wrap; }
+        .btn-cta-primary {
+            background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%);
+            color: white;
+            padding: 16px 40px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1.05rem;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 12px rgba(41, 98, 255, 0.2);
+        }
+        .btn-cta-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(41, 98, 255, 0.35);
+        }
+        .btn-cta-secondary {
+            background: white;
+            color: #2962FF;
+            padding: 16px 40px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1.05rem;
+            border: 2px solid #e0e0e0;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .btn-cta-secondary:hover {
+            border-color: #2962FF;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        /* 使用统计 */
+        .hero-stats {
+            display: flex;
+            gap: 40px;
+            justify-content: center;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-top: 20px;
+        }
+        .hero-stat-item { display: flex; align-items: center; gap: 8px; }
+        .hero-stat-number { font-weight: 700; color: #2962FF; font-size: 1.1rem; }
+
+        /* 数据看板 (Stat Cards) */
+        .stats-container { max-width: 1100px; margin: 0 auto 60px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding: 0 20px; }
+        .stat-card {
+            background: #fff;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+            border: 1px solid rgba(0,0,0,0.04);
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #2962FF, #1E88E5);
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+        }
+        .stat-card:hover::before {
+            transform: scaleX(1);
+        }
+        .stat-card.loading {
+            pointer-events: none;
+        }
+        .stat-card.loading .stat-value {
+            background: #f0f0f0;
+            color: transparent;
+            border-radius: 8px;
+        }
+        .stat-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .stat-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 32px; font-weight: 700; color: var(--text-primary); letter-spacing: -1px; }
+        .stat-indicator { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; display: inline-block; }
+        .chart-wrapper { height: 60px; width: 100%; margin-top: auto; }
+
+        /* 功能卡片 Grid */
+        .features-grid { max-width: 1100px; margin: 0 auto; padding: 0 20px 100px; }
+        .feature-card {
+            background: #fff;
+            border: 1px solid rgba(0,0,0,0.04);
+            border-radius: 24px;
+            padding: 40px;
+            height: 100%;
+            transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(41, 98, 255, 0.03), rgba(255, 59, 48, 0.03));
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        .feature-card:hover {
+            transform: translateY(-12px) scale(1.02);
+            box-shadow: 0 24px 48px -10px rgba(0,0,0,0.12);
+            border-color: rgba(41, 98, 255, 0.2);
+        }
+        .feature-card:hover::before {
+            opacity: 1;
+        }
+        .card-icon {
+            font-size: 3rem;
+            margin-bottom: 24px;
+            transition: transform 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+            position: relative;
+            z-index: 1;
+        }
+        .feature-card:hover .card-icon {
+            transform: scale(1.15) rotate(5deg);
+        }
+        .card-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; position: relative; z-index: 1; }
+        .card-desc { color: var(--text-secondary); font-size: 1.05rem; line-height: 1.5; margin-bottom: 30px; flex-grow: 1; position: relative; z-index: 1; }
+        .card-arrow {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            font-size: 1.5rem;
+            opacity: 0;
+            transition: all 0.3s ease;
+            transform: translateX(-10px);
+            color: #2962FF;
+            z-index: 1;
+        }
+        .feature-card:hover .card-arrow { opacity: 1; transform: translateX(0); }
+
+        /* 最近使用标签 */
+        .card-badge {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #2962FF, #1E88E5);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            z-index: 2;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all 0.3s ease;
+        }
+        .feature-card:hover .card-badge {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* 开发中卡片 (横条) */
+        .wip-section { margin-top: 40px; }
+        .wip-card {
+            border: 2px dashed #E0E0E0; background: #FAFAFA;
+            display: flex; align-items: center; flex-direction: row; padding: 30px 40px;
+            position: relative;
+        }
+        .wip-card:hover { border-color: #2962FF; background: #F5F8FF; transform: none; box-shadow: none; }
+        .wip-content { margin-left: 24px; flex-grow: 1; text-align: left; }
+        .wip-card .card-icon { margin-bottom: 0; font-size: 2.5rem; }
+        .wip-card .card-arrow { position: static; opacity: 1; transform: none; font-size: 2rem; color: #ccc; transition: color 0.3s; }
+        .wip-card:hover .card-arrow { color: #2962FF; }
+
+        /* 确保反馈表单可点击输入 */
+        .wip-card input,
+        .wip-card textarea,
+        .wip-card button {
+            position: relative;
+            z-index: 2;
+            background-color: #fff;
+        }
+
+        .footer { text-align: center; padding: 60px 0; color: #aaa; font-size: 0.85rem; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 40px; }
+
+        /* 移动端适配微调 */
+        @media (max-width: 768px) {
+            .hero-title { font-size: 3rem; }
+            .hero-subtitle { font-size: 1.1rem; }
+            .cta-buttons { flex-direction: column; width: 100%; padding: 0 20px; }
+            .btn-cta-primary, .btn-cta-secondary { width: 100%; text-align: center; }
+            .hero-stats { flex-direction: column; gap: 15px; align-items: flex-start; padding: 0 20px; }
+            .stats-container { grid-template-columns: 1fr; }
+            .wip-card { flex-direction: column; text-align: center; }
+            .wip-content { margin: 20px 0; text-align: center; }
+            .feature-card { padding: 30px; }
+            .card-badge { top: 15px; right: 15px; }
+        }
+</style>
+{% endblock %}
+{% block content %}
+<nav class="navbar d-flex justify-content-between align-items-center">
+        <a class="navbar-brand" href="/">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo-img">
+        </a>
+        <div class="d-flex align-items-center gap-3">
+            <a href="/my-stats" class="text-secondary" style="text-decoration: none; font-size: 14px; font-weight: 500;">📊 我的统计</a>
+            {% if user.role == 'admin' %}
+            <a href="/admin" class="text-secondary" style="text-decoration: none; font-size: 14px; font-weight: 500;">⚙️ 管理后台</a>
+            {% endif %}
+            <div class="user-profile">
+                <div class="user-avatar"></div>
+                <span>{{ user.real_name or 'Admin' }}</span>
+                <a href="/logout" class="text-secondary ms-2" style="text-decoration: none;"><small>退出</small></a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="hero-section">
+        <h1 class="hero-title">Work smarter,<br>not harder.</h1>
+        <p class="hero-subtitle">智能舆情分析、竞品监控与内容创作平台</p>
+
+        <div class="hero-stats">
+            <div class="hero-stat-item">
+                <span>✓</span>
+                <span>已处理 <span class="hero-stat-number" id="total-comments-stat">0</span> 条评论</span>
+            </div>
+            <div class="hero-stat-item">
+                <span>✓</span>
+                <span>支持 <span class="hero-stat-number">6</span> 种语言</span>
+            </div>
+            <div class="hero-stat-item">
+                <span>✓</span>
+                <span><span class="hero-stat-number" id="active-users-stat">0</span> 位活跃用户</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="stats-container">
+        <div class="stat-card loading" onclick="window.location.href='/my-stats'">
+            <div>
+                <div class="stat-header">
+                    <span class="stat-label">Total Reviews</span>
+                    <span class="stat-indicator" id="growth-indicator" style="background:#E8F5E9; color:#2E7D32;">+0%</span>
+                </div>
+                <div class="stat-value counter" id="stat-comments" data-target="0">0</div>
+            </div>
+            <div class="chart-wrapper"><canvas id="chart1"></canvas></div>
+        </div>
+
+        <div class="stat-card loading" onclick="window.location.href='/my-stats'">
+            <div>
+                <div class="stat-header">
+                    <span class="stat-label">Total Analyses</span>
+                    <span class="stat-indicator" id="analyses-indicator" style="background:#FFF3E0; color:#E65100;">Active</span>
+                </div>
+                <div class="stat-value counter" id="stat-analyses" data-target="0">0</div>
+            </div>
+            <div class="chart-wrapper"><canvas id="chart2"></canvas></div>
+        </div>
+
+        <div class="stat-card loading" onclick="window.location.href='/my-stats'">
+            <div>
+                <div class="stat-header">
+                    <span class="stat-label">AI Tokens</span>
+                    <span class="stat-indicator" id="tokens-indicator" style="background:#DEEBFF; color:#0747A6;">Stable</span>
+                </div>
+                <div class="stat-value counter" id="stat-tokens" data-target="0">0</div>
+            </div>
+            <div class="chart-wrapper"><canvas id="chart3"></canvas></div>
+        </div>
+    </div>
+
+    <div class="features-grid container" id="features">
+        <div class="row g-4">
+            <div class="col-md-4">
+                <a href="/sentiment-tool" class="feature-card">
+                    <span class="card-badge">最近使用</span>
+                    <div class="card-icon">🎮</div>
+                    <h3 class="card-title">舆情洞察</h3>
+                    <p class="card-desc">全自动社媒评论分析与归类。支持多语言情感判别。</p>
+                    <div class="card-arrow">→</div>
+                </a>
+            </div>
+            <div class="col-md-4">
+                <a href="/competitor-tool" class="feature-card">
+                    <div class="card-icon">📡</div>
+                    <h3 class="card-title">竞品雷达</h3>
+                    <p class="card-desc">自动抓取竞品社媒数据，生成多维 SWOT 竞争报告。</p>
+                    <div class="card-arrow">→</div>
+                </a>
+            </div>
+            <div class="col-md-4">
+                <a href="/chat-tool" class="feature-card">
+                    <div class="card-icon">✍️</div>
+                    <h3 class="card-title">内容创作</h3>
+                    <p class="card-desc">AI 文案与视频脚本生成。支持多轮对话迭代。</p>
+                    <div class="card-arrow">→</div>
+                </a>
+            </div>
+        </div>
+
+        <div class="row wip-section">
+            <div class="col-12">
+                <div class="feature-card wip-card" style="cursor: default;">
+                    <div class="card-icon">💡</div>
+                    <div class="wip-content">
+                        <h3 class="card-title" style="margin-bottom: 15px;">需要新功能？</h3>
+                        <p class="card-desc" style="margin-bottom: 20px; line-height: 1.8;">
+                            我们正在持续优化平台功能。如果您有任何建议或需求，请告诉我们：
+                        </p>
+                        <form id="feedbackForm" style="display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;">
+                            <input
+                                type="text"
+                                id="projectName"
+                                placeholder="您的项目名称"
+                                required
+                                style="flex: 1; min-width: 200px; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem;"
+                            >
+                            <textarea
+                                id="feedbackText"
+                                placeholder="描述您的需求或建议..."
+                                required
+                                rows="3"
+                                style="flex: 2; min-width: 300px; padding: 12px 16px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.95rem; resize: vertical;"
+                            ></textarea>
+                            <button
+                                type="submit"
+                                style="padding: 12px 24px; background: #2962FF; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; align-self: flex-start;"
+                            >
+                                发送建议
+                            </button>
+                        </form>
+                        <div id="feedbackMessage" style="margin-top: 12px; font-size: 0.9rem;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<div class="footer">© 2026 Sailson Interactive. Powered by Google Cloud Vertex AI.</div>
+{% endblock %}
+{% block scripts %}
+<script>
+        // 页面加载时执行
+        document.addEventListener("DOMContentLoaded", () => {
+            // 禁用所有 Chart.js 图表（暂时）
+            console.log('页面加载完成');
+
+            // 简单加载数据，不要任何动画
+            loadDashboardStats();
+
+            // 反馈表单提交
+            document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                const projectName = document.getElementById('projectName').value;
+                const feedback = document.getElementById('feedbackText').value;
+                const messageDiv = document.getElementById('feedbackMessage');
+                const submitBtn = e.target.querySelector('button[type="submit"]');
+
+                // 禁用按钮
+                submitBtn.disabled = true;
+                submitBtn.textContent = '发送中...';
+                messageDiv.textContent = '';
+
+                try {
+                    const resp = await fetch('/submit_feedback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ project_name: projectName, feedback })
+                    });
+
+                    const data = await resp.json();
+
+                    if (resp.ok) {
+                        messageDiv.style.color = '#2E7D32';
+                        messageDiv.textContent = '✅ 感谢您的反馈！我们会尽快回复您。';
+                        document.getElementById('feedbackForm').reset();
+                        alert('✅ 已收到您的反馈，感谢！');
+                    } else {
+                        const msg = '❌ ' + (data.error || '发送失败，请稍后重试');
+                        messageDiv.style.color = '#C62828';
+                        messageDiv.textContent = msg;
+                        alert(msg);
+                    }
+                } catch (e) {
+                    const msg = '❌ 网络错误，请稍后重试';
+                    messageDiv.style.color = '#C62828';
+                    messageDiv.textContent = msg;
+                    alert(msg);
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '发送建议';
+                }
+            });
+        });
+
+        // 加载数据 - 极简版，无动画
+        async function loadDashboardStats() {
+            try {
+                const resp = await fetch('/dashboard_stats', {
+                    signal: AbortSignal.timeout(5000)
+                });
+                const data = await resp.json();
+
+                // 直接设置数值，不要动画
+                document.getElementById('stat-comments').textContent = data.comments.toLocaleString();
+                document.getElementById('stat-analyses').textContent = data.analyses.toLocaleString();
+                document.getElementById('stat-tokens').textContent = data.tokens.toLocaleString();
+
+                // 更新 Hero 统计
+                document.getElementById('total-comments-stat').textContent = data.comments.toLocaleString();
+                const activeUsers = Math.max(1, Math.floor(data.analyses / 10));
+                document.getElementById('active-users-stat').textContent = activeUsers;
+
+                // 移除 loading 状态
+                document.querySelectorAll('.stat-card').forEach(card => {
+                    card.classList.remove('loading');
+                });
+
+                console.log('数据加载成功', data);
+            } catch (e) {
+                console.error('加载失败:', e);
+
+                // 移除 loading 状态
+                document.querySelectorAll('.stat-card').forEach(card => {
+                    card.classList.remove('loading');
+                });
+
+                // 设置默认值
+                document.getElementById('stat-comments').textContent = '0';
+                document.getElementById('stat-analyses').textContent = '0';
+                document.getElementById('stat-tokens').textContent = '0';
+            }
+        }
+</script>
+{% endblock %}

@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+{% block title %}舆情洞察 | Sailson AI{% endblock %}
+{% block body_class %}{% endblock %}
+{% block head %}
+<style>
+    body { background-color: #FAFAFA; font-family: 'Inter', sans-serif; height: 100vh; display: flex; margin: 0; }
+    .sidebar { width: 260px; background: #fff; border-right: 1px solid #eee; display: flex; flex-direction: column; padding: 20px; flex-shrink: 0; }
+    .logo-area { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; cursor: pointer; }
+    .logo-img { height: 32px; }
+    .search-box { width: 100%; padding: 10px 12px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.85rem; margin-bottom: 15px; transition: all 0.3s ease; }
+    .search-box:focus { outline: none; border-color: #2962FF; box-shadow: 0 0 0 3px rgba(41, 98, 255, 0.1); }
+    .filter-tags { display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }
+    .filter-tag { padding: 6px 12px; border-radius: 16px; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.2s ease; background: #f5f5f5; color: #666; border: 1px solid transparent; }
+    .filter-tag.active { background: #e3f2fd; color: #2962FF; border-color: #2962FF; }
+    .filter-tag:hover { background: #e8e8e8; }
+    .history-list { flex: 1; overflow-y: auto; list-style: none; padding: 0; margin-top: 10px; }
+    .history-item { padding: 12px; font-size: 0.85rem; color: #555; cursor: pointer; border-radius: 8px; margin-bottom: 6px; overflow: hidden; transition: all 0.2s ease; display: flex; align-items: flex-start; gap: 10px; }
+    .history-item:hover { background: #f0f0f0; transform: translateX(4px); }
+    .history-item.active { background: #e3f2fd; color: #007bff; font-weight: 600; }
+    .history-item-icon { font-size: 1.2rem; flex-shrink: 0; }
+    .history-item-content { flex: 1; min-width: 0; }
+    .history-item-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+    .history-item-time { font-size: 0.7rem; color: #999; }
+    .main-content { flex: 1; padding: 40px; overflow-y: auto; background: #FAFAFA; width: 100%; }
+    .content-container { max-width: 1100px; margin: 0 auto; }
+    .glass-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 16px; padding: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
+    .example-hint { margin-top: 10px; padding: 12px; background: #f8f9fa; border-radius: 8px; font-size: 0.85rem; color: #666; display: flex; align-items: center; justify-content: space-between; }
+    .example-hint a { color: #2962FF; text-decoration: none; font-weight: 600; cursor: pointer; }
+    .example-hint a:hover { text-decoration: underline; }
+    .empty-state { text-align: center; padding: 60px 20px; color: #666; }
+    .empty-state-icon { font-size: 4rem; margin-bottom: 20px; opacity: 0.5; }
+    .empty-state h3 { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; color: #333; }
+    .empty-state p { font-size: 1rem; color: #999; max-width: 500px; margin: 0 auto 30px; line-height: 1.6; }
+    .btn-tutorial { background: #2962FF; color: white; padding: 12px 30px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; transition: all 0.3s ease; }
+    .btn-tutorial:hover { background: #1E88E5; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(41, 98, 255, 0.3); }
+    .nav-tabs { border-bottom: none; margin-bottom: 20px; gap: 10px; padding-left: 0; display: flex; list-style: none; }
+    .nav-link { border-radius: 20px !important; color: #666; background: #f8f9fa; border: 1px solid transparent; padding: 8px 20px; cursor: pointer; text-decoration: none; display: block; }
+    .nav-link.active { background: #e3f2fd !important; color: #007bff !important; font-weight: 600; border: 1px solid #e3f2fd; }
+    .form-control { width: 100%; padding: 14px; font-size: 1rem; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+    #resultArea { margin-top: 25px; border-radius: 12px; overflow: hidden; border: 1px solid #eee; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    #resultArea table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-bottom: 0; }
+    #resultArea th { background-color: #f8f9fa !important; color: #495057; font-weight: 600; padding: 18px 12px; text-align: center; border-bottom: 2px solid #e9ecef; white-space: nowrap; }
+    #resultArea td { padding: 16px 12px; vertical-align: middle; border-bottom: 1px solid #f1f3f5; color: #333; font-size: 0.92rem; line-height: 1.6; word-wrap: break-word; }
+    #resultArea tr:hover { background-color: #f8fbff; transition: background-color 0.2s; }
+    #resultArea th:nth-child(1), #resultArea td:nth-child(1) { width: 80px; text-align: center; color: #999; }
+    #resultArea th:nth-child(3), #resultArea td:nth-child(3) { width: 110px; text-align: center; font-weight: 600; color: #2962FF; }
+    #resultArea th:nth-child(4), #resultArea td:nth-child(4) { width: 90px; text-align: center; }
+    #resultArea th:nth-child(5), #resultArea td:nth-child(5) { width: 250px; }
+    #resultArea th:nth-child(2), #resultArea td:nth-child(2) { width: auto; }
+    .table-responsive-custom { overflow-x: auto; }
+    .fade-in { animation: fadeIn 0.5s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+{% endblock %}
+{% block content %}
+<div class="sidebar">
+    <div class="logo-area" onclick="location.reload()">
+        <img src="{{ url_for('static', filename='logo.png') }}" class="logo-img" alt="Logo">
+        <span style="font-weight: 700; font-size: 1.1rem; color: #333;">舆情分析</span>
+    </div>
+    <button onclick="location.reload()" class="btn btn-primary w-100 mb-3" style="background-color: #2962FF; border:none; padding: 10px; border-radius: 8px; color: white; cursor: pointer;">+ 新的分析</button>
+    <input type="text" class="search-box" placeholder="🔍 搜索历史记录..." id="searchBox" oninput="filterHistory()">
+    <div class="filter-tags">
+        <button type="button" class="filter-tag active" onclick="filterByTime('all', event)">全部</button>
+        <button type="button" class="filter-tag" onclick="filterByTime('today', event)">今天</button>
+        <button type="button" class="filter-tag" onclick="filterByTime('week', event)">本周</button>
+    </div>
+    <div class="text-muted small fw-bold">历史记录</div>
+    <ul class="history-list" id="historyList"></ul>
+    <div style="margin-top: auto; padding-top: 20px; border-top: 1px solid #eee;">
+        <a href="/" style="text-decoration: none; color: #666; font-size: 0.9rem;">← 返回首页</a>
+    </div>
+</div>
+<div class="main-content">
+    <div class="content-container">
+        <div class="text-center mb-5">
+            <h2 class="fw-bold" style="color: #111;">Sentiment Insight</h2>
+            <p class="text-muted">社媒评论多维度智能归类系统 (Apify 驱动)</p>
+        </div>
+        <div class="glass-card">
+            <div class="mb-3">
+                <label class="small text-muted mb-1" for="projectSelect">项目</label>
+                <select id="projectSelect" class="form-control form-select">
+                    <option value="CFL" selected>CFL</option>
+                    <option value="PUBGM">PUBGM</option>
+                    <option value="HOK">HOK</option>
+                </select>
+            </div>
+            <ul class="nav nav-tabs">
+                <li class="nav-item"><a class="nav-link active" href="#" onclick="setMode('link', event); return false;">🔗 链接爬取</a></li>
+                <li class="nav-item"><a class="nav-link" href="#" onclick="setMode('file', event); return false;">📁 截图/Excel</a></li>
+            </ul>
+            <div id="linkArea">
+                <label class="small text-muted mb-1" for="urlInput">Facebook 帖子链接</label>
+                <input type="text" id="urlInput" class="form-control" placeholder="请输入 Facebook 帖子链接..." value="">
+                <div class="example-hint">
+                    <span>💡 示例：https://www.facebook.com/gaming/posts/123456789</span>
+                    <a href="#" onclick="fillExample(); return false;">使用示例</a>
+                </div>
+            </div>
+            <div id="fileArea" style="display: none;">
+                <div style="border: 2px dashed #ddd; padding: 30px; text-align: center; border-radius: 10px; cursor: pointer; background: #f9f9f9;" onclick="document.getElementById('fileInput').click()">
+                    <div style="font-size: 30px;" aria-hidden="true">☁️</div>
+                    <div class="text-muted mt-2">点击上传文件</div>
+                    <div id="fileNameDisplay" class="mt-2 text-primary fw-bold"></div>
+                </div>
+                <input type="file" id="fileInput" style="display: none;" onchange="handleFileSelect(this)">
+            </div>
+            <button onclick="startAnalysis()" id="analyzeBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">✨ 立即分析</button>
+            <div id="loading" class="text-center py-5" style="display: none;" role="status" aria-live="polite">
+                <div class="spinner-border text-primary">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p id="loadingText" class="mt-3 text-muted fw-bold">AI 正在深度思考中...</p>
+            </div>
+            <div id="resultContainer" class="mt-5" style="display: none;">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="fw-bold m-0">分析结果</h5>
+                    <div class="d-flex gap-2">
+                        <button onclick="exportByLanguage()" class="btn btn-primary btn-sm" style="background: #2962FF; color: white; border: none; font-weight: 600; padding: 8px 16px;">📄 按语言导出 (Excel)</button>
+                        <button onclick="exportByCategory()" class="btn btn-primary btn-sm" style="background: #D32F2F; color: white; border: none; font-weight: 600; padding: 8px 16px;">📋 按分类导出 (Excel)</button>
+                    </div>
+                </div>
+                <div class="table-responsive-custom"><div id="resultArea" class="fade-in"></div></div>
+            </div>
+            <div id="emptyState" class="empty-state"{% if has_used_sentiment %} style="display:none;"{% endif %}>
+                <div class="empty-state-icon" aria-hidden="true">🎯</div>
+                <h3>开始你的第一次分析</h3>
+                <p>输入 Facebook 帖子链接，我们将自动抓取评论并进行智能分类。支持多语言情感分析和问题归类。</p>
+                <a href="#" class="btn-tutorial" onclick="showTutorial(); return false;">查看使用教程</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let mode = 'link';
+let allHistory = [];
+let currentFilter = 'all';
+let currentRecordId = null;
+const POLL_MAX = 72;
+const POLL_INTERVAL = 5000;
+
+function fillExample() { document.getElementById('urlInput').value = 'https://www.facebook.com/gaming/posts/123456789'; }
+
+function showTutorial() {
+    alert('使用教程：\n\n1. 输入 Facebook 帖子链接\n2. 点击"立即分析"按钮\n3. 等待 2-3 分钟完成分析\n4. 查看分类结果并导出 Excel\n\n支持的语言：英语、菲律宾语、泰语、越南语、印尼语、马来语');
+}
+
+function applyTimeFilter(items) {
+    if (currentFilter === 'all') return items;
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(weekStart.getDate() - 7);
+    return items.filter(item => {
+        const t = item.created_at ? new Date(item.created_at) : null;
+        if (!t) return currentFilter === 'all';
+        if (currentFilter === 'today') return t >= todayStart;
+        if (currentFilter === 'week') return t >= weekStart;
+        return true;
+    });
+}
+
+function filterHistory() {
+    const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+    const searchFiltered = allHistory.filter(item => item.title.toLowerCase().includes(searchTerm));
+    const timeFiltered = applyTimeFilter(searchFiltered);
+    renderHistory(timeFiltered);
+}
+
+function filterByTime(filter, e) {
+    currentFilter = filter;
+    document.querySelectorAll('.filter-tag').forEach(tag => tag.classList.remove('active'));
+    if (e && e.currentTarget) e.currentTarget.classList.add('active');
+    const timeFiltered = applyTimeFilter(allHistory);
+    const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+    const filtered = searchTerm ? timeFiltered.filter(item => item.title.toLowerCase().includes(searchTerm)) : timeFiltered;
+    renderHistory(filtered);
+}
+
+function renderHistory(items) {
+    const list = document.getElementById('historyList');
+    list.innerHTML = '';
+    if (!items || items.length === 0) {
+        const li = document.createElement('li');
+        li.style.cssText = 'padding: 20px; text-align: center; color: #999;';
+        li.textContent = '暂无历史记录';
+        list.appendChild(li);
+        return;
+    }
+    items.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'history-item';
+        li.dataset.recordId = item.id;
+        const icon = document.createElement('div');
+        icon.className = 'history-item-icon';
+        icon.textContent = '📊';
+        icon.setAttribute('aria-hidden', 'true');
+        const content = document.createElement('div');
+        content.className = 'history-item-content';
+        const title = document.createElement('div');
+        title.className = 'history-item-title';
+        title.textContent = item.title;
+        const time = document.createElement('div');
+        time.className = 'history-item-time';
+        time.textContent = '刚刚';
+        content.appendChild(title);
+        content.appendChild(time);
+        li.appendChild(icon);
+        li.appendChild(content);
+        li.onclick = async () => {
+            const r = await fetch('/get_record/' + item.id);
+            const d = await r.json();
+            document.getElementById('resultContainer').style.display = 'block';
+            document.getElementById('resultArea').innerHTML = d.result;
+            document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
+            currentRecordId = item.id;
+            document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+            li.classList.add('active');
+        };
+        list.appendChild(li);
+    });
+}
+
+function setMode(m, e) {
+    mode = m;
+    document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
+    if (e && e.currentTarget) e.currentTarget.classList.add('active');
+    document.getElementById('linkArea').style.display = m === 'link' ? 'block' : 'none';
+    document.getElementById('fileArea').style.display = m === 'file' ? 'block' : 'none';
+}
+
+function handleFileSelect(input) {
+    if (input.files[0]) {
+        document.getElementById('fileNameDisplay').textContent = '✅ ' + input.files[0].name;
+    }
+}
+
+async function startAnalysis() {
+    const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loadingText');
+    const resContainer = document.getElementById('resultContainer');
+    const emptyState = document.getElementById('emptyState');
+    const btn = document.getElementById('analyzeBtn');
+    const formData = new FormData();
+    formData.append('project', document.getElementById('projectSelect').value);
+    if (mode === 'link') {
+        const url = document.getElementById('urlInput').value;
+        if (!url) return alert('请输入链接');
+        formData.append('url', url);
+        loadingText.innerHTML = '🕵️ 任务已提交，正在后台处理...<br><small>（预计需要 2-3 分钟，请耐心等待）</small>';
+    } else {
+        const file = document.getElementById('fileInput').files[0];
+        if (!file) return alert('请选择文件');
+        formData.append('file', file);
+        loadingText.textContent = '🧠 任务已提交，正在后台处理...';
+    }
+    loading.style.display = 'block';
+    resContainer.style.display = 'none';
+    emptyState.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = '🚀 任务执行中...';
+    try {
+        const resp = await fetch('/analyze', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (data.task_id) {
+            pollTaskStatus(data.task_id, 0);
+        } else {
+            throw new Error('未返回任务ID');
+        }
+    } catch (e) {
+        loading.style.display = 'none';
+        emptyState.style.display = 'block';
+        alert('任务提交失败：' + e.message);
+        btn.disabled = false;
+        btn.textContent = '✨ 立即分析';
+    }
+}
+
+async function pollTaskStatus(taskId, attempt) {
+    const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loadingText');
+    const resContainer = document.getElementById('resultContainer');
+    const resArea = document.getElementById('resultArea');
+    const btn = document.getElementById('analyzeBtn');
+    try {
+        const resp = await fetch('/task_status/' + taskId);
+        const data = await resp.json();
+        if (data.progress) {
+            loadingText.innerHTML = '⏳ ' + data.progress + '<br><small>任务ID: ' + taskId.substring(0, 8) + '...</small>';
+        }
+        if (data.status === 'completed') {
+            loading.style.display = 'none';
+            resContainer.style.display = 'block';
+            resArea.innerHTML = data.result;
+            currentRecordId = data.record_id || null;
+            const items = await loadHistory();
+            if (!currentRecordId && items && items.length) currentRecordId = items[0].id;
+            btn.disabled = false;
+            btn.textContent = '✨ 立即分析';
+        } else if (data.status === 'failed') {
+            loading.style.display = 'none';
+            alert('❌ 分析失败：' + (data.error || '未知错误'));
+            btn.disabled = false;
+            btn.textContent = '✨ 立即分析';
+        } else if (attempt >= POLL_MAX) {
+            loading.style.display = 'none';
+            alert('任务超时，请稍后在历史记录中查看');
+            btn.disabled = false;
+            btn.textContent = '✨ 立即分析';
+        } else {
+            setTimeout(() => pollTaskStatus(taskId, attempt + 1), POLL_INTERVAL);
+        }
+    } catch (e) {
+        loading.style.display = 'none';
+        alert('查询任务状态失败：' + e.message);
+        btn.disabled = false;
+        btn.textContent = '✨ 立即分析';
+    }
+}
+
+function exportByLanguage() {
+    if (!currentRecordId) {
+        alert('请先选择一条分析记录（或先完成一次新的分析）');
+        return;
+    }
+    window.location.href = '/export_by_language?record_id=' + currentRecordId;
+}
+
+function exportByCategory() {
+    if (!currentRecordId) {
+        alert('请先选择一条分析记录（或先完成一次新的分析）');
+        return;
+    }
+    window.location.href = '/export_by_category?record_id=' + currentRecordId;
+}
+
+async function loadHistory() {
+    try {
+        const resp = await fetch('/get_history');
+        const list = await resp.json();
+        const sentimentList = list.filter(i => i.type === 'sentiment');
+        allHistory = sentimentList;
+        const timeFiltered = applyTimeFilter(sentimentList);
+        const searchTerm = document.getElementById('searchBox').value.toLowerCase();
+        const filtered = searchTerm ? timeFiltered.filter(i => i.title.toLowerCase().includes(searchTerm)) : timeFiltered;
+        renderHistory(filtered);
+        if (!currentRecordId && sentimentList.length > 0) {
+            currentRecordId = sentimentList[0].id;
+        }
+        return sentimentList;
+    } catch (e) {
+        console.log('历史记录加载失败');
+        return [];
+    }
+}
+
+window.onload = loadHistory;
+</script>
+{% endblock %}

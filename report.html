@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}智能周报 | Sailson AI{% endblock %}
+{% block body_class %}d-flex{% endblock %}
+{% block head %}
+<style>
+        :root { --primary-color: #2E7D32; --bg-color: #FAFAFA; --sidebar-width: 280px; }
+        body { background-color: var(--bg-color); font-family: 'Inter', sans-serif; height: 100vh; display: flex; overflow: hidden;}
+        
+        .sidebar { width: var(--sidebar-width); background: #fff; border-right: 1px solid #E5E5E5; padding: 20px; display: flex; flex-direction: column; }
+        .sidebar-header { margin-bottom: 30px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+        .sidebar-logo { height: 32px; width: auto; }
+        .sidebar-title { font-weight: 700; font-size: 1.1rem; }
+        .new-chat-btn { background: var(--primary-color); color: white; border: none; padding: 12px; border-radius: 10px; width: 100%; font-weight: 600; margin-bottom: 20px; transition: 0.2s; }
+        .new-chat-btn:hover { background: #1B5E20; transform: translateY(-1px); }
+        .history-list { flex-grow: 1; overflow-y: auto; list-style: none; padding: 0; }
+        .history-item { padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; color: #333; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .history-item:hover { background: #F5F5F7; }
+        .history-item.active { background: #E8F5E9; color: var(--primary-color); font-weight: 600; }
+        .back-home { margin-top: auto; padding-top: 20px; border-top: 1px solid #eee; text-decoration: none; color: #666; font-size: 0.9rem; }
+
+        .main-content { flex-grow: 1; padding: 40px; overflow-y: auto; }
+        .container-box { max-width: 1000px; margin: 0 auto; }
+        .glass-card { background: #fff; border: 1px solid #E5E5E5; border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.02); }
+        .form-label { font-weight: 600; margin-top: 10px; font-size: 0.9rem; }
+        .form-control { padding: 12px; border-radius: 10px; border: 1px solid #E0E0E0; }
+        .btn-generate { background: var(--primary-color); color: white; border: none; padding: 12px; border-radius: 10px; width: 100%; font-weight: 600; margin-top: 20px; }
+        
+        /* 打字机光标效果 */
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 18px;
+            background-color: var(--primary-color);
+            animation: blink 1s infinite;
+            vertical-align: middle;
+            margin-left: 2px;
+        }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+
+        /* 邮件内容样式 */
+        #output { 
+            white-space: pre-wrap; 
+            line-height: 1.8; 
+            font-family: 'Inter', sans-serif;
+            color: #333;
+        }
+</style>
+{% endblock %}
+{% block content %}
+<aside class="sidebar">
+        <div class="sidebar-header" onclick="location.reload()">
+            <img src="{{ url_for('static', filename='logo.png') }}" class="sidebar-logo">
+            <span class="sidebar-title">周报助手</span>
+        </div>
+        <button onclick="location.reload()" class="new-chat-btn">+ 新周报</button>
+        <div class="text-muted small fw-bold mb-2">历史周报</div>
+        <ul class="history-list" id="historyList"></ul>
+        <a href="/" class="back-home">← 返回首页</a>
+    </aside>
+
+    <main class="main-content">
+        <div class="container-box">
+            <h2 class="fw-bold mb-4">智能周报生成</h2>
+            <div class="row g-4">
+                <div class="col-md-5">
+                    <div class="glass-card">
+                        <label class="form-label">关键数据</label>
+                        <textarea class="form-control" id="metrics" rows="2" placeholder="DAU +5%..."></textarea>
+                        <label class="form-label">本周进展</label>
+                        <textarea class="form-control" id="progress" rows="3" placeholder="上线新功能..."></textarea>
+                        <label class="form-label">下周计划</label>
+                        <textarea class="form-control" id="plan" rows="2" placeholder="跟进活动..."></textarea>
+                        <button onclick="genReport()" id="btn" class="btn-generate">✨ 生成邮件</button>
+                    </div>
+                </div>
+                <div class="col-md-7">
+                    <div class="glass-card" style="min-height: 500px; background: #fff;">
+                        <div id="outputContainer">
+                            <div id="placeholder" class="text-center text-muted py-5 mt-5">
+                                <div style="font-size: 40px;">📧</div>
+                                <p>邮件预览区</p>
+                            </div>
+                            <div id="output" style="display: none;"></div>
+                        </div>
+                        
+                        <div id="loading" class="text-center py-5" style="display: none;">
+                            <div class="spinner-border text-success"></div>
+                            <p class="mt-2 text-muted fw-bold" id="loadingText">AI 正在思考...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+</main>
+{% endblock %}
+{% block scripts %}
+<script>
+        window.onload = loadHistory;
+
+        async function genReport() {
+            const metrics = document.getElementById('metrics').value;
+            const progress = document.getElementById('progress').value;
+            const plan = document.getElementById('plan').value;
+            
+            if(!metrics) { alert("请写点内容"); return; }
+            
+            // 1. UI 状态切换
+            document.getElementById('placeholder').style.display = 'none';
+            document.getElementById('output').style.display = 'none';
+            document.getElementById('output').innerHTML = ''; // 清空旧内容
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('btn').disabled = true;
+
+            // 2. 启动“智能思考”动画 (每 800ms 换一句话)
+            const loadingTexts = ["🚀 正在连接通义千问...", "🧠 正在梳理工作逻辑...", "✍️ 正在润色职场术语...", "📧 正在生成邮件格式..."];
+            let step = 0;
+            const timer = setInterval(() => {
+                document.getElementById('loadingText').innerText = loadingTexts[step % loadingTexts.length];
+                step++;
+            }, 800);
+
+            try {
+                // 3. 请求 API
+                const res = await fetch('/generate_report', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ metrics, progress, plan })
+                });
+                const data = await res.json();
+                
+                // 4. 清除 Loading，开始打字
+                clearInterval(timer);
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('output').style.display = 'block';
+                
+                // ✨ 启动打字机特效
+                typeWriterEffect(data.result);
+                
+                loadHistory();
+
+            } catch (error) {
+                clearInterval(timer);
+                document.getElementById('loading').innerHTML = `<span class="text-danger">生成失败: ${error}</span>`;
+            } finally {
+                document.getElementById('btn').disabled = false;
+            }
+        }
+
+        // ✨ 打字机核心函数
+        function typeWriterEffect(text) {
+            const output = document.getElementById('output');
+            output.innerHTML = ''; // 清空
+            let i = 0;
+            const speed = 20; // 打字速度 (越小越快)
+
+            function type() {
+                if (i < text.length) {
+                    // 如果遇到换行符，处理一下
+                    if (text.charAt(i) === '\n') {
+                        output.innerHTML += '<br>';
+                    } else {
+                        output.innerHTML += text.charAt(i);
+                    }
+                    i++;
+                    
+                    // 加个光标
+                    if (!document.getElementById('cursor')) {
+                        output.innerHTML += '<span id="cursor" class="cursor"></span>';
+                    } else {
+                        // 移动光标到最后
+                        const cursor = document.getElementById('cursor');
+                        output.appendChild(cursor); 
+                    }
+                    
+                    setTimeout(type, speed);
+                } else {
+                    // 打字结束，移除光标
+                    const cursor = document.getElementById('cursor');
+                    if(cursor) cursor.style.display = 'none';
+                }
+            }
+            type();
+        }
+
+        async function loadHistory() {
+            const res = await fetch('/get_history');
+            const list = await res.json();
+            const ul = document.getElementById('historyList');
+            ul.innerHTML = '';
+            list.forEach(item => {
+                if(item.type === 'report') {
+                    const li = document.createElement('li');
+                    li.className = 'history-item';
+                    li.innerText = item.title;
+                    li.onclick = async () => {
+                        const r = await fetch(`/get_record/${item.id}`);
+                        const d = await r.json();
+                        // 历史记录直接显示，不用打字机
+                        document.getElementById('placeholder').style.display = 'none';
+                        document.getElementById('output').style.display = 'block';
+                        document.getElementById('output').innerHTML = d.result;
+                    };
+                    ul.appendChild(li);
+                }
+            });
+        }
+</script>
+{% endblock %}

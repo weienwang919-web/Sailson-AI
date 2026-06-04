@@ -1,0 +1,41 @@
+/* Sailson AI 设计令牌 */
+:root {
+  --color-primary: #2962FF;
+  --color-primary-hover: #1E88E5;
+  --color-accent: #10B981;
+  --color-danger: #D32F2F;
+  --color-success: #2E7D32;
+  --bg-page: #FAFAFA;
+  --bg-card: #fff;
+  --text-primary: #1d1d1f;
+  --text-secondary: #86868b;
+  --border-light: #eee;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 4px 12px rgba(0,0,0,0.03);
+  --sidebar-w: 260px;
+}
+
+/* 基础 */
+body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+
+/* 侧边栏通用 */
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg-card);
+  border-right: 1px solid var(--border-light);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.logo-area { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; cursor: pointer; }
+.logo-img { height: 32px; }
+
+/* 响应式：小屏侧边栏与主内容 */
+@media (max-width: 768px) {
+  body.d-flex { flex-wrap: wrap; overflow-y: auto; }
+  .sidebar { width: 100%; max-height: 220px; border-right: none; border-bottom: 1px solid var(--border-light); order: 1; }
+  .main-content, .chat-main { width: 100%; order: 2; flex: 1 1 auto; }
+}

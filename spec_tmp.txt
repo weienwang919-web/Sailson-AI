@@ -1,0 +1,233 @@
+SPD 舆情监控 AI 工具 — 数据采集与报告输出 Spec
+用途：本文档拆解沐瞳 SPD 舆情监控需求 brief 中的全部数据维度，作为自研 AI 舆情工具的开发 Spec，供 Claude Code 迭代使用。源需求文档：26Y SPD舆情监控需求brief
+
+一、任务配置层（Task Config）
+每次舆情监控任务的基础配置参数。
+JSON {   "task_name": "MLBB" | "SPD",   "keywords": "布尔搜索表达式（含 AND / OR / NOT）",   "platforms": ["facebook", "instagram"],   "date_range": {     "start": "2026-03-27",     "end": "2026-04-02"   },   "regions": ["global", "TH"] } 
+
+关键说明
+	•	task_name 支持多任务并行（MLBB 整体 + SPD 联动活动），一条帖子可能同时匹配多个任务
+	•	keywords 直接复用客户提供的布尔表达式，工具需支持解析 AND / OR / NOT 逻辑
+	•	regions 需要全球和泰国区域两个视角分别出数据
+	•	区域判断逻辑：基于发帖账号归属（如 MLBB EN、MLBB TH、MLBB ID 等官方账号），UGC 内容按语言检测归类
+关键词配置参考
+任务
+布尔表达式
+MLBB
+("#mlbb" OR #mlbb* OR "mlbb" OR "#mobilelegends" OR "mobilelegends" OR "MobileLegendsBangBang" ...) AND NOT ("FREEFIRE" OR "#MLB" OR "#mlbbaseball" OR "#mlbbets")
+SPD
+MLBB 关键词 AND (火影角色名/英雄名/皮肤名) OR 联动专属标签（如 MLBBxNARUTO、#MLBBNewSkin 等）
+
+二、数据爬取维度（Input Schema）
+2.1 贴文级数据（Post-level）
+每条匹配的帖子需采集以下字段：
+字段名
+类型
+说明
+post_id
+string
+平台原始帖子 ID
+platform
+enum
+facebook \| instagram
+region
+string
+EN / ID / TH / IN / PH / MY 等（按账号归属判断）
+author
+string
+发帖账号名称
+author_type
+enum
+official（官方）\| kol \| ugc（普通用户）
+post_date
+date
+发布日期（YYYY-MM-DD）
+post_type
+enum
+reel / image / video / carousel / text
+post_content
+string
+帖子文案原文
+post_topic
+string
+帖子主题摘要（AI 生成，一句话概括）
+post_url
+string
+帖子原始链接
+thumbnail_url
+string
+封面图/缩略图 URL
+views
+number
+观看/播放量
+shares
+number
+分享/转发量
+likes
+number
+点赞量
+comments_count
+number
+评论数
+engagement
+number
+互动量 = likes + comments + shares（核心指标）
+matched_task
+string[]
+匹配到的任务列表：["MLBB"] / ["SPD"] / ["MLBB", "SPD"]
+2.2 评论级数据（Comment-level）
+对 TOP5 帖子 的评论需逐条采集：
+字段名
+类型
+说明
+comment_id
+string
+评论原始 ID
+post_id
+string
+所属帖子 ID
+author
+string
+评论者名称
+content
+string
+评论原文
+language
+string
+语言检测结果（en / id / th / pt 等）
+likes
+number
+评论点赞数
+created_at
+datetime
+评论发布时间
+sentiment
+enum
+AI 情感分类：positive / neutral / negative
+sentiment_topic
+string
+AI 观点主题归类（如"设计同质化"、"IP还原度不足"、"免费福利好评"等）
+is_reply
+boolean
+是否为子回复（reply to comment）
+parent_comment_id
+string \| null
+父评论 ID（仅子回复时有值）
+
+三、报告输出维度（Output Schema）
+模块 A：社媒声量（Engagement Trends）
+A1. 分日互动量趋势
+JSON {   "daily_engagement": [     {       "date": "2026-03-27",       "mlbb_engagement": 125000,       "spd_engagement": 42000     }   ] } 
+
+输出要求
+	•	需要出两组趋势数据：① 全球 MLBB vs SPD ② 泰国区域 MLBB vs SPD
+	•	输出为折线图数据（双线对比），需支持渲染为可视化图表
+	•	互动量 = 转发 + 点赞 + 评论
+A2. 峰值日贴文下钻
+对互动量出现波峰的日期，自动下钻到具体引爆帖子：
+JSON {   "peak_drilldown": [     {       "date": "2026-03-23",       "task": "MLBB",       "region": "global",       "top_posts": [         {           "author": "dimas.avt",           "author_region": "ID",           "post_topic": "Macel高光视频",           "post_url": "https://www.instagram.com/reels/xxx/",           "engagement": 75000         }       ]     }   ] } 
+
+输出格式参考（给到客户的文本版）：
+ML声量峰值分析：
+	•	3/23
+	•	dimas.avt（ID）发布 Macel高光视频，获得 75K 互动量。
+	•	MLBB INDIA INS 发布 赛季段位MEME动画，获得 26K 互动量。
+
+模块 B：社媒舆情（Sentiment Analysis）
+B1. TOP5 贴文舆情概况（汇总卡片）
+对周期内 SPD 相关 TOP5 帖子的评论进行整体汇总：
+JSON {   "summary": {     "total_comments": 1200,     "sentiment_ratio": {       "positive": 25.0,       "neutral": 60.0,       "negative": 15.0     },     "key_opinions": [       {         "sentiment": "positive",         "region": "EN",         "opinion": "对 Naruto 联动皮肤表现出积极购买意愿",         "percentage": 4.1       },       {         "sentiment": "negative",         "region": "EN",         "opinion": "Julian × Itachi 角色适配质疑，技能机制与IP人设不符",         "percentage": 3.7       }     ]   } } 
+
+观点提炼规则
+	•	按 正面 / 中性 / 负面 三档分组
+	•	每条观点标注 区域（EN / ID / TH）和 占比百分比
+	•	格式：{区域}：{一句话观点描述}（{百分比}%）
+	•	示例：EN：玩家对 Naruto 联动中 Julian × Itachi 的角色适配提出质疑（3.7%）
+B2. TOP5 贴文逐条详情
+字段
+说明
+rank
+排名 1-5（按互动量降序）
+region
+帖子所属区域（EN / ID / TH）
+platform
+INS / FB
+post_content
+帖子主题 + 文案摘要 + 缩略图
+sentiment_ratio
+该帖评论的 Positive% / Neutral% / Negative% 三项占比
+top_sentiments
+正面 / 负面 / 中性 各 TOP3 观点（见下方详细结构）
+views
+观看/播放量
+likes
+点赞量
+comments
+评论数
+post_url
+帖子原始链接
+观点详情结构（top\_sentiments 内每条）
+JSON {   "sentiment": "positive",   "opinion": "玩家认可 Valir Ember Gaze 皮肤的视觉特效",   "count": "22+",   "examples": [     {       "original": "Looks straight up from naruto",       "translation": "看起来完全像从火影里出来的"     },     {       "original": "This cosplay is better than Ling lord Shen cosplay",       "translation": "这个cos比Ling那个还好😂"     }   ] } 
+
+每条观点要求
+	•	opinion：一句话中文观点提炼
+	•	count：持该观点的评论条数（格式："22+"）
+	•	examples：2-3 条代表性原始评论 + 中文翻译
+
+四、处理管线（Pipeline Architecture）
+
+各阶段详细说明
+阶段
+名称
+处理逻辑
+1
+Crawl
+按 TaskConfig 爬取 Facebook + Instagram 的帖子及其评论。需支持翻页、限速、反爬绕过。
+2
+Match
+用布尔关键词表达式匹配帖子内容（文案 + hashtag），标记 matched_task（MLBB / SPD / both）。
+3
+Tag
+按发帖账号归属打区域标签（EN / ID / TH / IN 等）。官方账号走账号映射表，UGC 走语言检测。同时标记 author_type。
+4
+Aggregate
+按日期聚合互动量（likes + comments + shares），分 MLBB / SPD 两个任务维度 × 全球 / 泰国区域 两个视角，共 4 条时间序列。
+5
+Rank
+仅对 SPD 相关帖子，按 engagement 降序排列，取 TOP5。同时识别波峰日期用于下钻。
+6
+Analyze
+对 TOP5 帖子的全部评论执行：① 情感三分类（positive / neutral / negative）② 观点主题聚类（语义相近的评论归为同一观点）③ 提取代表性示例评论 + 翻译。
+7
+Render
+按模板生成最终报告，包含：声量趋势图表 + 峰值下钻文本 + 舆情概况卡片 + TOP5 贴文详情表。
+
+五、AI 处理要求
+5.1 情感分析模型
+参数
+要求
+分类标签
+三分类：positive / neutral / negative
+多语言支持
+至少支持 EN、ID（印尼语）、TH（泰语）、PT（葡萄牙语）
+Neutral 判定
+纯提问、活动参与代码、无意义短评（emoji-only、tag friends）→ neutral
+边界案例
+反讽/戏谑需上下文判断，不能仅靠关键词
+5.2 观点聚类逻辑
+	•	对同一帖子下所有评论，先做情感分类
+	•	同一情感类别内，按语义相似度聚类（如"皮肤像火影风格"的多种表述归为一个观点）
+	•	每个观点计算占总评论数的百分比
+	•	提取 2-3 条最具代表性的原文作为示例
+	•	非英文评论需附带中文翻译
+5.3 帖子主题摘要
+	•	AI 生成一句话摘要（post_topic），描述帖子核心内容
+	•	格式参考："Valir Ember Gaze 皮肤 PV" / "Macel 高光操作集锦" / "MPL 赛事战报"
+
+六、注意事项
+关键约束
+	•	TOP5 帖子筛选范围：仅 SPD 相关帖子（brief 原文注明"仅SPD相关"）
+	•	声量趋势范围：MLBB 和 SPD 都要出（用于对比联动活动占整体声量的比例）
+	•	泰国区域单独拆分：声量趋势和峰值下钻都需要全球和泰国区域两个版本
+	•	互动量定义：转发 + 点赞 + 评论（不含 views）
+	•	图表需求：声量趋势部分原文有图表占位（block type 999），需输出可渲染的图表数据

@@ -3,14 +3,12 @@ import type { Key } from "react";
 import { Button, Card, Drawer, Input, message, Modal, Space, Table, Tabs, Tag, Upload } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { UploadOutlined } from "@ant-design/icons";
-import type { BusinessField, BusinessFieldCatalog, FieldInventoryItem, FilterPayload, KolRecord, ScrapeJob } from "../api";
+import type { BusinessField, BusinessFieldCatalog, FilterPayload, KolRecord, ScrapeJob } from "../api";
 import {
   createKol,
   deleteKol,
   exportKols,
   getBusinessFields,
-  getFieldAliasRules,
-  getFieldInventory,
   getFilterOptions,
   getJob,
   getJobs,
@@ -59,8 +57,6 @@ export default function Dashboard() {
   const [linkText, setLinkText] = useState("");
   const [importing, setImporting] = useState(false);
   const [pureRefreshStatus, setPureRefreshStatus] = useState("");
-  const [inventory, setInventory] = useState<FieldInventoryItem[]>([]);
-  const [aliasRuleCount, setAliasRuleCount] = useState(0);
 
   const filterFields = useMemo(
     () => businessFields.filter.map((field) => ({ label: field.label, value: field.filter_key, dataType: field.data_type })),
@@ -200,16 +196,6 @@ export default function Dashboard() {
     { title: "错误", dataIndex: "error", ellipsis: true },
   ];
 
-  const inventoryColumns: ColumnsType<FieldInventoryItem> = [
-    { title: "原始字段", dataIndex: "raw_field", width: 220, fixed: "left" },
-    { title: "平台", dataIndex: "platform", width: 110, render: (value?: string | null) => value || "未识别" },
-    { title: "处理方式", width: 190, render: (_: unknown, item: FieldInventoryItem) => item.platform ? "按平台归到商务字段" : "导出时放到兜底商务报价" },
-    { title: "建议合并", dataIndex: "suggested_standard_field", width: 150, render: (value?: string | null) => value || "商务报价兜底" },
-    { title: "出现次数", dataIndex: "count", width: 100, sorter: (a, b) => a.count - b.count },
-    { title: "来源", dataIndex: "sources", width: 240, render: (sources: string[]) => sources.join("\n") },
-    { title: "样例值", dataIndex: "sample_values", render: (values: string[]) => values.join(" / ") },
-  ];
-
   const applyFilters = (nextFilters: FilterPayload) => {
     setFilters(nextFilters);
     setPage(1);
@@ -326,12 +312,6 @@ export default function Dashboard() {
     }
   };
 
-  const loadFieldInventory = async () => {
-    const [inventoryData, rules] = await Promise.all([getFieldInventory(), getFieldAliasRules()]);
-    setInventory(inventoryData.items);
-    setAliasRuleCount(rules.platform_alias_rules.reduce((sum, rule) => sum + rule.aliases.length, 0));
-  };
-
   return (
     <div className="page">
       <div className="header">
@@ -382,6 +362,15 @@ export default function Dashboard() {
             children: (
               <Card>
                 <div className="toolbar">
+                  <Input.Search
+                    allowClear
+                    value={search}
+                    placeholder="搜索 KOL / 类目 / 国家 / 平台"
+                    style={{ width: 300 }}
+                    onChange={(event) => setSearch(event.target.value)}
+                    onSearch={handleSearch}
+                  />
+                  <Button onClick={() => setFilterOpen(true)}>筛选{filterCount ? `（${filterCount}）` : ""}</Button>
                   <Button type="primary" onClick={openCreate}>
                     新增 KOL
                   </Button>
@@ -407,7 +396,7 @@ export default function Dashboard() {
                 <div className="workbench governance-grid">
                   <Card className="work-card">
                     <div className="work-title">Excel 导入</div>
-                    <div className="work-desc">导入报价、合作模式、受众等人工字段，复杂字段会进入字段盘点。</div>
+                    <div className="work-desc">导入报价、合作模式、受众等人工字段，系统会按平台优先归到对应商务字段。</div>
                     <Upload accept=".xlsx" showUploadList={false} beforeUpload={(file) => { void handleExcelImport(file, false); return false; }}>
                       <Button type="primary" icon={<UploadOutlined />} loading={importing}>上传 Excel</Button>
                     </Upload>
@@ -430,20 +419,9 @@ export default function Dashboard() {
                     <div className="work-desc">查看抓取任务状态、进度和错误信息。</div>
                     <Button onClick={loadJobs}>刷新任务</Button>
                   </Card>
-                  <Card className="work-card">
-                    <div className="work-title">字段盘点</div>
-                    <div className="work-desc">只要平台识别正确，报价字段会优先归到对应平台；识别不了的字段导出时统一追加到兜底商务报价。</div>
-                    <Button onClick={loadFieldInventory}>生成字段盘点</Button>
-                  </Card>
                 </div>
                 <Card title="任务中心">
                   <Table rowKey="id" loading={jobLoading} columns={jobColumns} dataSource={jobs} pagination={false} size="small" />
-                </Card>
-                <Card title={`字段盘点与商务报价兜底（已沉淀别名 ${aliasRuleCount} 个）`}>
-                  <div style={{ color: "#667085", marginBottom: 12 }}>
-                    字段维护的核心是不要识别错平台。能识别平台的商务报价直接进入对应平台列；不能识别平台的报价、CPM、合作模式等字段不会丢，导出时会追加到“未识别商务报价”列。
-                  </div>
-                  <Table rowKey="raw_field" columns={inventoryColumns} dataSource={inventory} size="small" scroll={{ x: 1200, y: 420 }} />
                 </Card>
               </Space>
             ),
