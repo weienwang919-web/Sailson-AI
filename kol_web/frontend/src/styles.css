@@ -168,3 +168,75 @@ body {
 .platform-title {
   letter-spacing: 0.02em;
 }
+
+.stats-bar {
+  display: flex;
+  gap: 24px;
+  padding: 14px 20px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+  flex-wrap: wrap;
+}
+
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 100px;
+}
+
+.stats-label {
+  font-size: 12px;
+  color: #98a2b3;
+  white-space: nowrap;
+}
+
+.stats-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #101828;
+}
+
+.quick-filters {
+  margin-bottom: 12px;
+  padding: 12px 0;
+  border-top: 1px solid #f2f4f7;
+  border-bottom: 1px solid #f2f4f7;
+}
+
+.quick-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.quick-filter-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #344054;
+  white-space: nowrap;
+  min-width: 130px;
+}
+
+.ant-tag-checkable {
+  cursor: pointer;
+  padding: 2px 10px;
+  border-radius: 4px;
+  border: 1px solid #d0d5dd;
+  font-size: 13px;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.ant-tag-checkable:hover {
+  border-color: #1677ff;
+  color: #1677ff;
+}
+
+.ant-tag-checkable-checked {
+  background: #1677ff !important;
+  border-color: #1677ff !important;
+  color: #fff !important;
+}

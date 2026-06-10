@@ -5,6 +5,7 @@ export type KolRecord = {
   name: string;
   category: string;
   normalized_category?: string | null;
+  major_category?: string | null;
   source_file?: string | null;
   country?: string | null;
   language?: string | null;

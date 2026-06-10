@@ -11,6 +11,7 @@ class KOLRecordOut(BaseModel):
     name: str
     category: str
     normalized_category: str | None = None
+    major_category: str | None = None
     source_file: str | None = None
     country: str | None = None
     language: str | None = None

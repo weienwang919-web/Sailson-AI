@@ -2,19 +2,33 @@ from __future__ import annotations
 
 import re
 
-STANDARD_CATEGORIES = [
-    "Gaming",
-    "Entertainment",
-    "Lifestyle",
-    "Beauty/Fashion",
-    "Tech",
-    "Music",
-    "Sports",
-    "Food/Travel",
-    "Education/Review",
-    "Cosplay/ACG",
-    "Other",
+MAJOR_CATEGORIES = [
+    "游戏/Gaming",
+    "动漫娱乐/Anime & Entertainment",
+    "coser/Cosplayer",
+    "非游/Non-Gaming",
 ]
+
+MAJOR_CATEGORY_MAP: dict[str, str] = {
+    "Gaming": "游戏/Gaming",
+    "Entertainment": "动漫娱乐/Anime & Entertainment",
+    "Cosplay/ACG": "coser/Cosplayer",
+    "Lifestyle": "非游/Non-Gaming",
+    "Beauty/Fashion": "非游/Non-Gaming",
+    "Tech": "非游/Non-Gaming",
+    "Music": "非游/Non-Gaming",
+    "Sports": "非游/Non-Gaming",
+    "Food/Travel": "非游/Non-Gaming",
+    "Education/Review": "非游/Non-Gaming",
+    "Other": "非游/Non-Gaming",
+}
+
+
+def major_category(normalized: str | None) -> str:
+    return MAJOR_CATEGORY_MAP.get(normalized or "", "非游/Non-Gaming")
+
+
+STANDARD_CATEGORIES = MAJOR_CATEGORIES
 
 CATEGORY_RULES = [
     ("Gaming", ["gaming", "gamer", "streamer", "游戏", "moba", "minecraft", "塔防", "策略", "动作游戏", "角色扮演", "解说", "caster"]),

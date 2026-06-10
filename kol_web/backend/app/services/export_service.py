@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy.orm import Session
 
@@ -24,7 +26,7 @@ def export_records_restored(db: Session, records: list[KOLRecord]) -> Path:
         _clear_template_data_rows(wb)
     else:
         wb = Workbook()
-        wb.active.title = "KOL List"
+        wb.active.title = "KOL 列表/List"
 
     by_category: dict[str, list[KOLRecord]] = {}
     for record in records:
@@ -285,8 +287,22 @@ def _write_platform(ws: Worksheet, row: int, cols: dict, platform: str, record: 
         set_col("short video", record.yt_short_video_price)
 
 
+_HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
+_HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+_HEADER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
+_THIN_BORDER = Border(
+    left=Side(style="thin", color="D9D9D9"),
+    right=Side(style="thin", color="D9D9D9"),
+    top=Side(style="thin", color="D9D9D9"),
+    bottom=Side(style="thin", color="D9D9D9"),
+)
+_DATA_ALIGNMENT = Alignment(vertical="center", wrap_text=True)
+_NUMBER_ALIGNMENT = Alignment(horizontal="right", vertical="center")
+_EVEN_ROW_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+
 def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
-    title = "Other"
+    title = "KOL 数据/Data"
     if title in wb.sheetnames:
         ws = wb[title]
     elif len(wb.sheetnames) == 1 and wb.active.max_row == 1 and wb.active["A1"].value is None:
@@ -294,67 +310,108 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
         ws.title = title
     else:
         ws = wb.create_sheet(title)
+
+    from app.core.category import major_category
+
     headers = [
-        "KOL",
-        "Category",
-        "Country",
-        "Platform",
-        "TikTok Link",
-        "TT Follower",
-        "TT AVV",
-        "TT Short Video Price",
-        "TT Main Price",
-        "TT CPM",
-        "TT Collaboration",
-        "Instagram Link",
-        "INS Follower",
-        "INS Post Price",
-        "INS Main Price",
-        "INS CPM",
-        "INS Collaboration",
-        "YouTube Link",
-        "YT Follower",
-        "YT AVV",
-        "YT Full Video Price",
-        "YT Main Price",
-        "YT CPM",
-        "YT Collaboration",
-        "Unrecognized Business Quotes",
-        "Notes",
+        ("KOL 名称/Name", 20),
+        ("大类/Category", 12),
+        ("国家/Country", 10),
+        ("平台/Platform", 10),
+        ("TikTok 链接/Link", 30),
+        ("TikTok 粉丝/Followers", 14),
+        ("TikTok AVV/均观看量", 14),
+        ("TikTok 短视频报价/Short Video Price", 16),
+        ("TikTok 主报价/Main Price", 16),
+        ("TikTok CPM", 14),
+        ("TikTok 合作模式/Collaboration", 16),
+        ("Instagram 链接/Link", 30),
+        ("Instagram 粉丝/Followers", 14),
+        ("Instagram Post 报价/Post Price", 16),
+        ("Instagram 主报价/Main Price", 16),
+        ("Instagram CPM", 14),
+        ("Instagram 合作模式/Collaboration", 16),
+        ("YouTube 链接/Link", 30),
+        ("YouTube 粉丝/Followers", 14),
+        ("YouTube AVV/均观看量", 14),
+        ("YouTube 长视频报价/Full Video Price", 16),
+        ("YouTube 主报价/Main Price", 16),
+        ("YouTube CPM", 14),
+        ("YouTube 合作模式/Collaboration", 16),
+        ("未识别报价/Unrecognized Quotes", 24),
+        ("备注/Notes", 24),
     ]
-    ws.append(headers)
-    for record in records:
+    header_labels = [h[0] for h in headers]
+    col_widths = [h[1] for h in headers]
+
+    ws.append(header_labels)
+    for col_idx, width in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+        cell.alignment = _HEADER_ALIGNMENT
+        cell.border = _THIN_BORDER
+    ws.row_dimensions[1].height = 28
+
+    for record_idx, record in enumerate(records):
         extra = _extra_fields(record)
-        ws.append(
-            [
-                record.name,
-                record.category,
-                record.country,
-                record.platform_text,
-                record.tt_link,
-                record.tt_follower,
-                record.tt_avv,
-                record.tt_short_video_price,
-                extra.get("TikTok - 主报价"),
-                extra.get("TikTok - CPM"),
-                extra.get("TikTok - 合作模式"),
-                record.ins_link,
-                record.ins_follower,
-                record.ins_post_price,
-                extra.get("Instagram - 主报价"),
-                extra.get("Instagram - CPM"),
-                extra.get("Instagram - 合作模式"),
-                record.yt_link,
-                record.yt_follower,
-                record.yt_avv,
-                record.yt_full_video_price,
-                extra.get("YouTube - 主报价"),
-                extra.get("YouTube - CPM"),
-                extra.get("YouTube - 合作模式"),
-                _unrecognized_business_quotes(extra),
-                record.notes,
-            ]
-        )
+        row_num = record_idx + 2
+        row_data = [
+            record.name,
+            major_category(record.normalized_category or ""),
+            record.country,
+            record.platform_text,
+            record.tt_link,
+            record.tt_follower,
+            record.tt_avv,
+            record.tt_short_video_price,
+            extra.get("TikTok - 主报价"),
+            extra.get("TikTok - CPM"),
+            extra.get("TikTok - 合作模式"),
+            record.ins_link,
+            record.ins_follower,
+            record.ins_post_price,
+            extra.get("Instagram - 主报价"),
+            extra.get("Instagram - CPM"),
+            extra.get("Instagram - 合作模式"),
+            record.yt_link,
+            record.yt_follower,
+            record.yt_avv,
+            record.yt_full_video_price,
+            extra.get("YouTube - 主报价"),
+            extra.get("YouTube - CPM"),
+            extra.get("YouTube - 合作模式"),
+            _unrecognized_business_quotes(extra),
+            record.notes,
+        ]
+        ws.append(row_data)
+
+        is_even = record_idx % 2 == 1
+        for col_idx in range(1, len(row_data) + 1):
+            cell = ws.cell(row=row_num, column=col_idx)
+            cell.border = _THIN_BORDER
+            if is_even:
+                cell.fill = _EVEN_ROW_FILL
+            value = cell.value
+            if isinstance(value, (int, float)):
+                cell.alignment = _NUMBER_ALIGNMENT
+                cell.number_format = "#,##0" if isinstance(value, int) else "#,##0.00"
+            elif isinstance(value, str) and value.startswith("http"):
+                cell.alignment = _DATA_ALIGNMENT
+                try:
+                    cell.hyperlink = value
+                    cell.font = Font(color="0563C1", underline="single")
+                except Exception:
+                    pass
+            else:
+                cell.alignment = _DATA_ALIGNMENT
+        ws.row_dimensions[row_num].height = 20
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
 
 
 def _extra_fields(record: KOLRecord) -> dict[str, Any]:

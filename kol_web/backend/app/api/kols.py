@@ -14,7 +14,7 @@ from sqlalchemy import and_, desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.business_fields import BUSINESS_FIELDS, field_payload, fields_for_usage
-from app.core.category import STANDARD_CATEGORIES, normalize_category
+from app.core.category import STANDARD_CATEGORIES, major_category, normalize_category
 from app.core.field_normalizer import STANDARD_PLATFORM_FIELDS
 from app.database import get_db
 from app.models import KOLRecord, ScrapeJob
@@ -306,6 +306,10 @@ def build_rule_clause(rule: FilterRule):
         return None
     op = rule.op
     value = rule.value
+    if rule.field in ("normalized_category", "major_category") and op in ("eq", "contains"):
+        expanded = _expand_major_category(value)
+        if expanded:
+            return col.in_(expanded)
     if op == "eq":
         return col == value
     if op == "neq":
@@ -325,7 +329,20 @@ def build_rule_clause(rule: FilterRule):
     return None
 
 
+def _expand_major_category(value: str) -> list[str] | None:
+    from app.core.category import MAJOR_CATEGORY_MAP
+
+    reverse: dict[str, list[str]] = {}
+    for std, major in MAJOR_CATEGORY_MAP.items():
+        reverse.setdefault(major, []).append(std)
+    if value in reverse:
+        return reverse[value]
+    return None
+
+
 def column_for_filter_field(field: str):
+    if field == "major_category":
+        return getattr(KOLRecord, "normalized_category")
     if field.startswith("extra:"):
         extra_key = field.split(":", 1)[1]
         return func.json_extract(KOLRecord.extra_fields, f'$."{extra_key}"')
@@ -349,6 +366,7 @@ def serialize_kol(record: KOLRecord) -> KOLRecordOut:
         "name": record.name,
         "category": record.category,
         "normalized_category": record.normalized_category or normalize_category(record.category),
+        "major_category": major_category(record.normalized_category or normalize_category(record.category)),
         "source_file": record.source_file,
         "country": record.country,
         "language": record.language,
@@ -488,7 +506,10 @@ def field_alias_rules() -> dict[str, Any]:
 
 @router.get("/filters/options")
 def filter_options(db: Session = Depends(get_db)) -> dict[str, list[str]]:
-    options: dict[str, list[str]] = {"normalized_category": STANDARD_CATEGORIES}
+    options: dict[str, list[str]] = {
+        "normalized_category": STANDARD_CATEGORIES,
+        "major_category": STANDARD_CATEGORIES,
+    }
     for field in ("category", "source_file", "country", "language", "platform_text"):
         col = getattr(KOLRecord, field)
         rows = db.query(col).filter(col.is_not(None), col != "").group_by(col).order_by(col).limit(200).all()
