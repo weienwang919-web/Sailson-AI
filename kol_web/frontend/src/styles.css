@@ -240,3 +240,50 @@ body {
   border-color: #1677ff !important;
   color: #fff !important;
 }
+
+.platform-view-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f2f4f7;
+}
+
+.platform-view-hint {
+  font-size: 12px;
+  color: #98a2b3;
+}
+
+.platform-tag {
+  margin: 0;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.platform-tag-tiktok {
+  background: #111827 !important;
+  color: #fff !important;
+}
+
+.platform-tag-instagram {
+  background: #c13584 !important;
+  color: #fff !important;
+}
+
+.platform-tag-youtube {
+  background: #dc2626 !important;
+  color: #fff !important;
+}
+
+.platform-tag-muted {
+  background: #f2f4f7 !important;
+  color: #667085 !important;
+  font-weight: 500;
+}
+
+.empty-cell {
+  color: #d0d5dd;
+}

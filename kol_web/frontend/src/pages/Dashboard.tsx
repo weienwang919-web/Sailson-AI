@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Key } from "react";
-import { Button, Card, Drawer, Input, message, Modal, Space, Table, Tabs, Tag, Upload } from "antd";
+import { Button, Card, Drawer, Input, message, Modal, Segmented, Space, Table, Tabs, Tag, Upload } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { UploadOutlined } from "@ant-design/icons";
 import type { BusinessField, BusinessFieldCatalog, FilterPayload, FilterRule, KolRecord, ScrapeJob } from "../api";
@@ -24,6 +24,73 @@ const { TextArea } = Input;
 type AppSection = "query" | "manage" | "governance";
 
 type KolFormState = Record<string, string>;
+
+type KolPlatform = "tiktok" | "instagram" | "youtube";
+type PlatformView = "auto" | KolPlatform;
+
+const PLATFORM_META: Record<
+  KolPlatform,
+  { label: string; short: string; groupClass: string; subClass: string; fieldKeys: string[] }
+> = {
+  tiktok: {
+    label: "TikTok",
+    short: "TT",
+    groupClass: "platform-tiktok",
+    subClass: "platform-tiktok-sub",
+    fieldKeys: ["tt_link", "tt_follower", "tt_avv", "tt_short_video_price", "tt_main_price", "tt_cpm", "tt_collaboration"],
+  },
+  instagram: {
+    label: "Instagram",
+    short: "INS",
+    groupClass: "platform-instagram",
+    subClass: "platform-instagram-sub",
+    fieldKeys: ["ins_link", "ins_follower", "ins_post_price", "ins_main_price", "ins_cpm", "ins_collaboration"],
+  },
+  youtube: {
+    label: "YouTube",
+    short: "YT",
+    groupClass: "platform-youtube",
+    subClass: "platform-youtube-sub",
+    fieldKeys: ["yt_link", "yt_follower", "yt_avv", "yt_full_video_price", "yt_main_price", "yt_cpm", "yt_collaboration"],
+  },
+};
+
+const UNIFIED_PLATFORM_COLUMNS: Array<{
+  role: string;
+  title: string;
+  width: number;
+  keys: Record<KolPlatform, string | null>;
+}> = [
+  { role: "link", title: "链接/Link", width: 110, keys: { tiktok: "tt_link", instagram: "ins_link", youtube: "yt_link" } },
+  { role: "follower", title: "粉丝/Followers", width: 120, keys: { tiktok: "tt_follower", instagram: "ins_follower", youtube: "yt_follower" } },
+  { role: "avv", title: "AVV/均观看量", width: 120, keys: { tiktok: "tt_avv", instagram: null, youtube: "yt_avv" } },
+  {
+    role: "price",
+    title: "报价/Price",
+    width: 130,
+    keys: { tiktok: "tt_short_video_price", instagram: "ins_post_price", youtube: "yt_full_video_price" },
+  },
+  {
+    role: "main_price",
+    title: "主报价/Main Price",
+    width: 130,
+    keys: { tiktok: "tt_main_price", instagram: "ins_main_price", youtube: "yt_main_price" },
+  },
+  { role: "cpm", title: "CPM", width: 100, keys: { tiktok: "tt_cpm", instagram: "ins_cpm", youtube: "yt_cpm" } },
+  {
+    role: "collaboration",
+    title: "合作模式/Collaboration",
+    width: 140,
+    keys: { tiktok: "tt_collaboration", instagram: "ins_collaboration", youtube: "yt_collaboration" },
+  },
+];
+
+const PLATFORM_VIEW_OPTIONS: Array<{ value: PlatformView; label: string }> = [
+  { value: "auto", label: "智能展示/Auto" },
+  { value: "tiktok", label: "TikTok" },
+  { value: "instagram", label: "Instagram" },
+  { value: "youtube", label: "YouTube" },
+];
 
 const defaultFilters: FilterPayload = { logic: "and", children: [] };
 
@@ -90,6 +157,7 @@ export default function Dashboard() {
     country?: string;
     hasPrice?: boolean;
   }>({});
+  const [platformView, setPlatformView] = useState<PlatformView>("auto");
 
   const filterFields = useMemo(
     () => businessFields.filter.map((field) => ({ label: field.label, value: field.filter_key, dataType: field.data_type })),
@@ -107,15 +175,20 @@ export default function Dashboard() {
     let totalCpm = 0;
     let cpmCount = 0;
     for (const r of items) {
-      const follower = r.tt_follower || r.ins_follower || r.yt_follower;
-      if (follower) { totalFollowers += follower; followerCount++; }
-      const price = r.tt_short_video_price || r.ins_post_price || r.yt_full_video_price
-        || r.extra_fields?.["TikTok - 主报价"] || r.extra_fields?.["Instagram - 主报价"] || r.extra_fields?.["YouTube - 主报价"];
-      const numPrice = typeof price === "number" ? price : price ? parseFloat(String(price)) : 0;
-      if (numPrice > 0) { totalPrice += numPrice; priceCount++; }
-      const cpm = r.extra_fields?.["TikTok - CPM"] || r.extra_fields?.["Instagram - CPM"] || r.extra_fields?.["YouTube - CPM"];
-      const numCpm = typeof cpm === "number" ? cpm : cpm ? parseFloat(String(cpm)) : 0;
-      if (numCpm > 0) { totalCpm += numCpm; cpmCount++; }
+      const metrics = getRecordPlatformMetrics(r, platformView);
+      if (!metrics) continue;
+      if (metrics.follower) {
+        totalFollowers += metrics.follower;
+        followerCount++;
+      }
+      if (metrics.price) {
+        totalPrice += metrics.price;
+        priceCount++;
+      }
+      if (metrics.cpm) {
+        totalCpm += metrics.cpm;
+        cpmCount++;
+      }
     }
     return {
       count: items.length,
@@ -124,7 +197,7 @@ export default function Dashboard() {
       avgPrice: priceCount ? Math.round(totalPrice / priceCount) : 0,
       avgCpm: cpmCount ? +(totalCpm / cpmCount).toFixed(1) : 0,
     };
-  }, [items, total]);
+  }, [items, total, platformView]);
 
   const buildQuickFilterPayload = (quick: typeof activeQuickFilters): FilterPayload => {
     const rules: FilterRule[] = [];
@@ -196,98 +269,23 @@ export default function Dashboard() {
     void loadList();
   }, [page, pageSize]);
 
-  const columns: ColumnsType<KolRecord> = useMemo(() => {
-    const fieldMap = new Map(businessFields.list.map((field) => [field.key, field]));
-    const makeFieldColumn = (key: string, className?: string) => {
-      const field = fieldMap.get(key);
-      if (!field) return null;
-      return {
-        title: field.label.replace(/^TikTok |^Instagram |^YouTube /, ""),
-        key: field.key,
-        width: columnWidth(field),
-        className,
-        onHeaderCell: () => ({ className }),
-        render: (_: unknown, record: KolRecord) => renderBusinessValue(record, field),
-      };
-    };
-    const compact = (cols: Array<ReturnType<typeof makeFieldColumn>>) => cols.filter(Boolean) as ColumnsType<KolRecord>;
-    return [
-      {
-        title: "基础信息",
-        key: "base_group",
-        children: compact([
-          makeFieldColumn("name"),
-          makeFieldColumn("major_category"),
-          makeFieldColumn("platform_text"),
-          makeFieldColumn("country"),
-          makeFieldColumn("case_links"),
-          makeFieldColumn("notes"),
-        ]),
-      },
-      {
-        title: <span className="platform-title">TikTok</span>,
-        key: "tiktok_group",
-        className: "platform-group platform-tiktok",
-        onHeaderCell: () => ({ className: "platform-group platform-tiktok" }),
-        children: compact([
-          makeFieldColumn("tt_link", "platform-tiktok-sub"),
-          makeFieldColumn("tt_follower", "platform-tiktok-sub"),
-          makeFieldColumn("tt_avv", "platform-tiktok-sub"),
-          makeFieldColumn("tt_short_video_price", "platform-tiktok-sub"),
-          makeFieldColumn("tt_main_price", "platform-tiktok-sub"),
-          makeFieldColumn("tt_cpm", "platform-tiktok-sub"),
-          makeFieldColumn("tt_collaboration", "platform-tiktok-sub"),
-        ]),
-      },
-      {
-        title: <span className="platform-title">Instagram</span>,
-        key: "instagram_group",
-        className: "platform-group platform-instagram",
-        onHeaderCell: () => ({ className: "platform-group platform-instagram" }),
-        children: compact([
-          makeFieldColumn("ins_link", "platform-instagram-sub"),
-          makeFieldColumn("ins_follower", "platform-instagram-sub"),
-          makeFieldColumn("ins_post_price", "platform-instagram-sub"),
-          makeFieldColumn("ins_main_price", "platform-instagram-sub"),
-          makeFieldColumn("ins_cpm", "platform-instagram-sub"),
-          makeFieldColumn("ins_collaboration", "platform-instagram-sub"),
-        ]),
-      },
-      {
-        title: <span className="platform-title">YouTube</span>,
-        key: "youtube_group",
-        className: "platform-group platform-youtube",
-        onHeaderCell: () => ({ className: "platform-group platform-youtube" }),
-        children: compact([
-          makeFieldColumn("yt_link", "platform-youtube-sub"),
-          makeFieldColumn("yt_follower", "platform-youtube-sub"),
-          makeFieldColumn("yt_avv", "platform-youtube-sub"),
-          makeFieldColumn("yt_full_video_price", "platform-youtube-sub"),
-          makeFieldColumn("yt_main_price", "platform-youtube-sub"),
-          makeFieldColumn("yt_cpm", "platform-youtube-sub"),
-          makeFieldColumn("yt_collaboration", "platform-youtube-sub"),
-        ]),
-      },
-      {
-        title: "操作",
-        key: "actions",
-        fixed: "right" as const,
-        width: 150,
-        render: (_: unknown, record: KolRecord) => (
-          <Space>
-            <Button size="small" onClick={() => openEdit(record)}>
-              编辑
-            </Button>
-            <Button size="small" danger onClick={() => confirmDelete(record)}>
-              删除
-            </Button>
-          </Space>
-        ),
-      },
-    ];
-  }, [businessFields.list]);
+  const tableScrollX = platformView === "auto" ? 1500 : 1300;
 
-  const queryColumns = useMemo(() => columns.filter((column) => column.key !== "actions"), [columns]);
+  const platformViewBar = (
+    <div className="platform-view-bar">
+      <span className="quick-filter-label">平台视图/Platform View</span>
+      <Segmented
+        value={platformView}
+        onChange={(value) => setPlatformView(value as PlatformView)}
+        options={PLATFORM_VIEW_OPTIONS.map((option) => ({ label: option.label, value: option.value }))}
+      />
+      {platformView === "auto" ? (
+        <span className="platform-view-hint">每行只展示该 KOL 的主平台数据，多平台会标注其他平台</span>
+      ) : (
+        <span className="platform-view-hint">仅展示 {PLATFORM_META[platformView].label} 列，无数据的单元格为空</span>
+      )}
+    </div>
+  );
 
   const jobColumns: ColumnsType<ScrapeJob> = [
     { title: "Job", dataIndex: "id", width: 80 },
@@ -369,6 +367,34 @@ export default function Dashboard() {
       },
     });
   };
+
+  const queryColumns = useMemo(
+    () => buildListColumns(businessFields, platformView),
+    [businessFields.list, platformView],
+  );
+
+  const columns: ColumnsType<KolRecord> = useMemo(
+    () => [
+      ...queryColumns,
+      {
+        title: "操作",
+        key: "actions",
+        fixed: "right" as const,
+        width: 150,
+        render: (_: unknown, record: KolRecord) => (
+          <Space>
+            <Button size="small" onClick={() => openEdit(record)}>
+              编辑
+            </Button>
+            <Button size="small" danger onClick={() => confirmDelete(record)}>
+              删除
+            </Button>
+          </Space>
+        ),
+      },
+    ],
+    [queryColumns],
+  );
 
   const handleExcelImport = async (file: File, scrape = false) => {
     setImporting(true);
@@ -467,6 +493,7 @@ export default function Dashboard() {
                       导出
                     </Button>
                   </div>
+                  {platformViewBar}
                   <div className="quick-filters">
                     <div className="quick-filter-row">
                       <span className="quick-filter-label">大类/Category</span>
@@ -557,7 +584,7 @@ export default function Dashboard() {
                     columns={queryColumns}
                     dataSource={items}
                     size="small"
-                    scroll={{ x: 2200, y: 640 }}
+                    scroll={{ x: tableScrollX, y: 640 }}
                     rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
                     pagination={paginationProps(total, page, pageSize, setPage, setPageSize)}
                   />
@@ -585,13 +612,14 @@ export default function Dashboard() {
                   </Button>
                   <Button onClick={() => void loadList()}>刷新列表</Button>
                 </div>
+                {platformViewBar}
                 <Table
                   rowKey="id"
                   loading={loading}
                   columns={columns}
                   dataSource={items}
                   size="small"
-                  scroll={{ x: 2400, y: 640 }}
+                  scroll={{ x: tableScrollX, y: 640 }}
                   pagination={paginationProps(total, page, pageSize, setPage, setPageSize)}
                 />
               </Card>
@@ -687,6 +715,182 @@ export default function Dashboard() {
       </Modal>
     </div>
   );
+}
+
+function buildListColumns(businessFields: BusinessFieldCatalog, platformView: PlatformView): ColumnsType<KolRecord> {
+  const fieldMap = new Map(businessFields.list.map((field) => [field.key, field]));
+  const makeFieldColumn = (key: string, className?: string) => {
+    const field = fieldMap.get(key);
+    if (!field) return null;
+    return {
+      title: field.label.replace(/^TikTok |^Instagram |^YouTube /, ""),
+      key: field.key,
+      width: columnWidth(field),
+      className,
+      onHeaderCell: () => ({ className }),
+      render: (_: unknown, record: KolRecord) => renderCellValue(record, field),
+    };
+  };
+  const compact = (cols: Array<ReturnType<typeof makeFieldColumn>>) => cols.filter(Boolean) as ColumnsType<KolRecord>;
+
+  const baseColumns = compact([
+    makeFieldColumn("name"),
+    makeFieldColumn("major_category"),
+    makeFieldColumn("country"),
+    makeFieldColumn("case_links"),
+    makeFieldColumn("notes"),
+  ]);
+
+  const platformBadgeColumn = {
+    title: "平台/Platform",
+    key: "active_platform",
+    width: platformView === "auto" ? 130 : 100,
+    render: (_: unknown, record: KolRecord) => <PlatformCell record={record} view={platformView} />,
+  };
+
+  if (platformView === "auto") {
+    const unifiedColumns = UNIFIED_PLATFORM_COLUMNS.map((column) => ({
+      title: column.title,
+      key: `unified_${column.role}`,
+      width: column.width,
+      render: (_: unknown, record: KolRecord) => {
+        const platform = resolveActivePlatform(record, "auto");
+        if (!platform) return <span className="empty-cell">-</span>;
+        const fieldKey = column.keys[platform];
+        if (!fieldKey) return <span className="empty-cell">-</span>;
+        const field = fieldMap.get(fieldKey);
+        if (!field) return "";
+        return renderCellValue(record, field);
+      },
+    }));
+
+    return [
+      {
+        title: "基础信息/Basic Info",
+        key: "base_group",
+        children: [platformBadgeColumn, ...baseColumns],
+      },
+      {
+        title: "平台数据/Platform Data",
+        key: "platform_data_group",
+        children: unifiedColumns,
+      },
+    ];
+  }
+
+  const meta = PLATFORM_META[platformView];
+  return [
+    {
+      title: "基础信息/Basic Info",
+      key: "base_group",
+      children: [platformBadgeColumn, ...baseColumns],
+    },
+    {
+      title: <span className="platform-title">{meta.label}</span>,
+      key: `${platformView}_group`,
+      className: `platform-group ${meta.groupClass}`,
+      onHeaderCell: () => ({ className: `platform-group ${meta.groupClass}` }),
+      children: compact(meta.fieldKeys.map((key) => makeFieldColumn(key, meta.subClass))),
+    },
+  ];
+}
+
+function PlatformCell({ record, view }: { record: KolRecord; view: PlatformView }) {
+  const active = resolveActivePlatform(record, view);
+  const all = listPlatformsWithData(record);
+  if (!active) return <span className="empty-cell">-</span>;
+  return (
+    <Space size={4} wrap>
+      <Tag className={`platform-tag platform-tag-${active}`}>{PLATFORM_META[active].label}</Tag>
+      {view === "auto" &&
+        all
+          .filter((platform) => platform !== active)
+          .map((platform) => (
+            <Tag key={platform} className="platform-tag platform-tag-muted">
+              {PLATFORM_META[platform].short}
+            </Tag>
+          ))}
+    </Space>
+  );
+}
+
+function parsePlatformsFromText(text: string): KolPlatform[] {
+  const lower = text.toLowerCase();
+  const found: KolPlatform[] = [];
+  if (/\b(tt|tiktok)\b/.test(lower) || lower.includes("tiktok")) found.push("tiktok");
+  if (/\b(ins|ig|instagram)\b/.test(lower) || lower.includes("instagram")) found.push("instagram");
+  if (/\b(yt|ytb|youtube|twitch)\b/.test(lower) || lower.includes("youtube") || lower.includes("twitch")) {
+    found.push("youtube");
+  }
+  return [...new Set(found)];
+}
+
+function platformDataScore(record: KolRecord, platform: KolPlatform): number {
+  const metrics = getRecordPlatformMetrics(record, platform);
+  if (!metrics) return 0;
+  let score = 0;
+  if (metrics.link) score += 10;
+  if (metrics.follower) score += 5;
+  if (metrics.avv) score += 2;
+  if (metrics.price) score += 3;
+  if (metrics.mainPrice) score += 2;
+  if (metrics.cpm) score += 1;
+  return score;
+}
+
+function listPlatformsWithData(record: KolRecord): KolPlatform[] {
+  return (Object.keys(PLATFORM_META) as KolPlatform[]).filter((platform) => platformDataScore(record, platform) > 0);
+}
+
+function resolveActivePlatform(record: KolRecord, view: PlatformView): KolPlatform | null {
+  if (view !== "auto") return view;
+  const fromText = parsePlatformsFromText(record.platform_text || "");
+  const scored = (Object.keys(PLATFORM_META) as KolPlatform[])
+    .map((platform) => ({ platform, score: platformDataScore(record, platform) }))
+    .filter((item) => item.score > 0);
+  if (!scored.length) return fromText[0] ?? null;
+  if (fromText.length === 1) return fromText[0];
+  if (fromText.length > 1) {
+    return fromText
+      .map((platform) => ({ platform, score: platformDataScore(record, platform) }))
+      .sort((a, b) => b.score - a.score)[0].platform;
+  }
+  return scored.sort((a, b) => b.score - a.score)[0].platform;
+}
+
+function getRecordPlatformMetrics(record: KolRecord, view: PlatformView) {
+  const platform = resolveActivePlatform(record, view);
+  if (!platform) return null;
+
+  const link = platform === "tiktok" ? record.tt_link : platform === "instagram" ? record.ins_link : record.yt_link;
+  const mainPriceExtraKey =
+    platform === "tiktok" ? "TikTok - 主报价" : platform === "instagram" ? "Instagram - 主报价" : "YouTube - 主报价";
+  const cpmExtraKey =
+    platform === "tiktok" ? "TikTok - CPM" : platform === "instagram" ? "Instagram - CPM" : "YouTube - CPM";
+  const follower =
+    platform === "tiktok" ? record.tt_follower : platform === "instagram" ? record.ins_follower : record.yt_follower;
+  const avv = platform === "tiktok" ? record.tt_avv : platform === "youtube" ? record.yt_avv : null;
+  const modelPrice = platform === "tiktok" ? record.tt_short_video_price : platform === "instagram" ? record.ins_post_price : record.yt_full_video_price;
+  const extraMain = record.extra_fields?.[mainPriceExtraKey];
+  const price = toNumber(modelPrice) || toNumber(extraMain);
+  const cpm = toNumber(record.extra_fields?.[cpmExtraKey]);
+
+  return { platform, link, follower, avv, price, mainPrice: toNumber(extraMain), cpm };
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (value === null || value === undefined || value === "") return 0;
+  const parsed = Number(String(value).replace(/[$,￥]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function renderCellValue(record: KolRecord, field: BusinessField) {
+  const value = renderBusinessValue(record, field);
+  if (value === "" || value === null || value === undefined) {
+    return <span className="empty-cell">-</span>;
+  }
+  return value;
 }
 
 function KolFormModal({
