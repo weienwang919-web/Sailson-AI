@@ -26,7 +26,7 @@ def export_records_restored(db: Session, records: list[KOLRecord]) -> Path:
         _clear_template_data_rows(wb)
     else:
         wb = Workbook()
-        wb.active.title = "KOL 列表/List"
+        wb.active.title = _safe_sheet_title("KOL 列表 List")
 
     by_category: dict[str, list[KOLRecord]] = {}
     for record in records:
@@ -299,10 +299,17 @@ _THIN_BORDER = Border(
 _DATA_ALIGNMENT = Alignment(vertical="center", wrap_text=True)
 _NUMBER_ALIGNMENT = Alignment(horizontal="right", vertical="center")
 _EVEN_ROW_FILL = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+_INVALID_SHEET_CHARS = set("\\/[]?*")
+
+
+def _safe_sheet_title(title: str, max_len: int = 31) -> str:
+    cleaned = "".join(" " if ch in _INVALID_SHEET_CHARS else ch for ch in title).strip()
+    cleaned = " ".join(cleaned.split())
+    return (cleaned[:max_len] if cleaned else "Sheet").strip() or "Sheet"
 
 
 def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
-    title = "KOL 数据/Data"
+    title = _safe_sheet_title("KOL 数据 Data")
     if title in wb.sheetnames:
         ws = wb[title]
     elif len(wb.sheetnames) == 1 and wb.active.max_row == 1 and wb.active["A1"].value is None:

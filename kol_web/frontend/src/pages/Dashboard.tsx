@@ -12,6 +12,7 @@ import {
   getFilterOptions,
   getJob,
   getJobs,
+  hasFilterRules,
   importExcel,
   importLinks,
   listKols,
@@ -311,11 +312,17 @@ export default function Dashboard() {
   };
 
   const handleExport = async () => {
-    const blob = await exportKols({
-      ids: selectedRowKeys.length ? selectedRowKeys.map(Number) : undefined,
-      filters,
-    });
-    downloadBlob(blob, `kol_export_${timestampForFile()}.xlsx`);
+    try {
+      const blob = await exportKols({
+        ids: selectedRowKeys.length ? selectedRowKeys.map(Number) : undefined,
+        filters: hasFilterRules(filters) ? filters : undefined,
+      });
+      downloadBlob(blob, `kol_export_${timestampForFile()}.xlsx`);
+      message.success("导出成功");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "导出失败，请稍后重试";
+      message.error(detail);
+    }
   };
 
   const openCreate = () => {

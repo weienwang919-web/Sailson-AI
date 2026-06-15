@@ -222,7 +222,7 @@ export async function exportKols(params: {
   updateMetrics?: boolean;
   sourceFile?: string;
 }): Promise<Blob> {
-  const { data } = await api.post(
+  const response = await api.post(
     "/kols/export",
     {
       ids: params.ids?.length ? params.ids : undefined,
@@ -232,5 +232,20 @@ export async function exportKols(params: {
     },
     { responseType: "blob" },
   );
-  return data;
+  const blob = response.data as Blob;
+  const contentType = String(response.headers["content-type"] || "");
+  if (contentType.includes("json") || (blob.type && blob.type.includes("json"))) {
+    const text = await blob.text();
+    try {
+      const err = JSON.parse(text) as { detail?: string | Array<{ msg?: string }>; error?: string };
+      if (typeof err.detail === "string") throw new Error(err.detail);
+      if (Array.isArray(err.detail)) throw new Error(err.detail.map((item) => item.msg).filter(Boolean).join("; ") || text);
+      if (err.error) throw new Error(err.error);
+      throw new Error(text);
+    } catch (parseError) {
+      if (parseError instanceof Error && parseError.message !== text) throw parseError;
+      throw new Error(text || "导出失败");
+    }
+  }
+  return blob;
 }
