@@ -41,6 +41,10 @@ class KOLRecordOut(BaseModel):
     yt_short_video_price: float | None = None
 
     avg_engagement: float | None = None
+    audience_gender: str | None = None
+    audience_gender_pct: str | None = None
+    audience_region: str | None = None
+    audience_age: str | None = None
     extra_fields: dict[str, Any] = Field(default_factory=dict)
     last_scraped_at: datetime | None = None
     updated_at: datetime

@@ -31,6 +31,10 @@ export type KolRecord = {
   yt_pre_roll_price?: number | null;
   yt_short_video_price?: number | null;
   avg_engagement?: number | null;
+  audience_gender?: string | null;
+  audience_gender_pct?: string | null;
+  audience_region?: string | null;
+  audience_age?: string | null;
   extra_fields?: Record<string, string | number | null>;
   last_scraped_at?: string | null;
   updated_at: string;

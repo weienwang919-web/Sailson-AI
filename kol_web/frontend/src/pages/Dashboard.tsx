@@ -65,18 +65,6 @@ const UNIFIED_PLATFORM_COLUMNS: Array<{
   { role: "link", title: "链接/Link", width: 110, keys: { tiktok: "tt_link", instagram: "ins_link", youtube: "yt_link" } },
   { role: "follower", title: "粉丝/Followers", width: 120, keys: { tiktok: "tt_follower", instagram: "ins_follower", youtube: "yt_follower" } },
   { role: "avv", title: "AVV/均观看量", width: 120, keys: { tiktok: "tt_avv", instagram: null, youtube: "yt_avv" } },
-  {
-    role: "price",
-    title: "报价/Price",
-    width: 130,
-    keys: { tiktok: "tt_short_video_price", instagram: "ins_post_price", youtube: "yt_full_video_price" },
-  },
-  {
-    role: "main_price",
-    title: "主报价/Main Price",
-    width: 130,
-    keys: { tiktok: "tt_main_price", instagram: "ins_main_price", youtube: "yt_main_price" },
-  },
   { role: "cpm", title: "CPM", width: 100, keys: { tiktok: "tt_cpm", instagram: "ins_cpm", youtube: "yt_cpm" } },
   {
     role: "collaboration",
@@ -744,8 +732,8 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     makeFieldColumn("name"),
     makeFieldColumn("major_category"),
     makeFieldColumn("country"),
+    makeFieldColumn("language"),
     makeFieldColumn("case_links"),
-    makeFieldColumn("notes"),
   ]);
 
   const platformBadgeColumn = {
@@ -754,6 +742,45 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     width: platformView === "auto" ? 130 : 100,
     render: (_: unknown, record: KolRecord) => <PlatformCell record={record} view={platformView} />,
   };
+
+  // 统一报价列
+  const priceColumn = {
+    title: "报价汇总/All Prices",
+    key: "all_prices",
+    width: 200,
+    render: (_: unknown, record: KolRecord) => <AllPricesCell record={record} />,
+  };
+
+  // 粉丝画像列（进度条可视化）
+  const audienceColumns = [
+    {
+      title: "受众地区/Audience Region",
+      key: "audience_region",
+      width: 150,
+      render: (_: unknown, record: KolRecord) => {
+        const raw = record.audience_region || record.extra_fields?.["受众地区"];
+        return <AudienceBar value={raw} />;
+      },
+    },
+    {
+      title: "性别/Audience Gender",
+      key: "audience_gender",
+      width: 120,
+      render: (_: unknown, record: KolRecord) => {
+        const raw = record.audience_gender || record.extra_fields?.["受众性别"];
+        return <AudienceBar value={raw} type="gender" />;
+      },
+    },
+    {
+      title: "年龄/Audience Age",
+      key: "audience_age",
+      width: 120,
+      render: (_: unknown, record: KolRecord) => {
+        const raw = record.audience_age || record.extra_fields?.["受众年龄"];
+        return <AudienceBar value={raw} type="age" />;
+      },
+    },
+  ];
 
   if (platformView === "auto") {
     const unifiedColumns = UNIFIED_PLATFORM_COLUMNS.map((column) => ({
@@ -780,7 +807,28 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
       {
         title: "平台数据/Platform Data",
         key: "platform_data_group",
-        children: unifiedColumns,
+        children: [
+          ...UNIFIED_PLATFORM_COLUMNS.map((column) => ({
+            title: column.title,
+            key: `unified_${column.role}`,
+            width: column.width,
+            render: (_: unknown, record: KolRecord) => {
+              const platform = resolveActivePlatform(record, "auto");
+              if (!platform) return <span className="empty-cell">-</span>;
+              const fieldKey = column.keys[platform];
+              if (!fieldKey) return <span className="empty-cell">-</span>;
+              const field = fieldMap.get(fieldKey);
+              if (!field) return "";
+              return renderCellValue(record, field);
+            },
+          })),
+          priceColumn,
+        ],
+      },
+      {
+        title: "粉丝画像/Audience",
+        key: "audience_group",
+        children: audienceColumns,
       },
     ];
   }
@@ -898,6 +946,94 @@ function renderCellValue(record: KolRecord, field: BusinessField) {
     return <span className="empty-cell">-</span>;
   }
   return value;
+}
+
+function parseAudience(text: string): Array<{ label: string; pct: number }> {
+  if (!text) return [];
+  // 支持格式: "US 40%, JP 30%, TH 20%, other 10%" 或 "男 45% / 女 55%" 或 "18-24 30%, 25-34 40%, 35-44 20%"
+  const parts = text.split(/[,;/&|]\s*/);
+  const results: Array<{ label: string; pct: number }> = [];
+  for (const part of parts) {
+    const m = part.match(/([A-Za-z0-9\u4e00-\u9fa5%+\-—–\s]+?)\s*([\d.]+)\s*%/);
+    if (m) {
+      const label = m[1].trim();
+      const pct = parseFloat(m[2]);
+      if (label && !isNaN(pct)) results.push({ label, pct });
+    }
+  }
+  return results.slice(0, 5);
+}
+
+function AudienceBar({ value, type }: { value: unknown; type?: string }) {
+  const text = value ? String(value) : "";
+  if (!text) return <span className="empty-cell">-</span>;
+  const items = parseAudience(text);
+  if (!items.length) return <span className="audience-text">{text}</span>;
+  const maxPct = Math.max(...items.map((i) => i.pct));
+  return (
+    <div className="audience-bar">
+      {items.map((item) => (
+        <div key={item.label} className="audience-item">
+          <div className="audience-label">{item.label}</div>
+          <div className="audience-track">
+            <div
+              className="audience-fill"
+              style={{ width: `${(item.pct / maxPct) * 100}%` }}
+            />
+          </div>
+          <div className="audience-pct">{item.pct}%</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AllPricesCell({ record }: { record: KolRecord }) {
+  const ef = record.extra_fields || {};
+  const rows: Array<{ label: string; value: unknown }> = [];
+  const seen = new Set<string>();
+  const addRow = (label: string, value: unknown) => {
+    if (value === null || value === undefined || value === "") return;
+    const key = `${label}:${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ label, value });
+  };
+
+  // Model fields
+  addRow("TT 短视频报价", record.tt_short_video_price);
+  addRow("TT Anchor Link 报价", record.tt_anchor_link_price);
+  addRow("INS Post 报价", record.ins_post_price);
+  addRow("INS Reels 报价", record.ins_reels_price);
+  addRow("YT 长视频报价", record.yt_full_video_price);
+  addRow("YT 直播报价", record.yt_live_2hr_price);
+  addRow("YT 贴片报价", record.yt_pre_roll_price);
+  addRow("YT 短视频报价", record.yt_short_video_price);
+
+  // Extra fields: 主报价 / CPM / 合作模式 / 直播报价 / 授权报价
+  const extraPriceKeys = new Set(["主报价", "CPM", "合作模式", "直播报价", "授权报价"]);
+  for (const [k, v] of Object.entries(ef)) {
+    if (v === null || v === undefined || v === "") continue;
+    // 跳过已知归类字段，收集其他有意义的报价
+    if (extraPriceKeys.has(k.trim())) {
+      addRow(k, v);
+    } else if (!isNaN(Number(v)) && Number(v) > 0 && String(v).length < 20) {
+      // 纯数字报价，可能未被归类
+      addRow(k, v);
+    }
+  }
+
+  if (!rows.length) return <span className="empty-cell">-</span>;
+  return (
+    <div className="all-prices-cell">
+      {rows.map((row) => (
+        <div key={row.label} className="price-row">
+          <span className="price-label">{row.label}</span>
+          <span className="price-value">{typeof row.value === "number" ? row.value.toLocaleString() : String(row.value)}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function KolFormModal({
