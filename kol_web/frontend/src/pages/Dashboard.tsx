@@ -41,11 +41,12 @@ const QUICK_FILTERS = {
     { label: "100万+", min: 1000000, max: null },
   ],
   countries: [
-    { label: "美国/US", value: "US" },
-    { label: "日本/JP", value: "JP" },
-    { label: "韩国/KR", value: "KR" },
-    { label: "泰国/TH", value: "TH" },
-    { label: "印尼/ID", value: "ID" },
+    { label: "美国/US", value: "美国" },
+    { label: "日本/JP", value: "日本" },
+    { label: "韩国/KR", value: "韩国" },
+    { label: "泰国/TH", value: "泰国" },
+    { label: "印尼/ID", value: "印尼" },
+    { label: "英国/UK", value: "英国" },
   ],
   priceStatus: [
     { label: "有报价", hasPrice: true },

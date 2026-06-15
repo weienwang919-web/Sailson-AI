@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.business_fields import BUSINESS_FIELDS, field_payload, fields_for_usage
 from app.core.category import STANDARD_CATEGORIES, major_category, normalize_category
+from app.core.country import expand_country_filter
 from app.core.field_normalizer import STANDARD_PLATFORM_FIELDS
 from app.database import get_db
 from app.models import KOLRecord, ScrapeJob
@@ -310,6 +311,10 @@ def build_rule_clause(rule: FilterRule):
         expanded = _expand_major_category(value)
         if expanded:
             return col.in_(expanded)
+    if rule.field == "country" and op in ("eq", "contains"):
+        aliases = expand_country_filter(str(value))
+        if aliases:
+            return or_(*[col.ilike(alias) for alias in aliases])
     if op == "eq":
         return col == value
     if op == "neq":
