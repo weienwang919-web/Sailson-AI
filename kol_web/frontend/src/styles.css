@@ -300,7 +300,8 @@ body {
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  line-height: 1;
+  line-height: 1.4;
+  flex-wrap: nowrap;
 }
 
 .audience-label {
@@ -309,7 +310,7 @@ body {
   font-size: 11px;
   text-align: right;
   flex-shrink: 0;
-  max-width: 56px;
+  max-width: 64px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -351,13 +352,11 @@ body {
 
 .audience-text {
   font-size: 11px;
-  color: #98a2b3;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 140px;
+  color: #667085;
+  line-height: 1.5;
   display: block;
-  font-style: italic;
+  word-break: break-all;
+  white-space: normal;
 }
 
 .all-prices-cell {

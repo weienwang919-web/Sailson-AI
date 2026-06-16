@@ -756,7 +756,7 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     {
       title: "受众地区/Audience Region",
       key: "audience_region",
-      width: 150,
+      width: 200,
       render: (_: unknown, record: KolRecord) => {
         const raw = record.audience_region || record.extra_fields?.["受众地区"];
         return <AudienceBar value={raw} type="region" />;
@@ -765,7 +765,7 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     {
       title: "性别/Audience Gender",
       key: "audience_gender",
-      width: 120,
+      width: 160,
       render: (_: unknown, record: KolRecord) => {
         const raw = record.audience_gender || record.extra_fields?.["受众性别"];
         return <AudienceBar value={raw} type="gender" />;
@@ -774,7 +774,7 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     {
       title: "年龄/Audience Age",
       key: "audience_age",
-      width: 120,
+      width: 180,
       render: (_: unknown, record: KolRecord) => {
         const raw = record.audience_age || record.extra_fields?.["受众年龄"];
         return <AudienceBar value={raw} type="age" />;
@@ -974,43 +974,45 @@ function isValidLabel(label: string, type: string): boolean {
   return true;
 }
 
-// 按类型严格解析受众数据
+// 按类型严格解析受众数据，支持多种分隔符包括中文冒号
 function parseAudienceByType(text: string, type: string): Array<{ label: string; pct: number }> {
   if (!text) return [];
-  const parts = text.split(/[,;/&|]\s*/);
+  // 支持分隔符：逗号、斜杠、分号、竖线、中文顿号、中文冒号（可能在%前或后）
+  const parts = text.split(/[,;/&|、\n]+/);
   const results: Array<{ label: string; pct: number }> = [];
 
   for (const part of parts) {
-    const m = part.match(/([A-Za-z0-9\u4e00-\u9fa5%+\-—–\s]+?)\s*([\d.]+)\s*%/);
+    // 匹配 标签 + 数字% 或 标签：数字%
+    // 中文冒号可能在百分号前（泰国：71.2%）或后（Thailand: 71.2%）
+    const m = part.match(/([A-Za-z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\s]*?)\s*[:：]?\s*([\d.]+)\s*%/);
     if (!m) continue;
     const rawLabel = m[1].trim();
     const pct = parseFloat(m[2]);
-    if (isNaN(pct)) continue;
+    if (isNaN(pct) || pct <= 0 || pct > 100) continue;
 
     let label = rawLabel;
 
     if (type === "region") {
-      // 地区：只接受国家代码（2字母）或已知国家名
+      // 地区：只接受国家代码（2字母）或已知国家名（中文）
       const upper = rawLabel.toUpperCase();
-      // 2字母国家代码
       if (/^[A-Z]{2}$/.test(upper)) {
         label = COUNTRY_NAME_MAP[upper] || upper;
       } else if (COUNTRY_NAME_MAP[upper]) {
         label = COUNTRY_NAME_MAP[upper];
       } else if (/[\u4e00-\u9fa5]/.test(rawLabel)) {
-        label = rawLabel; // 已有中文
+        label = rawLabel;
       } else {
-        continue; // 不认识的标签，跳过
+        continue;
       }
     } else if (type === "gender") {
-      // 性别：只接受男/女/male/female
+      // 性别：支持男/女、男性/女性、male/female
       const lower = rawLabel.toLowerCase();
-      if (/^男$|^male$|^man$/.test(lower)) label = "男";
-      else if (/^女$|^female$|^woman$/.test(lower)) label = "女";
+      if (/男/.test(rawLabel) || /^male$|^man$|^m$/.test(lower)) label = "男";
+      else if (/女/.test(rawLabel) || /^female$|^woman$|^f$/.test(lower)) label = "女";
       else continue;
     } else if (type === "age") {
-      // 年龄：只接受年龄范围格式
-      if (!/^\d+-\d+$/.test(rawLabel)) continue;
+      // 年龄：支持 18-24、25-34、35+ 等格式
+      if (!/^\d+(-\d+|\+)?$/.test(rawLabel)) continue;
       label = rawLabel;
     }
 
