@@ -345,6 +345,9 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
         ("YouTube 主报价/Main Price", 16),
         ("YouTube CPM", 14),
         ("YouTube 合作模式/Collaboration", 16),
+        ("受众地区/Audience Region", 20),
+        ("受众性别/Audience Gender", 16),
+        ("受众年龄/Audience Age", 16),
         ("未识别报价/Unrecognized Quotes", 24),
         ("备注/Notes", 24),
     ]
@@ -391,6 +394,9 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
             extra.get("YouTube - 主报价"),
             extra.get("YouTube - CPM"),
             extra.get("YouTube - 合作模式"),
+            record.audience_region,
+            record.audience_gender,
+            record.audience_age,
             _unrecognized_business_quotes(extra),
             record.notes,
         ]

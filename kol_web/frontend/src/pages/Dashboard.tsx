@@ -3,7 +3,7 @@ import type { Key } from "react";
 import { Button, Card, Drawer, Input, message, Modal, Segmented, Space, Table, Tabs, Tag, Upload } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { UploadOutlined } from "@ant-design/icons";
-import type { BusinessField, BusinessFieldCatalog, FilterPayload, FilterRule, KolRecord, ScrapeJob } from "../api";
+import type { BusinessField, BusinessFieldCatalog, FilterNode, FilterPayload, FilterRule, KolRecord, ScrapeJob } from "../api";
 import {
   createKol,
   deleteKol,
@@ -189,29 +189,47 @@ export default function Dashboard() {
   }, [items, total, platformView]);
 
   const buildQuickFilterPayload = (quick: typeof activeQuickFilters): FilterPayload => {
-    const rules: FilterRule[] = [];
+    const children: FilterNode[] = [];
     if (quick.category) {
-      rules.push({ field: "major_category", op: "eq", value: quick.category });
+      children.push({ field: "major_category", op: "eq", value: quick.category });
     }
     if (quick.followerRange) {
       const { min, max } = quick.followerRange;
-      rules.push({
+      children.push({
         field: "tt_follower",
         op: max !== null ? "between" : "gte",
         value: max !== null ? [min, max] : min,
       });
     }
     if (quick.country) {
-      rules.push({ field: "country", op: "eq", value: quick.country });
+      children.push({ field: "country", op: "eq", value: quick.country });
     }
     if (quick.hasPrice !== undefined) {
-      rules.push({
-        field: "tt_short_video_price",
-        op: quick.hasPrice ? "is_not_empty" : "is_empty",
-        value: undefined,
-      });
+      const priceFields = [
+        "tt_short_video_price",
+        "tt_anchor_link_price",
+        "ins_post_price",
+        "ins_reels_price",
+        "yt_full_video_price",
+        "yt_live_2hr_price",
+        "yt_pre_roll_price",
+        "yt_short_video_price",
+      ];
+      if (quick.hasPrice) {
+        // 任一平台有报价 → OR
+        children.push({
+          logic: "or",
+          children: priceFields.map((f) => ({ field: f, op: "is_not_empty", value: undefined })),
+        });
+      } else {
+        // 所有平台都没报价 → AND
+        children.push({
+          logic: "and",
+          children: priceFields.map((f) => ({ field: f, op: "is_empty", value: undefined })),
+        });
+      }
     }
-    return rules.length ? { logic: "and", children: rules } : defaultFilters;
+    return children.length ? { logic: "and", children } : defaultFilters;
   };
 
   const applyQuickFilters = (nextQuick: typeof activeQuickFilters) => {
@@ -974,26 +992,23 @@ function isValidLabel(label: string, type: string): boolean {
   return true;
 }
 
-// 按类型严格解析受众数据，支持多种分隔符包括中文冒号
+// 按类型严格解析受众数据，使用全局匹配支持紧贴格式（如 "18-24:55% 25-34:32%"）
 function parseAudienceByType(text: string, type: string): Array<{ label: string; pct: number }> {
   if (!text) return [];
-  // 支持分隔符：逗号、斜杠、分号、竖线、中文顿号、中文冒号（可能在%前或后）
-  const parts = text.split(/[,;/&|、\n]+/);
   const results: Array<{ label: string; pct: number }> = [];
 
-  for (const part of parts) {
-    // 匹配 标签 + 数字% 或 标签：数字%
-    // 中文冒号可能在百分号前（泰国：71.2%）或后（Thailand: 71.2%）
-    const m = part.match(/([A-Za-z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\s]*?)\s*[:：]?\s*([\d.]+)\s*%/);
-    if (!m) continue;
-    const rawLabel = m[1].trim();
-    const pct = parseFloat(m[2]);
+  // 全局匹配：标签可能由中英文字母/数字/连字符组成，后跟可选冒号、数字、百分号
+  // 用 [^\d%]+ 跳过百分号后到下个标签前的分隔符
+  const pattern = /([A-Za-z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\-+]*?)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const rawLabel = match[1].trim();
+    const pct = parseFloat(match[2]);
     if (isNaN(pct) || pct <= 0 || pct > 100) continue;
 
     let label = rawLabel;
 
     if (type === "region") {
-      // 地区：只接受国家代码（2字母）或已知国家名（中文）
       const upper = rawLabel.toUpperCase();
       if (/^[A-Z]{2}$/.test(upper)) {
         label = COUNTRY_NAME_MAP[upper] || upper;
@@ -1005,20 +1020,19 @@ function parseAudienceByType(text: string, type: string): Array<{ label: string;
         continue;
       }
     } else if (type === "gender") {
-      // 性别：支持男/女、男性/女性、male/female
       const lower = rawLabel.toLowerCase();
       if (/男/.test(rawLabel) || /^male$|^man$|^m$/.test(lower)) label = "男";
       else if (/女/.test(rawLabel) || /^female$|^woman$|^f$/.test(lower)) label = "女";
       else continue;
     } else if (type === "age") {
-      // 年龄：支持 18-24、25-34、35+ 等格式
-      if (!/^\d+(-\d+|\+)?$/.test(rawLabel)) continue;
+      // 年龄：18-24、25-34、35+、35-、52+ 等
+      if (!/^\d+(-\d+|\+|-)?$/.test(rawLabel)) continue;
       label = rawLabel;
     }
 
     if (label) results.push({ label, pct });
   }
-  return results.slice(0, 5);
+  return results.slice(0, 6);
 }
 
 // 兼容旧调用（不指定类型时宽松解析）
@@ -1052,7 +1066,6 @@ function AudienceBar({ value, type }: { value: unknown; type?: string }) {
   if (!text) return <span className="empty-cell">-</span>;
   const items = type ? parseAudienceByType(text, type) : parseAudience(text);
   if (!items.length) return <span className="audience-text" title={text}>{text}</span>;
-  const maxPct = Math.max(...items.map((i) => i.pct));
   const typeClass = type ? ` type-${type}` : "";
   return (
     <div className={`audience-bar${typeClass}`}>
@@ -1062,7 +1075,7 @@ function AudienceBar({ value, type }: { value: unknown; type?: string }) {
           <div className="audience-track">
             <div
               className="audience-fill"
-              style={{ width: `${(item.pct / maxPct) * 100}%` }}
+              style={{ width: `${Math.min(100, item.pct)}%` }}
             />
           </div>
           <div className="audience-pct">{item.pct}%</div>
@@ -1084,7 +1097,7 @@ function AllPricesCell({ record }: { record: KolRecord }) {
     rows.push({ label, value });
   };
 
-  // Model fields
+  // Model fields（直接字段）
   addRow("TT 短视频报价", record.tt_short_video_price);
   addRow("TT Anchor Link 报价", record.tt_anchor_link_price);
   addRow("INS Post 报价", record.ins_post_price);
@@ -1094,16 +1107,30 @@ function AllPricesCell({ record }: { record: KolRecord }) {
   addRow("YT 贴片报价", record.yt_pre_roll_price);
   addRow("YT 短视频报价", record.yt_short_video_price);
 
-  // Extra fields: 主报价 / CPM / 合作模式 / 直播报价 / 授权报价
-  const extraPriceKeys = new Set(["主报价", "CPM", "合作模式", "直播报价", "授权报价"]);
+  // Extra fields: 明确是报价的才显示
+  // 主报价映射到平台标签
+  const mainPriceMap: Record<string, string> = {
+    "TikTok - 主报价": "TT 主报价",
+    "Instagram - 主报价": "INS 主报价",
+    "YouTube - 主报价": "YT 主报价",
+  };
+  const authPriceMap: Record<string, string> = {
+    "TikTok - 授权报价": "TT 授权报价",
+    "Instagram - 授权报价": "INS 授权报价",
+    "YouTube - 授权报价": "YT 授权报价",
+  };
   for (const [k, v] of Object.entries(ef)) {
     if (v === null || v === undefined || v === "") continue;
-    // 跳过已知归类字段，收集其他有意义的报价
-    if (extraPriceKeys.has(k.trim())) {
-      addRow(k, v);
-    } else if (!isNaN(Number(v)) && Number(v) > 0 && String(v).length < 20) {
-      // 纯数字报价，可能未被归类
-      addRow(k, v);
+    const trimmed = k.trim();
+    // 排除 CPM、合作模式（不是价格）
+    if (/cpm|合作模式|collaboration/i.test(trimmed)) continue;
+    // 主报价/授权报价 映射到平台标签
+    if (mainPriceMap[trimmed]) {
+      addRow(mainPriceMap[trimmed], v);
+    } else if (authPriceMap[trimmed]) {
+      addRow(authPriceMap[trimmed], v);
+    } else if (trimmed.includes("报价") || trimmed.includes("授权")) {
+      addRow(trimmed, v);
     }
   }
 
