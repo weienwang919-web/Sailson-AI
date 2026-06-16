@@ -982,16 +982,6 @@ const COUNTRY_NAME_MAP: Record<string, string> = {
   CN: "中国", TW: "台湾", HK: "香港", MO: "澳门",
 };
 
-// 判断标签是否"有意义"：不是纯数字、不是单个字母（除非是国家代码）
-function isValidLabel(label: string, type: string): boolean {
-  if (!label || label.length === 0) return false;
-  // 纯数字不行
-  if (/^\d+(\.\d+)?$/.test(label)) return false;
-  // 纯单字母不行（除非是国家代码 2 字母）
-  if (type !== "region" && /^[A-Za-z]$/.test(label)) return false;
-  return true;
-}
-
 // 按类型严格解析受众数据，使用全局匹配支持紧贴格式（如 "18-24:55% 25-34:32%"）
 function parseAudienceByType(text: string, type: string): Array<{ label: string; pct: number }> {
   if (!text) return [];
@@ -1032,6 +1022,19 @@ function parseAudienceByType(text: string, type: string): Array<{ label: string;
 
     if (label) results.push({ label, pct });
   }
+
+  // 统一排序，避免同列顺序不一致
+  if (type === "gender") {
+    // 男在上，女在下
+    results.sort((a, b) => (a.label === "男" ? -1 : 1) - (b.label === "男" ? -1 : 1));
+  } else if (type === "age") {
+    // 按年龄段起始数字升序
+    results.sort((a, b) => parseInt(a.label, 10) - parseInt(b.label, 10));
+  } else if (type === "region") {
+    // 按占比降序
+    results.sort((a, b) => b.pct - a.pct);
+  }
+
   return results.slice(0, 6);
 }
 
@@ -1049,16 +1052,6 @@ function parseAudience(text: string): Array<{ label: string; pct: number }> {
     }
   }
   return results.slice(0, 5);
-}
-
-// 规范化国家代码显示
-function normalizeCountryLabel(raw: string): string {
-  const upper = raw.toUpperCase().trim();
-  // 如果已经是中文，直接返回
-  if (/[\u4e00-\u9fa5]/.test(upper)) return upper;
-  // 查找映射
-  if (COUNTRY_NAME_MAP[upper]) return COUNTRY_NAME_MAP[upper];
-  return upper;
 }
 
 function AudienceBar({ value, type }: { value: unknown; type?: string }) {
@@ -1085,12 +1078,28 @@ function AudienceBar({ value, type }: { value: unknown; type?: string }) {
   );
 }
 
+// 判断是否为"干净的"单一报价：纯数字/金额，而非含多个金额的合作描述文字
+function isCleanPrice(value: unknown): boolean {
+  if (typeof value === "number") return true;
+  const text = String(value).trim();
+  if (!text) return false;
+  // 描述性关键词（合作模式文字混入），直接排除
+  if (/定制|贴片|直播|发布|套餐|打包|授权|视频|个月|一月/.test(text)) {
+    // 含多个数字（多个金额拼在一起）则视为描述文字
+    const numCount = (text.match(/\d[\d,.]*/g) || []).length;
+    if (numCount >= 2) return false;
+  }
+  return true;
+}
+
 function AllPricesCell({ record }: { record: KolRecord }) {
   const ef = record.extra_fields || {};
   const rows: Array<{ label: string; value: unknown }> = [];
   const seen = new Set<string>();
   const addRow = (label: string, value: unknown) => {
     if (value === null || value === undefined || value === "") return;
+    // 过滤掉描述性长文本（含多个金额或合作描述），这类是合作模式不是单一报价
+    if (!isCleanPrice(value)) return;
     const key = `${label}:${value}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -1107,29 +1116,25 @@ function AllPricesCell({ record }: { record: KolRecord }) {
   addRow("YT 贴片报价", record.yt_pre_roll_price);
   addRow("YT 短视频报价", record.yt_short_video_price);
 
-  // Extra fields: 明确是报价的才显示
-  // 主报价映射到平台标签
-  const mainPriceMap: Record<string, string> = {
-    "TikTok - 主报价": "TT 主报价",
-    "Instagram - 主报价": "INS 主报价",
-    "YouTube - 主报价": "YT 主报价",
-  };
-  const authPriceMap: Record<string, string> = {
-    "TikTok - 授权报价": "TT 授权报价",
-    "Instagram - 授权报价": "INS 授权报价",
-    "YouTube - 授权报价": "YT 授权报价",
+  // Extra fields: 明确是报价的才显示，平台前缀统一成简短标签
+  const platformPrefix: Record<string, string> = {
+    TikTok: "TT ",
+    Instagram: "INS ",
+    YouTube: "YT ",
+    Other: "", // 未识别平台不加前缀
   };
   for (const [k, v] of Object.entries(ef)) {
     if (v === null || v === undefined || v === "") continue;
     const trimmed = k.trim();
     // 排除 CPM、合作模式（不是价格）
     if (/cpm|合作模式|collaboration/i.test(trimmed)) continue;
-    // 主报价/授权报价 映射到平台标签
-    if (mainPriceMap[trimmed]) {
-      addRow(mainPriceMap[trimmed], v);
-    } else if (authPriceMap[trimmed]) {
-      addRow(authPriceMap[trimmed], v);
-    } else if (trimmed.includes("报价") || trimmed.includes("授权")) {
+    // 只显示报价/授权类
+    if (!/报价|授权/.test(trimmed)) continue;
+    // 解析 "平台 - 字段名" 格式，统一前缀
+    const m = trimmed.match(/^(TikTok|Instagram|YouTube|Other)\s*-\s*(.+)$/);
+    if (m) {
+      addRow(`${platformPrefix[m[1]] ?? ""}${m[2]}`, v);
+    } else {
       addRow(trimmed, v);
     }
   }
