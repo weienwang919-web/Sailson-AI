@@ -205,7 +205,7 @@ export default function Dashboard() {
       children.push({ field: "country", op: "eq", value: quick.country });
     }
     if (quick.hasPrice !== undefined) {
-      const priceFields = [
+      const modelPriceFields = [
         "tt_short_video_price",
         "tt_anchor_link_price",
         "ins_post_price",
@@ -215,14 +215,21 @@ export default function Dashboard() {
         "yt_pre_roll_price",
         "yt_short_video_price",
       ];
+      // 报价汇总列还会读取 extra_fields 里的主/直播/授权报价，筛选需保持一致
+      const platforms = ["TikTok", "Instagram", "YouTube", "Other"];
+      const priceTypes = ["主报价", "直播报价", "授权报价"];
+      const extraPriceFields = platforms.flatMap((p) =>
+        priceTypes.map((t) => `extra:${p} - ${t}`)
+      );
+      const priceFields = [...modelPriceFields, ...extraPriceFields];
       if (quick.hasPrice) {
-        // 任一平台有报价 → OR
+        // 任一字段有报价 → OR
         children.push({
           logic: "or",
           children: priceFields.map((f) => ({ field: f, op: "is_not_empty", value: undefined })),
         });
       } else {
-        // 所有平台都没报价 → AND
+        // 所有字段都没报价 → AND
         children.push({
           logic: "and",
           children: priceFields.map((f) => ({ field: f, op: "is_empty", value: undefined })),
@@ -989,7 +996,7 @@ function parseAudienceByType(text: string, type: string): Array<{ label: string;
 
   // 全局匹配：标签可能由中英文字母/数字/连字符组成，后跟可选冒号、数字、百分号
   // 用 [^\d%]+ 跳过百分号后到下个标签前的分隔符
-  const pattern = /([A-Za-z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\-+]*?)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/g;
+  const pattern = /([A-Za-z0-9\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\-+]*?)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/g;
   let match;
   while ((match = pattern.exec(text)) !== null) {
     const rawLabel = match[1].trim();
