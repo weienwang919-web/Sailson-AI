@@ -351,12 +351,13 @@ body {
 
 .audience-text {
   font-size: 11px;
-  color: #667085;
+  color: #98a2b3;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 140px;
   display: block;
+  font-style: italic;
 }
 
 .all-prices-cell {

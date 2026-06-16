@@ -964,9 +964,64 @@ const COUNTRY_NAME_MAP: Record<string, string> = {
   CN: "中国", TW: "台湾", HK: "香港", MO: "澳门",
 };
 
+// 判断标签是否"有意义"：不是纯数字、不是单个字母（除非是国家代码）
+function isValidLabel(label: string, type: string): boolean {
+  if (!label || label.length === 0) return false;
+  // 纯数字不行
+  if (/^\d+(\.\d+)?$/.test(label)) return false;
+  // 纯单字母不行（除非是国家代码 2 字母）
+  if (type !== "region" && /^[A-Za-z]$/.test(label)) return false;
+  return true;
+}
+
+// 按类型严格解析受众数据
+function parseAudienceByType(text: string, type: string): Array<{ label: string; pct: number }> {
+  if (!text) return [];
+  const parts = text.split(/[,;/&|]\s*/);
+  const results: Array<{ label: string; pct: number }> = [];
+
+  for (const part of parts) {
+    const m = part.match(/([A-Za-z0-9\u4e00-\u9fa5%+\-—–\s]+?)\s*([\d.]+)\s*%/);
+    if (!m) continue;
+    const rawLabel = m[1].trim();
+    const pct = parseFloat(m[2]);
+    if (isNaN(pct)) continue;
+
+    let label = rawLabel;
+
+    if (type === "region") {
+      // 地区：只接受国家代码（2字母）或已知国家名
+      const upper = rawLabel.toUpperCase();
+      // 2字母国家代码
+      if (/^[A-Z]{2}$/.test(upper)) {
+        label = COUNTRY_NAME_MAP[upper] || upper;
+      } else if (COUNTRY_NAME_MAP[upper]) {
+        label = COUNTRY_NAME_MAP[upper];
+      } else if (/[\u4e00-\u9fa5]/.test(rawLabel)) {
+        label = rawLabel; // 已有中文
+      } else {
+        continue; // 不认识的标签，跳过
+      }
+    } else if (type === "gender") {
+      // 性别：只接受男/女/male/female
+      const lower = rawLabel.toLowerCase();
+      if (/^男$|^male$|^man$/.test(lower)) label = "男";
+      else if (/^女$|^female$|^woman$/.test(lower)) label = "女";
+      else continue;
+    } else if (type === "age") {
+      // 年龄：只接受年龄范围格式
+      if (!/^\d+-\d+$/.test(rawLabel)) continue;
+      label = rawLabel;
+    }
+
+    if (label) results.push({ label, pct });
+  }
+  return results.slice(0, 5);
+}
+
+// 兼容旧调用（不指定类型时宽松解析）
 function parseAudience(text: string): Array<{ label: string; pct: number }> {
   if (!text) return [];
-  // 支持格式: "US 40%, JP 30%, TH 20%, other 10%" 或 "男 45% / 女 55%" 或 "18-24 30%, 25-34 40%, 35-44 20%"
   const parts = text.split(/[,;/&|]\s*/);
   const results: Array<{ label: string; pct: number }> = [];
   for (const part of parts) {
@@ -993,28 +1048,24 @@ function normalizeCountryLabel(raw: string): string {
 function AudienceBar({ value, type }: { value: unknown; type?: string }) {
   const text = value ? String(value) : "";
   if (!text) return <span className="empty-cell">-</span>;
-  const items = parseAudience(text);
-  if (!items.length) return <span className="audience-text">{text}</span>;
+  const items = type ? parseAudienceByType(text, type) : parseAudience(text);
+  if (!items.length) return <span className="audience-text" title={text}>{text}</span>;
   const maxPct = Math.max(...items.map((i) => i.pct));
   const typeClass = type ? ` type-${type}` : "";
   return (
     <div className={`audience-bar${typeClass}`}>
-      {items.map((item) => {
-        // 国家代码转换
-        const displayLabel = type === "region" ? normalizeCountryLabel(item.label) : item.label;
-        return (
-          <div key={item.label} className="audience-item">
-            <div className="audience-label">{displayLabel}</div>
-            <div className="audience-track">
-              <div
-                className="audience-fill"
-                style={{ width: `${(item.pct / maxPct) * 100}%` }}
-              />
-            </div>
-            <div className="audience-pct">{item.pct}%</div>
+      {items.map((item) => (
+        <div key={item.label} className="audience-item">
+          <div className="audience-label">{item.label}</div>
+          <div className="audience-track">
+            <div
+              className="audience-fill"
+              style={{ width: `${(item.pct / maxPct) * 100}%` }}
+            />
           </div>
-        );
-      })}
+          <div className="audience-pct">{item.pct}%</div>
+        </div>
+      ))}
     </div>
   );
 }
