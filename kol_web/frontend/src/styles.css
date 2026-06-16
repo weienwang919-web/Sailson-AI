@@ -304,15 +304,26 @@ body {
 }
 
 .audience-label {
-  min-width: 28px;
+  min-width: 36px;
   color: #344054;
   font-size: 11px;
   text-align: right;
   flex-shrink: 0;
-  max-width: 40px;
+  max-width: 56px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.audience-bar.type-region .audience-label {
+  max-width: 50px;
+  font-size: 10px;
+}
+
+.audience-bar.type-gender .audience-label,
+.audience-bar.type-age .audience-label {
+  max-width: 48px;
+  font-size: 11px;
 }
 
 .audience-track {

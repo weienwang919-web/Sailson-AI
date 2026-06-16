@@ -759,7 +759,7 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
       width: 150,
       render: (_: unknown, record: KolRecord) => {
         const raw = record.audience_region || record.extra_fields?.["受众地区"];
-        return <AudienceBar value={raw} />;
+        return <AudienceBar value={raw} type="region" />;
       },
     },
     {
@@ -948,6 +948,22 @@ function renderCellValue(record: KolRecord, field: BusinessField) {
   return value;
 }
 
+// 国家代码 -> 中文名 映射
+const COUNTRY_NAME_MAP: Record<string, string> = {
+  US: "美国", GB: "英国", UK: "英国", TH: "泰国", JP: "日本", KR: "韩国",
+  ID: "印尼", PH: "菲律宾", VN: "越南", MY: "马来西亚", SG: "新加坡",
+  IN: "印度", PK: "巴基斯坦", BD: "孟加拉", MM: "缅甸", KH: "柬埔寨",
+  LA: "老挝", BN: "文莱", TL: "东帝汶", NP: "尼泊尔", LK: "斯里兰卡",
+  AU: "澳大利亚", NZ: "新西兰", CA: "加拿大", MX: "墨西哥", BR: "巴西",
+  AR: "阿根廷", CL: "智利", CO: "哥伦比亚", PE: "秘鲁", VE: "委内瑞拉",
+  DE: "德国", FR: "法国", IT: "意大利", ES: "西班牙", PT: "葡萄牙",
+  NL: "荷兰", BE: "比利时", CH: "瑞士", AT: "奥地利", PL: "波兰",
+  SE: "瑞典", NO: "挪威", DK: "丹麦", FI: "芬兰", IE: "爱尔兰",
+  RU: "俄罗斯", UA: "乌克兰", TR: "土耳其", SA: "沙特", AE: "阿联酋",
+  EG: "埃及", NG: "尼日利亚", KE: "肯尼亚", ZA: "南非", MA: "摩洛哥",
+  CN: "中国", TW: "台湾", HK: "香港", MO: "澳门",
+};
+
 function parseAudience(text: string): Array<{ label: string; pct: number }> {
   if (!text) return [];
   // 支持格式: "US 40%, JP 30%, TH 20%, other 10%" 或 "男 45% / 女 55%" 或 "18-24 30%, 25-34 40%, 35-44 20%"
@@ -964,26 +980,41 @@ function parseAudience(text: string): Array<{ label: string; pct: number }> {
   return results.slice(0, 5);
 }
 
+// 规范化国家代码显示
+function normalizeCountryLabel(raw: string): string {
+  const upper = raw.toUpperCase().trim();
+  // 如果已经是中文，直接返回
+  if (/[\u4e00-\u9fa5]/.test(upper)) return upper;
+  // 查找映射
+  if (COUNTRY_NAME_MAP[upper]) return COUNTRY_NAME_MAP[upper];
+  return upper;
+}
+
 function AudienceBar({ value, type }: { value: unknown; type?: string }) {
   const text = value ? String(value) : "";
   if (!text) return <span className="empty-cell">-</span>;
   const items = parseAudience(text);
   if (!items.length) return <span className="audience-text">{text}</span>;
   const maxPct = Math.max(...items.map((i) => i.pct));
+  const typeClass = type ? ` type-${type}` : "";
   return (
-    <div className="audience-bar">
-      {items.map((item) => (
-        <div key={item.label} className="audience-item">
-          <div className="audience-label">{item.label}</div>
-          <div className="audience-track">
-            <div
-              className="audience-fill"
-              style={{ width: `${(item.pct / maxPct) * 100}%` }}
-            />
+    <div className={`audience-bar${typeClass}`}>
+      {items.map((item) => {
+        // 国家代码转换
+        const displayLabel = type === "region" ? normalizeCountryLabel(item.label) : item.label;
+        return (
+          <div key={item.label} className="audience-item">
+            <div className="audience-label">{displayLabel}</div>
+            <div className="audience-track">
+              <div
+                className="audience-fill"
+                style={{ width: `${(item.pct / maxPct) * 100}%` }}
+              />
+            </div>
+            <div className="audience-pct">{item.pct}%</div>
           </div>
-          <div className="audience-pct">{item.pct}%</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
