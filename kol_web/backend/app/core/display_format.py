@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.models import KOLRecord
+if TYPE_CHECKING:
+    from app.models import KOLRecord
 
 PLATFORM_PREFIX = {
     "TikTok": "TT ",
@@ -24,6 +26,13 @@ MODEL_PRICE_FIELDS: tuple[tuple[str, str], ...] = (
     ("YT 短视频报价", "yt_short_video_price"),
 )
 
+CPM_EXTRA_KEYS = ("TikTok - CPM", "Instagram - CPM", "YouTube - CPM")
+PLATFORM_CPM_BY_PRICE_PREFIX = (
+    (re.compile(r"^(TT|TikTok)\b", re.I), ("TikTok - CPM",)),
+    (re.compile(r"^(INS|Instagram)\b", re.I), ("Instagram - CPM",)),
+    (re.compile(r"^(YT|YouTube)\b", re.I), ("YouTube - CPM",)),
+)
+
 
 def extra_fields_dict(record: KOLRecord) -> dict[str, Any]:
     if not record.extra_fields:
@@ -35,8 +44,33 @@ def extra_fields_dict(record: KOLRecord) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
-def is_clean_price(value: Any) -> bool:
+def _numeric_value(value: Any) -> float | None:
     if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not re.fullmatch(r"[$￥€]?\s*\d[\d,.]*(?:\.\d+)?\s*", text):
+        return None
+    try:
+        return float(re.sub(r"[$,￥€\s]", "", text))
+    except ValueError:
+        return None
+
+
+def _values_equal(left: Any, right: Any) -> bool:
+    left_num = _numeric_value(left)
+    right_num = _numeric_value(right)
+    if left_num is not None and right_num is not None:
+        return math.isclose(left_num, right_num, rel_tol=0, abs_tol=0.00001)
+    return str(left).strip() == str(right).strip()
+
+
+def is_clean_price(value: Any) -> bool:
+    if _numeric_value(value) is not None:
         return True
     text = str(value).strip()
     if not text:
@@ -47,6 +81,26 @@ def is_clean_price(value: Any) -> bool:
     return True
 
 
+def is_probable_cpm_value(label: str, value: Any, extra: dict[str, Any]) -> bool:
+    if not label or value in (None, ""):
+        return False
+    if re.search(r"\bcpm\b", label, re.I):
+        return True
+    if not re.search(r"贴片|pre[-\s]?roll", label, re.I):
+        return False
+    numeric = _numeric_value(value)
+    if numeric is None:
+        return False
+    cpm_keys: tuple[str, ...] = ()
+    for pattern, keys in PLATFORM_CPM_BY_PRICE_PREFIX:
+        if pattern.search(label):
+            cpm_keys = keys
+            break
+    if not cpm_keys:
+        return False
+    return any(extra.get(key) not in (None, "") and _values_equal(value, extra.get(key)) for key in cpm_keys)
+
+
 def collect_all_prices(record: KOLRecord) -> list[tuple[str, Any]]:
     extra = extra_fields_dict(record)
     rows: list[tuple[str, Any]] = []
@@ -54,6 +108,8 @@ def collect_all_prices(record: KOLRecord) -> list[tuple[str, Any]]:
 
     def add_row(label: str, value: Any) -> None:
         if value is None or value == "":
+            return
+        if is_probable_cpm_value(label, value, extra):
             return
         if not is_clean_price(value):
             return

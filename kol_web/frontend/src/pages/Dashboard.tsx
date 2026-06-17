@@ -245,15 +245,25 @@ export default function Dashboard() {
       });
       setItems(data.items);
       setTotal(data.total);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "请稍后重试";
+      message.error(`KOL 列表加载失败：${detail}`);
+      setItems([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
   };
 
   const loadMetadata = async () => {
-    const [fieldCatalog, options] = await Promise.all([getBusinessFields(), getFilterOptions()]);
-    setBusinessFields(fieldCatalog);
-    setFilterValueOptions(options);
+    try {
+      const [fieldCatalog, options] = await Promise.all([getBusinessFields(), getFilterOptions()]);
+      setBusinessFields(fieldCatalog);
+      setFilterValueOptions(options);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "请稍后重试";
+      message.error(`KOL 字段配置加载失败：${detail}`);
+    }
   };
 
   useEffect(() => {
@@ -920,6 +930,7 @@ function getRecordPlatformMetrics(record: KolRecord, view: PlatformView) {
   const platform = resolveActivePlatform(record, view);
   if (!platform) return null;
 
+  const extraFields = record.extra_fields || {};
   const link = platform === "tiktok" ? record.tt_link : platform === "instagram" ? record.ins_link : record.yt_link;
   const mainPriceExtraKey =
     platform === "tiktok" ? "TikTok - 主报价" : platform === "instagram" ? "Instagram - 主报价" : "YouTube - 主报价";
@@ -929,11 +940,14 @@ function getRecordPlatformMetrics(record: KolRecord, view: PlatformView) {
     platform === "tiktok" ? record.tt_follower : platform === "instagram" ? record.ins_follower : record.yt_follower;
   const avv = platform === "tiktok" ? record.tt_avv : platform === "youtube" ? record.yt_avv : null;
   const modelPrice = platform === "tiktok" ? record.tt_short_video_price : platform === "instagram" ? record.ins_post_price : record.yt_full_video_price;
-  const extraMain = record.extra_fields?.[mainPriceExtraKey];
-  const price = toNumber(modelPrice) || toNumber(extraMain);
-  const cpm = toNumber(record.extra_fields?.[cpmExtraKey]);
+  const extraMain = extraFields[mainPriceExtraKey];
+  const modelPriceLabel = platform === "tiktok" ? "TT 短视频报价" : platform === "instagram" ? "INS Post 报价" : "YT 长视频报价";
+  const safeModelPrice = isProbableCpmValue(modelPriceLabel, modelPrice, extraFields) ? 0 : toNumber(modelPrice);
+  const safeMainPrice = isProbableCpmValue(mainPriceExtraKey, extraMain, extraFields) ? 0 : toNumber(extraMain);
+  const price = safeModelPrice || safeMainPrice;
+  const cpm = toNumber(extraFields[cpmExtraKey]);
 
-  return { platform, link, follower, avv, price, mainPrice: toNumber(extraMain), cpm };
+  return { platform, link, follower, avv, price, mainPrice: safeMainPrice, cpm };
 }
 
 function toNumber(value: unknown): number {
@@ -941,6 +955,42 @@ function toNumber(value: unknown): number {
   if (value === null || value === undefined || value === "") return 0;
   const parsed = Number(String(value).replace(/[$,￥]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function numericPriceValue(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (value === null || value === undefined || value === "") return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (!/^[$￥€]?\s*\d[\d,.]*(?:\.\d+)?\s*$/.test(text)) return null;
+  const parsed = Number(text.replace(/[$,￥€\s]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function priceValuesEqual(left: unknown, right: unknown): boolean {
+  const leftNumber = numericPriceValue(left);
+  const rightNumber = numericPriceValue(right);
+  if (leftNumber !== null && rightNumber !== null) return Math.abs(leftNumber - rightNumber) < 0.00001;
+  return String(left).trim() === String(right).trim();
+}
+
+const PLATFORM_CPM_KEYS: Array<{ pattern: RegExp; keys: string[] }> = [
+  { pattern: /^(TT|TikTok)\b/i, keys: ["TikTok - CPM"] },
+  { pattern: /^(INS|Instagram)\b/i, keys: ["Instagram - CPM"] },
+  { pattern: /^(YT|YouTube)\b/i, keys: ["YouTube - CPM"] },
+];
+
+function isProbableCpmValue(label: string, value: unknown, extraFields: Record<string, unknown>): boolean {
+  if (!label || value === null || value === undefined || value === "") return false;
+  if (/\bcpm\b/i.test(label)) return true;
+  if (!/贴片|pre[-\s]?roll/i.test(label)) return false;
+  if (numericPriceValue(value) === null) return false;
+  const matched = PLATFORM_CPM_KEYS.find((entry) => entry.pattern.test(label));
+  if (!matched) return false;
+  return matched.keys.some((key) => {
+    const cpm = extraFields[key];
+    return cpm !== null && cpm !== undefined && cpm !== "" && priceValuesEqual(value, cpm);
+  });
 }
 
 function renderCellValue(record: KolRecord, field: BusinessField) {
@@ -963,7 +1013,7 @@ function AudienceText({ value }: { value: unknown }) {
 
 // 判断是否为"干净的"单一报价：纯数字/金额，而非含多个金额的合作描述文字
 function isCleanPrice(value: unknown): boolean {
-  if (typeof value === "number") return true;
+  if (numericPriceValue(value) !== null) return true;
   const text = String(value).trim();
   if (!text) return false;
   // 描述性关键词（合作模式文字混入），直接排除
@@ -981,6 +1031,7 @@ function AllPricesCell({ record }: { record: KolRecord }) {
   const seen = new Set<string>();
   const addRow = (label: string, value: unknown) => {
     if (value === null || value === undefined || value === "") return;
+    if (isProbableCpmValue(label, value, ef)) return;
     // 过滤掉描述性长文本（含多个金额或合作描述），这类是合作模式不是单一报价
     if (!isCleanPrice(value)) return;
     const key = `${label}:${value}`;

@@ -290,7 +290,7 @@ def flat_row_to_payload(row: dict[str, Any], sheet: str, filename: str) -> dict[
         payload["yt_avv"] = avv
         payload["yt_full_video_price"] = to_float(first("💰1*Full Video(8-10min)", "Full Video", "定制长视频报价（10-15min）", "定制长视频报价"))
         payload["yt_live_2hr_price"] = to_float(first("💰1h*Livestream", "Livestream", "直播报价", "直播1h报价", "直播1h"))
-        payload["yt_pre_roll_price"] = to_float(first("💰1*Tie-in (Pre/Mid roll)", "Pre-roll", "贴片报价(90s)", "贴片", "发布CPM", "Integration (Tie-in) USD"))
+        payload["yt_pre_roll_price"] = to_float(first("💰1*Tie-in (Pre/Mid roll)", "Pre-roll", "贴片报价(90s)", "贴片", "Integration (Tie-in) USD"))
         payload["yt_short_video_price"] = to_float(first("💰1*Short Video (15s-60s)", "Short Video", "定制短视频/shorts（1-3min）", "定制短视频/shorts报价（1-3min）"))
     return payload
 
