@@ -12,6 +12,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy.orm import Session
 
+from app.core.display_format import audience_value, format_all_prices_cell, unified_platform_row
 from app.core.pipeline import clean_text, normalize_link, parse_platform_blocks
 from app.models import KOLRecord, SheetTemplate
 
@@ -324,31 +325,17 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
         ("KOL 名称/Name", 20),
         ("大类/Category", 12),
         ("国家/Country", 10),
-        ("平台/Platform", 10),
-        ("TikTok 链接/Link", 30),
-        ("TikTok 粉丝/Followers", 14),
-        ("TikTok AVV/均观看量", 14),
-        ("TikTok 短视频报价/Short Video Price", 16),
-        ("TikTok 主报价/Main Price", 16),
-        ("TikTok CPM", 14),
-        ("TikTok 合作模式/Collaboration", 16),
-        ("Instagram 链接/Link", 30),
-        ("Instagram 粉丝/Followers", 14),
-        ("Instagram Post 报价/Post Price", 16),
-        ("Instagram 主报价/Main Price", 16),
-        ("Instagram CPM", 14),
-        ("Instagram 合作模式/Collaboration", 16),
-        ("YouTube 链接/Link", 30),
-        ("YouTube 粉丝/Followers", 14),
-        ("YouTube AVV/均观看量", 14),
-        ("YouTube 长视频报价/Full Video Price", 16),
-        ("YouTube 主报价/Main Price", 16),
-        ("YouTube CPM", 14),
-        ("YouTube 合作模式/Collaboration", 16),
-        ("受众地区/Audience Region", 20),
-        ("受众性别/Audience Gender", 16),
-        ("受众年龄/Audience Age", 16),
-        ("未识别报价/Unrecognized Quotes", 24),
+        ("语言/Language", 10),
+        ("平台/Platform", 12),
+        ("链接/Link", 30),
+        ("粉丝/Followers", 14),
+        ("AVV/均观看量", 14),
+        ("CPM", 12),
+        ("合作模式/Collaboration", 18),
+        ("报价汇总/All Prices", 28),
+        ("受众地区/Audience Region", 24),
+        ("受众性别/Audience Gender", 20),
+        ("受众年龄/Audience Age", 24),
         ("备注/Notes", 24),
     ]
     header_labels = [h[0] for h in headers]
@@ -367,37 +354,23 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
     ws.row_dimensions[1].height = 28
 
     for record_idx, record in enumerate(records):
-        extra = _extra_fields(record)
+        platform_row = unified_platform_row(record)
         row_num = record_idx + 2
         row_data = [
             record.name,
             major_category(record.normalized_category or ""),
             record.country,
-            record.platform_text,
-            record.tt_link,
-            record.tt_follower,
-            record.tt_avv,
-            record.tt_short_video_price,
-            extra.get("TikTok - 主报价"),
-            extra.get("TikTok - CPM"),
-            extra.get("TikTok - 合作模式"),
-            record.ins_link,
-            record.ins_follower,
-            record.ins_post_price,
-            extra.get("Instagram - 主报价"),
-            extra.get("Instagram - CPM"),
-            extra.get("Instagram - 合作模式"),
-            record.yt_link,
-            record.yt_follower,
-            record.yt_avv,
-            record.yt_full_video_price,
-            extra.get("YouTube - 主报价"),
-            extra.get("YouTube - CPM"),
-            extra.get("YouTube - 合作模式"),
-            record.audience_region,
-            record.audience_gender,
-            record.audience_age,
-            _unrecognized_business_quotes(extra),
+            record.language,
+            platform_row["platform"],
+            platform_row["link"],
+            platform_row["follower"],
+            platform_row["avv"],
+            platform_row["cpm"],
+            platform_row["collaboration"],
+            format_all_prices_cell(record),
+            audience_value(record, "audience_region", "受众地区"),
+            audience_value(record, "audience_gender", "受众性别"),
+            audience_value(record, "audience_age", "受众年龄"),
             record.notes,
         ]
         ws.append(row_data)
@@ -425,36 +398,3 @@ def _append_flat_sheet(wb: Workbook, records: list[KOLRecord]) -> None:
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
-
-
-def _extra_fields(record: KOLRecord) -> dict[str, Any]:
-    if not record.extra_fields:
-        return {}
-    try:
-        obj = json.loads(record.extra_fields)
-    except json.JSONDecodeError:
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
-def _unrecognized_business_quotes(extra: dict[str, Any]) -> str:
-    recognized = {
-        "TikTok - 主报价",
-        "TikTok - CPM",
-        "TikTok - 合作模式",
-        "Instagram - 主报价",
-        "Instagram - CPM",
-        "Instagram - 合作模式",
-        "YouTube - 主报价",
-        "YouTube - CPM",
-        "YouTube - 合作模式",
-    }
-    business_tokens = ("报价", "price", "cpm", "合作", "collaboration", "商务", "授权", "直播")
-    rows: list[str] = []
-    for key, value in extra.items():
-        if key in recognized or value in (None, ""):
-            continue
-        lowered = str(key).lower()
-        if any(token in lowered for token in business_tokens):
-            rows.append(f"{key}: {value}")
-    return "\n".join(rows)

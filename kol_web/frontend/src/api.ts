@@ -124,6 +124,7 @@ export async function listKols(params: {
   pageSize: number;
   search?: string;
   filters?: FilterPayload;
+  hasPrice?: boolean;
 }): Promise<KolListResponse> {
   const { data } = await api.get<KolListResponse>("/kols", {
     params: {
@@ -131,6 +132,7 @@ export async function listKols(params: {
       page_size: params.pageSize,
       search: params.search || undefined,
       filters: hasFilterRules(params.filters) ? JSON.stringify(params.filters) : undefined,
+      has_price: params.hasPrice === undefined ? undefined : params.hasPrice,
     },
   });
   return data;
@@ -225,6 +227,7 @@ export async function exportKols(params: {
   filters?: FilterPayload;
   updateMetrics?: boolean;
   sourceFile?: string;
+  hasPrice?: boolean;
 }): Promise<Blob> {
   const response = await api.post(
     "/kols/export",
@@ -233,6 +236,7 @@ export async function exportKols(params: {
       filters: params.ids?.length ? undefined : params.filters,
       update_metrics: params.updateMetrics || false,
       source_file: params.sourceFile,
+      has_price: params.hasPrice === undefined ? undefined : params.hasPrice,
     },
     { responseType: "blob" },
   );

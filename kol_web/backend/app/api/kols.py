@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.business_fields import BUSINESS_FIELDS, field_payload, fields_for_usage
 from app.core.category import STANDARD_CATEGORIES, major_category, normalize_category
 from app.core.country import expand_country_filter
+from app.core.display_format import has_displayable_prices
 from app.core.field_normalizer import STANDARD_PLATFORM_FIELDS
 from app.database import get_db
 from app.models import KOLRecord, ScrapeJob
@@ -92,6 +93,7 @@ def list_kols(
     page_size: int = Query(50, ge=1, le=500),
     search: str | None = None,
     filters: str | None = None,
+    has_price: bool | None = None,
 ) -> KOLListResponse:
     query = db.query(KOLRecord)
     if search:
@@ -99,13 +101,16 @@ def list_kols(
         query = query.filter(or_(*(getattr(KOLRecord, field).ilike(like) for field in TEXT_SEARCH_FIELDS)))
     if filters:
         query = apply_filters(query, FilterPayload.model_validate(json.loads(filters)))
-    total = query.count()
-    items = (
-        query.order_by(desc(KOLRecord.updated_at), desc(KOLRecord.created_at), desc(KOLRecord.id))
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+    order = (desc(KOLRecord.updated_at), desc(KOLRecord.created_at), desc(KOLRecord.id))
+    if has_price is not None:
+        records = query.order_by(*order).all()
+        records = [record for record in records if has_displayable_prices(record) == has_price]
+        total = len(records)
+        start = (page - 1) * page_size
+        items = records[start : start + page_size]
+    else:
+        total = query.count()
+        items = query.order_by(*order).offset((page - 1) * page_size).limit(page_size).all()
     return KOLListResponse(total=total, items=[serialize_kol(x) for x in items])
 
 
@@ -248,6 +253,8 @@ def export_kols(payload: ExportRequest, db: Session = Depends(get_db)) -> FileRe
     elif payload.filters:
         query = apply_filters(query, payload.filters)
     records = query.order_by(KOLRecord.category, KOLRecord.name).all()
+    if payload.has_price is not None:
+        records = [record for record in records if has_displayable_prices(record) == payload.has_price]
     if payload.update_metrics:
         job = create_scrape_job(db, [r.id for r in records])
         run_scrape_job(job.id, [r.id for r in records], int(os.getenv("VIDEOS_PER_PROFILE", "10")))

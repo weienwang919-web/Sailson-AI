@@ -120,6 +120,7 @@ class ExportRequest(BaseModel):
     filters: FilterPayload | None = None
     update_metrics: bool = False
     source_file: str | None = None
+    has_price: bool | None = None
 
 
 class ScrapeRequest(BaseModel):

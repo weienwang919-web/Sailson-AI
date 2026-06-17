@@ -204,38 +204,6 @@ export default function Dashboard() {
     if (quick.country) {
       children.push({ field: "country", op: "eq", value: quick.country });
     }
-    if (quick.hasPrice !== undefined) {
-      const modelPriceFields = [
-        "tt_short_video_price",
-        "tt_anchor_link_price",
-        "ins_post_price",
-        "ins_reels_price",
-        "yt_full_video_price",
-        "yt_live_2hr_price",
-        "yt_pre_roll_price",
-        "yt_short_video_price",
-      ];
-      // 报价汇总列还会读取 extra_fields 里的主/直播/授权报价，筛选需保持一致
-      const platforms = ["TikTok", "Instagram", "YouTube", "Other"];
-      const priceTypes = ["主报价", "直播报价", "授权报价"];
-      const extraPriceFields = platforms.flatMap((p) =>
-        priceTypes.map((t) => `extra:${p} - ${t}`)
-      );
-      const priceFields = [...modelPriceFields, ...extraPriceFields];
-      if (quick.hasPrice) {
-        // 任一字段有报价 → OR
-        children.push({
-          logic: "or",
-          children: priceFields.map((f) => ({ field: f, op: "is_not_empty", value: undefined })),
-        });
-      } else {
-        // 所有字段都没报价 → AND
-        children.push({
-          logic: "and",
-          children: priceFields.map((f) => ({ field: f, op: "is_empty", value: undefined })),
-        });
-      }
-    }
     return children.length ? { logic: "and", children } : defaultFilters;
   };
 
@@ -244,24 +212,37 @@ export default function Dashboard() {
     const payload = buildQuickFilterPayload(nextQuick);
     setFilters(payload);
     setPage(1);
-    void loadList({ page: 1, filters: payload });
+    void loadList({ page: 1, filters: payload, hasPrice: nextQuick.hasPrice });
   };
 
   const clearQuickFilters = () => {
     setActiveQuickFilters({});
     setFilters(defaultFilters);
     setPage(1);
-    void loadList({ page: 1, filters: defaultFilters });
+    void loadList({ page: 1, filters: defaultFilters, hasPrice: undefined });
   };
 
-  const loadList = async (overrides?: { page?: number; pageSize?: number; search?: string; filters?: FilterPayload }) => {
+  const loadList = async (overrides?: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    filters?: FilterPayload;
+    hasPrice?: boolean;
+  }) => {
     setLoading(true);
     try {
       const nextPage = overrides?.page ?? page;
       const nextPageSize = overrides?.pageSize ?? pageSize;
       const nextSearch = overrides?.search ?? search;
       const nextFilters = overrides?.filters ?? filters;
-      const data = await listKols({ page: nextPage, pageSize: nextPageSize, search: nextSearch, filters: nextFilters });
+      const nextHasPrice = overrides?.hasPrice !== undefined ? overrides.hasPrice : activeQuickFilters.hasPrice;
+      const data = await listKols({
+        page: nextPage,
+        pageSize: nextPageSize,
+        search: nextSearch,
+        filters: nextFilters,
+        hasPrice: nextHasPrice,
+      });
       setItems(data.items);
       setTotal(data.total);
     } finally {
@@ -329,6 +310,7 @@ export default function Dashboard() {
       const blob = await exportKols({
         ids: selectedRowKeys.length ? selectedRowKeys.map(Number) : undefined,
         filters: hasFilterRules(filters) ? filters : undefined,
+        hasPrice: activeQuickFilters.hasPrice,
       });
       downloadBlob(blob, `kol_export_${timestampForFile()}.xlsx`);
       message.success("导出成功");
@@ -758,7 +740,6 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     makeFieldColumn("major_category"),
     makeFieldColumn("country"),
     makeFieldColumn("language"),
-    makeFieldColumn("case_links"),
   ]);
 
   const platformBadgeColumn = {
@@ -776,34 +757,31 @@ function buildListColumns(businessFields: BusinessFieldCatalog, platformView: Pl
     render: (_: unknown, record: KolRecord) => <AllPricesCell record={record} />,
   };
 
-  // 粉丝画像列（进度条可视化）
+  // 粉丝画像列（纯文字展示）
   const audienceColumns = [
     {
       title: "受众地区/Audience Region",
       key: "audience_region",
       width: 200,
-      render: (_: unknown, record: KolRecord) => {
-        const raw = record.audience_region || record.extra_fields?.["受众地区"];
-        return <AudienceBar value={raw} type="region" />;
-      },
+      render: (_: unknown, record: KolRecord) => (
+        <AudienceText value={record.audience_region || record.extra_fields?.["受众地区"]} />
+      ),
     },
     {
       title: "性别/Audience Gender",
       key: "audience_gender",
       width: 160,
-      render: (_: unknown, record: KolRecord) => {
-        const raw = record.audience_gender || record.extra_fields?.["受众性别"];
-        return <AudienceBar value={raw} type="gender" />;
-      },
+      render: (_: unknown, record: KolRecord) => (
+        <AudienceText value={record.audience_gender || record.extra_fields?.["受众性别"]} />
+      ),
     },
     {
       title: "年龄/Audience Age",
       key: "audience_age",
       width: 180,
-      render: (_: unknown, record: KolRecord) => {
-        const raw = record.audience_age || record.extra_fields?.["受众年龄"];
-        return <AudienceBar value={raw} type="age" />;
-      },
+      render: (_: unknown, record: KolRecord) => (
+        <AudienceText value={record.audience_age || record.extra_fields?.["受众年龄"]} />
+      ),
     },
   ];
 
@@ -973,115 +951,13 @@ function renderCellValue(record: KolRecord, field: BusinessField) {
   return value;
 }
 
-// 国家代码 -> 中文名 映射
-const COUNTRY_NAME_MAP: Record<string, string> = {
-  US: "美国", GB: "英国", UK: "英国", TH: "泰国", JP: "日本", KR: "韩国",
-  ID: "印尼", PH: "菲律宾", VN: "越南", MY: "马来西亚", SG: "新加坡",
-  IN: "印度", PK: "巴基斯坦", BD: "孟加拉", MM: "缅甸", KH: "柬埔寨",
-  LA: "老挝", BN: "文莱", TL: "东帝汶", NP: "尼泊尔", LK: "斯里兰卡",
-  AU: "澳大利亚", NZ: "新西兰", CA: "加拿大", MX: "墨西哥", BR: "巴西",
-  AR: "阿根廷", CL: "智利", CO: "哥伦比亚", PE: "秘鲁", VE: "委内瑞拉",
-  DE: "德国", FR: "法国", IT: "意大利", ES: "西班牙", PT: "葡萄牙",
-  NL: "荷兰", BE: "比利时", CH: "瑞士", AT: "奥地利", PL: "波兰",
-  SE: "瑞典", NO: "挪威", DK: "丹麦", FI: "芬兰", IE: "爱尔兰",
-  RU: "俄罗斯", UA: "乌克兰", TR: "土耳其", SA: "沙特", AE: "阿联酋",
-  EG: "埃及", NG: "尼日利亚", KE: "肯尼亚", ZA: "南非", MA: "摩洛哥",
-  CN: "中国", TW: "台湾", HK: "香港", MO: "澳门",
-};
-
-// 按类型严格解析受众数据，使用全局匹配支持紧贴格式（如 "18-24:55% 25-34:32%"）
-function parseAudienceByType(text: string, type: string): Array<{ label: string; pct: number }> {
-  if (!text) return [];
-  const results: Array<{ label: string; pct: number }> = [];
-
-  // 全局匹配：标签可能由中英文字母/数字/连字符组成，后跟可选冒号、数字、百分号
-  // 用 [^\d%]+ 跳过百分号后到下个标签前的分隔符
-  const pattern = /([A-Za-z0-9\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5\-+]*?)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/g;
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    const rawLabel = match[1].trim();
-    const pct = parseFloat(match[2]);
-    if (isNaN(pct) || pct <= 0 || pct > 100) continue;
-
-    let label = rawLabel;
-
-    if (type === "region") {
-      const upper = rawLabel.toUpperCase();
-      if (/^[A-Z]{2}$/.test(upper)) {
-        label = COUNTRY_NAME_MAP[upper] || upper;
-      } else if (COUNTRY_NAME_MAP[upper]) {
-        label = COUNTRY_NAME_MAP[upper];
-      } else if (/[\u4e00-\u9fa5]/.test(rawLabel)) {
-        label = rawLabel;
-      } else {
-        continue;
-      }
-    } else if (type === "gender") {
-      const lower = rawLabel.toLowerCase();
-      if (/男/.test(rawLabel) || /^male$|^man$|^m$/.test(lower)) label = "男";
-      else if (/女/.test(rawLabel) || /^female$|^woman$|^f$/.test(lower)) label = "女";
-      else continue;
-    } else if (type === "age") {
-      // 年龄：18-24、25-34、35+、35-、52+ 等
-      if (!/^\d+(-\d+|\+|-)?$/.test(rawLabel)) continue;
-      label = rawLabel;
-    }
-
-    if (label) results.push({ label, pct });
-  }
-
-  // 统一排序，避免同列顺序不一致
-  if (type === "gender") {
-    // 男在上，女在下
-    results.sort((a, b) => (a.label === "男" ? -1 : 1) - (b.label === "男" ? -1 : 1));
-  } else if (type === "age") {
-    // 按年龄段起始数字升序
-    results.sort((a, b) => parseInt(a.label, 10) - parseInt(b.label, 10));
-  } else if (type === "region") {
-    // 按占比降序
-    results.sort((a, b) => b.pct - a.pct);
-  }
-
-  return results.slice(0, 6);
-}
-
-// 兼容旧调用（不指定类型时宽松解析）
-function parseAudience(text: string): Array<{ label: string; pct: number }> {
-  if (!text) return [];
-  const parts = text.split(/[,;/&|]\s*/);
-  const results: Array<{ label: string; pct: number }> = [];
-  for (const part of parts) {
-    const m = part.match(/([A-Za-z0-9\u4e00-\u9fa5%+\-—–\s]+?)\s*([\d.]+)\s*%/);
-    if (m) {
-      const label = m[1].trim();
-      const pct = parseFloat(m[2]);
-      if (label && !isNaN(pct)) results.push({ label, pct });
-    }
-  }
-  return results.slice(0, 5);
-}
-
-function AudienceBar({ value, type }: { value: unknown; type?: string }) {
-  const text = value ? String(value) : "";
+function AudienceText({ value }: { value: unknown }) {
+  const text = value ? String(value).trim() : "";
   if (!text) return <span className="empty-cell">-</span>;
-  const items = type ? parseAudienceByType(text, type) : parseAudience(text);
-  if (!items.length) return <span className="audience-text" title={text}>{text}</span>;
-  const typeClass = type ? ` type-${type}` : "";
   return (
-    <div className={`audience-bar${typeClass}`}>
-      {items.map((item) => (
-        <div key={item.label} className="audience-item">
-          <div className="audience-label">{item.label}</div>
-          <div className="audience-track">
-            <div
-              className="audience-fill"
-              style={{ width: `${Math.min(100, item.pct)}%` }}
-            />
-          </div>
-          <div className="audience-pct">{item.pct}%</div>
-        </div>
-      ))}
-    </div>
+    <span className="audience-text" title={text}>
+      {text}
+    </span>
   );
 }
 

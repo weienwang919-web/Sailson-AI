@@ -31,7 +31,7 @@ BUSINESS_FIELDS: tuple[BusinessField, ...] = (
     BusinessField("country", "国家/地区/Country", "core", ("list", "filter", "detail", "export", "create", "update")),
     BusinessField("language", "语言/Language", "core", ("list", "filter", "detail", "export", "create", "update")),
     BusinessField("content_tags", "内容标签/Content Tags", "detail", ("filter", "detail", "export", "create", "update")),
-    BusinessField("case_links", "案例链接/Case Links", "progress", ("list", "detail", "export", "create", "update"), "link"),
+    BusinessField("case_links", "案例链接/Case Links", "progress", ("detail", "export", "create", "update"), "link"),
     BusinessField("tt_link", "TikTok 链接/Link", "core", ("list", "detail", "export", "create", "update"), "link"),
     BusinessField("tt_follower", "TikTok 粉丝/Followers", "metrics", ("list", "filter", "detail", "export", "create", "update"), "number"),
     BusinessField("tt_avv", "TikTok AVV/均观看量", "metrics", ("list", "filter", "detail", "export", "create", "update"), "number"),
