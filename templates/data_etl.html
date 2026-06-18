@@ -115,36 +115,6 @@
     <div class="status" id="f4-st"></div>
   </div>
 
-  <!-- 5 -->
-  <div class="card" id="sec5">
-    <h2>功能 5：视频链接批量拉播放量</h2>
-    <div class="hint">
-      上传含视频链接的 Excel，通过 Apify 批量拉取基础数据并写回原表。支持 TikTok / Instagram / YouTube / Facebook。
-      链接列默认识别 <code>post_url</code>、<code>url</code>、<code>视频链接</code> 等。每批最多 {{ max_video_urls }} 条链接。会产生 Apify 费用。
-    </div>
-    <input type="file" id="f5-file" accept=".xlsx,.xls" onchange="previewF5Columns()">
-    <label>链接列名（可选，留空自动识别）</label>
-    <input type="text" id="f5-col" placeholder="留空则自动识别含链接的列">
-    <div class="status" id="f5-cols" style="margin-top:6px;"></div>
-    <label>勾选要写回的列</label>
-    <div class="chk-row" id="f5-fields">
-      <label><input type="checkbox" name="f5-metric" value="views" checked> 播放量</label>
-      <label><input type="checkbox" name="f5-metric" value="likes" checked> 点赞量</label>
-      <label><input type="checkbox" name="f5-metric" value="comments" checked> 评论量</label>
-      <label><input type="checkbox" name="f5-metric" value="shares"> 转发量</label>
-      <label><input type="checkbox" name="f5-metric" value="collects"> 收藏量</label>
-      <label><input type="checkbox" name="f5-metric" value="engagement"> 互动量</label>
-      <label><input type="checkbox" name="f5-metric" value="followers"> 主页粉丝数</label>
-      <label><input type="checkbox" name="f5-metric" value="author"> 作者</label>
-      <label><input type="checkbox" name="f5-metric" value="post_date"> 发布日期</label>
-      <label><input type="checkbox" name="f5-metric" value="caption"> 视频文案</label>
-      <label><input type="checkbox" name="f5-metric" value="duration"> 视频时长</label>
-    </div>
-    <button class="btn btn-primary" id="f5-go" onclick="startVideoMetrics()">开始并排队</button>
-    <div class="status" id="f5-st"></div>
-    <div id="f5-dl"></div>
-  </div>
-
 </div>
 
 <script>
@@ -334,65 +304,6 @@ async function doSumEngagement() {
   } catch (e) {
     st.textContent = String(e);
     st.className = 'status err';
-  }
-}
-
-async function previewF5Columns() {
-  const el = document.getElementById('f5-cols');
-  const f = document.getElementById('f5-file').files[0];
-  if (!f) { el.textContent = ''; return; }
-  el.textContent = '正在读取表头...';
-  el.className = 'status';
-  try {
-    const fd = new FormData();
-    fd.append('file', f);
-    const res = await fetch('/api/etl/preview_columns', { method: 'POST', body: fd });
-    const d = await res.json();
-    if (d.status === 'success' && d.columns && d.columns.length) {
-      el.textContent = '检测到列: ' + d.columns.join(' | ');
-      el.className = 'status ok';
-    } else {
-      el.textContent = d.message || '未能读取列名';
-      el.className = 'status err';
-    }
-  } catch (e) {
-    el.textContent = String(e);
-    el.className = 'status err';
-  }
-}
-
-async function startVideoMetrics() {
-  const st = document.getElementById('f5-st');
-  const dl = document.getElementById('f5-dl');
-  const btn = document.getElementById('f5-go');
-  dl.innerHTML = '';
-  const f = document.getElementById('f5-file').files[0];
-  if (!f) { st.textContent = '请选择 Excel'; st.className = 'status err'; return; }
-  const selected = Array.from(document.querySelectorAll('input[name="f5-metric"]:checked')).map(el => el.value);
-  if (!selected.length) { st.textContent = '请至少勾选一列'; st.className = 'status err'; return; }
-  const fd = new FormData();
-  fd.append('file', f);
-  const uc = document.getElementById('f5-col').value.trim();
-  if (uc) fd.append('url_column', uc);
-  fd.append('selected_fields', selected.join(','));
-  btn.disabled = true;
-  st.textContent = '上传并排队...';
-  st.className = 'status';
-  try {
-    const res = await fetch('/api/etl/video_metrics_start', { method: 'POST', body: fd });
-    const d = await res.json();
-    if (d.status !== 'queued') {
-      st.textContent = d.message || JSON.stringify(d);
-      st.className = 'status err';
-      btn.disabled = false;
-      return;
-    }
-    st.textContent = '已排队 ' + d.url_count + ' 条链接，任务 ID: ' + d.task_id;
-    pollEtlTask(d.task_id, st, dl, btn);
-  } catch (e) {
-    st.textContent = String(e);
-    st.className = 'status err';
-    btn.disabled = false;
   }
 }
 

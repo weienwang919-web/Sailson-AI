@@ -35,6 +35,7 @@ import bleach
 import database as db
 import etl_tools
 import etl_jobs
+import video_metrics_etl
 import sentiment_insight
 import competitor_radar
 import tiktok_official_service
@@ -1857,7 +1858,11 @@ def sentiment_tool():
         except Exception as e:
             logger.error(f"❌ 检查舆情历史记录失败: {e}")
 
-    return render_template('analysis.html', has_used_sentiment=has_used_sentiment)
+    return render_template(
+        'analysis.html',
+        has_used_sentiment=has_used_sentiment,
+        max_video_urls=ETL_VIDEO_METRICS_MAX_URLS,
+    )
 
 
 from thai_utils import (
@@ -7058,6 +7063,7 @@ def thai_report_top5():
 
 ETL_COMMENTS_MAX_URLS = int(os.environ.get('ETL_COMMENTS_MAX_URLS', '200'))
 ETL_VIDEO_METRICS_MAX_URLS = int(os.environ.get('ETL_VIDEO_METRICS_MAX_URLS', '500'))
+DEFAULT_VIDEO_METRIC_FIELDS = list(video_metrics_etl.DEFAULT_VIDEO_METRIC_FIELDS)
 
 
 @app.route('/data-etl')
@@ -7261,7 +7267,7 @@ def etl_video_metrics_start():
         if selected_raw:
             selected_fields = [x.strip() for x in selected_raw.split(',') if x.strip()]
         else:
-            selected_fields = ['views', 'likes', 'comments']
+            selected_fields = list(DEFAULT_VIDEO_METRIC_FIELDS)
     except (TypeError, ValueError) as e:
         return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
 

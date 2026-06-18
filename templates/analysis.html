@@ -63,6 +63,18 @@
     .url-textarea:focus { outline: none; border-color: #2962FF; box-shadow: 0 0 0 3px rgba(41, 98, 255, 0.1); }
     .platform-badges { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; font-size: 0.78rem; color: #666; }
     .platform-badges .badge { background: #f0f4ff; color: #2962FF; padding: 3px 10px; border-radius: 12px; font-weight: 600; }
+    .tool-tabs { display: inline-flex; gap: 6px; padding: 4px; background: #f3f6fb; border: 1px solid #e6ebf2; border-radius: 12px; margin-bottom: 22px; }
+    .tool-tab { border: none; background: transparent; color: #667085; padding: 9px 16px; border-radius: 9px; font-size: 0.9rem; font-weight: 700; cursor: pointer; }
+    .tool-tab.active { background: #fff; color: #2962FF; box-shadow: 0 1px 4px rgba(16,24,40,0.08); }
+    .tool-panel { display: none; }
+    .tool-panel.active { display: block; }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 14px; margin-top: 8px; }
+    .metric-grid label { display: flex; align-items: center; gap: 6px; margin: 0; color: #344054; font-size: 0.88rem; }
+    .status-line { margin-top: 10px; min-height: 20px; font-size: 0.86rem; color: #667085; word-break: break-word; }
+    .status-line.ok { color: #2e7d32; }
+    .status-line.err { color: #c62828; }
+    .download-line { margin-top: 8px; font-size: 0.9rem; }
+    .download-line a { color: #2962FF; font-weight: 700; text-decoration: none; }
     .fade-in { animation: fadeIn 0.5s ease-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 </style>
@@ -93,6 +105,12 @@
             <p class="text-muted">社媒评论多维度智能归类系统 (Apify 驱动)</p>
         </div>
         <div class="glass-card">
+            <div class="tool-tabs" role="tablist" aria-label="舆情任务类型">
+                <button type="button" class="tool-tab active" id="commentsTabBtn" onclick="switchSentimentTool('comments')">拉评论分析</button>
+                <button type="button" class="tool-tab" id="videoMetricsTabBtn" onclick="switchSentimentTool('videoMetrics')">拉视频数据</button>
+            </div>
+
+            <div id="commentsPanel" class="tool-panel active">
             <div id="linkArea">
                 <label class="small text-muted mb-1" for="urlsInput">社媒主贴链接（每行一个，可混合平台）</label>
                 <textarea id="urlsInput" class="url-textarea" placeholder="支持 Facebook / Instagram / TikTok / YouTube / X(Twitter)&#10;一行一个链接，例如：&#10;https://www.facebook.com/gaming/posts/...&#10;https://www.instagram.com/p/.../&#10;https://www.tiktok.com/@user/video/...&#10;https://www.youtube.com/watch?v=...&#10;https://x.com/user/status/..."></textarea>
@@ -110,6 +128,40 @@
                 </div>
             </div>
             <button onclick="startAnalysis()" id="analyzeBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">✨ 立即分析</button>
+            </div>
+
+            <div id="videoMetricsPanel" class="tool-panel">
+                <label class="small text-muted mb-1" for="videoMetricsFile">上传含视频链接的 Excel</label>
+                <input type="file" id="videoMetricsFile" class="form-control" accept=".xlsx,.xls" onchange="previewVideoMetricColumns()">
+                <label class="small text-muted mb-1 mt-3" for="videoMetricsCol">链接列名（可选，留空自动识别）</label>
+                <input type="text" id="videoMetricsCol" class="form-control" placeholder="例如：视频链接 / 短链 / post_url">
+                <div class="status-line" id="videoMetricsCols"></div>
+                <div class="platform-badges">
+                    <span class="badge">TT</span>
+                    <span class="badge">IG</span>
+                    <span class="badge">YTB</span>
+                    <span class="badge">FB</span>
+                    <span style="margin-left:auto;color:#999;">每批最多 {{ max_video_urls }} 条，支持 TikTok 短链</span>
+                </div>
+                <label class="small text-muted mb-1 mt-3">写回字段</label>
+                <div class="metric-grid" id="videoMetricsFields">
+                    <label><input type="checkbox" name="video-metric" value="views" checked> 播放量/VV</label>
+                    <label><input type="checkbox" name="video-metric" value="likes" checked> 点赞量</label>
+                    <label><input type="checkbox" name="video-metric" value="comments" checked> 评论量</label>
+                    <label><input type="checkbox" name="video-metric" value="shares" checked> 转发量</label>
+                    <label><input type="checkbox" name="video-metric" value="collects" checked> 收藏量</label>
+                    <label><input type="checkbox" name="video-metric" value="engagement" checked> 互动量</label>
+                    <label><input type="checkbox" name="video-metric" value="followers" checked> 主页粉丝数</label>
+                    <label><input type="checkbox" name="video-metric" value="author" checked> 作者</label>
+                    <label><input type="checkbox" name="video-metric" value="post_date" checked> 发布日期</label>
+                    <label><input type="checkbox" name="video-metric" value="caption" checked> 视频文案</label>
+                    <label><input type="checkbox" name="video-metric" value="duration" checked> 视频时长</label>
+                </div>
+                <button onclick="startVideoMetrics()" id="videoMetricsBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">开始拉视频数据</button>
+                <div class="status-line" id="videoMetricsStatus"></div>
+                <div class="download-line" id="videoMetricsDownload"></div>
+            </div>
+
             <div id="loading" class="text-center py-5" style="display: none;" role="status" aria-live="polite">
                 <div class="spinner-border text-primary">
                     <span class="visually-hidden">Loading...</span>
@@ -143,6 +195,16 @@ let currentFilter = 'all';
 let currentRecordId = null;
 const POLL_MAX = 72;
 const POLL_INTERVAL = 5000;
+
+function switchSentimentTool(kind) {
+    const isVideo = kind === 'videoMetrics';
+    document.getElementById('commentsPanel').classList.toggle('active', !isVideo);
+    document.getElementById('videoMetricsPanel').classList.toggle('active', isVideo);
+    document.getElementById('commentsTabBtn').classList.toggle('active', !isVideo);
+    document.getElementById('videoMetricsTabBtn').classList.toggle('active', isVideo);
+    document.getElementById('commentsTabBtn').setAttribute('aria-selected', String(!isVideo));
+    document.getElementById('videoMetricsTabBtn').setAttribute('aria-selected', String(isVideo));
+}
 
 function fillExample() {
     document.getElementById('urlsInput').value = [
@@ -269,6 +331,120 @@ async function startAnalysis() {
         alert('任务提交失败：' + e.message);
         btn.disabled = false;
         btn.textContent = '✨ 立即分析';
+    }
+}
+
+async function previewVideoMetricColumns() {
+    const el = document.getElementById('videoMetricsCols');
+    const f = document.getElementById('videoMetricsFile').files[0];
+    if (!f) {
+        el.textContent = '';
+        return;
+    }
+    el.textContent = '正在读取表头...';
+    el.className = 'status-line';
+    try {
+        const fd = new FormData();
+        fd.append('file', f);
+        const res = await fetch('/api/etl/preview_columns', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.status === 'success' && data.columns && data.columns.length) {
+            el.textContent = '检测到列：' + data.columns.join(' | ');
+            el.className = 'status-line ok';
+        } else {
+            el.textContent = data.message || '未能读取列名';
+            el.className = 'status-line err';
+        }
+    } catch (e) {
+        el.textContent = String(e);
+        el.className = 'status-line err';
+    }
+}
+
+function pollVideoMetricsTask(taskId, attempt) {
+    const statusEl = document.getElementById('videoMetricsStatus');
+    const dlEl = document.getElementById('videoMetricsDownload');
+    const btn = document.getElementById('videoMetricsBtn');
+    fetch('/api/etl/task_status/' + encodeURIComponent(taskId))
+        .then(r => r.json())
+        .then(data => {
+            statusEl.textContent = data.progress || data.status || '';
+            if (data.status === 'completed') {
+                statusEl.textContent = '完成';
+                statusEl.className = 'status-line ok';
+                btn.disabled = false;
+                let downloadId = null;
+                let filename = 'video_metrics.xlsx';
+                try {
+                    const result = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+                    downloadId = result && result.download_id;
+                    filename = (result && result.filename) || filename;
+                } catch (e) {}
+                if (downloadId) {
+                    dlEl.innerHTML = '<a href="/api/etl/download/' + downloadId + '">下载 ' + filename + '</a>';
+                }
+                return;
+            }
+            if (data.status === 'failed') {
+                statusEl.textContent = data.error || '任务失败';
+                statusEl.className = 'status-line err';
+                btn.disabled = false;
+                return;
+            }
+            if (attempt >= 800) {
+                statusEl.textContent = '轮询超时，请稍后刷新任务状态';
+                btn.disabled = false;
+                return;
+            }
+            setTimeout(() => pollVideoMetricsTask(taskId, attempt + 1), 2000);
+        })
+        .catch(e => {
+            statusEl.textContent = '查询任务失败：' + e.message;
+            statusEl.className = 'status-line err';
+            btn.disabled = false;
+        });
+}
+
+async function startVideoMetrics() {
+    const statusEl = document.getElementById('videoMetricsStatus');
+    const dlEl = document.getElementById('videoMetricsDownload');
+    const btn = document.getElementById('videoMetricsBtn');
+    const file = document.getElementById('videoMetricsFile').files[0];
+    if (!file) {
+        statusEl.textContent = '请选择 Excel 文件';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    const selected = Array.from(document.querySelectorAll('input[name="video-metric"]:checked')).map(el => el.value);
+    if (!selected.length) {
+        statusEl.textContent = '请至少勾选一个写回字段';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    const col = document.getElementById('videoMetricsCol').value.trim();
+    if (col) fd.append('url_column', col);
+    fd.append('selected_fields', selected.join(','));
+    btn.disabled = true;
+    dlEl.innerHTML = '';
+    statusEl.textContent = '上传并排队...';
+    statusEl.className = 'status-line';
+    try {
+        const res = await fetch('/api/etl/video_metrics_start', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.status !== 'queued') {
+            statusEl.textContent = data.message || JSON.stringify(data);
+            statusEl.className = 'status-line err';
+            btn.disabled = false;
+            return;
+        }
+        statusEl.textContent = '已排队 ' + data.url_count + ' 条链接，任务 ID: ' + data.task_id;
+        pollVideoMetricsTask(data.task_id, 0);
+    } catch (e) {
+        statusEl.textContent = String(e);
+        statusEl.className = 'status-line err';
+        btn.disabled = false;
     }
 }
 

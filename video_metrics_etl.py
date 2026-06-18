@@ -35,6 +35,7 @@ METRIC_FIELDS: Dict[str, str] = {
     "caption": "视频文案",
     "duration": "视频时长",
 }
+DEFAULT_VIDEO_METRIC_FIELDS = list(METRIC_FIELDS.keys())
 
 VIDEO_ACTORS = {
     "TT": os.environ.get("APIFY_TIKTOK_PROFILE_ACTOR_ID", "clockworks/tiktok-scraper"),
@@ -629,7 +630,7 @@ def merge_metrics_into_excel(
 
     selected = [f for f in selected_fields if f in METRIC_FIELDS]
     if not selected:
-        selected = ["views", "likes", "comments"]
+        selected = list(DEFAULT_VIDEO_METRIC_FIELDS)
 
     header_map = {f: METRIC_FIELDS[f] for f in selected}
     status_col = "抓取状态"
