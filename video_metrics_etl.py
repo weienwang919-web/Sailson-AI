@@ -11,6 +11,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import pandas as pd
+import requests
 
 import competitor_radar as radar
 import etl_tools
@@ -19,6 +20,7 @@ import tasks
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = int(os.environ.get("ETL_VIDEO_METRICS_BATCH_SIZE", "40"))
+SHORT_URL_TIMEOUT_SECS = int(os.environ.get("ETL_SHORT_URL_TIMEOUT_SECS", "8"))
 
 METRIC_FIELDS: Dict[str, str] = {
     "views": "播放量",
@@ -43,6 +45,13 @@ VIDEO_ACTORS = {
 
 _YT_HOSTS = ("youtube.com", "youtu.be", "m.youtube.com")
 _FB_HOSTS = ("facebook.com", "fb.com", "fb.watch", "m.facebook.com")
+_TT_SHORT_HOSTS = {"vt.tiktok.com", "vm.tiktok.com"}
+_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )
+}
 
 
 def detect_platform(url: str) -> str:
@@ -82,6 +91,94 @@ def normalize_url(url: str) -> str:
         return f"{p.scheme.lower()}://{host}{path}"
     except Exception:
         return s.rstrip("/")
+
+
+def _host(url: str) -> str:
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_tiktok_short_url(url: str) -> bool:
+    try:
+        p = urlparse(normalize_url(url))
+        host = (p.netloc or "").lower()
+        path = (p.path or "").strip("/")
+    except Exception:
+        return False
+    return host in _TT_SHORT_HOSTS or (host.endswith("tiktok.com") and path.startswith("t/"))
+
+
+def _is_tiktok_post_url(url: str) -> bool:
+    try:
+        p = urlparse(normalize_url(url))
+        host = (p.netloc or "").lower()
+        path = (p.path or "").strip("/")
+    except Exception:
+        return False
+    if "tiktok.com" not in host:
+        return False
+    return bool(re.search(r"^@[^/]+/(video|photo)/[^/]+", path, re.I))
+
+
+def _resolve_redirect_url(url: str) -> str:
+    """展开社媒短链。失败时返回空字符串，由调用方使用原链接兜底。"""
+    if not url:
+        return ""
+    try:
+        resp = requests.head(
+            url,
+            allow_redirects=True,
+            timeout=SHORT_URL_TIMEOUT_SECS,
+            headers=_HTTP_HEADERS,
+        )
+        resolved = normalize_url(resp.url)
+        if _is_tiktok_post_url(resolved):
+            return resolved
+    except Exception as e:
+        logger.info("短链 HEAD 展开失败，改用 GET: %s (%s)", url, e)
+
+    try:
+        resp = requests.get(
+            url,
+            allow_redirects=True,
+            timeout=SHORT_URL_TIMEOUT_SECS,
+            headers=_HTTP_HEADERS,
+            stream=True,
+        )
+        try:
+            resolved = normalize_url(resp.url)
+            if _is_tiktok_post_url(resolved):
+                return resolved
+        finally:
+            resp.close()
+    except Exception as e:
+        logger.warning("短链 GET 展开失败: %s (%s)", url, e)
+    return ""
+
+
+def _resolve_input_urls(urls: List[str]) -> tuple[List[str], Dict[str, str]]:
+    """返回原始规范化 URL 列表，以及 raw_url -> actor_url 的映射。"""
+    input_urls: List[str] = []
+    resolved_by_input: Dict[str, str] = {}
+    seen = set()
+
+    for raw in urls:
+        u = normalize_url(raw)
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        input_urls.append(u)
+
+        resolved = ""
+        if _is_tiktok_short_url(u):
+            resolved = _resolve_redirect_url(u)
+            if resolved and _host(resolved) != _host(u):
+                logger.info("TikTok 短链已展开: %s -> %s", u, resolved)
+        resolved_by_input[u] = resolved or u
+
+    return input_urls, resolved_by_input
 
 
 def _tiktok_username(url: str) -> str:
@@ -421,69 +518,87 @@ def fetch_video_metrics(
     progress_hook: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, dict]:
     """按平台分批调用 Apify，返回 {normalized_url: metrics_dict}。"""
+    input_urls, actor_url_by_input = _resolve_input_urls(urls)
     grouped: Dict[str, List[str]] = {}
-    for raw in urls:
-        u = normalize_url(raw)
-        if not u:
-            continue
-        plat = detect_platform(u)
-        grouped.setdefault(plat, []).append(u)
+    input_urls_by_actor_url: Dict[str, List[str]] = {}
+    for input_url in input_urls:
+        actor_url = actor_url_by_input.get(input_url) or input_url
+        plat = detect_platform(actor_url)
+        grouped.setdefault(plat, []).append(actor_url)
+        input_urls_by_actor_url.setdefault(actor_url, []).append(input_url)
 
     results: Dict[str, dict] = {}
-    total = sum(len(v) for v in grouped.values())
+    total = len(input_urls)
     done = 0
 
     for platform, plat_urls in grouped.items():
         if platform == "UNKNOWN":
-            for u in plat_urls:
-                results[u] = {"_error": "无法识别平台"}
-            done += len(plat_urls)
+            for actor_url in plat_urls:
+                for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                    results[input_url] = {"_error": "无法识别平台"}
+            done += sum(len(input_urls_by_actor_url.get(u, [u])) for u in plat_urls)
             continue
 
         unique_urls = list(dict.fromkeys(plat_urls))
         for i in range(0, len(unique_urls), BATCH_SIZE):
             batch = unique_urls[i : i + BATCH_SIZE]
-            msg = f"正在抓取 {platform} 视频数据 ({done + 1}-{min(done + len(batch), total)}/{total})..."
+            batch_input_count = sum(len(input_urls_by_actor_url.get(u, [u])) for u in batch)
+            msg = f"正在抓取 {platform} 视频数据 ({done + 1}-{min(done + batch_input_count, total)}/{total})..."
             if progress_hook:
                 progress_hook(msg)
             try:
                 items = _scrape_batch(platform, batch, apify_token)
                 indexed = _index_items(items)
-                for u in batch:
-                    item = indexed.get(u)
+                for actor_url in batch:
+                    item = indexed.get(actor_url)
                     if not item:
                         # 单条 URL 兜底再试一次
                         try:
-                            single_items = _scrape_batch(platform, [u], apify_token)
+                            single_items = _scrape_batch(platform, [actor_url], apify_token)
                             indexed.update(_index_items(single_items))
-                            item = indexed.get(u)
+                            item = indexed.get(actor_url)
+                            if not item and len(single_items) == 1 and isinstance(single_items[0], dict):
+                                item = single_items[0]
                         except Exception as e:
-                            logger.warning("单条重试失败 %s: %s", u, e)
+                            logger.warning("单条重试失败 %s: %s", actor_url, e)
                     if item:
-                        results[u] = _extract_metrics(item, platform)
+                        metrics = _extract_metrics(item, platform)
+                        for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                            results[input_url] = metrics
+                            results[actor_url] = metrics
                     else:
                         try:
-                            fallback_metrics = _fallback_via_profile(platform, u, apify_token)
+                            fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
                         except Exception as e:
-                            logger.warning("主页兜底失败 %s: %s", u, e)
+                            logger.warning("主页兜底失败 %s: %s", actor_url, e)
                             fallback_metrics = {}
                         if fallback_metrics:
-                            results[u] = fallback_metrics
+                            for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                                results[input_url] = fallback_metrics
+                                results[actor_url] = fallback_metrics
                         else:
-                            results[u] = {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
+                            error = {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
+                            for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                                results[input_url] = error
+                                results[actor_url] = error
             except Exception as e:
                 logger.error("批次抓取失败 platform=%s: %s", platform, e)
-                for u in batch:
+                for actor_url in batch:
                     try:
-                        fallback_metrics = _fallback_via_profile(platform, u, apify_token)
+                        fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
                     except Exception as fallback_exc:
-                        logger.warning("批次失败后的主页兜底失败 %s: %s", u, fallback_exc)
+                        logger.warning("批次失败后的主页兜底失败 %s: %s", actor_url, fallback_exc)
                         fallback_metrics = {}
                     if fallback_metrics:
-                        results[u] = fallback_metrics
+                        for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                            results[input_url] = fallback_metrics
+                            results[actor_url] = fallback_metrics
                     else:
-                        results[u] = {"_error": str(e)[:200]}
-            done += len(batch)
+                        error = {"_error": str(e)[:200]}
+                        for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                            results[input_url] = error
+                            results[actor_url] = error
+            done += batch_input_count
 
     return results
 

@@ -255,7 +255,12 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
         update_task_fn(task_id, status="failed", error=f"写回 Excel 失败: {e}")
         return
 
-    ok_count = sum(1 for m in metrics_map.values() if m and not m.get("_error"))
+    ok_count = 0
+    for raw_url in urls:
+        key = video_metrics_etl.normalize_url(raw_url)
+        metrics = metrics_map.get(key) or metrics_map.get(raw_url)
+        if metrics and not metrics.get("_error"):
+            ok_count += 1
     out_row = db.execute_and_fetch_one(
         """
         INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
