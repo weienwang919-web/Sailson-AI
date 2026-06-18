@@ -5,10 +5,11 @@
   - IG  : apify/instagram-comment-scraper
   - TT  : clockworks/tiktok-comments-scraper
   - YTB : streamers/youtube-comments-scraper（可由环境变量覆盖）
+  - X   : apidojo/tweet-scraper（可由环境变量覆盖）
 
 对外暴露：
-  - detect_platform(url) -> 'FB' | 'IG' | 'TT' | 'YTB' | 'UNKNOWN'
-  - run_insight_pipeline(urls, apify_token, ai_call, prompt_template, progress=None)
+  - detect_platform(url) -> 'FB' | 'IG' | 'TT' | 'YTB' | 'X' | 'UNKNOWN'
+  - run_insight_pipeline(urls, apify_token, ai_call, progress=None)
       -> dict(structured=[...], html=str, total_comments=int, total_tokens=int)
   - build_excel(structured) -> openpyxl Workbook
   - INSIGHT_HEADERS / SCHEMA_VERSION
@@ -17,6 +18,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +44,7 @@ INSIGHT_HEADERS = [
     "主贴标题",
     "评论时间",
     "归属时间段",
+    "评论点赞数",
     "评论人",
     "内容原文",
     "内容翻译",
@@ -228,7 +231,7 @@ def _call_actor(actor_id: str, candidate_inputs: list[dict], apify_token: str) -
 
 def _first_str(item: dict, keys: Iterable[str]) -> str:
     for k in keys:
-        v = item.get(k)
+        v = _deep_get(item, k)
         if isinstance(v, str) and v.strip():
             return v.strip()
         if isinstance(v, dict):
@@ -237,6 +240,209 @@ def _first_str(item: dict, keys: Iterable[str]) -> str:
                 if isinstance(vv, str) and vv.strip():
                     return vv.strip()
     return ""
+
+
+def _deep_get(item: dict, path: str):
+    current = item
+    for part in str(path).split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _first_value_as_str(item: dict, keys: Iterable[str]) -> str:
+    for k in keys:
+        v = _deep_get(item, k)
+        if v is None or isinstance(v, bool):
+            continue
+        if isinstance(v, dict):
+            for sub in ("id", "commentId", "pk", "cid", "url", "link", "permalink"):
+                vv = v.get(sub)
+                if vv is not None and not isinstance(vv, bool) and str(vv).strip():
+                    return str(vv).strip()
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
+
+
+_COUNT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*([kKmMbBwW万]?)")
+
+
+def _safe_count(value, default: int = 0) -> int:
+    """Parse social count fields, including compact values like 1.2K / 3万."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+        if isinstance(value, dict):
+            for sub in ("count", "total", "value", "likes", "likeCount", "likesCount"):
+                if sub in value:
+                    parsed = _safe_count(value.get(sub), None)
+                    if parsed is not None:
+                        return parsed
+            return default
+        s = str(value).strip().replace(",", "")
+        if not s:
+            return default
+        m = _COUNT_RE.search(s)
+        if not m:
+            cleaned = re.sub(r"[^\d-]", "", s)
+            return max(0, int(cleaned)) if cleaned else default
+        number = float(m.group(1))
+        suffix = (m.group(2) or "").lower()
+        multiplier = {
+            "k": 1_000,
+            "m": 1_000_000,
+            "b": 1_000_000_000,
+            "w": 10_000,
+            "万": 10_000,
+        }.get(suffix, 1)
+        return max(0, int(number * multiplier))
+    except Exception:
+        return default
+
+
+def _first_count(item: dict, keys: Iterable[str]) -> int:
+    for k in keys:
+        v = _deep_get(item, k)
+        parsed = _safe_count(v, None)
+        if parsed is not None:
+            return parsed
+    return 0
+
+
+def _is_http_url(value: str) -> bool:
+    return isinstance(value, str) and value.strip().startswith(("http://", "https://"))
+
+
+def _first_url(item: dict, keys: Iterable[str]) -> str:
+    for k in keys:
+        v = _deep_get(item, k)
+        if isinstance(v, dict):
+            for sub in ("url", "link", "permalink", "webVideoUrl", "postUrl"):
+                vv = v.get(sub)
+                if _is_http_url(vv):
+                    return vv.strip()
+            continue
+        if _is_http_url(v):
+            return v.strip()
+    return ""
+
+
+def _is_probable_post_url(url: str, platform: str) -> bool:
+    if not _is_http_url(url):
+        return False
+    u = url.lower()
+    if platform == "TT":
+        return "tiktok.com" in u and "/video/" in u
+    if platform == "YTB":
+        return "youtu.be/" in u or ("youtube.com" in u and ("/watch" in u or "/shorts/" in u))
+    if platform == "IG":
+        return "instagram.com" in u and any(p in u for p in ("/p/", "/reel/", "/tv/"))
+    if platform == "FB":
+        return any(h in u for h in ("facebook.com", "fb.watch")) and any(
+            p in u for p in ("/posts/", "/videos/", "/reel/", "/watch", "story.php", "permalink.php")
+        )
+    if platform == "X":
+        return any(h in u for h in ("twitter.com", "x.com")) and any(p in u for p in ("/status/", "/statuses/"))
+    return True
+
+
+def _extract_item_post_url(item: dict, platform: str, fallback_url: str) -> str:
+    direct = _first_url(
+        item,
+        [
+            "postUrl",
+            "postURL",
+            "post_url",
+            "postLink",
+            "post_link",
+            "postPermalink",
+            "post.permalink",
+            "post.url",
+            "post.link",
+            "webVideoUrl",
+            "videoWebUrl",
+            "video.webVideoUrl",
+            "video.url",
+            "tweetUrl",
+            "tweet.url",
+            "inputUrl",
+            "sourceUrl",
+        ],
+    )
+    if direct:
+        return direct
+    for key in ("url", "link", "permalink", "canonicalUrl"):
+        candidate = _first_url(item, [key])
+        if candidate and _is_probable_post_url(candidate, platform):
+            return candidate
+    return fallback_url
+
+
+def _extract_comment_url(item: dict) -> str:
+    return _first_url(
+        item,
+        [
+            "commentUrl",
+            "commentURL",
+            "comment_url",
+            "commentLink",
+            "comment_link",
+            "commentPermalink",
+            "comment.permalink",
+            "comment.url",
+        ],
+    )
+
+
+def _extract_comment_like_count(item: dict) -> int:
+    return _first_count(
+        item,
+        [
+            "commentLikeCount",
+            "commentLikesCount",
+            "comment_likes_count",
+            "commentLikes",
+            "likesCount",
+            "likeCount",
+            "likes_count",
+            "likes",
+            "diggCount",
+            "upvoteCount",
+            "voteCount",
+            "votes",
+            "reactionCount",
+            "reactionsCount",
+            "feedback.reaction_count.count",
+            "feedback.reactionCount",
+        ],
+    )
+
+
+def _stable_comment_id(item: dict, platform: str, post_url: str, author: str, text: str, created_str: str) -> str:
+    raw_id = _first_value_as_str(
+        item,
+        [
+            "commentId",
+            "comment_id",
+            "id",
+            "cid",
+            "pk",
+            "commentPk",
+            "replyId",
+            "uid",
+        ],
+    )
+    if raw_id:
+        return f"{platform}:{raw_id}"
+    fingerprint = f"{platform}|{post_url}|{author}|{created_str}|{text}"
+    digest = hashlib.sha1(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f"{platform}:hash:{digest}"
 
 
 def _is_x_original_tweet(item: dict) -> bool:
@@ -364,7 +570,7 @@ def _extract_post_meta(items: list[dict], platform: str, fallback_url: str) -> d
     }
 
 
-def _extract_comment(item: dict, platform: str) -> dict | None:
+def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | None:
     """统一抽出评论字段。返回 None 表示这条不是评论（或要跳过）。"""
     if not isinstance(item, dict):
         return None
@@ -409,6 +615,9 @@ def _extract_comment(item: dict, platform: str) -> dict | None:
             break
 
     return {
+        "comment_id": _stable_comment_id(item, platform, post_url, author or "", text, _fmt_dt(created_dt)),
+        "comment_url": _extract_comment_url(item),
+        "like_count": _extract_comment_like_count(item),
         "text": text,
         "author": author or "",
         "created_dt": created_dt,
@@ -583,12 +792,17 @@ def _build_ai_prompt(batch_lines: str, expected_count: int) -> str:
         "「中国玩家圈口语化中文」。请逐条处理下面的评论，并输出 JSON 数组（不要 markdown）。\n\n"
         f"⚠ 极重要：输入正好 {expected_count} 条评论（编号 0 ~ {expected_count - 1}），\n"
         f"   你必须严格输出 {expected_count} 个对象，按输入顺序排列，一条不能漏、一条不能加，\n"
-        "   idx 必须等于输入编号，且 translation_zh 必须是中文（非中文原文绝对不要原样照抄到译文）。\n\n"
+        "   idx 必须等于输入编号，id 必须原样返回，且 translation_zh 必须是中文"
+        "（非中文原文绝对不要原样照抄到译文）。\n\n"
         "每个对象字段：\n"
         "  - idx: 整数，等于输入编号\n"
+        "  - id: 字符串，必须原样返回输入评论的 id\n"
         "  - translation_zh: 中文译文，按下面《翻译规范》执行；若原文已是中文，直接照搬，不要再润色\n"
         "  - sentiment: 严格三选一：正向 / 中立 / 负面\n"
         "  - category: 严格七选一：产品体验 / 功能建议 / 账号&充值 / 外挂作弊 / 活动运营 / 客服投诉 / 其他\n\n"
+        "《输入格式》\n"
+        "每行都是 JSON，字段包含 idx/id/likes/text。你只处理 text 字段；idx、id、likes 是定位元数据，"
+        "不得混入 translation_zh。\n\n"
         "《翻译规范（重要，全部遵守）》\n"
         "1. 目标语感：像中国玩家在贴吧/B站/微博/TapTap 上聊天，自然口语、可短可碎，不要书面腔。\n"
         "2. 严禁逐字直译。要把英语/阿拉伯语/西语等的语序、虚词重组成符合中文习惯的表达。\n"
@@ -631,7 +845,7 @@ def _build_ai_prompt(batch_lines: str, expected_count: int) -> str:
         "  - 客服投诉：客服响应、官方处理态度、申诉、邮件无回复\n"
         "  - 其他：无法归类、纯灌水、纯表情、宗教/文化敏感诉求等\n\n"
         f"《待处理评论》\n{batch_lines}\n\n"
-        '只输出 JSON 数组，例如：[{"idx":0,"translation_zh":"...","sentiment":"正向","category":"产品体验"}]\n'
+        '只输出 JSON 数组，例如：[{"idx":0,"id":"C0","translation_zh":"...","sentiment":"正向","category":"产品体验"}]\n'
     )
 
 
@@ -664,7 +878,17 @@ def _run_ai_for_comments(
         idx_chunk = ai_indexes[start : start + AI_BATCH_SIZE]
         expected = len(idx_chunk)
         lines = "\n".join(
-            f"{k}. {preprocessed[i][0].replace(chr(10), ' ')[:1000]}"
+            json.dumps(
+                {
+                    "idx": k,
+                    "id": str(comments[i].get("_analysis_id") or comments[i].get("comment_id") or f"C{i}"),
+                    "likes": _safe_count(
+                        comments[i].get("comment_like_count") or comments[i].get("like_count")
+                    ),
+                    "text": preprocessed[i][0].replace(chr(10), " ")[:1000],
+                },
+                ensure_ascii=False,
+            )
             for k, i in enumerate(idx_chunk)
         )
         prompt = _build_ai_prompt(lines, expected)
@@ -678,24 +902,37 @@ def _run_ai_for_comments(
         parsed_objs = [o for o in parsed if isinstance(o, dict)]
         if len(parsed_objs) != expected:
             logger.warning(
-                f"⚠️ AI 返回数量不匹配：期望 {expected}，实际 {len(parsed_objs)}；将按位置对齐+空缺留白"
+                f"⚠️ AI 返回数量不匹配：期望 {expected}，实际 {len(parsed_objs)}；"
+                f"将按 id/idx 对齐，缺失项留白"
             )
 
+        by_id: dict[str, dict] = {}
+        by_idx: dict[int, dict] = {}
+        for obj in parsed_objs:
+            obj_id = str(obj.get("id") or "").strip()
+            if obj_id and obj_id not in by_id:
+                by_id[obj_id] = obj
+            try:
+                obj_idx = int(obj.get("idx"))
+            except Exception:
+                obj_idx = None
+            if obj_idx is not None and 0 <= obj_idx < expected and obj_idx not in by_idx:
+                by_idx[obj_idx] = obj
+
         for k, i in enumerate(idx_chunk):
-            # 主对齐方式：位置；若 AI 返回 idx 且与 k 一致 → 用之；否则用同位置项
+            # 主对齐方式：稳定 id；其次严格 idx。只有对象完全没有定位字段且数量匹配时才按位置兜底。
             obj = {}
-            if k < len(parsed_objs):
+            target_id = str(comments[i].get("_analysis_id") or comments[i].get("comment_id") or f"C{i}")
+            if target_id in by_id:
+                obj = by_id[target_id]
+            elif k in by_idx:
+                obj = by_idx[k]
+            elif len(parsed_objs) == expected and k < len(parsed_objs):
                 cand = parsed_objs[k]
-                try:
-                    cand_idx = int(cand.get("idx"))
-                except Exception:
-                    cand_idx = None
-                # idx 不一致时，仍以位置对齐为准（避免 AI 错号导致整批后段错位）
-                obj = cand
-                if cand_idx is not None and cand_idx != k:
-                    logger.debug(
-                        f"AI 返回 idx={cand_idx} 与位置 {k} 不一致，按位置对齐"
-                    )
+                if not str(cand.get("id") or "").strip() and cand.get("idx") is None:
+                    obj = cand
+            if not obj:
+                logger.warning(f"⚠️ AI 结果缺失：comment_id={target_id}，该条译文留空以避免错位")
 
             tr = obj.get("translation_zh") or obj.get("translation") or ""
             original = preprocessed[i][0]
@@ -782,26 +1019,39 @@ def run_insight_pipeline(
         if not items:
             continue
         meta = _extract_post_meta(items, platform, url)
-        for it in items:
-            c = _extract_comment(it, platform)
+        for raw_index, it in enumerate(items):
+            row_post_url = _extract_item_post_url(it, platform, url)
+            c = _extract_comment(it, platform, row_post_url)
             if not c:
                 continue
+            analysis_id = f"C{len(all_comments_for_ai)}"
             all_comments_for_ai.append(
                 {
+                    "_source_index": raw_index,
+                    "_analysis_id": analysis_id,
                     "platform": platform,
-                    "post_url": url,
+                    "comment_id": c["comment_id"],
+                    "post_url": row_post_url,
                     "post_title": meta["post_title"],
                     "post_date": meta["post_date"],
                     "author": c["author"],
                     "text": c["text"],
                     "created_str": c["created_str"],
                     "bucket": c["bucket"],
+                    "comment_like_count": c["like_count"],
+                    "comment_url": c["comment_url"],
                 }
             )
 
     if len(all_comments_for_ai) > MAX_AI_COMMENTS:
+        all_comments_for_ai = sorted(
+            all_comments_for_ai,
+            key=lambda c: (int(c.get("comment_like_count") or 0), -int(c.get("_source_index") or 0)),
+            reverse=True,
+        )
         logger.warning(
-            f"⚠️ 评论数 {len(all_comments_for_ai)} 超过上限 {MAX_AI_COMMENTS}，仅分析前 {MAX_AI_COMMENTS} 条"
+            f"⚠️ 评论数 {len(all_comments_for_ai)} 超过上限 {MAX_AI_COMMENTS}，"
+            f"优先保留高点赞评论后截取前 {MAX_AI_COMMENTS} 条"
         )
         all_comments_for_ai = all_comments_for_ai[:MAX_AI_COMMENTS]
 
@@ -820,6 +1070,9 @@ def run_insight_pipeline(
                 "post_title": c["post_title"],
                 "comment_time": c["created_str"],
                 "time_bucket": c["bucket"],
+                "comment_like_count": int(c.get("comment_like_count") or 0),
+                "comment_url": c.get("comment_url", ""),
+                "comment_id": c.get("comment_id", ""),
                 "author": c["author"],
                 "content": c["text"],
                 "translation_zh": r.get("translation_zh", ""),
@@ -886,6 +1139,7 @@ def build_html_table(rows: list[dict]) -> str:
             _html_escape(r.get("post_title", "")),
             _html_escape(r.get("comment_time", "")),
             _html_escape(r.get("time_bucket", "")),
+            str(_safe_count(r.get("comment_like_count"))),
             _html_escape(r.get("author", "")),
             _html_escape(r.get("content", "")),
             _html_escape(r.get("translation_zh", "")),
@@ -943,6 +1197,7 @@ def _write_insight_sheet(ws, rows: list[dict]) -> None:
             r.get("post_title", ""),
             r.get("comment_time", ""),
             r.get("time_bucket", ""),
+            _safe_count(r.get("comment_like_count")),
             r.get("author", ""),
             r.get("content", ""),
             r.get("translation_zh", ""),
@@ -951,7 +1206,7 @@ def _write_insight_sheet(ws, rows: list[dict]) -> None:
             r.get("category", ""),
         ])
 
-    widths = [8, 18, 50, 30, 18, 12, 18, 50, 50, 18, 18, 16]
+    widths = [8, 18, 50, 30, 18, 12, 12, 18, 50, 50, 18, 18, 16]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
