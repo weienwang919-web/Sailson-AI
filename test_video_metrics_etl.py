@@ -116,6 +116,40 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(result[short_key]["views"], 2468)
 
+    def test_fetch_profile_video_metrics_extracts_video_rows(self):
+        profile_url = "https://www.tiktok.com/@bunnyhack04"
+
+        def fake_profile(platform, url, _token, results_limit=20):
+            self.assertEqual(platform, "TT")
+            self.assertEqual(url, video_metrics_etl.normalize_url(profile_url))
+            self.assertEqual(results_limit, 3)
+            return [
+                {
+                    "webVideoUrl": "https://www.tiktok.com/@bunnyhack04/video/123",
+                    "playCount": 1000,
+                    "diggCount": 20,
+                    "commentCount": 3,
+                    "shareCount": 4,
+                    "collectCount": 5,
+                    "authorMeta": {"uniqueId": "bunnyhack04", "fans": 777},
+                    "createTimeISO": "2026-06-18T00:00:00Z",
+                    "text": "hello",
+                }
+            ]
+
+        with patch.object(video_metrics_etl, "_scrape_profile", side_effect=fake_profile):
+            rows = video_metrics_etl.fetch_profile_video_metrics(
+                [profile_url],
+                "token",
+                start_date="2026-06-01",
+                max_videos=3,
+            )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["video_key"], "TT:123")
+        self.assertEqual(rows[0]["views"], 1000)
+        self.assertEqual(rows[0]["followers"], 777)
+
 
 if __name__ == "__main__":
     unittest.main()

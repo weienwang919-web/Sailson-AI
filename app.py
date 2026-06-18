@@ -36,6 +36,7 @@ import database as db
 import etl_tools
 import etl_jobs
 import video_metrics_etl
+import profile_video_scheduler
 import sentiment_insight
 import competitor_radar
 import tiktok_official_service
@@ -242,6 +243,15 @@ if not _IS_WORKER:
         hour=2,
         minute=0,
         id='tiktok_hotspot_job',
+        replace_existing=True
+    )
+
+    # 主页视频基础数据定时同步：每小时检查一次当前小时配置
+    scheduler.add_job(
+        func=lambda: enqueue_due_profile_video_sync(),
+        trigger='cron',
+        minute=5,
+        id='profile_video_sync_job',
         replace_existing=True
     )
 
@@ -534,6 +544,7 @@ ensure_task_queue_schema()
 ensure_analysis_results_schema()
 ensure_etl_file_outputs_schema()
 ensure_fb_post_metrics_schema()
+profile_video_scheduler.ensure_schema()
 tiktok_official_service.ensure_schema()
 usage_service.ensure_schema()
 rag.ensure_tables()
@@ -677,6 +688,38 @@ def update_task(task_id, status=None, progress=None, result=None, error=None, re
             db.execute(sql, tuple(params))
     except Exception as e:
         logger.error(f"❌ 更新任务状态失败: {e}")
+
+
+def set_task_params(task_id, params):
+    """写入 task_queue.task_params，供 DB worker 拾取。"""
+    db.execute(
+        "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+        (json.dumps(params, ensure_ascii=False, default=str), task_id),
+    )
+
+
+def enqueue_due_profile_video_sync(hour=None):
+    """APScheduler 回调：按当前小时把启用的主页视频同步配置入队。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                profile_video_scheduler.run_profile_video_sync_task(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = profile_video_scheduler.enqueue_due_profile_video_sync(
+            create_task,
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            hour=hour if hour is not None else datetime.datetime.now().hour,
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建主页视频定时同步任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建主页视频定时同步任务失败: {e}")
 
 def get_task(task_id):
     """获取任务状态"""
@@ -7313,6 +7356,115 @@ def etl_video_metrics_start():
         threading.Thread(target=_run, daemon=True).start()
 
     return jsonify({'status': 'queued', 'task_id': queue_task_id, 'url_count': len(urls)})
+
+
+@app.route('/api/etl/profile-video/configs')
+@login_required
+def profile_video_configs():
+    try:
+        rows = profile_video_scheduler.list_configs(session.get('user_id'))
+        return jsonify({'status': 'success', 'items': _json_safe_rows(rows)})
+    except Exception as e:
+        logger.error(f"profile_video_configs failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/etl/profile-video/feishu_fields')
+@login_required
+def profile_video_feishu_fields():
+    return jsonify({
+        'status': 'success',
+        'fields': list(profile_video_scheduler.FEISHU_FIELD_MAP.values()),
+    })
+
+
+@app.route('/api/etl/profile-video/configs', methods=['POST'])
+@login_required
+def profile_video_configs_create():
+    try:
+        data = request.get_json(silent=True) or {}
+        raw_urls = data.get('profile_urls') or data.get('urls') or ''
+        if isinstance(raw_urls, str):
+            urls = [x.strip() for x in raw_urls.replace('\r', '').split('\n') if x.strip()]
+        else:
+            urls = [str(x).strip() for x in raw_urls if str(x).strip()]
+        if not urls:
+            return jsonify({'status': 'error', 'message': '请填写至少一个主页链接'}), 400
+        result = profile_video_scheduler.upsert_configs(
+            urls,
+            user_id=session.get('user_id'),
+            enabled=bool(data.get('enabled', True)),
+            sync_scope=data.get('sync_scope') or 'recent',
+            start_date=data.get('start_date') or None,
+            end_date=data.get('end_date') or None,
+            max_videos=int(data.get('max_videos') or profile_video_scheduler.default_max_videos_per_profile()),
+            schedule_hour=int(data.get('schedule_hour') or profile_video_scheduler.default_sync_hour()),
+            feishu_app_token=data.get('feishu_app_token') or None,
+            feishu_table_id=data.get('feishu_table_id') or None,
+        )
+        return jsonify({'status': 'success', **result})
+    except Exception as e:
+        logger.error(f"profile_video_configs_create failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+
+@app.route('/api/etl/profile-video/configs/<int:config_id>', methods=['PATCH'])
+@login_required
+def profile_video_configs_update(config_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        row = profile_video_scheduler.update_config(config_id, session.get('user_id'), data)
+        if not row:
+            return jsonify({'status': 'error', 'message': '配置不存在'}), 404
+        return jsonify({'status': 'success', 'item': _json_safe(row)})
+    except Exception as e:
+        logger.error(f"profile_video_configs_update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+
+@app.route('/api/etl/profile-video/sync_start', methods=['POST'])
+@login_required
+def profile_video_sync_start():
+    try:
+        data = request.get_json(silent=True) or {}
+        config_ids = data.get('config_ids') or []
+        if isinstance(config_ids, str):
+            config_ids = [int(x) for x in config_ids.split(',') if x.strip()]
+        config_ids = [int(x) for x in config_ids if str(x).strip()]
+        profile_urls = data.get('profile_urls') or []
+        if isinstance(profile_urls, str):
+            profile_urls = [x.strip() for x in profile_urls.replace('\r', '').split('\n') if x.strip()]
+        if not config_ids and not profile_urls:
+            enabled = profile_video_scheduler.list_configs(session.get('user_id'))
+            config_ids = [r['id'] for r in enabled if r.get('enabled')]
+        if not config_ids and not profile_urls:
+            return jsonify({'status': 'error', 'message': '没有可同步的主页配置'}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    params = {
+        'source': 'profile_video_sync',
+        'trigger_type': data.get('trigger_type') or 'manual',
+        'config_ids': config_ids,
+        'profile_urls': profile_urls,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+
+    create_task(queue_task_id, user_id, session_id, function_type='profile_video_sync')
+    if USE_DB_WORKER:
+        set_task_params(queue_task_id, params)
+    else:
+
+        def _run():
+            profile_video_scheduler.run_profile_video_sync_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return jsonify({'status': 'queued', 'task_id': queue_task_id, 'profile_count': len(config_ids) + len(profile_urls)})
 
 
 @app.route('/api/etl/task_status/<task_id>')

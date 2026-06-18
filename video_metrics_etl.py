@@ -8,7 +8,7 @@ import logging
 import os
 import re
 from typing import Callable, Dict, Iterable, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import requests
@@ -243,6 +243,98 @@ def _item_url_keys(item: dict) -> List[str]:
     return out
 
 
+def _item_raw_urls(item: dict) -> List[str]:
+    keys = (
+        "webVideoUrl", "url", "postUrl", "postURL", "inputUrl", "videoUrl",
+        "permalink", "link", "pageUrl", "facebookUrl",
+    )
+    out = []
+    for k in keys:
+        v = item.get(k)
+        if isinstance(v, str) and v.strip().startswith("http"):
+            out.append(v.strip())
+    if item.get("shortCode"):
+        out.append(f"https://www.instagram.com/p/{item['shortCode']}/")
+    return out
+
+
+def _looks_like_video_url(platform: str, url: str) -> bool:
+    try:
+        p = urlparse(url)
+        path = (p.path or "").lower()
+        query = parse_qs(p.query or "")
+    except Exception:
+        return False
+    if platform == "TT":
+        return "/video/" in path or "/photo/" in path
+    if platform == "IG":
+        return path.startswith(("/p/", "/reel/", "/reels/", "/tv/"))
+    if platform == "YTB":
+        return "v" in query or path.startswith(("/watch", "/shorts/")) or "youtu.be" in (p.netloc or "")
+    if platform == "FB":
+        return any(x in path for x in ("/videos/", "/reel/", "/posts/")) or "fb.watch" in (p.netloc or "")
+    return bool(url)
+
+
+def _synthesized_item_url(item: dict, platform: str) -> str:
+    if platform == "TT":
+        author = item.get("authorMeta") or {}
+        username = ""
+        if isinstance(author, dict):
+            username = author.get("name") or author.get("uniqueId") or author.get("nickname") or ""
+        video_id = item.get("id") or item.get("videoId") or item.get("awemeId")
+        if username and video_id:
+            return f"https://www.tiktok.com/@{username}/video/{video_id}"
+    if platform == "YTB":
+        video_id = item.get("id") or item.get("videoId")
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+    return ""
+
+
+def _canonical_profile_item_url(item: dict, platform: str) -> str:
+    for raw in _item_raw_urls(item):
+        if _looks_like_video_url(platform, raw):
+            return raw.strip()
+    return _synthesized_item_url(item, platform)
+
+
+def video_key_from_url(url: str, platform: str = "") -> str:
+    raw = (url or "").strip()
+    plat = platform or detect_platform(raw)
+    if not raw:
+        return ""
+    try:
+        p = urlparse(raw)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").strip("/")
+        query = parse_qs(p.query or "")
+    except Exception:
+        return f"{plat}:{normalize_url(raw)}"
+
+    if plat == "TT":
+        m = re.search(r"(?:video|photo)/(\d+)", path)
+        if m:
+            return f"TT:{m.group(1)}"
+    if plat == "IG":
+        parts = [x for x in path.split("/") if x]
+        if len(parts) >= 2 and parts[0].lower() in {"p", "reel", "reels", "tv"}:
+            return f"IG:{parts[1]}"
+    if plat == "YTB":
+        vid = (query.get("v") or [""])[0]
+        if not vid and "youtu.be" in host:
+            vid = path.split("/")[0] if path else ""
+        if not vid and path.startswith("shorts/"):
+            vid = path.split("/")[1] if len(path.split("/")) > 1 else ""
+        if vid:
+            return f"YTB:{vid}"
+    if plat == "FB":
+        m = re.search(r"(?:videos|reel)/(\d+)", path)
+        if m:
+            return f"FB:{m.group(1)}"
+    return f"{plat}:{normalize_url(raw)}"
+
+
 def _extract_followers(item: dict, platform: str) -> int:
     if platform == "TT":
         author_meta = item.get("authorMeta") or {}
@@ -437,37 +529,38 @@ def _actor_inputs(platform: str, urls: List[str]) -> List[dict]:
     return [{"startUrls": [{"url": u} for u in urls]}]
 
 
-def _profile_actor_inputs(platform: str, profile_url: str) -> List[dict]:
+def _profile_actor_inputs(platform: str, profile_url: str, results_limit: int = 20) -> List[dict]:
+    limit = max(1, int(results_limit or 20))
     if platform == "TT":
         user = _tiktok_username(profile_url)
         profile_seed = user or profile_url
         return [
             {
                 "profiles": [profile_seed],
-                "resultsPerPage": 20,
+                "resultsPerPage": limit,
                 "shouldDownloadVideos": False,
                 "shouldDownloadCovers": False,
                 "shouldDownloadSubtitles": False,
             },
             {
                 "profileUrls": [profile_url],
-                "resultsPerPage": 20,
+                "resultsPerPage": limit,
                 "shouldDownloadVideos": False,
             },
         ]
     if platform == "IG":
         return [
-            {"directUrls": [profile_url], "resultsType": "posts", "resultsLimit": 20, "searchType": "user"},
-            {"startUrls": [{"url": profile_url}], "resultsLimit": 20},
+            {"directUrls": [profile_url], "resultsType": "posts", "resultsLimit": limit, "searchType": "user"},
+            {"startUrls": [{"url": profile_url}], "resultsLimit": limit},
         ]
     if platform == "YTB":
         return [
-            {"startUrls": [{"url": profile_url}], "maxResults": 20},
+            {"startUrls": [{"url": profile_url}], "maxResults": limit},
         ]
     if platform == "FB":
         return [
-            {"startUrls": [{"url": profile_url}], "maxPosts": 20},
-            {"startUrls": [profile_url], "resultsLimit": 20},
+            {"startUrls": [{"url": profile_url}], "maxPosts": limit},
+            {"startUrls": [profile_url], "resultsLimit": limit},
         ]
     return [{"startUrls": [{"url": profile_url}]}]
 
@@ -479,11 +572,11 @@ def _scrape_batch(platform: str, urls: List[str], apify_token: str) -> List[dict
     return radar._call_actor(actor, _actor_inputs(platform, urls), apify_token)
 
 
-def _scrape_profile(platform: str, profile_url: str, apify_token: str) -> List[dict]:
+def _scrape_profile(platform: str, profile_url: str, apify_token: str, results_limit: int = 20) -> List[dict]:
     actor = VIDEO_ACTORS.get(platform)
     if not actor:
         raise RuntimeError(f"不支持的平台: {platform}")
-    return radar._call_actor(actor, _profile_actor_inputs(platform, profile_url), apify_token)
+    return radar._call_actor(actor, _profile_actor_inputs(platform, profile_url, results_limit), apify_token)
 
 
 def _index_items(items: Iterable[dict]) -> Dict[str, dict]:
@@ -511,6 +604,90 @@ def _fallback_via_profile(platform: str, url: str, apify_token: str) -> dict:
             if follower_metrics:
                 return follower_metrics
     return {}
+
+
+def _in_date_window(post_date: str, start_date: Optional[str], end_date: Optional[str]) -> bool:
+    if not (start_date or end_date):
+        return True
+    if not post_date:
+        return False
+    day = str(post_date)[:10]
+    if start_date and day < start_date[:10]:
+        return False
+    if end_date and day > end_date[:10]:
+        return False
+    return True
+
+
+def fetch_profile_video_metrics(
+    profile_urls: List[str],
+    apify_token: str,
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    max_videos: int = 50,
+    progress_hook: Optional[Callable[[str], None]] = None,
+) -> List[dict]:
+    """按主页链接抓取视频基础指标，返回一行一个视频的结构化数据。"""
+    rows: List[dict] = []
+    seen_keys = set()
+    limit = max(1, int(max_videos or 50))
+    normalized_profiles = [normalize_url(u) for u in profile_urls if normalize_url(u)]
+
+    for idx, profile_url in enumerate(normalized_profiles, start=1):
+        platform = detect_platform(profile_url)
+        if progress_hook:
+            progress_hook(f"正在抓取主页视频 {idx}/{len(normalized_profiles)}: {profile_url}")
+        if platform == "UNKNOWN":
+            rows.append({
+                "profile_url": profile_url,
+                "platform": platform,
+                "video_url": "",
+                "video_key": f"UNKNOWN:{profile_url}",
+                "_error": "无法识别平台",
+            })
+            continue
+        try:
+            items = _scrape_profile(platform, profile_url, apify_token, results_limit=limit)
+        except Exception as e:
+            rows.append({
+                "profile_url": profile_url,
+                "platform": platform,
+                "video_url": "",
+                "video_key": f"{platform}:{profile_url}",
+                "_error": str(e)[:300],
+            })
+            continue
+
+        per_profile_count = 0
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            video_url = _canonical_profile_item_url(item, platform)
+            if not video_url:
+                continue
+            video_key = video_key_from_url(video_url, platform)
+            if not video_key or video_key in seen_keys:
+                continue
+            metrics = _extract_metrics(item, platform)
+            if not metrics:
+                continue
+            if not _in_date_window(metrics.get("post_date") or "", start_date, end_date):
+                continue
+            seen_keys.add(video_key)
+            row = {
+                "profile_url": profile_url,
+                "platform": platform,
+                "video_url": video_url,
+                "video_key": video_key,
+                **metrics,
+            }
+            rows.append(row)
+            per_profile_count += 1
+            if per_profile_count >= limit:
+                break
+
+    return rows
 
 
 def fetch_video_metrics(

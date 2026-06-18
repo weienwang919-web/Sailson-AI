@@ -9,6 +9,7 @@
   - etl_hashtag : Excel 工具 Hashtag 发现导出（etl_jobs.run_etl_hashtag_task）
   - etl_comments: Excel 工具链接批量抓评论导出（etl_jobs.run_etl_comments_task）
   - etl_video_metrics: Excel 工具视频链接批量拉指标写回（etl_jobs.run_etl_video_metrics_task）
+  - profile_video_sync: 主页视频数据定时同步到飞书多维表格
   - tiktok_official_refresh: TikTok 官号监控官方 API 刷新
 
 启动方式：
@@ -159,6 +160,8 @@ def dispatch_task(task_row):
             _handle_etl_comments(task_id, params)
         elif func_type == 'etl_video_metrics':
             _handle_etl_video_metrics(task_id, params)
+        elif func_type == 'profile_video_sync':
+            _handle_profile_video_sync(task_id, params)
         elif func_type == 'tiktok_official_refresh':
             _handle_tiktok_official_refresh(task_id, params)
         else:
@@ -463,6 +466,18 @@ def _handle_etl_video_metrics(task_id, params):
         etl_jobs.run_etl_video_metrics_task(task_id, params, update_task)
     except Exception as e:
         logger.error(f"❌ etl_video_metrics 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
+def _handle_profile_video_sync(task_id, params):
+    """主页视频数据：批量抓取并写入飞书多维表格。"""
+    import profile_video_scheduler
+    try:
+        profile_video_scheduler.run_profile_video_sync_task(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ profile_video_sync 失败: {e}")
         import traceback
         traceback.print_exc()
         update_task(task_id, status='failed', error=str(e)[:500])

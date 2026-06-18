@@ -75,6 +75,22 @@
     .status-line.err { color: #c62828; }
     .download-line { margin-top: 8px; font-size: 0.9rem; }
     .download-line a { color: #2962FF; font-weight: 700; text-decoration: none; }
+    .section-divider { border-top: 1px solid #edf0f4; margin: 28px 0; }
+    .subtool-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .subtool-head h3 { font-size: 1rem; font-weight: 700; margin: 0; color: #111827; }
+    .subtool-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .btn-soft { border: 1px solid #d8e0ec; background: #fff; color: #344054; border-radius: 8px; padding: 8px 12px; font-size: 0.86rem; font-weight: 700; cursor: pointer; }
+    .btn-soft:hover { background: #f7f9fc; }
+    .profile-table-wrap { border: 1px solid #edf0f4; border-radius: 10px; overflow-x: auto; }
+    .profile-table { width: 100%; border-collapse: collapse; min-width: 860px; font-size: 0.84rem; }
+    .profile-table th, .profile-table td { padding: 10px 12px; border-bottom: 1px solid #edf0f4; vertical-align: middle; }
+    .profile-table th { background: #f8fafc; color: #475467; font-weight: 700; white-space: nowrap; }
+    .profile-table td { color: #344054; }
+    .profile-url { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .profile-url a { color: #2962FF; text-decoration: none; }
+    .mini-input { width: 84px; padding: 6px 8px; border: 1px solid #d8e0ec; border-radius: 7px; font-size: 0.82rem; }
+    .toggle-cell { text-align: center; }
+    .modal-textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
     .fade-in { animation: fadeIn 0.5s ease-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 </style>
@@ -160,6 +176,36 @@
                 <button onclick="startVideoMetrics()" id="videoMetricsBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">开始拉视频数据</button>
                 <div class="status-line" id="videoMetricsStatus"></div>
                 <div class="download-line" id="videoMetricsDownload"></div>
+
+                <div class="section-divider"></div>
+                <div class="subtool-head">
+                    <h3>主页视频定时同步</h3>
+                    <div class="subtool-actions">
+                        <button type="button" class="btn-soft" onclick="openProfileVideoModal()">新增主页</button>
+                        <button type="button" class="btn-soft" onclick="runProfileVideoSync()">立即同步启用项</button>
+                        <button type="button" class="btn-soft" onclick="loadProfileVideoConfigs()">刷新</button>
+                    </div>
+                </div>
+                <div class="status-line" id="profileVideoStatus"></div>
+                <div class="profile-table-wrap">
+                    <table class="profile-table">
+                        <thead>
+                            <tr>
+                                <th>启用</th>
+                                <th>主页链接</th>
+                                <th>平台</th>
+                                <th>范围</th>
+                                <th>每天几点</th>
+                                <th>每主页上限</th>
+                                <th>最后同步</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="profileVideoRows">
+                            <tr><td colspan="8" class="text-muted">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <div id="loading" class="text-center py-5" style="display: none;" role="status" aria-live="polite">
@@ -187,6 +233,66 @@
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="profileVideoModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新增主页视频同步</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <label class="small text-muted mb-1" for="profileVideoUrls">主页链接（每行一个）</label>
+                <textarea id="profileVideoUrls" class="form-control modal-textarea" placeholder="https://www.tiktok.com/@username&#10;https://www.instagram.com/username/&#10;https://www.youtube.com/@channel"></textarea>
+                <div class="status-line">飞书表建议字段：视频唯一键、主页链接、平台、视频链接、作者、发布日期、视频文案、视频时长、播放量、点赞量、评论量、转发量、收藏量、互动量、主页粉丝数、最后同步时间。</div>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <label class="small text-muted mb-1" for="profileVideoScope">同步范围</label>
+                        <select id="profileVideoScope" class="form-control" onchange="toggleProfileVideoDateRange()">
+                            <option value="recent">最近 7 天</option>
+                            <option value="range">指定日期范围</option>
+                            <option value="all">全部可抓取视频</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="small text-muted mb-1" for="profileVideoHour">每天几点同步</label>
+                        <input type="number" id="profileVideoHour" class="form-control" value="9" min="0" max="23">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="small text-muted mb-1" for="profileVideoMax">每主页视频上限</label>
+                        <input type="number" id="profileVideoMax" class="form-control" value="50" min="1" max="500">
+                    </div>
+                </div>
+                <div class="row mt-3" id="profileVideoDateRange" style="display:none;">
+                    <div class="col-md-6">
+                        <label class="small text-muted mb-1" for="profileVideoStart">开始日期</label>
+                        <input type="date" id="profileVideoStart" class="form-control">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small text-muted mb-1" for="profileVideoEnd">结束日期</label>
+                        <input type="date" id="profileVideoEnd" class="form-control">
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <label class="small text-muted mb-1" for="profileVideoAppToken">飞书 App Token（可选）</label>
+                        <input type="text" id="profileVideoAppToken" class="form-control" placeholder="留空使用环境变量默认表">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small text-muted mb-1" for="profileVideoTableId">飞书 Table ID（可选）</label>
+                        <input type="text" id="profileVideoTableId" class="form-control" placeholder="留空使用环境变量默认表">
+                    </div>
+                </div>
+                <label class="mt-3 small text-muted"><input type="checkbox" id="profileVideoEnabled" checked> 启用定时同步</label>
+                <div class="status-line" id="profileVideoModalStatus"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="saveProfileVideoConfigs()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -195,6 +301,7 @@ let currentFilter = 'all';
 let currentRecordId = null;
 const POLL_MAX = 72;
 const POLL_INTERVAL = 5000;
+let profileVideoModalInstance = null;
 
 function switchSentimentTool(kind) {
     const isVideo = kind === 'videoMetrics';
@@ -204,6 +311,7 @@ function switchSentimentTool(kind) {
     document.getElementById('videoMetricsTabBtn').classList.toggle('active', isVideo);
     document.getElementById('commentsTabBtn').setAttribute('aria-selected', String(!isVideo));
     document.getElementById('videoMetricsTabBtn').setAttribute('aria-selected', String(isVideo));
+    if (isVideo) loadProfileVideoConfigs();
 }
 
 function fillExample() {
@@ -448,6 +556,192 @@ async function startVideoMetrics() {
     }
 }
 
+function openProfileVideoModal() {
+    const modalEl = document.getElementById('profileVideoModal');
+    if (window.bootstrap && modalEl) {
+        profileVideoModalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+        profileVideoModalInstance.show();
+    }
+}
+
+function toggleProfileVideoDateRange() {
+    const scope = document.getElementById('profileVideoScope').value;
+    document.getElementById('profileVideoDateRange').style.display = scope === 'range' ? 'flex' : 'none';
+}
+
+async function loadProfileVideoConfigs() {
+    const tbody = document.getElementById('profileVideoRows');
+    const statusEl = document.getElementById('profileVideoStatus');
+    if (!tbody) return;
+    statusEl.textContent = '加载主页配置...';
+    statusEl.className = 'status-line';
+    try {
+        const res = await fetch('/api/etl/profile-video/configs');
+        const data = await res.json();
+        if (data.status !== 'success') throw new Error(data.message || '加载失败');
+        renderProfileVideoConfigs(data.items || []);
+        statusEl.textContent = (data.items || []).length ? '已加载 ' + data.items.length + ' 个主页配置' : '暂无主页配置';
+        statusEl.className = 'status-line ok';
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="8">加载失败</td></tr>';
+        statusEl.textContent = e.message || String(e);
+        statusEl.className = 'status-line err';
+    }
+}
+
+function renderProfileVideoConfigs(items) {
+    const tbody = document.getElementById('profileVideoRows');
+    if (!items.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-muted">暂无配置，点击“新增主页”批量添加</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map(item => {
+        const url = escapeHtml(item.profile_url || '');
+        const shortUrl = url.length > 64 ? url.slice(0, 64) + '...' : url;
+        const scopeLabel = item.sync_scope === 'all' ? '全部' : (item.sync_scope === 'range' ? rangeText(item.start_date, item.end_date) : '最近 7 天');
+        const lastTime = item.last_success_at || item.last_run_at || '';
+        const err = item.last_error ? escapeHtml(item.last_error) : '正常';
+        return `
+            <tr>
+                <td class="toggle-cell"><input type="checkbox" ${item.enabled ? 'checked' : ''} onchange="updateProfileVideoConfig(${item.id}, {enabled: this.checked})"></td>
+                <td class="profile-url"><a href="${url}" target="_blank" rel="noreferrer" title="${url}">${shortUrl}</a></td>
+                <td>${escapeHtml(item.platform || '-')}</td>
+                <td>${escapeHtml(scopeLabel)}</td>
+                <td><input class="mini-input" type="number" min="0" max="23" value="${item.schedule_hour || 9}" onchange="updateProfileVideoConfig(${item.id}, {schedule_hour: this.value})"></td>
+                <td><input class="mini-input" type="number" min="1" max="500" value="${item.max_videos || 50}" onchange="updateProfileVideoConfig(${item.id}, {max_videos: this.value})"></td>
+                <td>${escapeHtml(formatDateTime(lastTime))}</td>
+                <td title="${err}">${item.last_error ? '<span style="color:#c62828;">异常</span>' : '<span style="color:#2e7d32;">正常</span>'}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function saveProfileVideoConfigs() {
+    const statusEl = document.getElementById('profileVideoModalStatus');
+    const urls = document.getElementById('profileVideoUrls').value.trim();
+    if (!urls) {
+        statusEl.textContent = '请填写至少一个主页链接';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    const payload = {
+        profile_urls: urls,
+        enabled: document.getElementById('profileVideoEnabled').checked,
+        sync_scope: document.getElementById('profileVideoScope').value,
+        start_date: document.getElementById('profileVideoStart').value,
+        end_date: document.getElementById('profileVideoEnd').value,
+        schedule_hour: parseInt(document.getElementById('profileVideoHour').value, 10) || 9,
+        max_videos: parseInt(document.getElementById('profileVideoMax').value, 10) || 50,
+        feishu_app_token: document.getElementById('profileVideoAppToken').value.trim(),
+        feishu_table_id: document.getElementById('profileVideoTableId').value.trim(),
+    };
+    statusEl.textContent = '保存中...';
+    statusEl.className = 'status-line';
+    try {
+        const res = await fetch('/api/etl/profile-video/configs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.status !== 'success') throw new Error(data.message || '保存失败');
+        statusEl.textContent = '已保存 ' + data.total + ' 个主页';
+        statusEl.className = 'status-line ok';
+        document.getElementById('profileVideoUrls').value = '';
+        await loadProfileVideoConfigs();
+        if (profileVideoModalInstance) profileVideoModalInstance.hide();
+    } catch (e) {
+        statusEl.textContent = e.message || String(e);
+        statusEl.className = 'status-line err';
+    }
+}
+
+async function updateProfileVideoConfig(id, patch) {
+    const statusEl = document.getElementById('profileVideoStatus');
+    statusEl.textContent = '更新配置...';
+    statusEl.className = 'status-line';
+    try {
+        const res = await fetch('/api/etl/profile-video/configs/' + encodeURIComponent(id), {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(patch),
+        });
+        const data = await res.json();
+        if (data.status !== 'success') throw new Error(data.message || '更新失败');
+        statusEl.textContent = '已更新';
+        statusEl.className = 'status-line ok';
+    } catch (e) {
+        statusEl.textContent = e.message || String(e);
+        statusEl.className = 'status-line err';
+        loadProfileVideoConfigs();
+    }
+}
+
+async function runProfileVideoSync() {
+    const statusEl = document.getElementById('profileVideoStatus');
+    statusEl.textContent = '提交同步任务...';
+    statusEl.className = 'status-line';
+    try {
+        const res = await fetch('/api/etl/profile-video/sync_start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({trigger_type: 'manual'}),
+        });
+        const data = await res.json();
+        if (data.status !== 'queued') throw new Error(data.message || '提交失败');
+        statusEl.textContent = '已排队 ' + data.profile_count + ' 个主页，任务 ID: ' + data.task_id;
+        pollProfileVideoTask(data.task_id, 0);
+    } catch (e) {
+        statusEl.textContent = e.message || String(e);
+        statusEl.className = 'status-line err';
+    }
+}
+
+function pollProfileVideoTask(taskId, attempt) {
+    const statusEl = document.getElementById('profileVideoStatus');
+    fetch('/api/etl/task_status/' + encodeURIComponent(taskId))
+        .then(r => r.json())
+        .then(data => {
+            statusEl.textContent = data.progress || data.status || '';
+            if (data.status === 'completed') {
+                statusEl.className = 'status-line ok';
+                loadProfileVideoConfigs();
+                return;
+            }
+            if (data.status === 'failed') {
+                statusEl.textContent = data.error || '任务失败';
+                statusEl.className = 'status-line err';
+                loadProfileVideoConfigs();
+                return;
+            }
+            if (attempt < 1200) setTimeout(() => pollProfileVideoTask(taskId, attempt + 1), 3000);
+        })
+        .catch(e => {
+            statusEl.textContent = '查询任务失败：' + e.message;
+            statusEl.className = 'status-line err';
+        });
+}
+
+function rangeText(start, end) {
+    const s = start ? String(start).slice(0, 10) : '';
+    const e = end ? String(end).slice(0, 10) : '';
+    return (s || '不限') + ' - ' + (e || '不限');
+}
+
+function formatDateTime(value) {
+    if (!value) return '-';
+    return String(value).replace('T', ' ').slice(0, 19);
+}
+
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 async function pollTaskStatus(taskId, attempt) {
     const loading = document.getElementById('loading');
     const loadingText = document.getElementById('loadingText');
@@ -534,6 +828,9 @@ async function loadHistory() {
     }
 }
 
-window.onload = loadHistory;
+window.onload = function () {
+    loadHistory();
+    loadProfileVideoConfigs();
+};
 </script>
 {% endblock %}

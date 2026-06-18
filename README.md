@@ -32,6 +32,20 @@ PORT=5001
 SECRET_KEY=your_secret_key_here
 ```
 
+主页视频定时同步到飞书多维表格时，额外配置：
+
+```
+FEISHU_APP_ID=cli_xxxxx
+FEISHU_APP_SECRET=xxxxx
+FEISHU_BITABLE_APP_TOKEN=bascnxxxxx
+FEISHU_BITABLE_TABLE_ID=tblxxxxx
+PROFILE_VIDEO_SYNC_HOUR=9
+PROFILE_VIDEO_MAX_VIDEOS=50
+PROFILE_VIDEO_RECENT_DAYS=7
+```
+
+飞书表建议字段：视频唯一键、主页链接、平台、视频链接、作者、发布日期、视频文案、视频时长、播放量、点赞量、评论量、转发量、收藏量、互动量、主页粉丝数、最后同步时间。
+
 ### KOL 功能部署
 
 KOL 功能在 Render 的主 Web 服务中随 Flask 一起启动：`start_render.sh` 会先在 `127.0.0.1:8001` 拉起 KOL FastAPI，再启动 Gunicorn。主 Flask 服务通过 `/kol-api` 代理访问它。
