@@ -207,6 +207,12 @@ def start_kol_api_if_needed():
 
 _kol_api_process = start_kol_api_if_needed()
 
+
+def run_scheduled_profile_video_sync():
+    """APScheduler 可序列化入口：主页视频基础数据定时同步。"""
+    enqueue_due_profile_video_sync()
+
+
 if not _IS_WORKER:
     jobstores = {
         'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
@@ -248,7 +254,7 @@ if not _IS_WORKER:
 
     # 主页视频基础数据定时同步：每小时检查一次当前小时配置
     scheduler.add_job(
-        func=lambda: enqueue_due_profile_video_sync(),
+        func=run_scheduled_profile_video_sync,
         trigger='cron',
         minute=5,
         id='profile_video_sync_job',
