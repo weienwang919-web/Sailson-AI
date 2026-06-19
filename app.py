@@ -1904,7 +1904,7 @@ def sentiment_tool():
     return render_template(
         'analysis.html',
         has_used_sentiment=has_used_sentiment,
-        max_video_urls=ETL_VIDEO_METRICS_MAX_URLS,
+        video_metrics_batch_size=video_metrics_etl.BATCH_SIZE,
     )
 
 
@@ -7105,7 +7105,6 @@ def thai_report_top5():
 # ============================================
 
 ETL_COMMENTS_MAX_URLS = int(os.environ.get('ETL_COMMENTS_MAX_URLS', '200'))
-ETL_VIDEO_METRICS_MAX_URLS = int(os.environ.get('ETL_VIDEO_METRICS_MAX_URLS', '500'))
 DEFAULT_VIDEO_METRIC_FIELDS = list(video_metrics_etl.DEFAULT_VIDEO_METRIC_FIELDS)
 
 
@@ -7115,7 +7114,6 @@ def data_etl_tool():
     return render_template(
         'data_etl.html',
         max_urls=ETL_COMMENTS_MAX_URLS,
-        max_video_urls=ETL_VIDEO_METRICS_MAX_URLS,
     )
 
 
@@ -7298,11 +7296,6 @@ def etl_video_metrics_start():
         raw = f.read()
         parsed = etl_tools.parse_excel_urls(raw, url_col)
         urls = parsed.urls
-        if len(urls) > ETL_VIDEO_METRICS_MAX_URLS:
-            return jsonify({
-                'status': 'error',
-                'message': f'链接数超过上限 {ETL_VIDEO_METRICS_MAX_URLS}，请分批上传',
-            }), 400
         if not urls:
             return jsonify({'status': 'error', 'message': '未解析到有效 http(s) 链接'}), 400
 
