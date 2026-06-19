@@ -86,8 +86,13 @@
     .profile-table th, .profile-table td { padding: 10px 12px; border-bottom: 1px solid #edf0f4; vertical-align: middle; }
     .profile-table th { background: #f8fafc; color: #475467; font-weight: 700; white-space: nowrap; }
     .profile-table td { color: #344054; }
+    .video-task-table { min-width: 760px; }
     .profile-url { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .profile-url a { color: #2962FF; text-decoration: none; }
+    .task-id-cell { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: #667085; }
+    .task-download-link { color: #2962FF; font-weight: 700; text-decoration: none; }
+    .task-status-ok { color: #2e7d32; font-weight: 700; }
+    .task-status-err { color: #c62828; font-weight: 700; }
     .mini-input { width: 84px; padding: 6px 8px; border: 1px solid #d8e0ec; border-radius: 7px; font-size: 0.82rem; }
     .toggle-cell { text-align: center; }
     .modal-textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
@@ -176,6 +181,31 @@
                 <button onclick="startVideoMetrics()" id="videoMetricsBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">开始拉视频数据</button>
                 <div class="status-line" id="videoMetricsStatus"></div>
                 <div class="download-line" id="videoMetricsDownload"></div>
+
+                <div class="section-divider"></div>
+                <div class="subtool-head">
+                    <h3>最近拉视频数据任务</h3>
+                    <div class="subtool-actions">
+                        <button type="button" class="btn-soft" onclick="loadVideoMetricsTasks()">刷新</button>
+                    </div>
+                </div>
+                <div class="profile-table-wrap">
+                    <table class="profile-table video-task-table">
+                        <thead>
+                            <tr>
+                                <th>提交时间</th>
+                                <th>状态</th>
+                                <th>进度</th>
+                                <th>链接数</th>
+                                <th>文件</th>
+                                <th>任务 ID</th>
+                            </tr>
+                        </thead>
+                        <tbody id="videoMetricsTaskRows">
+                            <tr><td colspan="6" class="text-muted">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
 
                 <div class="section-divider"></div>
                 <div class="subtool-head">
@@ -311,7 +341,38 @@ function switchSentimentTool(kind) {
     document.getElementById('videoMetricsTabBtn').classList.toggle('active', isVideo);
     document.getElementById('commentsTabBtn').setAttribute('aria-selected', String(!isVideo));
     document.getElementById('videoMetricsTabBtn').setAttribute('aria-selected', String(isVideo));
-    if (isVideo) loadProfileVideoConfigs();
+    if (isVideo) {
+        loadVideoMetricsTasks();
+        loadProfileVideoConfigs();
+    }
+}
+
+async function fetchJsonOrThrow(url, options) {
+    const res = await fetch(url, options || {});
+    const text = await res.text();
+    let data = null;
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (contentType.indexOf('json') !== -1) {
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch (e) {
+            throw new Error('服务返回的 JSON 格式异常，请刷新后重试');
+        }
+    } else {
+        const trimmed = (text || '').trim();
+        const lowered = trimmed.toLowerCase();
+        if (lowered.startsWith('<!doctype') || lowered.startsWith('<html') || res.redirected) {
+            if (res.redirected || res.status === 401 || res.status === 403) {
+                throw new Error('登录状态可能已失效，请刷新页面或重新登录后查看任务');
+            }
+            throw new Error('服务返回了错误页面，请稍后刷新任务或联系管理员查看后台日志');
+        }
+        throw new Error(trimmed.slice(0, 200) || '服务返回了非 JSON 内容');
+    }
+    if (!res.ok) {
+        throw new Error((data && (data.message || data.error)) || ('请求失败：' + res.status));
+    }
+    return data;
 }
 
 function fillExample() {
@@ -454,8 +515,7 @@ async function previewVideoMetricColumns() {
     try {
         const fd = new FormData();
         fd.append('file', f);
-        const res = await fetch('/api/etl/preview_columns', { method: 'POST', body: fd });
-        const data = await res.json();
+        const data = await fetchJsonOrThrow('/api/etl/preview_columns', { method: 'POST', body: fd });
         if (data.status === 'success' && data.columns && data.columns.length) {
             el.textContent = '检测到列：' + data.columns.join(' | ');
             el.className = 'status-line ok';
@@ -473,43 +533,43 @@ function pollVideoMetricsTask(taskId, attempt) {
     const statusEl = document.getElementById('videoMetricsStatus');
     const dlEl = document.getElementById('videoMetricsDownload');
     const btn = document.getElementById('videoMetricsBtn');
-    fetch('/api/etl/task_status/' + encodeURIComponent(taskId))
-        .then(r => r.json())
+    fetchJsonOrThrow('/api/etl/task_status/' + encodeURIComponent(taskId))
         .then(data => {
             statusEl.textContent = data.progress || data.status || '';
+            statusEl.className = 'status-line';
             if (data.status === 'completed') {
-                statusEl.textContent = '完成';
+                let result = {};
+                try {
+                    result = typeof data.result === 'string' ? JSON.parse(data.result) : (data.result || {});
+                } catch (e) {}
+                statusEl.textContent = '完成' + (result.success_count != null && result.url_count != null ? '：成功 ' + result.success_count + ' / ' + result.url_count + ' 条' : '');
                 statusEl.className = 'status-line ok';
                 btn.disabled = false;
-                let downloadId = null;
-                let filename = 'video_metrics.xlsx';
-                try {
-                    const result = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
-                    downloadId = result && result.download_id;
-                    filename = (result && result.filename) || filename;
-                } catch (e) {}
-                if (downloadId) {
-                    dlEl.innerHTML = '<a href="/api/etl/download/' + downloadId + '">下载 ' + filename + '</a>';
-                }
+                showVideoMetricsDownload(result && result.download_id, (result && result.filename) || 'video_metrics.xlsx');
+                loadVideoMetricsTasks();
                 return;
             }
             if (data.status === 'failed') {
                 statusEl.textContent = data.error || '任务失败';
                 statusEl.className = 'status-line err';
                 btn.disabled = false;
+                loadVideoMetricsTasks();
                 return;
             }
             if (attempt >= 800) {
-                statusEl.textContent = '轮询超时，请稍后刷新任务状态';
+                statusEl.textContent = '轮询超时，任务可能仍在后台继续；完成后可在下方最近任务下载文件';
+                statusEl.className = 'status-line';
                 btn.disabled = false;
+                loadVideoMetricsTasks();
                 return;
             }
             setTimeout(() => pollVideoMetricsTask(taskId, attempt + 1), 2000);
         })
         .catch(e => {
-            statusEl.textContent = '查询任务失败：' + e.message;
+            statusEl.textContent = '查询任务失败：' + e.message + '；可刷新下方最近任务查看完成文件';
             statusEl.className = 'status-line err';
             btn.disabled = false;
+            loadVideoMetricsTasks();
         });
 }
 
@@ -539,8 +599,7 @@ async function startVideoMetrics() {
     statusEl.textContent = '上传并排队...';
     statusEl.className = 'status-line';
     try {
-        const res = await fetch('/api/etl/video_metrics_start', { method: 'POST', body: fd });
-        const data = await res.json();
+        const data = await fetchJsonOrThrow('/api/etl/video_metrics_start', { method: 'POST', body: fd });
         if (data.status !== 'queued') {
             statusEl.textContent = data.message || JSON.stringify(data);
             statusEl.className = 'status-line err';
@@ -548,12 +607,59 @@ async function startVideoMetrics() {
             return;
         }
         statusEl.textContent = '已排队 ' + data.url_count + ' 条链接，任务 ID: ' + data.task_id;
+        loadVideoMetricsTasks();
         pollVideoMetricsTask(data.task_id, 0);
     } catch (e) {
         statusEl.textContent = String(e);
         statusEl.className = 'status-line err';
         btn.disabled = false;
     }
+}
+
+function showVideoMetricsDownload(downloadId, filename) {
+    const dlEl = document.getElementById('videoMetricsDownload');
+    if (!dlEl || !downloadId) return;
+    dlEl.innerHTML = '<a href="/api/etl/download/' + encodeURIComponent(downloadId) + '">下载 ' + escapeHtml(filename || 'video_metrics.xlsx') + '</a>';
+}
+
+async function loadVideoMetricsTasks() {
+    const tbody = document.getElementById('videoMetricsTaskRows');
+    if (!tbody) return;
+    try {
+        const data = await fetchJsonOrThrow('/api/etl/video_metrics_tasks?limit=20');
+        if (data.status !== 'success') throw new Error(data.message || '加载失败');
+        renderVideoMetricsTasks(data.items || []);
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="6" class="task-status-err">加载失败：' + escapeHtml(e.message || String(e)) + '</td></tr>';
+    }
+}
+
+function renderVideoMetricsTasks(items) {
+    const tbody = document.getElementById('videoMetricsTaskRows');
+    if (!items.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-muted">暂无拉视频数据任务</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map(item => {
+        const status = item.status || '-';
+        const statusClass = status === 'completed' ? 'task-status-ok' : (status === 'failed' ? 'task-status-err' : '');
+        const progress = item.error || item.progress || '-';
+        const countText = item.url_count != null ? (item.success_count != null ? item.success_count + ' / ' + item.url_count : item.url_count) : '-';
+        const fileHtml = item.download_id
+            ? '<a class="task-download-link" href="/api/etl/download/' + encodeURIComponent(item.download_id) + '">下载 ' + escapeHtml(item.filename || 'video_metrics.xlsx') + '</a>'
+            : (status === 'completed' ? '文件生成中' : '-');
+        const taskId = item.task_id || '';
+        return `
+            <tr>
+                <td>${escapeHtml(formatDateTime(item.created_at))}</td>
+                <td class="${statusClass}">${escapeHtml(statusLabel(status))}</td>
+                <td title="${escapeHtml(progress)}">${escapeHtml(shortText(progress, 48))}</td>
+                <td>${escapeHtml(countText)}</td>
+                <td>${fileHtml}</td>
+                <td class="task-id-cell" title="${escapeHtml(taskId)}">${escapeHtml(taskId)}</td>
+            </tr>
+        `;
+    }).join('');
 }
 
 function openProfileVideoModal() {
@@ -576,8 +682,7 @@ async function loadProfileVideoConfigs() {
     statusEl.textContent = '加载主页配置...';
     statusEl.className = 'status-line';
     try {
-        const res = await fetch('/api/etl/profile-video/configs');
-        const data = await res.json();
+        const data = await fetchJsonOrThrow('/api/etl/profile-video/configs');
         if (data.status !== 'success') throw new Error(data.message || '加载失败');
         renderProfileVideoConfigs(data.items || []);
         statusEl.textContent = (data.items || []).length ? '已加载 ' + data.items.length + ' 个主页配置' : '暂无主页配置';
@@ -638,12 +743,11 @@ async function saveProfileVideoConfigs() {
     statusEl.textContent = '保存中...';
     statusEl.className = 'status-line';
     try {
-        const res = await fetch('/api/etl/profile-video/configs', {
+        const data = await fetchJsonOrThrow('/api/etl/profile-video/configs', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload),
         });
-        const data = await res.json();
         if (data.status !== 'success') throw new Error(data.message || '保存失败');
         statusEl.textContent = '已保存 ' + data.total + ' 个主页';
         statusEl.className = 'status-line ok';
@@ -661,12 +765,11 @@ async function updateProfileVideoConfig(id, patch) {
     statusEl.textContent = '更新配置...';
     statusEl.className = 'status-line';
     try {
-        const res = await fetch('/api/etl/profile-video/configs/' + encodeURIComponent(id), {
+        const data = await fetchJsonOrThrow('/api/etl/profile-video/configs/' + encodeURIComponent(id), {
             method: 'PATCH',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(patch),
         });
-        const data = await res.json();
         if (data.status !== 'success') throw new Error(data.message || '更新失败');
         statusEl.textContent = '已更新';
         statusEl.className = 'status-line ok';
@@ -682,12 +785,11 @@ async function runProfileVideoSync() {
     statusEl.textContent = '提交同步任务...';
     statusEl.className = 'status-line';
     try {
-        const res = await fetch('/api/etl/profile-video/sync_start', {
+        const data = await fetchJsonOrThrow('/api/etl/profile-video/sync_start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({trigger_type: 'manual'}),
         });
-        const data = await res.json();
         if (data.status !== 'queued') throw new Error(data.message || '提交失败');
         statusEl.textContent = '已排队 ' + data.profile_count + ' 个主页，任务 ID: ' + data.task_id;
         pollProfileVideoTask(data.task_id, 0);
@@ -699,10 +801,10 @@ async function runProfileVideoSync() {
 
 function pollProfileVideoTask(taskId, attempt) {
     const statusEl = document.getElementById('profileVideoStatus');
-    fetch('/api/etl/task_status/' + encodeURIComponent(taskId))
-        .then(r => r.json())
+    fetchJsonOrThrow('/api/etl/task_status/' + encodeURIComponent(taskId))
         .then(data => {
             statusEl.textContent = data.progress || data.status || '';
+            statusEl.className = 'status-line';
             if (data.status === 'completed') {
                 statusEl.className = 'status-line ok';
                 loadProfileVideoConfigs();
@@ -731,6 +833,23 @@ function rangeText(start, end) {
 function formatDateTime(value) {
     if (!value) return '-';
     return String(value).replace('T', ' ').slice(0, 19);
+}
+
+function statusLabel(status) {
+    const labels = {
+        pending: '排队中',
+        claimed: '处理中',
+        processing: '处理中',
+        completed: '完成',
+        failed: '失败'
+    };
+    return labels[status] || status || '-';
+}
+
+function shortText(value, maxLen) {
+    const text = String(value == null ? '' : value);
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen - 1) + '...';
 }
 
 function escapeHtml(value) {
@@ -830,6 +949,7 @@ async function loadHistory() {
 
 window.onload = function () {
     loadHistory();
+    loadVideoMetricsTasks();
     loadProfileVideoConfigs();
 };
 </script>

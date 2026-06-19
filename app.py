@@ -7489,6 +7489,86 @@ def api_etl_task_status(task_id):
     })
 
 
+@app.route('/api/etl/video_metrics_tasks')
+@login_required
+def api_etl_video_metrics_tasks():
+    """最近的拉视频数据任务，供轮询超时或刷新后找回下载文件。"""
+    try:
+        limit = max(1, min(int(request.args.get('limit') or 20), 100))
+    except (TypeError, ValueError):
+        limit = 20
+
+    uid = session.get('user_id')
+    rows = db.query_all(
+        """
+        WITH recent_task_ids AS (
+            SELECT task_id
+            FROM task_queue
+            WHERE user_id = %s AND function_type = 'etl_video_metrics'
+            UNION
+            SELECT task_id
+            FROM etl_file_outputs
+            WHERE user_id = %s AND filename = 'video_metrics.xlsx'
+        )
+        SELECT q.task_id,
+               q.status,
+               q.progress,
+               q.result,
+               q.error,
+               q.created_at,
+               q.updated_at,
+               q.finished_at,
+               o.download_id AS fallback_download_id,
+               o.filename AS fallback_filename,
+               o.created_at AS fallback_created_at
+        FROM recent_task_ids ids
+        LEFT JOIN task_queue q
+               ON q.task_id = ids.task_id
+              AND (q.user_id = %s OR q.user_id IS NULL)
+        LEFT JOIN LATERAL (
+            SELECT id AS download_id, filename, created_at
+            FROM etl_file_outputs
+            WHERE user_id = %s
+              AND task_id = ids.task_id
+              AND filename <> '_input_video_metrics.xlsx'
+            ORDER BY id DESC
+            LIMIT 1
+        ) o ON TRUE
+        ORDER BY COALESCE(q.created_at, o.created_at) DESC
+        LIMIT %s
+        """,
+        (uid, uid, uid, uid, limit),
+    ) or []
+
+    items = []
+    for row in rows:
+        result_payload = {}
+        raw_result = row.get('result')
+        if raw_result:
+            try:
+                result_payload = json.loads(raw_result) if isinstance(raw_result, str) else dict(raw_result)
+            except Exception:
+                result_payload = {}
+
+        download_id = result_payload.get('download_id') or row.get('fallback_download_id')
+        filename = result_payload.get('filename') or row.get('fallback_filename') or 'video_metrics.xlsx'
+        items.append({
+            'task_id': row.get('task_id'),
+            'status': row.get('status') or ('completed' if download_id else 'unknown'),
+            'progress': row.get('progress') or ('已生成文件' if download_id else None),
+            'error': row.get('error'),
+            'created_at': row.get('created_at') or row.get('fallback_created_at'),
+            'updated_at': row.get('updated_at'),
+            'finished_at': row.get('finished_at'),
+            'download_id': download_id,
+            'filename': filename,
+            'url_count': result_payload.get('url_count'),
+            'success_count': result_payload.get('success_count'),
+        })
+
+    return jsonify({'status': 'success', 'items': _json_safe_rows(items)})
+
+
 @app.route('/api/etl/download/<int:output_id>')
 @login_required
 def etl_download(output_id):
