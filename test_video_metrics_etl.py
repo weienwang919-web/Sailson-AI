@@ -1,5 +1,6 @@
 import io
 import sys
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -59,6 +60,62 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertIn(short_key, result)
         self.assertEqual(result[short_key]["views"], 1234)
         self.assertEqual(result[short_key]["likes"], 56)
+
+    def test_short_url_resolution_runs_concurrently(self):
+        short_urls = [f"https://vt.tiktok.com/ZSQoKaT6{i}/" for i in range(4)]
+        normalized_short_urls = [video_metrics_etl.normalize_url(url) for url in short_urls]
+
+        def fake_resolve(url):
+            time.sleep(0.05)
+            idx = normalized_short_urls.index(url)
+            return f"https://www.tiktok.com/@user/video/{idx}"
+
+        def fake_scrape(platform, urls, _token):
+            self.assertEqual(platform, "TT")
+            return [
+                {
+                    "webVideoUrl": url,
+                    "playCount": 100 + idx,
+                    "diggCount": 1,
+                }
+                for idx, url in enumerate(urls)
+            ]
+
+        started = time.perf_counter()
+        with patch.object(video_metrics_etl, "SHORT_URL_WORKERS", 4), patch.object(
+            video_metrics_etl, "_resolve_redirect_url", side_effect=fake_resolve
+        ), patch.object(video_metrics_etl, "_scrape_batch", side_effect=fake_scrape):
+            result = video_metrics_etl.fetch_video_metrics(short_urls, "token")
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.16)
+        for raw in short_urls:
+            self.assertIn(video_metrics_etl.normalize_url(raw), result)
+
+    def test_apify_batches_run_concurrently(self):
+        urls = [f"https://www.tiktok.com/@user/video/{i}" for i in range(5)]
+
+        def fake_scrape(platform, batch, _token):
+            self.assertEqual(platform, "TT")
+            time.sleep(0.05)
+            return [
+                {
+                    "webVideoUrl": url,
+                    "playCount": 200 + idx,
+                    "diggCount": 1,
+                }
+                for idx, url in enumerate(batch)
+            ]
+
+        started = time.perf_counter()
+        with patch.object(video_metrics_etl, "BATCH_SIZE", 2), patch.object(
+            video_metrics_etl, "BATCH_WORKERS", 2
+        ), patch.object(video_metrics_etl, "_scrape_batch", side_effect=fake_scrape):
+            result = video_metrics_etl.fetch_video_metrics(urls, "token")
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.13)
+        self.assertEqual(result[video_metrics_etl.normalize_url(urls[0])]["views"], 200)
 
     def test_merge_metrics_writes_short_url_row(self):
         short_url = "https://vt.tiktok.com/ZSQoKaT60/"

@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, Iterable, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -19,8 +20,10 @@ import tasks
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = int(os.environ.get("ETL_VIDEO_METRICS_BATCH_SIZE", "40"))
-SHORT_URL_TIMEOUT_SECS = int(os.environ.get("ETL_SHORT_URL_TIMEOUT_SECS", "8"))
+BATCH_SIZE = int(os.environ.get("ETL_VIDEO_METRICS_BATCH_SIZE", "80"))
+BATCH_WORKERS = max(1, int(os.environ.get("ETL_VIDEO_METRICS_BATCH_WORKERS", "2")))
+SHORT_URL_TIMEOUT_SECS = int(os.environ.get("ETL_SHORT_URL_TIMEOUT_SECS", "4"))
+SHORT_URL_WORKERS = max(1, int(os.environ.get("ETL_SHORT_URL_WORKERS", "16")))
 
 METRIC_FIELDS: Dict[str, str] = {
     "views": "播放量",
@@ -164,6 +167,7 @@ def _resolve_input_urls(urls: List[str]) -> tuple[List[str], Dict[str, str]]:
     input_urls: List[str] = []
     resolved_by_input: Dict[str, str] = {}
     seen = set()
+    short_urls: List[str] = []
 
     for raw in urls:
         u = normalize_url(raw)
@@ -171,13 +175,25 @@ def _resolve_input_urls(urls: List[str]) -> tuple[List[str], Dict[str, str]]:
             continue
         seen.add(u)
         input_urls.append(u)
-
-        resolved = ""
         if _is_tiktok_short_url(u):
-            resolved = _resolve_redirect_url(u)
-            if resolved and _host(resolved) != _host(u):
-                logger.info("TikTok 短链已展开: %s -> %s", u, resolved)
-        resolved_by_input[u] = resolved or u
+            short_urls.append(u)
+        else:
+            resolved_by_input[u] = u
+
+    if short_urls:
+        workers = min(SHORT_URL_WORKERS, len(short_urls))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_by_url = {executor.submit(_resolve_redirect_url, u): u for u in short_urls}
+            for future in as_completed(future_by_url):
+                u = future_by_url[future]
+                resolved = ""
+                try:
+                    resolved = future.result() or ""
+                except Exception as e:
+                    logger.warning("短链并发展开失败: %s (%s)", u, e)
+                if resolved and _host(resolved) != _host(u):
+                    logger.info("TikTok 短链已展开: %s -> %s", u, resolved)
+                resolved_by_input[u] = resolved or u
 
     return input_urls, resolved_by_input
 
@@ -606,6 +622,44 @@ def _fallback_via_profile(platform: str, url: str, apify_token: str) -> dict:
     return {}
 
 
+def _fetch_video_metrics_batch(platform: str, batch: List[str], apify_token: str) -> Dict[str, dict]:
+    results: Dict[str, dict] = {}
+    try:
+        items = _scrape_batch(platform, batch, apify_token)
+        indexed = _index_items(items)
+        for actor_url in batch:
+            item = indexed.get(actor_url)
+            if not item:
+                # 单条 URL 兜底再试一次
+                try:
+                    single_items = _scrape_batch(platform, [actor_url], apify_token)
+                    indexed.update(_index_items(single_items))
+                    item = indexed.get(actor_url)
+                    if not item and len(single_items) == 1 and isinstance(single_items[0], dict):
+                        item = single_items[0]
+                except Exception as e:
+                    logger.warning("单条重试失败 %s: %s", actor_url, e)
+            if item:
+                results[actor_url] = _extract_metrics(item, platform)
+            else:
+                try:
+                    fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
+                except Exception as e:
+                    logger.warning("主页兜底失败 %s: %s", actor_url, e)
+                    fallback_metrics = {}
+                results[actor_url] = fallback_metrics or {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
+    except Exception as e:
+        logger.error("批次抓取失败 platform=%s: %s", platform, e)
+        for actor_url in batch:
+            try:
+                fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
+            except Exception as fallback_exc:
+                logger.warning("批次失败后的主页兜底失败 %s: %s", actor_url, fallback_exc)
+                fallback_metrics = {}
+            results[actor_url] = fallback_metrics or {"_error": str(e)[:200]}
+    return results
+
+
 def _in_date_window(post_date: str, start_date: Optional[str], end_date: Optional[str]) -> bool:
     if not (start_date or end_date):
         return True
@@ -718,65 +772,37 @@ def fetch_video_metrics(
             continue
 
         unique_urls = list(dict.fromkeys(plat_urls))
-        for i in range(0, len(unique_urls), BATCH_SIZE):
-            batch = unique_urls[i : i + BATCH_SIZE]
-            batch_input_count = sum(len(input_urls_by_actor_url.get(u, [u])) for u in batch)
-            msg = f"正在抓取 {platform} 视频数据 ({done + 1}-{min(done + batch_input_count, total)}/{total})..."
-            if progress_hook:
-                progress_hook(msg)
-            try:
-                items = _scrape_batch(platform, batch, apify_token)
-                indexed = _index_items(items)
+        batches = [unique_urls[i : i + BATCH_SIZE] for i in range(0, len(unique_urls), BATCH_SIZE)]
+        if not batches:
+            continue
+
+        if progress_hook:
+            progress_hook(f"正在抓取 {platform} 视频数据，共 {len(unique_urls)} 条，{len(batches)} 批...")
+
+        batch_workers = min(BATCH_WORKERS, len(batches))
+        with ThreadPoolExecutor(max_workers=batch_workers) as executor:
+            future_by_batch = {
+                executor.submit(_fetch_video_metrics_batch, platform, batch, apify_token): batch
+                for batch in batches
+            }
+            for future in as_completed(future_by_batch):
+                batch = future_by_batch[future]
+                batch_input_count = sum(len(input_urls_by_actor_url.get(u, [u])) for u in batch)
+                try:
+                    batch_results = future.result()
+                except Exception as e:
+                    logger.error("批次线程异常 platform=%s: %s", platform, e)
+                    batch_results = {actor_url: {"_error": str(e)[:200]} for actor_url in batch}
+
                 for actor_url in batch:
-                    item = indexed.get(actor_url)
-                    if not item:
-                        # 单条 URL 兜底再试一次
-                        try:
-                            single_items = _scrape_batch(platform, [actor_url], apify_token)
-                            indexed.update(_index_items(single_items))
-                            item = indexed.get(actor_url)
-                            if not item and len(single_items) == 1 and isinstance(single_items[0], dict):
-                                item = single_items[0]
-                        except Exception as e:
-                            logger.warning("单条重试失败 %s: %s", actor_url, e)
-                    if item:
-                        metrics = _extract_metrics(item, platform)
-                        for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
-                            results[input_url] = metrics
-                            results[actor_url] = metrics
-                    else:
-                        try:
-                            fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
-                        except Exception as e:
-                            logger.warning("主页兜底失败 %s: %s", actor_url, e)
-                            fallback_metrics = {}
-                        if fallback_metrics:
-                            for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
-                                results[input_url] = fallback_metrics
-                                results[actor_url] = fallback_metrics
-                        else:
-                            error = {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
-                            for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
-                                results[input_url] = error
-                                results[actor_url] = error
-            except Exception as e:
-                logger.error("批次抓取失败 platform=%s: %s", platform, e)
-                for actor_url in batch:
-                    try:
-                        fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
-                    except Exception as fallback_exc:
-                        logger.warning("批次失败后的主页兜底失败 %s: %s", actor_url, fallback_exc)
-                        fallback_metrics = {}
-                    if fallback_metrics:
-                        for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
-                            results[input_url] = fallback_metrics
-                            results[actor_url] = fallback_metrics
-                    else:
-                        error = {"_error": str(e)[:200]}
-                        for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
-                            results[input_url] = error
-                            results[actor_url] = error
-            done += batch_input_count
+                    metrics = batch_results.get(actor_url) or {"_error": "未返回结果"}
+                    for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                        results[input_url] = metrics
+                    results[actor_url] = metrics
+
+                done += batch_input_count
+                if progress_hook:
+                    progress_hook(f"正在抓取 {platform} 视频数据，已完成 {min(done, total)}/{total}...")
 
     return results
 
