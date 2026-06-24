@@ -227,7 +227,7 @@ def _run_refresh(
         acv = _lookup_acv(platform, link, acv_metrics)
         if not metric and acv is None:
             row["status"] = "失败"
-            row["error"] = "未抓到粉丝/AVV/ACV"
+            row["error"] = _missing_metrics_reason(row, raw, metrics, acv_metrics)
             failed += 1
         else:
             row["followers"] = metric.get("followers") if metric else None
@@ -244,6 +244,7 @@ def _run_refresh(
                     added += 1
     db.commit()
 
+    failure_summary = _failure_summary(rows)
     job.summary_json = _job_summary_json(
         step=JOB_STEPS[2],
         total=len(rows),
@@ -251,6 +252,7 @@ def _run_refresh(
         failed=failed,
         added=added,
         updated=updated,
+        failure_summary=failure_summary,
     )
     db.commit()
     out_path = write_output(rows, wb, job.id)
@@ -261,6 +263,7 @@ def _run_refresh(
     job.updated_count = updated
     job.output_path = str(out_path)
     job.output_filename = out_path.name
+    failure_summary = _failure_summary(rows)
     job.summary_json = _job_summary_json(
         step=JOB_STEPS[4],
         total=len(rows),
@@ -268,7 +271,9 @@ def _run_refresh(
         failed=failed,
         added=added,
         updated=updated,
+        failure_summary=failure_summary,
         errors=[row.get("error") for row in rows if row.get("error")][:20],
+        error_examples=_failure_examples(rows),
         download_file_id=job.id,
         output_filename=out_path.name,
     )
@@ -297,6 +302,74 @@ def _fetch_raw(records: list[KOLRecord], videos_per_profile: int) -> tuple[dict[
             raw[platform] = []
             errors[platform] = str(exc)
     return raw, errors
+
+
+def _missing_metrics_reason(
+    row: dict[str, Any],
+    raw: dict[str, list[dict[str, Any]]],
+    metrics: dict[str, dict[str, dict[str, Any]]],
+    acv_metrics: dict[str, dict[str, int]],
+) -> str:
+    platform = row.get("platform") or ""
+    link = row.get("link") or row.get("raw_link") or ""
+    label = platform_label(platform)
+    platform_raw = raw.get(platform) or []
+    if not platform_raw:
+        return f"{label} 抓取无返回：请检查主页是否公开/存在，或稍后重试"
+    key = _metric_key(platform, link)
+    metric_keys = sorted((metrics.get(platform) or {}).keys())
+    acv_keys = sorted((acv_metrics.get(platform) or {}).keys())
+    if key:
+        sample_keys = metric_keys[:5] or acv_keys[:5]
+        if sample_keys:
+            return f"{label} 未匹配到该达人数据：链接标识 {key}，平台返回标识示例 {', '.join(sample_keys)}"
+        return f"{label} 返回了 {len(platform_raw)} 条数据，但没有可匹配的粉丝/AVV/ACV 字段"
+    return f"{label} 链接无法提取达人标识：{link}"
+
+
+def _failure_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for row in rows:
+        if not row.get("error"):
+            continue
+        reason = _compact_failure_reason(row.get("error") or "")
+        summary[reason] = summary.get(reason, 0) + 1
+    return summary
+
+
+def _failure_examples(rows: list[dict[str, Any]], limit: int = 20) -> list[dict[str, Any]]:
+    examples = []
+    for row in rows:
+        if not row.get("error"):
+            continue
+        examples.append({
+            "name": row.get("name") or "",
+            "platform": platform_label(row.get("platform") or ""),
+            "link": row.get("link") or row.get("raw_link") or "",
+            "error": row.get("error") or "",
+        })
+        if len(examples) >= limit:
+            break
+    return examples
+
+
+def _compact_failure_reason(error: str) -> str:
+    text = clean_text(error)
+    if not text:
+        return "未知原因"
+    if "抓取无返回" in text:
+        return "平台抓取无返回"
+    if "未匹配到该达人数据" in text:
+        return "平台返回数据未匹配到该链接"
+    if "没有可匹配的粉丝/AVV/ACV字段" in text or "没有可匹配的粉丝/AVV/ACV 字段" in text:
+        return "平台返回缺少粉丝/AVV/ACV字段"
+    if "链接格式无效" in text:
+        return "链接格式无效"
+    if "无法识别平台" in text:
+        return "无法识别平台"
+    if "抓取失败" in text:
+        return "平台抓取失败"
+    return text[:80]
 
 
 def write_output(rows: list[dict[str, Any]], wb, job_id: int) -> Path:

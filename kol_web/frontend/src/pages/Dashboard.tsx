@@ -345,8 +345,12 @@ export default function Dashboard() {
           <span className="empty-cell">-</span>
         ),
     },
+    {
+      title: "失败原因摘要",
+      width: 260,
+      render: (_: unknown, job: DataRefreshJob) => dataRefreshFailureSummary(job),
+    },
     { title: "创建时间", dataIndex: "created_at", width: 190, render: (value: string) => new Date(value).toLocaleString() },
-    { title: "失败原因", dataIndex: "error", ellipsis: true },
   ];
 
   const applyFilters = (nextFilters: FilterPayload) => {
@@ -891,6 +895,7 @@ export default function Dashboard() {
               <span>
                 成功 {dataRefreshCurrentJob.success_count}/{dataRefreshCurrentJob.total || 0}，失败 {dataRefreshCurrentJob.failed_count}
               </span>
+              {dataRefreshCurrentJob.failed_count > 0 && dataRefreshFailureSummary(dataRefreshCurrentJob)}
               {dataRefreshCurrentJob.status === "completed" && (
                 <Button type="link" href={dataRefreshDownloadUrl(dataRefreshCurrentJob.id)}>
                   下载回填 Excel
@@ -1436,6 +1441,39 @@ function dataRefreshStepIndex(job?: DataRefreshJob | null) {
   if (index >= 0) return index;
   if (job?.status === "completed") return DATA_REFRESH_STEPS.length - 1;
   return -1;
+}
+
+function dataRefreshFailureSummary(job?: DataRefreshJob | null) {
+  const parsed = parseDataRefreshSummary(job);
+  const failureSummary = parsed.failure_summary;
+  const examples = Array.isArray(parsed.error_examples) ? parsed.error_examples : [];
+  const parts =
+    failureSummary && typeof failureSummary === "object" && !Array.isArray(failureSummary)
+      ? Object.entries(failureSummary as Record<string, unknown>)
+          .filter(([, value]) => Number(value) > 0)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .map(([reason, count]) => `${reason} ${count}`)
+      : [];
+  const legacyErrors = Array.isArray(parsed.errors) ? parsed.errors.map((item) => String(item || "")).filter(Boolean) : [];
+  const primary = parts.length ? parts.slice(0, 2).join("；") : job?.error || legacyErrors[0] || "";
+  if (!primary) return <span className="empty-cell">-</span>;
+  const detail = [
+    parts.join("；"),
+    ...legacyErrors.slice(0, 8),
+    ...examples.slice(0, 8).map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const row = item as Record<string, unknown>;
+      return `${row.platform || ""} ${row.name || ""} ${row.link || ""}: ${row.error || ""}`.trim();
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <span title={detail} className={job?.failed_count ? "error-text" : undefined}>
+      {primary}
+      {parts.length > 2 ? " ..." : ""}
+    </span>
+  );
 }
 
 function downloadBlob(blob: Blob, filename: string) {

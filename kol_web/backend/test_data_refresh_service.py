@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -164,6 +165,48 @@ class DataRefreshServiceTests(unittest.TestCase):
 
             self.assertEqual(job.status, "failed")
             self.assertIn("未识别到达人主页链接", job.error)
+        finally:
+            db.close()
+
+    def test_refresh_job_summarizes_failed_rows_with_examples(self):
+        db = self.Session()
+        try:
+            rows = data_refresh_service.rows_from_links("https://www.tiktok.com/@alice")
+            job = DataRefreshJob(input_type="links", status="running", total=len(rows), include_acv=1)
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+
+            old_fetch = data_refresh_service._fetch_raw
+            data_refresh_service._fetch_raw = lambda _records, _n: (
+                {
+                    "tiktok": [
+                        {
+                            "authorMeta": {"name": "bob", "fans": 1000},
+                            "webVideoUrl": "https://www.tiktok.com/@bob/video/1",
+                            "playCount": 200,
+                        }
+                    ],
+                    "ins": [],
+                    "youtube": [],
+                },
+                {},
+            )
+            try:
+                data_refresh_service._run_refresh(db, job, rows, None, False, True, 10)
+            finally:
+                data_refresh_service._fetch_raw = old_fetch
+
+            self.assertEqual(job.status, "completed")
+            self.assertEqual(job.success_count, 0)
+            self.assertEqual(job.failed_count, 1)
+            self.assertIn("未匹配到该达人数据", rows[0]["error"])
+            self.assertIn("alice", rows[0]["error"])
+            self.assertIn("bob", rows[0]["error"])
+            summary = json.loads(job.summary_json)
+            self.assertEqual(summary["failure_summary"]["平台返回数据未匹配到该链接"], 1)
+            self.assertEqual(summary["error_examples"][0]["link"], "https://www.tiktok.com/@alice")
+            self.assertIn("未匹配到该达人数据", summary["error_examples"][0]["error"])
         finally:
             db.close()
 
