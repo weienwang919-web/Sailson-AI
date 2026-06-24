@@ -118,6 +118,7 @@
         <img src="{{ url_for('static', filename='logo.png') }}" class="logo-img" alt="Logo">
         <span style="font-weight: 700; font-size: 1.1rem; color: #333;">舆情分析</span>
     </div>
+    <button onclick="window.location.href='/agent-tool'" class="btn btn-primary w-100 mb-2" style="background-color: #111827; border:none; padding: 10px; border-radius: 8px; color: white; cursor: pointer;">AI 任务助手</button>
     <button onclick="location.reload()" class="btn btn-primary w-100 mb-3" style="background-color: #2962FF; border:none; padding: 10px; border-radius: 8px; color: white; cursor: pointer;">+ 新的分析</button>
     <input type="text" class="search-box" placeholder="🔍 搜索历史记录..." id="searchBox" oninput="filterHistory()">
     <div class="filter-tags">

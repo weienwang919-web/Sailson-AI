@@ -136,6 +136,29 @@ try:
     """)
     print("✅ 任务队列表创建成功")
 
+    print("\n📋 创建 AI 任务助手动作表...")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS agent_actions (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            chat_session_id INTEGER,
+            intent VARCHAR(80) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'draft',
+            params_json TEXT,
+            card_json TEXT,
+            reply TEXT,
+            tool_name VARCHAR(80),
+            tool_task_id VARCHAR(160),
+            tool_job_id VARCHAR(160),
+            result_json TEXT,
+            error TEXT,
+            confirmed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    print("✅ AI 任务助手动作表创建成功")
+
     # 检查是否已存在管理员账号
     cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
     admin_exists = cursor.fetchone()[0] > 0
@@ -182,6 +205,12 @@ try:
     """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_task_queue_status_created ON task_queue(status, created_at);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_agent_actions_user_created ON agent_actions(user_id, created_at);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_agent_actions_session ON agent_actions(chat_session_id);
     """)
     print("✅ 索引创建成功")
 

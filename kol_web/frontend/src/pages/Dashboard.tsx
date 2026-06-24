@@ -718,6 +718,13 @@ export default function Dashboard() {
               <Space direction="vertical" style={{ width: "100%" }} size="middle">
                 <div className="workbench governance-grid">
                   <Card className="work-card">
+                    <div className="work-title">AI 任务助手</div>
+                    <div className="work-desc">用自然语言描述需求，助手会预检并调用达人数据更新、舆情和视频数据工具。</div>
+                    <Button type="primary" onClick={() => { window.location.href = "/agent-tool"; }}>
+                      打开任务助手
+                    </Button>
+                  </Card>
+                  <Card className="work-card">
                     <div className="work-title">Excel 导入</div>
                     <div className="work-desc">导入报价、合作模式、受众等人工字段，系统会按平台优先归到对应商务字段。</div>
                     <Upload accept=".xlsx" showUploadList={false} beforeUpload={(file) => { void handleExcelImport(file, false); return false; }}>

@@ -38,6 +38,7 @@ import etl_jobs
 import video_metrics_etl
 import profile_video_scheduler
 import sentiment_insight
+import agent_service
 import competitor_radar
 import tiktok_official_service
 import usage_service
@@ -457,6 +458,36 @@ def ensure_etl_file_outputs_schema():
         logger.warning(f"⚠️ 无法创建 etl_file_outputs 表: {e}")
 
 
+def ensure_agent_actions_schema():
+    """AI 任务助手动作审计表。"""
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_actions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                chat_session_id INTEGER,
+                intent VARCHAR(80) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'draft',
+                params_json TEXT,
+                card_json TEXT,
+                reply TEXT,
+                tool_name VARCHAR(80),
+                tool_task_id VARCHAR(160),
+                tool_job_id VARCHAR(160),
+                result_json TEXT,
+                error TEXT,
+                confirmed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_agent_actions_user_created ON agent_actions(user_id, created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_agent_actions_session ON agent_actions(chat_session_id)")
+        logger.info("✅ 已确认 agent_actions 表存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法创建 agent_actions 表: {e}")
+
+
 def ensure_fb_post_metrics_schema():
     """确保帖子级指标表存在（用于SPD报告按engagement口径计算）。"""
     try:
@@ -549,6 +580,7 @@ USD_TO_CNY = 7.2
 ensure_task_queue_schema()
 ensure_analysis_results_schema()
 ensure_etl_file_outputs_schema()
+ensure_agent_actions_schema()
 ensure_fb_post_metrics_schema()
 profile_video_scheduler.ensure_schema()
 tiktok_official_service.ensure_schema()
@@ -1402,6 +1434,13 @@ def home():
     return render_template('index.html', user=session)
 
 
+@app.route('/agent-tool')
+@login_required
+def agent_tool():
+    """AI 任务助手页面"""
+    return render_template('agent.html', user=session)
+
+
 @app.route('/tiktok/callback/', strict_slashes=False)
 def tiktok_callback():
     """公开 TikTok OAuth 回调占位页，用于开发者后台 URL 校验。"""
@@ -1573,6 +1612,617 @@ def kol_api_proxy(path):
         if key.lower() not in excluded_response_headers
     ]
     return Response(upstream.content, status=upstream.status_code, headers=response_headers)
+
+
+# ============================================
+# AI 任务助手
+# ============================================
+
+AGENT_ACTION_EXECUTABLES = {
+    'sentiment_comments',
+    'video_metrics',
+    'profile_video_sync',
+    'kol_data_refresh_links',
+    'kol_data_refresh_excel',
+    'task_query',
+}
+
+
+def _agent_json(value):
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _agent_load_json(value, default=None):
+    if not value:
+        return default if default is not None else {}
+    try:
+        return json.loads(value) if isinstance(value, str) else value
+    except Exception:
+        return default if default is not None else {}
+
+
+def _agent_session(session_id_chat=None, title='AI 任务助手'):
+    user_id = session.get('user_id')
+    if session_id_chat:
+        row = db.query_one(
+            "SELECT id FROM chat_sessions WHERE id = %s AND user_id = %s",
+            (session_id_chat, user_id),
+        )
+        if row:
+            return int(row['id'])
+    return db.execute_and_fetch_id(
+        """
+        INSERT INTO chat_sessions (user_id, mode, project, title)
+        VALUES (%s, %s, %s, %s) RETURNING id
+        """,
+        (user_id, 'agent', 'CFL', title[:256]),
+    )
+
+
+def _agent_insert_message(session_id_chat, role, content):
+    db.execute(
+        "INSERT INTO chat_messages (session_id, role, content) VALUES (%s, %s, %s)",
+        (session_id_chat, role, content),
+    )
+
+
+def _agent_create_action(chat_session_id, draft):
+    user_id = session.get('user_id')
+    return db.execute_and_fetch_id(
+        """
+        INSERT INTO agent_actions (
+            user_id, chat_session_id, intent, status, params_json, card_json, reply
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            user_id,
+            chat_session_id,
+            draft.intent,
+            'draft' if draft.needs_confirmation else 'ready',
+            _agent_json(draft.params),
+            _agent_json(draft.card) if draft.card else None,
+            draft.reply,
+        ),
+    )
+
+
+def _agent_get_action(action_id):
+    row = db.query_one(
+        """
+        SELECT *
+        FROM agent_actions
+        WHERE id = %s AND user_id = %s
+        """,
+        (action_id, session.get('user_id')),
+    )
+    return dict(row) if row else None
+
+
+def _agent_update_action(action_id, **fields):
+    allowed = {
+        'status', 'tool_name', 'tool_task_id', 'tool_job_id',
+        'result_json', 'error', 'confirmed_at', 'card_json', 'reply',
+    }
+    updates = []
+    params = []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        updates.append(f"{key} = %s")
+        params.append(value)
+    if not updates:
+        return
+    updates.append("updated_at = NOW()")
+    params.append(action_id)
+    params.append(session.get('user_id'))
+    db.execute(
+        f"UPDATE agent_actions SET {', '.join(updates)} WHERE id = %s AND user_id = %s",
+        tuple(params),
+    )
+
+
+def _agent_action_out(row):
+    result = {
+        'id': row.get('id'),
+        'session_id': row.get('chat_session_id'),
+        'intent': row.get('intent'),
+        'status': row.get('status'),
+        'reply': row.get('reply'),
+        'params': _agent_load_json(row.get('params_json'), {}),
+        'card': _agent_load_json(row.get('card_json'), None),
+        'tool_name': row.get('tool_name'),
+        'tool_task_id': row.get('tool_task_id'),
+        'tool_job_id': row.get('tool_job_id'),
+        'result': _agent_load_json(row.get('result_json'), None),
+        'error': row.get('error'),
+        'created_at': row.get('created_at'),
+        'updated_at': row.get('updated_at'),
+        'confirmed_at': row.get('confirmed_at'),
+    }
+    return _json_safe(result)
+
+
+def _agent_kol_api_url(path):
+    if not KOL_API_BASE_URL:
+        raise RuntimeError('KOL_API_BASE_URL 未配置')
+    api_base = KOL_API_BASE_URL.rstrip('/')
+    if not api_base.startswith(('http://', 'https://')):
+        api_base = f"http://{api_base}"
+    if not api_base.endswith('/api'):
+        api_base = f"{api_base}/api"
+    return f"{api_base}/{path.lstrip('/')}"
+
+
+def _agent_kol_headers():
+    headers = {}
+    if KOL_PROXY_TOKEN:
+        headers['X-KOL-Proxy-Token'] = KOL_PROXY_TOKEN
+    return headers
+
+
+def _agent_create_sentiment_task(params):
+    urls = [u for u in (params.get('urls') or []) if sentiment_insight.detect_platform(u) != 'UNKNOWN']
+    if not urls:
+        raise ValueError('未识别到可分析的社媒评论链接')
+    task_id = str(uuid.uuid4())
+    session_id = session.get('session_id', 'default')
+    user_id = session.get('user_id')
+    username = session.get('username', 'unknown')
+    department = session.get('department', '未知')
+    create_task(task_id, user_id, session_id, function_type='sentiment')
+    task_params = {
+        'urls': urls,
+        'session_id': session_id,
+        'user_id': user_id,
+        'username': username,
+        'department': department,
+        'project': params.get('project', 'CFL'),
+    }
+    set_task_params(task_id, task_params)
+    if not USE_DB_WORKER:
+        threading.Thread(
+            target=process_analysis_task,
+            kwargs={
+                'task_id': task_id,
+                'urls': urls,
+                'session_id': session_id,
+                'user_id': user_id,
+                'username': username,
+                'department': department,
+                'project': params.get('project', 'CFL'),
+            },
+            daemon=True,
+        ).start()
+    return {'tool_name': 'sentiment_comments', 'task_id': task_id, 'status': 'queued', 'url_count': len(urls)}
+
+
+def _agent_create_video_metrics_task(params):
+    urls = [u for u in (params.get('urls') or []) if video_metrics_etl.detect_platform(u) != 'UNKNOWN']
+    if not urls:
+        raise ValueError('未识别到可拉取基础数据的视频/帖子链接')
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    df = pd.DataFrame({'视频链接': urls})
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='视频链接')
+    raw = buf.getvalue()
+    parsed = etl_tools.parse_excel_urls(raw, '视频链接')
+    input_row = db.execute_and_fetch_one(
+        """
+        INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (queue_task_id, user_id, '_input_video_metrics.xlsx', raw),
+    )
+    input_file_id = input_row['id'] if input_row else None
+    if not input_file_id:
+        raise RuntimeError('保存输入文件失败')
+    selected_fields = params.get('selected_fields') or list(DEFAULT_VIDEO_METRIC_FIELDS)
+    task_params = {
+        'source': 'agent_video_metrics',
+        'input_file_id': input_file_id,
+        'url_column': '视频链接',
+        'resolved_url_column': parsed.url_column,
+        'sheet_name': parsed.sheet_name,
+        'header_row': parsed.header_row,
+        'urls': parsed.urls,
+        'selected_fields': selected_fields,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+    create_task(queue_task_id, user_id, session_id, function_type='etl_video_metrics')
+    set_task_params(queue_task_id, task_params)
+    if not USE_DB_WORKER:
+        threading.Thread(
+            target=lambda: etl_jobs.run_etl_video_metrics_task(queue_task_id, task_params, update_task),
+            daemon=True,
+        ).start()
+    return {'tool_name': 'video_metrics', 'task_id': queue_task_id, 'status': 'queued', 'url_count': len(urls)}
+
+
+def _agent_create_profile_sync_task(params):
+    profile_urls = [u for u in (params.get('urls') or []) if agent_service.is_profile_url(u)]
+    if not profile_urls:
+        raise ValueError('未识别到可同步的达人主页链接')
+    sync_scope = params.get('sync_scope') or 'recent'
+    if sync_scope not in {'recent', 'range', 'all'}:
+        sync_scope = 'recent'
+    start_date = params.get('start_date') or None
+    end_date = params.get('end_date') or None
+    if sync_scope == 'recent':
+        start_date, end_date = agent_service.recent_window_dates(int(params.get('recent_days') or 7))
+        sync_scope = 'range'
+    max_videos = int(params.get('max_videos') or profile_video_scheduler.default_max_videos_per_profile())
+    schedule_hour = int(params.get('schedule_hour') or profile_video_scheduler.default_sync_hour())
+    config_ids = []
+    inline_configs = []
+    if params.get('schedule'):
+        result = profile_video_scheduler.upsert_configs(
+            profile_urls,
+            user_id=session.get('user_id'),
+            enabled=True,
+            sync_scope=sync_scope,
+            start_date=start_date,
+            end_date=end_date,
+            max_videos=max_videos,
+            schedule_hour=schedule_hour,
+            feishu_app_token=params.get('feishu_app_token') or None,
+            feishu_table_id=params.get('feishu_table_id') or None,
+        )
+        config_ids = result.get('ids') or []
+    else:
+        inline_configs = [
+            {
+                'profile_url': url,
+                'platform': video_metrics_etl.detect_platform(url),
+                'sync_scope': sync_scope,
+                'start_date': start_date,
+                'end_date': end_date,
+                'max_videos': max_videos,
+                'schedule_hour': schedule_hour,
+                'feishu_app_token': params.get('feishu_app_token') or None,
+                'feishu_table_id': params.get('feishu_table_id') or None,
+            }
+            for url in profile_urls
+        ]
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    task_params = {
+        'source': 'agent_profile_video_sync',
+        'trigger_type': 'agent',
+        'config_ids': config_ids,
+        'profile_urls': [],
+        'inline_configs': inline_configs,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+    create_task(queue_task_id, user_id, session_id, function_type='profile_video_sync')
+    set_task_params(queue_task_id, task_params)
+    if not USE_DB_WORKER:
+        threading.Thread(
+            target=lambda: profile_video_scheduler.run_profile_video_sync_task(queue_task_id, task_params, update_task),
+            daemon=True,
+        ).start()
+    return {
+        'tool_name': 'profile_video_sync',
+        'task_id': queue_task_id,
+        'status': 'queued',
+        'profile_count': len(config_ids) + len(inline_configs),
+        'config_ids': config_ids,
+    }
+
+
+def _agent_create_kol_link_task(params):
+    urls = [u for u in (params.get('urls') or []) if video_metrics_etl.detect_platform(u) in {'TT', 'IG', 'YTB'}]
+    if not urls:
+        raise ValueError('未识别到 TikTok / Instagram / YouTube 达人主页链接')
+    payload = {
+        'text': '\n'.join(urls),
+        'sync_to_pool': bool(params.get('sync_to_pool')),
+        'include_acv': bool(params.get('include_acv', True)),
+        'videos_per_profile': int(params.get('videos_per_profile') or 10),
+    }
+    response = requests.post(
+        _agent_kol_api_url('/kols/data-refresh/link-task'),
+        json=payload,
+        headers=_agent_kol_headers(),
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(response.text[:500])
+    data = response.json()
+    return {'tool_name': 'kol_data_refresh_links', 'job_id': data.get('id'), 'status': data.get('status'), 'job': data}
+
+
+def _agent_create_kol_excel_task(params):
+    attachment_id = params.get('attachment_id')
+    if not attachment_id:
+        raise ValueError('请先上传 Excel 附件')
+    row = db.query_one(
+        "SELECT content, filename FROM etl_file_outputs WHERE id = %s AND user_id = %s",
+        (attachment_id, session.get('user_id')),
+    )
+    if not row or not row.get('content'):
+        raise ValueError('Excel 附件不存在或无权限访问')
+    content = row['content']
+    if isinstance(content, memoryview):
+        content = content.tobytes()
+    filename = row.get('filename') or 'agent_kol_data_refresh.xlsx'
+    files = {
+        'file': (
+            filename,
+            BytesIO(content),
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    }
+    query = {
+        'sync_to_pool': str(bool(params.get('sync_to_pool'))).lower(),
+        'include_acv': str(bool(params.get('include_acv', True))).lower(),
+        'videos_per_profile': int(params.get('videos_per_profile') or 10),
+    }
+    response = requests.post(
+        _agent_kol_api_url('/kols/data-refresh/excel-task'),
+        params=query,
+        files=files,
+        headers=_agent_kol_headers(),
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(response.text[:500])
+    data = response.json()
+    return {'tool_name': 'kol_data_refresh_excel', 'job_id': data.get('id'), 'status': data.get('status'), 'job': data}
+
+
+def _agent_list_recent_tasks():
+    sentiment_items = []
+    try:
+        uid = session.get('user_id')
+        rows = db.query_all(
+            """
+            SELECT task_id, function_type, status, progress, result, error, record_id,
+                   created_at, updated_at, finished_at
+            FROM task_queue
+            WHERE user_id = %s
+              AND function_type IN ('sentiment', 'etl_video_metrics', 'profile_video_sync')
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (uid,),
+        ) or []
+        for row in rows:
+            result_payload = _agent_load_json(row.get('result'), {})
+            sentiment_items.append({
+                'source': 'sailson',
+                'id': row.get('task_id'),
+                'type': _sentiment_task_name(row.get('function_type')),
+                'status': row.get('status'),
+                'progress': row.get('progress'),
+                'success_count': result_payload.get('success_count'),
+                'failed_count': result_payload.get('failed_count'),
+                'download_id': result_payload.get('download_id'),
+                'error': row.get('error'),
+                'created_at': row.get('created_at'),
+            })
+    except Exception as e:
+        sentiment_items.append({'source': 'sailson', 'status': 'error', 'error': str(e)})
+
+    kol_items = []
+    if KOL_API_BASE_URL:
+        try:
+            response = requests.get(
+                _agent_kol_api_url('/kols/data-refresh/jobs'),
+                params={'limit': 10},
+                headers=_agent_kol_headers(),
+                timeout=15,
+            )
+            if response.status_code < 400:
+                for job in response.json() or []:
+                    kol_items.append({
+                        'source': 'kol',
+                        'id': job.get('id'),
+                        'type': '达人数据更新',
+                        'status': job.get('status'),
+                        'progress': f"成功 {job.get('success_count', 0)}/{job.get('total', 0)}，失败 {job.get('failed_count', 0)}",
+                        'success_count': job.get('success_count'),
+                        'failed_count': job.get('failed_count'),
+                        'download_url': f"/kol-api/kols/data-refresh/download/{job.get('id')}" if job.get('output_filename') else None,
+                        'error': job.get('error'),
+                        'created_at': job.get('created_at'),
+                    })
+        except Exception as e:
+            kol_items.append({'source': 'kol', 'status': 'error', 'error': str(e)})
+    return {'items': _json_safe_rows(sentiment_items + kol_items)}
+
+
+def _agent_execute_action(row):
+    intent = row.get('intent')
+    params = _agent_load_json(row.get('params_json'), {})
+    if intent not in AGENT_ACTION_EXECUTABLES:
+        raise ValueError('该任务类型暂不支持执行')
+    if intent == 'sentiment_comments':
+        return _agent_create_sentiment_task(params)
+    if intent == 'video_metrics':
+        return _agent_create_video_metrics_task(params)
+    if intent == 'profile_video_sync':
+        return _agent_create_profile_sync_task(params)
+    if intent == 'kol_data_refresh_links':
+        return _agent_create_kol_link_task(params)
+    if intent == 'kol_data_refresh_excel':
+        return _agent_create_kol_excel_task(params)
+    if intent == 'task_query':
+        return _agent_list_recent_tasks()
+    raise ValueError('无法执行该任务')
+
+
+@app.route('/api/agent/message', methods=['POST'])
+@login_required
+def agent_message_api():
+    try:
+        user_message = ''
+        session_id_chat = None
+        attachment_id = None
+        if request.files:
+            user_message = (request.form.get('message') or '').strip()
+            session_id_chat = request.form.get('session_id')
+            upload = request.files.get('file')
+            if upload and upload.filename:
+                if not upload.filename.lower().endswith('.xlsx'):
+                    return jsonify({'status': 'error', 'message': 'Agent 附件第一版仅支持 .xlsx'}), 400
+                raw = upload.read()
+                row = db.execute_and_fetch_one(
+                    """
+                    INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (f"agent_upload_{uuid.uuid4().hex}", session.get('user_id'), upload.filename, raw),
+                )
+                attachment_id = row['id'] if row else None
+        else:
+            data = request.get_json(silent=True) or {}
+            user_message = (data.get('message') or '').strip()
+            session_id_chat = data.get('session_id')
+            attachment_id = data.get('attachment_id')
+        if not user_message and not attachment_id:
+            return jsonify({'status': 'error', 'message': '请输入任务需求或上传 Excel'}), 400
+        if attachment_id and not user_message:
+            user_message = '帮我用这个 Excel 做达人数据更新，默认只导出 Excel'
+
+        chat_session_id = _agent_session(session_id_chat, user_message[:40] or 'AI 任务助手')
+        _agent_insert_message(chat_session_id, 'user', user_message)
+        draft = agent_service.build_draft(user_message, qwen_client=qwen_client)
+        if attachment_id:
+            draft.params['attachment_id'] = attachment_id
+            if draft.intent in {'unknown', 'kol_data_refresh_links'}:
+                draft.intent = 'kol_data_refresh_excel'
+            draft.card = agent_service.build_action_card(draft.intent, draft.params)
+            draft.needs_confirmation = True
+            draft.reply = f"我识别到一个「{draft.card.get('task_type')}」任务，请确认后开始执行。"
+        action_id = None
+        action_result = None
+        if draft.intent != 'unknown':
+            action_id = _agent_create_action(chat_session_id, draft)
+            if draft.intent == 'task_query':
+                row = _agent_get_action(action_id)
+                action_result = _agent_execute_action(row)
+                _agent_update_action(
+                    action_id,
+                    status='executed',
+                    tool_name='task_query',
+                    result_json=_agent_json(action_result),
+                )
+                row = _agent_get_action(action_id)
+                draft.card = _agent_load_json(row.get('card_json'), draft.card)
+        _agent_insert_message(chat_session_id, 'assistant', draft.reply)
+        return jsonify({
+            'status': 'success',
+            'session_id': chat_session_id,
+            'reply': draft.reply,
+            'intent': draft.intent,
+            'needs_confirmation': draft.needs_confirmation,
+            'action': {
+                'id': action_id,
+                'intent': draft.intent,
+                'status': 'executed' if action_result else ('draft' if draft.needs_confirmation else 'ready'),
+                'card': draft.card,
+                'params': draft.params,
+                'result': action_result,
+            } if action_id else None,
+        })
+    except Exception as e:
+        logger.error(f"Agent message failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/agent/actions/<int:action_id>/confirm', methods=['POST'])
+@login_required
+def agent_confirm_action_api(action_id):
+    row = _agent_get_action(action_id)
+    if not row:
+        return jsonify({'status': 'error', 'message': '任务动作不存在或无权限访问'}), 404
+    if row.get('status') in {'executing', 'executed'}:
+        return jsonify({'status': 'success', 'action': _agent_action_out(row)})
+    try:
+        _agent_update_action(action_id, status='executing', confirmed_at=datetime.datetime.now())
+        fresh = _agent_get_action(action_id)
+        result = _agent_execute_action(fresh)
+        tool_task_id = result.get('task_id')
+        tool_job_id = result.get('job_id')
+        _agent_update_action(
+            action_id,
+            status='executed',
+            tool_name=result.get('tool_name') or fresh.get('intent'),
+            tool_task_id=str(tool_task_id) if tool_task_id else None,
+            tool_job_id=str(tool_job_id) if tool_job_id else None,
+            result_json=_agent_json(result),
+        )
+        return jsonify({'status': 'success', 'action': _agent_action_out(_agent_get_action(action_id))})
+    except Exception as e:
+        logger.error(f"Agent confirm failed: {e}")
+        _agent_update_action(action_id, status='failed', error=str(e)[:1000])
+        return jsonify({'status': 'error', 'message': str(e), 'action': _agent_action_out(_agent_get_action(action_id))}), 500
+
+
+@app.route('/api/agent/actions/<int:action_id>')
+@login_required
+def agent_action_api(action_id):
+    row = _agent_get_action(action_id)
+    if not row:
+        return jsonify({'status': 'error', 'message': '任务动作不存在或无权限访问'}), 404
+    return jsonify({'status': 'success', 'action': _agent_action_out(row)})
+
+
+@app.route('/api/agent/tasks')
+@login_required
+def agent_tasks_api():
+    return jsonify({'status': 'success', **_agent_list_recent_tasks()})
+
+
+@app.route('/api/agent/sessions')
+@login_required
+def agent_sessions_api():
+    rows = db.query_all(
+        """
+        SELECT id, title, created_at
+        FROM chat_sessions
+        WHERE user_id = %s AND mode = 'agent'
+        ORDER BY created_at DESC
+        LIMIT 30
+        """,
+        (session.get('user_id'),),
+    ) or []
+    return jsonify({'status': 'success', 'items': _json_safe_rows(rows)})
+
+
+@app.route('/api/agent/sessions/<int:session_id_chat>')
+@login_required
+def agent_session_detail_api(session_id_chat):
+    row = db.query_one(
+        "SELECT id, title, created_at FROM chat_sessions WHERE id = %s AND user_id = %s AND mode = 'agent'",
+        (session_id_chat, session.get('user_id')),
+    )
+    if not row:
+        return jsonify({'status': 'error', 'message': '会话不存在'}), 404
+    messages = db.query_all(
+        "SELECT role, content, created_at FROM chat_messages WHERE session_id = %s ORDER BY created_at ASC",
+        (session_id_chat,),
+    ) or []
+    actions = db.query_all(
+        "SELECT * FROM agent_actions WHERE chat_session_id = %s AND user_id = %s ORDER BY created_at ASC",
+        (session_id_chat, session.get('user_id')),
+    ) or []
+    return jsonify({
+        'status': 'success',
+        'session': _json_safe(dict(row)),
+        'messages': _json_safe_rows(messages),
+        'actions': [_agent_action_out(dict(a)) for a in actions],
+    })
 
 
 @app.route('/dashboard_stats')

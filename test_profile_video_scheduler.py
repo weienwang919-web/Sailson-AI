@@ -69,6 +69,49 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(FakeFeishuClient.updated[0]["record_id"], "rec_old")
         self.assertEqual(upsert_state.call_count, 2)
 
+    def test_run_task_accepts_inline_configs_for_agent_oneoff_sync(self):
+        updates = []
+
+        def update_task(_task_id, **kwargs):
+            updates.append(kwargs)
+
+        rows = [
+            {
+                "video_key": "TT:new",
+                "profile_url": "https://www.tiktok.com/@a",
+                "platform": "TT",
+                "video_url": "https://www.tiktok.com/@a/video/1",
+                "views": 10,
+            }
+        ]
+
+        with patch.object(profile_video_scheduler, "_load_task_configs", return_value=[]), patch.object(
+            profile_video_scheduler, "_configs_missing_feishu_target", return_value=[]
+        ), patch.object(profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics", return_value=rows), patch.object(
+            profile_video_scheduler, "sync_rows_to_feishu", return_value={"created": 1, "updated": 0}
+        ), patch.object(profile_video_scheduler, "mark_task_for_configs"), patch.object(
+            profile_video_scheduler, "_mark_config_results"
+        ):
+            profile_video_scheduler.run_profile_video_sync_task(
+                "task-1",
+                {
+                    "user_id": 1,
+                    "trigger_type": "agent",
+                    "inline_configs": [
+                        {
+                            "profile_url": "https://www.tiktok.com/@a",
+                            "sync_scope": "range",
+                            "start_date": "2026-06-01",
+                            "end_date": "2026-06-24",
+                            "max_videos": 5,
+                        }
+                    ],
+                },
+                update_task,
+            )
+
+        self.assertEqual(updates[-1]["status"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

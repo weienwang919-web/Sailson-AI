@@ -263,6 +263,7 @@
             <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" class="logo-img">
         </a>
         <div class="d-flex align-items-center gap-3">
+            <a href="/agent-tool" class="text-secondary" style="text-decoration: none; font-size: 14px; font-weight: 500;">AI 任务助手</a>
             <a href="/my-stats" class="text-secondary" style="text-decoration: none; font-size: 14px; font-weight: 500;">📊 我的统计</a>
             <a href="/data-etl" class="text-secondary" style="text-decoration: none; font-size: 14px; font-weight: 500;">📥 Excel 数据工具</a>
             {% if user.role == 'admin' %}
@@ -352,6 +353,15 @@
 
     <div class="features-grid container" id="features">
         <div class="row g-4">
+            <div class="col-md-4">
+                <a href="/agent-tool" class="feature-card">
+                    <span class="card-badge" style="background:#EEF4FF;color:#1D4ED8;">Agent</span>
+                    <div class="card-icon">🤖</div>
+                    <h3 class="card-title">AI 任务助手</h3>
+                    <p class="card-desc">用自然语言拆解需求，预检后调用舆情、视频数据、主页同步与达人数据更新工具。</p>
+                    <div class="card-arrow">→</div>
+                </a>
+            </div>
             <div class="col-md-4">
                 <a href="/sentiment-tool" class="feature-card">
                     <span class="card-badge">最近使用</span>

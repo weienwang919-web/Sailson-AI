@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+{% block title %}AI 任务助手 | Sailson AI{% endblock %}
+{% block body_class %}agent-body{% endblock %}
+{% block head %}
+<style>
+    .agent-shell { min-height: 100vh; background: #f5f7fb; color: #172033; }
+    .agent-topbar { height: 64px; padding: 0 24px; background: #fff; border-bottom: 1px solid #e8edf5; display: flex; align-items: center; justify-content: space-between; }
+    .agent-brand { display: flex; align-items: center; gap: 12px; font-weight: 800; }
+    .agent-brand img { width: 32px; height: 32px; }
+    .agent-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; padding: 16px; max-width: 1440px; margin: 0 auto; }
+    .agent-main, .agent-side { background: #fff; border: 1px solid #e8edf5; border-radius: 8px; min-height: calc(100vh - 96px); }
+    .agent-main { display: flex; flex-direction: column; overflow: hidden; }
+    .agent-head { padding: 18px 20px; border-bottom: 1px solid #eef2f7; }
+    .agent-title { margin: 0; font-size: 20px; font-weight: 800; }
+    .agent-subtitle { margin-top: 4px; color: #667085; font-size: 14px; }
+    .agent-messages { flex: 1; padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .agent-empty { margin: auto; max-width: 640px; text-align: center; color: #667085; }
+    .agent-empty h2 { color: #172033; font-size: 24px; margin-bottom: 10px; }
+    .quick-prompts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+    .quick-prompts button { border: 1px solid #d9e2f2; background: #fff; border-radius: 8px; padding: 10px 12px; text-align: left; color: #344054; }
+    .msg { max-width: 78%; padding: 12px 14px; border-radius: 8px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+    .msg.user { align-self: flex-end; background: #2962ff; color: #fff; }
+    .msg.assistant { align-self: flex-start; background: #f1f5fb; color: #172033; }
+    .action-card { align-self: flex-start; width: min(760px, 100%); border: 1px solid #d7e1f2; border-radius: 8px; padding: 14px; background: #fff; box-shadow: 0 4px 16px rgba(26, 43, 71, 0.06); }
+    .action-card h3 { font-size: 16px; font-weight: 800; margin: 0 0 10px; }
+    .card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .card-kv { background: #f7f9fc; border-radius: 6px; padding: 8px 10px; }
+    .card-kv span { display: block; color: #667085; font-size: 12px; }
+    .card-kv strong { display: block; margin-top: 2px; color: #172033; font-size: 14px; }
+    .risk-list { margin: 8px 0 0; padding-left: 18px; color: #9a6700; font-size: 13px; }
+    .agent-composer { border-top: 1px solid #eef2f7; padding: 12px; background: #fff; }
+    .composer-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+    .agent-input { width: 100%; min-height: 92px; max-height: 180px; resize: vertical; border: 1px solid #d9e2f2; border-radius: 8px; padding: 12px; outline: none; }
+    .composer-actions { display: flex; flex-direction: column; gap: 8px; }
+    .agent-btn { border: 1px solid #d9e2f2; background: #fff; color: #344054; border-radius: 8px; padding: 10px 14px; font-weight: 700; }
+    .agent-btn.primary { background: #2962ff; border-color: #2962ff; color: #fff; }
+    .agent-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .file-line { margin-top: 8px; color: #667085; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+    .agent-side { padding: 16px; overflow: auto; }
+    .side-title { font-weight: 800; margin-bottom: 10px; }
+    .task-item { border: 1px solid #e8edf5; border-radius: 8px; padding: 10px; margin-bottom: 8px; background: #fff; }
+    .task-item-top { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; font-size: 13px; }
+    .task-meta { color: #667085; font-size: 12px; margin-top: 5px; }
+    .status-pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef4ff; color: #1d4ed8; white-space: nowrap; }
+    .status-pill.failed { background: #fee2e2; color: #b91c1c; }
+    .status-pill.completed, .status-pill.executed { background: #dcfce7; color: #166534; }
+    .download-link { display: inline-block; margin-top: 6px; color: #2962ff; text-decoration: none; font-size: 13px; font-weight: 700; }
+    @media (max-width: 960px) {
+        .agent-layout { grid-template-columns: 1fr; }
+        .agent-main, .agent-side { min-height: auto; }
+        .quick-prompts, .card-grid { grid-template-columns: 1fr; }
+        .msg { max-width: 92%; }
+    }
+</style>
+{% endblock %}
+{% block content %}
+<div class="agent-shell">
+    <nav class="agent-topbar">
+        <a class="agent-brand" href="/" style="text-decoration:none;color:inherit;">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo">
+            <span>Sailson AI · 任务助手</span>
+        </a>
+        <div style="display:flex;gap:14px;align-items:center;">
+            <a href="/sentiment-tool" class="text-secondary" style="text-decoration:none;">舆情</a>
+            <a href="/kol-tool" class="text-secondary" style="text-decoration:none;">KOL</a>
+            <a href="/" class="text-secondary" style="text-decoration:none;">首页</a>
+        </div>
+    </nav>
+    <div class="agent-layout">
+        <main class="agent-main">
+            <div class="agent-head">
+                <h1 class="agent-title">AI 任务助手</h1>
+                <div class="agent-subtitle">用自然语言描述需求，助手会拆解任务、预检风险，并调用平台工具执行。</div>
+            </div>
+            <div class="agent-messages" id="agentMessages">
+                <div class="agent-empty" id="agentEmpty">
+                    <h2>今天要让平台帮你跑什么？</h2>
+                    <p>支持舆情评论分析、拉视频数据、主页视频同步、达人数据更新和任务状态查询。</p>
+                    <div class="quick-prompts">
+                        <button type="button" onclick="fillPrompt('帮我分析这些 TikTok 视频评论舆情\\nhttps://www.tiktok.com/@game/video/123')">评论舆情分析</button>
+                        <button type="button" onclick="fillPrompt('帮我拉这些视频的播放量和基础视频数据\\nhttps://www.tiktok.com/@game/video/123')">拉视频数据</button>
+                        <button type="button" onclick="fillPrompt('每天 9 点同步这些主页近 7 天视频数据到飞书\\nhttps://www.tiktok.com/@game')">主页定时同步</button>
+                        <button type="button" onclick="fillPrompt('帮我更新这些达人粉丝、AVV、ACV，先只导出 Excel 不入库\\nhttps://www.youtube.com/@YouTube')">达人数据更新</button>
+                    </div>
+                </div>
+            </div>
+            <div class="agent-composer">
+                <div class="composer-row">
+                    <div>
+                        <textarea class="agent-input" id="agentInput" placeholder="例如：帮我分析这 5 个 TikTok 视频评论舆情；或上传 Excel 后说“帮我更新达人数据，只导出 Excel”。"></textarea>
+                        <div class="file-line">
+                            <input type="file" id="agentFile" accept=".xlsx" onchange="showFileName()">
+                            <span id="fileName">可选上传 Excel</span>
+                        </div>
+                    </div>
+                    <div class="composer-actions">
+                        <button class="agent-btn primary" id="sendBtn" onclick="sendAgentMessage()">发送</button>
+                        <button class="agent-btn" onclick="refreshRecentTasks()">刷新任务</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+        <aside class="agent-side">
+            <div class="side-title">最近任务</div>
+            <div id="recentTasks"><div class="task-meta">正在读取...</div></div>
+        </aside>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let currentSessionId = null;
+
+function escapeHtml(str) {
+    return (window.SailsonCommon && window.SailsonCommon.escapeHtml)
+        ? window.SailsonCommon.escapeHtml(str)
+        : String(str || '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+function fillPrompt(text) {
+    document.getElementById('agentInput').value = text;
+    document.getElementById('agentInput').focus();
+}
+
+function showFileName() {
+    const file = document.getElementById('agentFile').files[0];
+    document.getElementById('fileName').textContent = file ? `已选择：${file.name}` : '可选上传 Excel';
+}
+
+function addMessage(role, content) {
+    const empty = document.getElementById('agentEmpty');
+    if (empty) empty.remove();
+    const area = document.getElementById('agentMessages');
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    div.textContent = content;
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+}
+
+function addActionCard(action) {
+    if (!action || !action.card) return;
+    const area = document.getElementById('agentMessages');
+    const card = action.card;
+    const risks = (card.risks || []).map(r => `<li>${escapeHtml(r)}</li>`).join('');
+    const platforms = Object.entries(card.platform_counts || {}).map(([k, v]) => `${k}: ${v}`).join(' / ') || '-';
+    const div = document.createElement('div');
+    div.className = 'action-card';
+    div.id = `action-card-${action.id}`;
+    div.innerHTML = `
+        <h3>${escapeHtml(card.task_type || '任务')}</h3>
+        <div class="card-grid">
+            <div class="card-kv"><span>链接数</span><strong>${card.link_count || 0}</strong></div>
+            <div class="card-kv"><span>平台</span><strong>${escapeHtml(platforms)}</strong></div>
+            <div class="card-kv"><span>时间范围</span><strong>${escapeHtml(card.time_range || '-')}</strong></div>
+            <div class="card-kv"><span>写入目标</span><strong>${escapeHtml(card.write_target || '-')}</strong></div>
+            <div class="card-kv"><span>预计耗时</span><strong>${escapeHtml(card.estimated_text || '-')}</strong></div>
+            <div class="card-kv"><span>异常链接</span><strong>${(card.unsupported_links || []).length}</strong></div>
+        </div>
+        ${risks ? `<ul class="risk-list">${risks}</ul>` : ''}
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+            <button class="agent-btn primary" onclick="confirmAction(${action.id})">确认执行</button>
+            <span class="task-meta" id="action-status-${action.id}">等待确认</span>
+        </div>
+    `;
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+}
+
+async function sendAgentMessage() {
+    const input = document.getElementById('agentInput');
+    const fileInput = document.getElementById('agentFile');
+    const text = input.value.trim();
+    const file = fileInput.files[0];
+    if (!text && !file) return;
+    addMessage('user', text || `上传 Excel：${file.name}`);
+    input.value = '';
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = true;
+    btn.textContent = '处理中';
+    try {
+        let resp;
+        if (file) {
+            const form = new FormData();
+            form.append('message', text);
+            form.append('file', file);
+            if (currentSessionId) form.append('session_id', currentSessionId);
+            resp = await fetch('/api/agent/message', { method: 'POST', body: form });
+        } else {
+            resp = await fetch('/api/agent/message', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text, session_id: currentSessionId })
+            });
+        }
+        const data = await resp.json();
+        if (!resp.ok || data.status === 'error') throw new Error(data.message || data.error || '提交失败');
+        currentSessionId = data.session_id || currentSessionId;
+        addMessage('assistant', data.reply || '已收到');
+        if (data.action && data.action.status === 'executed' && data.action.result) {
+            addMessage('assistant', buildExecutionText(data.action.result));
+        } else if (data.action) {
+            addActionCard(data.action);
+        }
+        fileInput.value = '';
+        showFileName();
+        await refreshRecentTasks();
+    } catch (err) {
+        addMessage('assistant', `处理失败：${err.message || err}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '发送';
+    }
+}
+
+async function confirmAction(actionId) {
+    const statusEl = document.getElementById(`action-status-${actionId}`);
+    if (statusEl) statusEl.textContent = '正在创建任务...';
+    try {
+        const resp = await fetch(`/api/agent/actions/${actionId}/confirm`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok || data.status === 'error') throw new Error(data.message || '执行失败');
+        const result = (data.action && data.action.result) || {};
+        if (statusEl) statusEl.textContent = '已执行';
+        addMessage('assistant', buildExecutionText(result));
+        await refreshRecentTasks();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '执行失败';
+        addMessage('assistant', `执行失败：${err.message || err}`);
+    }
+}
+
+function buildExecutionText(result) {
+    if (result.items) return '已汇总最近任务，右侧列表已刷新。';
+    if (result.job_id) return `达人数据更新任务已创建，Job #${result.job_id}。`;
+    if (result.task_id) return `任务已创建，任务 ID：${result.task_id}。可以在右侧或原任务中心查看进度。`;
+    return '任务已执行。';
+}
+
+async function refreshRecentTasks() {
+    const box = document.getElementById('recentTasks');
+    box.innerHTML = '<div class="task-meta">正在读取...</div>';
+    try {
+        const resp = await fetch('/api/agent/tasks');
+        const data = await resp.json();
+        if (!resp.ok || data.status === 'error') throw new Error(data.message || '读取失败');
+        renderTasks(data.items || []);
+    } catch (err) {
+        box.innerHTML = `<div class="task-meta">读取失败：${escapeHtml(err.message || err)}</div>`;
+    }
+}
+
+function renderTasks(items) {
+    const box = document.getElementById('recentTasks');
+    if (!items.length) {
+        box.innerHTML = '<div class="task-meta">暂无任务</div>';
+        return;
+    }
+    box.innerHTML = items.slice(0, 20).map(item => {
+        const status = item.status || '-';
+        const cls = status === 'failed' ? 'failed' : (status === 'completed' || status === 'executed' ? 'completed' : '');
+        const download = item.download_url
+            ? `<a class="download-link" href="${escapeHtml(item.download_url)}">下载结果</a>`
+            : (item.download_id ? `<a class="download-link" href="/api/etl/download/${item.download_id}">下载结果</a>` : '');
+        return `
+            <div class="task-item">
+                <div class="task-item-top">
+                    <span>${escapeHtml(item.type || item.source || '任务')}</span>
+                    <span class="status-pill ${cls}">${escapeHtml(status)}</span>
+                </div>
+                <div class="task-meta">${escapeHtml(item.progress || '')}</div>
+                ${item.error ? `<div class="task-meta" style="color:#b91c1c;">${escapeHtml(item.error)}</div>` : ''}
+                ${download}
+            </div>
+        `;
+    }).join('');
+}
+
+document.getElementById('agentInput').addEventListener('keydown', function(event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        sendAgentMessage();
+    }
+});
+
+refreshRecentTasks();
+</script>
+{% endblock %}

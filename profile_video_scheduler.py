@@ -343,8 +343,22 @@ def run_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Call
     trigger_type = params.get("trigger_type") or "manual"
     config_ids = params.get("config_ids") or []
     profile_urls = params.get("profile_urls") or []
+    inline_configs = params.get("inline_configs") or []
 
     configs = _load_task_configs(config_ids, profile_urls, user_id)
+    if inline_configs:
+        for raw_cfg in inline_configs:
+            if not isinstance(raw_cfg, dict):
+                continue
+            profile_url = video_metrics_etl.normalize_url(str(raw_cfg.get("profile_url") or ""))
+            if not profile_url:
+                continue
+            cfg = dict(raw_cfg)
+            cfg["profile_url"] = profile_url
+            cfg["platform"] = cfg.get("platform") or video_metrics_etl.detect_platform(profile_url)
+            cfg["enabled"] = True
+            cfg["user_id"] = user_id
+            configs.append(cfg)
     if not configs:
         update_task_fn(task_id, status="failed", error="没有可同步的主页配置")
         return
