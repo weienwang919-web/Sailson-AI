@@ -816,7 +816,7 @@ function renderUnifiedTasks(items) {
             fileHtml = '<a class="task-download-link" href="/export_insight?record_id=' + encodeURIComponent(item.record_id) + '">导出评论结果</a>';
         }
         const retryHtml = status === 'failed'
-            ? '<button type="button" class="btn-soft" onclick="retryUnifiedTask(\\'' + escapeHtml(taskId) + '\\')">重试</button>'
+            ? '<button type="button" class="btn-soft" data-task-id="' + escapeHtml(taskId) + '" onclick="retryUnifiedTask(this.dataset.taskId)">重试</button>'
             : '-';
         return `
             <tr>
