@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,10 @@ from app.core.country import expand_country_filter
 from app.core.display_format import has_displayable_prices
 from app.core.field_normalizer import STANDARD_PLATFORM_FIELDS
 from app.database import get_db
-from app.models import KOLRecord, ScrapeJob
+from app.models import DataRefreshJob, KOLRecord, ScrapeJob
 from app.schemas import (
+    DataRefreshJobOut,
+    DataRefreshLinkRequest,
     ExportRequest,
     FilterPayload,
     FilterRule,
@@ -35,6 +38,7 @@ from app.schemas import (
     LinkImportResponse,
     ScrapeRequest,
 )
+from app.services import data_refresh_service
 from app.services.export_service import export_records_restored, export_source_workbook_updated
 from app.services.import_service import import_workbook
 from app.services.link_import_service import import_links
@@ -231,6 +235,99 @@ def scrape_kols(
     return JobOut.model_validate(job)
 
 
+@router.post("/kols/data-refresh/link-task", response_model=DataRefreshJobOut)
+def data_refresh_link_task(
+    payload: DataRefreshLinkRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> DataRefreshJobOut:
+    rows = data_refresh_service.rows_from_links(payload.text)
+    if not rows:
+        raise HTTPException(status_code=400, detail="请至少填写一个有效链接")
+    job = data_refresh_service.create_job(
+        db,
+        input_type="links",
+        total=len(rows),
+        sync_to_pool=payload.sync_to_pool,
+        include_acv=payload.include_acv,
+        videos_per_profile=payload.videos_per_profile,
+    )
+    background_tasks.add_task(
+        data_refresh_service.run_link_refresh_job,
+        job.id,
+        payload.text,
+        payload.sync_to_pool,
+        payload.include_acv,
+        payload.videos_per_profile,
+    )
+    db.refresh(job)
+    return DataRefreshJobOut.model_validate(job)
+
+
+@router.post("/kols/data-refresh/excel-task", response_model=DataRefreshJobOut)
+async def data_refresh_excel_task(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    sync_to_pool: bool = Query(False),
+    videos_per_profile: int = Query(10, ge=1, le=50),
+    include_acv: bool = Query(True),
+    db: Session = Depends(get_db),
+) -> DataRefreshJobOut:
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx is supported")
+    tmp_dir = Path(tempfile.gettempdir()) / "kol-data-refresh-inputs"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    input_path = tmp_dir / f"{uuid.uuid4().hex}_{Path(file.filename).name}"
+    input_path.write_bytes(await file.read())
+    job = data_refresh_service.create_job(
+        db,
+        input_type="excel",
+        total=0,
+        sync_to_pool=sync_to_pool,
+        include_acv=include_acv,
+        videos_per_profile=videos_per_profile,
+    )
+    background_tasks.add_task(
+        data_refresh_service.run_excel_refresh_job,
+        job.id,
+        str(input_path),
+        sync_to_pool,
+        include_acv,
+        videos_per_profile,
+    )
+    db.refresh(job)
+    return DataRefreshJobOut.model_validate(job)
+
+
+@router.get("/kols/data-refresh/jobs", response_model=list[DataRefreshJobOut])
+def list_data_refresh_jobs(db: Session = Depends(get_db), limit: int = Query(20, ge=1, le=100)) -> list[DataRefreshJobOut]:
+    rows = db.query(DataRefreshJob).order_by(desc(DataRefreshJob.created_at)).limit(limit).all()
+    return [DataRefreshJobOut.model_validate(row) for row in rows]
+
+
+@router.get("/kols/data-refresh/jobs/{job_id}", response_model=DataRefreshJobOut)
+def get_data_refresh_job(job_id: int, db: Session = Depends(get_db)) -> DataRefreshJobOut:
+    job = db.get(DataRefreshJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return DataRefreshJobOut.model_validate(job)
+
+
+@router.get("/kols/data-refresh/download/{job_id}")
+def download_data_refresh(job_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    job = db.get(DataRefreshJob, job_id)
+    if not job or not job.output_path:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    path = Path(job.output_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=job.output_filename or path.name,
+    )
+
+
 @router.get("/jobs/{job_id}", response_model=JobOut)
 def get_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
     job = db.get(ScrapeJob, job_id)
@@ -390,15 +487,18 @@ def serialize_kol(record: KOLRecord) -> KOLRecordOut:
         "tt_link": record.tt_link,
         "tt_follower": record.tt_follower,
         "tt_avv": record.tt_avv,
+        "tt_acv": record.tt_acv,
         "tt_short_video_price": record.tt_short_video_price,
         "tt_anchor_link_price": record.tt_anchor_link_price,
         "ins_link": record.ins_link,
         "ins_follower": record.ins_follower,
+        "ins_acv": record.ins_acv,
         "ins_post_price": record.ins_post_price,
         "ins_reels_price": record.ins_reels_price,
         "yt_link": record.yt_link,
         "yt_follower": record.yt_follower,
         "yt_avv": record.yt_avv,
+        "yt_acv": record.yt_acv,
         "yt_full_video_price": record.yt_full_video_price,
         "yt_live_2hr_price": record.yt_live_2hr_price,
         "yt_pre_roll_price": record.yt_pre_roll_price,

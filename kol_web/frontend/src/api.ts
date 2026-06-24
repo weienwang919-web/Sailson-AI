@@ -17,15 +17,18 @@ export type KolRecord = {
   tt_link?: string | null;
   tt_follower?: number | null;
   tt_avv?: number | null;
+  tt_acv?: number | null;
   tt_short_video_price?: number | null;
   tt_anchor_link_price?: number | null;
   ins_link?: string | null;
   ins_follower?: number | null;
+  ins_acv?: number | null;
   ins_post_price?: number | null;
   ins_reels_price?: number | null;
   yt_link?: string | null;
   yt_follower?: number | null;
   yt_avv?: number | null;
+  yt_acv?: number | null;
   yt_full_video_price?: number | null;
   yt_live_2hr_price?: number | null;
   yt_pre_roll_price?: number | null;
@@ -51,6 +54,25 @@ export type ScrapeJob = {
   total: number;
   done: number;
   error?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DataRefreshJob = {
+  id: number;
+  input_type: "links" | "excel" | string;
+  status: string;
+  total: number;
+  success_count: number;
+  failed_count: number;
+  added_count: number;
+  updated_count: number;
+  sync_to_pool: number;
+  include_acv: number;
+  videos_per_profile: number;
+  error?: string | null;
+  summary_json?: string | null;
+  output_filename?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -170,6 +192,54 @@ export async function importExcel(file: File, scrape: boolean) {
 export async function importLinks(text: string, scrape: boolean) {
   const { data } = await api.post("/kols/import-links", { text, scrape });
   return data;
+}
+
+export async function startDataRefreshLinkTask(params: {
+  text: string;
+  syncToPool: boolean;
+  videosPerProfile: number;
+  includeAcv: boolean;
+}): Promise<DataRefreshJob> {
+  const { data } = await api.post<DataRefreshJob>("/kols/data-refresh/link-task", {
+    text: params.text,
+    sync_to_pool: params.syncToPool,
+    videos_per_profile: params.videosPerProfile,
+    include_acv: params.includeAcv,
+  });
+  return data;
+}
+
+export async function startDataRefreshExcelTask(params: {
+  file: File;
+  syncToPool: boolean;
+  videosPerProfile: number;
+  includeAcv: boolean;
+}): Promise<DataRefreshJob> {
+  const form = new FormData();
+  form.append("file", params.file);
+  const { data } = await api.post<DataRefreshJob>("/kols/data-refresh/excel-task", form, {
+    params: {
+      sync_to_pool: params.syncToPool,
+      videos_per_profile: params.videosPerProfile,
+      include_acv: params.includeAcv,
+    },
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function getDataRefreshJob(id: number): Promise<DataRefreshJob> {
+  const { data } = await api.get<DataRefreshJob>(`/kols/data-refresh/jobs/${id}`);
+  return data;
+}
+
+export async function getDataRefreshJobs(limit = 20): Promise<DataRefreshJob[]> {
+  const { data } = await api.get<DataRefreshJob[]>("/kols/data-refresh/jobs", { params: { limit } });
+  return data;
+}
+
+export function dataRefreshDownloadUrl(id: number): string {
+  return `/kol-api/kols/data-refresh/download/${id}`;
 }
 
 export async function scrapeKols(ids?: number[]) {

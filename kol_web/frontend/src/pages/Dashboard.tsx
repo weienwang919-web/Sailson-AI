@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Key } from "react";
-import { Button, Card, Drawer, Input, message, Modal, Segmented, Space, Table, Tabs, Tag, Upload } from "antd";
+import { Button, Card, Checkbox, Drawer, Input, InputNumber, message, Modal, Segmented, Space, Table, Tabs, Tag, Upload } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { UploadOutlined } from "@ant-design/icons";
-import type { BusinessField, BusinessFieldCatalog, FilterNode, FilterPayload, FilterRule, KolRecord, ScrapeJob } from "../api";
+import type { BusinessField, BusinessFieldCatalog, DataRefreshJob, FilterNode, FilterPayload, FilterRule, KolRecord, ScrapeJob } from "../api";
 import {
   createKol,
+  dataRefreshDownloadUrl,
   deleteKol,
   exportKols,
   getBusinessFields,
+  getDataRefreshJob,
+  getDataRefreshJobs,
   getFilterOptions,
   getJob,
   getJobs,
@@ -16,6 +19,8 @@ import {
   importExcel,
   importLinks,
   listKols,
+  startDataRefreshExcelTask,
+  startDataRefreshLinkTask,
   updateKol,
 } from "../api";
 import { FilterBuilder } from "../components/FilterBuilder";
@@ -28,6 +33,7 @@ type KolFormState = Record<string, string>;
 
 type KolPlatform = "tiktok" | "instagram" | "youtube";
 type PlatformView = "auto" | KolPlatform;
+type DataRefreshInputMode = "links" | "excel";
 
 const PLATFORM_META: Record<
   KolPlatform,
@@ -38,21 +44,21 @@ const PLATFORM_META: Record<
     short: "TT",
     groupClass: "platform-tiktok",
     subClass: "platform-tiktok-sub",
-    fieldKeys: ["tt_link", "tt_follower", "tt_avv", "tt_short_video_price", "tt_main_price", "tt_cpm", "tt_collaboration"],
+    fieldKeys: ["tt_link", "tt_follower", "tt_avv", "tt_acv", "tt_short_video_price", "tt_main_price", "tt_cpm", "tt_collaboration"],
   },
   instagram: {
     label: "Instagram",
     short: "INS",
     groupClass: "platform-instagram",
     subClass: "platform-instagram-sub",
-    fieldKeys: ["ins_link", "ins_follower", "ins_post_price", "ins_main_price", "ins_cpm", "ins_collaboration"],
+    fieldKeys: ["ins_link", "ins_follower", "ins_acv", "ins_post_price", "ins_main_price", "ins_cpm", "ins_collaboration"],
   },
   youtube: {
     label: "YouTube",
     short: "YT",
     groupClass: "platform-youtube",
     subClass: "platform-youtube-sub",
-    fieldKeys: ["yt_link", "yt_follower", "yt_avv", "yt_full_video_price", "yt_main_price", "yt_cpm", "yt_collaboration"],
+    fieldKeys: ["yt_link", "yt_follower", "yt_avv", "yt_acv", "yt_full_video_price", "yt_main_price", "yt_cpm", "yt_collaboration"],
   },
 };
 
@@ -65,6 +71,7 @@ const UNIFIED_PLATFORM_COLUMNS: Array<{
   { role: "link", title: "链接/Link", width: 110, keys: { tiktok: "tt_link", instagram: "ins_link", youtube: "yt_link" } },
   { role: "follower", title: "粉丝/Followers", width: 120, keys: { tiktok: "tt_follower", instagram: "ins_follower", youtube: "yt_follower" } },
   { role: "avv", title: "AVV/均观看量", width: 120, keys: { tiktok: "tt_avv", instagram: null, youtube: "yt_avv" } },
+  { role: "acv", title: "ACV/直播均观", width: 130, keys: { tiktok: "tt_acv", instagram: "ins_acv", youtube: "yt_acv" } },
   { role: "cpm", title: "CPM", width: 100, keys: { tiktok: "tt_cpm", instagram: "ins_cpm", youtube: "yt_cpm" } },
   {
     role: "collaboration",
@@ -80,6 +87,8 @@ const PLATFORM_VIEW_OPTIONS: Array<{ value: PlatformView; label: string }> = [
   { value: "instagram", label: "Instagram" },
   { value: "youtube", label: "YouTube" },
 ];
+
+const DATA_REFRESH_STEPS = ["解析输入", "抓取平台数据", "写回 Excel", "可选同步资源池", "完成下载"];
 
 const defaultFilters: FilterPayload = { logic: "and", children: [] };
 
@@ -139,7 +148,17 @@ export default function Dashboard() {
   const [linkImportOpen, setLinkImportOpen] = useState(false);
   const [linkText, setLinkText] = useState("");
   const [importing, setImporting] = useState(false);
-  const [pureRefreshStatus, setPureRefreshStatus] = useState("");
+  const [dataRefreshOpen, setDataRefreshOpen] = useState(false);
+  const [dataRefreshMode, setDataRefreshMode] = useState<DataRefreshInputMode>("links");
+  const [dataRefreshLinks, setDataRefreshLinks] = useState("");
+  const [dataRefreshFile, setDataRefreshFile] = useState<File | null>(null);
+  const [dataRefreshSync, setDataRefreshSync] = useState(false);
+  const [dataRefreshIncludeAcv, setDataRefreshIncludeAcv] = useState(true);
+  const [dataRefreshVideos, setDataRefreshVideos] = useState(10);
+  const [dataRefreshSubmitting, setDataRefreshSubmitting] = useState(false);
+  const [dataRefreshCurrentJob, setDataRefreshCurrentJob] = useState<DataRefreshJob | null>(null);
+  const [dataRefreshJobs, setDataRefreshJobs] = useState<DataRefreshJob[]>([]);
+  const [dataRefreshJobsLoading, setDataRefreshJobsLoading] = useState(false);
   const [activeQuickFilters, setActiveQuickFilters] = useState<{
     category?: string;
     followerRange?: { min: number; max: number | null };
@@ -301,6 +320,35 @@ export default function Dashboard() {
     { title: "错误", dataIndex: "error", ellipsis: true },
   ];
 
+  const dataRefreshColumns: ColumnsType<DataRefreshJob> = [
+    { title: "Job", dataIndex: "id", width: 80 },
+    { title: "来源", dataIndex: "input_type", width: 100, render: (value: string) => (value === "excel" ? "Excel" : "粘贴链接") },
+    { title: "状态", dataIndex: "status", width: 110, render: (status: string) => <Tag color={jobColor(status)}>{statusLabel(status)}</Tag> },
+    {
+      title: "进度",
+      width: 170,
+      render: (_: unknown, job: DataRefreshJob) => `${job.success_count}/${job.total || 0} 成功，${job.failed_count} 失败`,
+    },
+    { title: "同步入库", dataIndex: "sync_to_pool", width: 100, render: (value: number) => (value ? "是" : "否") },
+    {
+      title: "阶段",
+      width: 160,
+      render: (_: unknown, job: DataRefreshJob) => dataRefreshStep(job) || "-",
+    },
+    {
+      title: "下载",
+      width: 130,
+      render: (_: unknown, job: DataRefreshJob) =>
+        job.status === "completed" ? (
+          <a href={dataRefreshDownloadUrl(job.id)}>{job.output_filename || "下载 Excel"}</a>
+        ) : (
+          <span className="empty-cell">-</span>
+        ),
+    },
+    { title: "创建时间", dataIndex: "created_at", width: 190, render: (value: string) => new Date(value).toLocaleString() },
+    { title: "失败原因", dataIndex: "error", ellipsis: true },
+  ];
+
   const applyFilters = (nextFilters: FilterPayload) => {
     setActiveQuickFilters({});
     setFilters(nextFilters);
@@ -419,20 +467,37 @@ export default function Dashboard() {
     }
   };
 
-  const handlePureRefresh = async (file: File) => {
-    setImporting(true);
-    setPureRefreshStatus("正在导入并拉取粉丝/AVV...");
+  const openDataRefresh = () => {
+    setDataRefreshOpen(true);
+    void loadDataRefreshJobs();
+  };
+
+  const handleDataRefreshSubmit = async () => {
+    setDataRefreshSubmitting(true);
+    setDataRefreshCurrentJob(null);
     try {
-      const result = await importExcel(file, true);
-      if (result.job) {
-        await waitForJobCompletion(result.job.id, (job) => setPureRefreshStatus(`Job #${job.id} ${job.status}，进度 ${job.done}/${job.total}`));
+      const options = {
+        syncToPool: dataRefreshSync,
+        videosPerProfile: dataRefreshVideos || 10,
+        includeAcv: dataRefreshIncludeAcv,
+      };
+      const job =
+        dataRefreshMode === "links"
+          ? await startDataRefreshLinkTask({ text: dataRefreshLinks, ...options })
+          : await startDataRefreshExcelTask({ file: dataRefreshFile as File, ...options });
+      setDataRefreshCurrentJob(job);
+      message.success("达人数据更新任务已提交");
+      await loadDataRefreshJobs();
+      await waitForDataRefreshCompletion(job.id, (next) => {
+        setDataRefreshCurrentJob(next);
+      });
+      await loadDataRefreshJobs();
+      if (dataRefreshSync) {
+        await loadList();
       }
-      const blob = await exportKols({ ids: result.ids || [], sourceFile: result.filename });
-      downloadBlob(blob, `kol_refresh_${timestampForFile()}.xlsx`);
-      setPureRefreshStatus("已完成并下载");
-      await loadList();
+      message.success("达人数据更新完成，可下载回填文件");
     } finally {
-      setImporting(false);
+      setDataRefreshSubmitting(false);
     }
   };
 
@@ -450,6 +515,15 @@ export default function Dashboard() {
       setJobs(await getJobs());
     } finally {
       setJobLoading(false);
+    }
+  };
+
+  const loadDataRefreshJobs = async () => {
+    setDataRefreshJobsLoading(true);
+    try {
+      setDataRefreshJobs(await getDataRefreshJobs(20));
+    } finally {
+      setDataRefreshJobsLoading(false);
     }
   };
 
@@ -656,12 +730,11 @@ export default function Dashboard() {
                     <Button onClick={() => setLinkImportOpen(true)}>打开链接导入</Button>
                   </Card>
                   <Card className="work-card">
-                    <div className="work-title">纯刷数据</div>
-                    <div className="work-desc">上传 Excel 后只更新粉丝数和 AVV，并下载回填后的文件。</div>
-                    <Upload accept=".xlsx" showUploadList={false} disabled={importing} beforeUpload={(file) => { void handlePureRefresh(file); return false; }}>
-                      <Button icon={<UploadOutlined />} loading={importing}>上传并刷数据</Button>
-                    </Upload>
-                    {pureRefreshStatus && <div className="work-status">{pureRefreshStatus}</div>}
+                    <div className="work-title">达人数据更新</div>
+                    <div className="work-desc">批量更新达人粉丝、AVV、ACV，支持粘贴链接或上传 Excel，完成后下载回填文件。</div>
+                    <Button icon={<UploadOutlined />} onClick={openDataRefresh}>
+                      打开更新任务
+                    </Button>
                   </Card>
                   <Card className="work-card">
                     <div className="work-title">任务中心</div>
@@ -671,6 +744,20 @@ export default function Dashboard() {
                 </div>
                 <Card title="任务中心">
                   <Table rowKey="id" loading={jobLoading} columns={jobColumns} dataSource={jobs} pagination={false} size="small" />
+                </Card>
+                <Card title="达人数据更新任务">
+                  <div className="toolbar toolbar-minimal">
+                    <Button onClick={() => void loadDataRefreshJobs()}>刷新任务</Button>
+                  </div>
+                  <Table
+                    rowKey="id"
+                    loading={dataRefreshJobsLoading}
+                    columns={dataRefreshColumns}
+                    dataSource={dataRefreshJobs}
+                    pagination={false}
+                    size="small"
+                    scroll={{ x: 1180 }}
+                  />
                 </Card>
               </Space>
             ),
@@ -722,6 +809,97 @@ export default function Dashboard() {
             value={linkText}
             onChange={(event) => setLinkText(event.target.value)}
             placeholder={"https://www.tiktok.com/@...\nhttps://www.instagram.com/.../\nhttps://www.youtube.com/@..."}
+          />
+        </Space>
+      </Modal>
+      <Modal
+        title="达人数据更新"
+        open={dataRefreshOpen}
+        onCancel={() => setDataRefreshOpen(false)}
+        onOk={handleDataRefreshSubmit}
+        okText="开始更新"
+        cancelText="关闭"
+        confirmLoading={dataRefreshSubmitting}
+        width={860}
+        okButtonProps={{
+          disabled:
+            dataRefreshSubmitting ||
+            (dataRefreshMode === "links" ? !dataRefreshLinks.trim() : !dataRefreshFile),
+        }}
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size="middle">
+          <Segmented
+            value={dataRefreshMode}
+            onChange={(value) => setDataRefreshMode(value as DataRefreshInputMode)}
+            options={[
+              { label: "粘贴链接", value: "links" },
+              { label: "上传 Excel", value: "excel" },
+            ]}
+          />
+          {dataRefreshMode === "links" ? (
+            <TextArea
+              rows={8}
+              value={dataRefreshLinks}
+              onChange={(event) => setDataRefreshLinks(event.target.value)}
+              placeholder={"https://www.tiktok.com/@...\nhttps://www.instagram.com/.../\nhttps://www.youtube.com/@..."}
+            />
+          ) : (
+            <div className="data-refresh-upload">
+              <Upload
+                accept=".xlsx"
+                maxCount={1}
+                beforeUpload={(file) => {
+                  setDataRefreshFile(file);
+                  return false;
+                }}
+                onRemove={() => setDataRefreshFile(null)}
+              >
+                <Button icon={<UploadOutlined />}>选择 Excel</Button>
+              </Upload>
+              {dataRefreshFile && <span className="work-status">已选择：{dataRefreshFile.name}</span>}
+            </div>
+          )}
+          <div className="data-refresh-options">
+            <Checkbox checked={dataRefreshSync} onChange={(event) => setDataRefreshSync(event.target.checked)}>
+              同步写入 KOL 资源池
+            </Checkbox>
+            <Checkbox checked={dataRefreshIncludeAcv} onChange={(event) => setDataRefreshIncludeAcv(event.target.checked)}>
+              尝试抓取 ACV
+            </Checkbox>
+            <label className="inline-number">
+              <span>每主页视频数</span>
+              <InputNumber min={1} max={50} value={dataRefreshVideos} onChange={(value) => setDataRefreshVideos(Number(value) || 10)} />
+            </label>
+          </div>
+          <div className="data-refresh-steps">
+            {DATA_REFRESH_STEPS.map((step, index) => (
+              <span key={step} className={dataRefreshStepIndex(dataRefreshCurrentJob) >= index ? "step active" : "step"}>
+                {step}
+              </span>
+            ))}
+          </div>
+          {dataRefreshCurrentJob && (
+            <div className="data-refresh-current">
+              <Tag color={jobColor(dataRefreshCurrentJob.status)}>{statusLabel(dataRefreshCurrentJob.status)}</Tag>
+              <span>
+                成功 {dataRefreshCurrentJob.success_count}/{dataRefreshCurrentJob.total || 0}，失败 {dataRefreshCurrentJob.failed_count}
+              </span>
+              {dataRefreshCurrentJob.status === "completed" && (
+                <Button type="link" href={dataRefreshDownloadUrl(dataRefreshCurrentJob.id)}>
+                  下载回填 Excel
+                </Button>
+              )}
+              {dataRefreshCurrentJob.error && <span className="error-text">{dataRefreshCurrentJob.error}</span>}
+            </div>
+          )}
+          <Table
+            rowKey="id"
+            loading={dataRefreshJobsLoading}
+            columns={dataRefreshColumns}
+            dataSource={dataRefreshJobs}
+            pagination={false}
+            size="small"
+            scroll={{ x: 1180 }}
           />
         </Space>
       </Modal>
@@ -900,6 +1078,7 @@ function platformDataScore(record: KolRecord, platform: KolPlatform): number {
   if (metrics.link) score += 10;
   if (metrics.follower) score += 5;
   if (metrics.avv) score += 2;
+  if (metrics.acv) score += 2;
   if (metrics.price) score += 3;
   if (metrics.mainPrice) score += 2;
   if (metrics.cpm) score += 1;
@@ -939,6 +1118,7 @@ function getRecordPlatformMetrics(record: KolRecord, view: PlatformView) {
   const follower =
     platform === "tiktok" ? record.tt_follower : platform === "instagram" ? record.ins_follower : record.yt_follower;
   const avv = platform === "tiktok" ? record.tt_avv : platform === "youtube" ? record.yt_avv : null;
+  const acv = platform === "tiktok" ? record.tt_acv : platform === "instagram" ? record.ins_acv : record.yt_acv;
   const modelPrice = platform === "tiktok" ? record.tt_short_video_price : platform === "instagram" ? record.ins_post_price : record.yt_full_video_price;
   const extraMain = extraFields[mainPriceExtraKey];
   const modelPriceLabel = platform === "tiktok" ? "TT 短视频报价" : platform === "instagram" ? "INS Post 报价" : "YT 长视频报价";
@@ -947,7 +1127,7 @@ function getRecordPlatformMetrics(record: KolRecord, view: PlatformView) {
   const price = safeModelPrice || safeMainPrice;
   const cpm = toNumber(extraFields[cpmExtraKey]);
 
-  return { platform, link, follower, avv, price, mainPrice: safeMainPrice, cpm };
+  return { platform, link, follower, avv, acv, price, mainPrice: safeMainPrice, cpm };
 }
 
 function toNumber(value: unknown): number {
@@ -1204,6 +1384,51 @@ async function waitForJobCompletion(jobId: number, onTick?: (job: ScrapeJob) => 
     if (job.status === "completed") return job;
     if (job.status === "failed") throw new Error(`拉取失败：${job.error || `Job #${jobId}`}`);
   }
+}
+
+async function waitForDataRefreshCompletion(jobId: number, onTick?: (job: DataRefreshJob) => void) {
+  for (;;) {
+    await delay(3000);
+    const job = await getDataRefreshJob(jobId);
+    onTick?.(job);
+    if (job.status === "completed") return job;
+    if (job.status === "failed") throw new Error(`达人数据更新失败：${job.error || `Job #${jobId}`}`);
+  }
+}
+
+function statusLabel(status: string) {
+  if (status === "completed") return "完成";
+  if (status === "failed") return "失败";
+  if (status === "running") return "运行中";
+  if (status === "pending") return "排队中";
+  return status || "-";
+}
+
+function parseDataRefreshSummary(job?: DataRefreshJob | null): Record<string, unknown> {
+  if (!job?.summary_json) return {};
+  try {
+    const parsed = JSON.parse(job.summary_json);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function dataRefreshStep(job?: DataRefreshJob | null) {
+  const parsed = parseDataRefreshSummary(job);
+  if (typeof parsed.step === "string") return parsed.step;
+  if (!job) return "";
+  if (job.status === "completed") return DATA_REFRESH_STEPS[DATA_REFRESH_STEPS.length - 1];
+  if (job.status === "running") return DATA_REFRESH_STEPS[1];
+  return DATA_REFRESH_STEPS[0];
+}
+
+function dataRefreshStepIndex(job?: DataRefreshJob | null) {
+  const step = dataRefreshStep(job);
+  const index = DATA_REFRESH_STEPS.indexOf(step);
+  if (index >= 0) return index;
+  if (job?.status === "completed") return DATA_REFRESH_STEPS.length - 1;
+  return -1;
 }
 
 function downloadBlob(blob: Blob, filename: string) {

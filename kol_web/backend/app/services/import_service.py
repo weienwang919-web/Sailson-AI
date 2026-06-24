@@ -278,16 +278,28 @@ def flat_row_to_payload(row: dict[str, Any], sheet: str, filename: str) -> dict[
             "Expected \n30d views/CCV",
         )
     )
+    acv = to_int(
+        first(
+            "ACV",
+            "Avg Live Viewers",
+            "Average Live Viewers",
+            "平均直播观看人数",
+            "直播均观",
+        )
+    )
     if detected == "tiktok":
         payload["tt_follower"] = follower
         payload["tt_avv"] = avv
+        payload["tt_acv"] = acv
         payload["tt_short_video_price"] = to_float(first("💰1*Short Video (15s-60s)", "Short Video", "报价", "报价（$）", "Expected\nPrice（USD）", "Expected \nPrice", "迈蒂报价", "迈蒂报价$", "视频报价（$）"))
     elif detected == "ins":
         payload["ins_follower"] = follower
+        payload["ins_acv"] = acv
         payload["ins_post_price"] = to_float(first("💰1*Photo Post", "Post", "报价", "报价（$）", "Expected\nPrice（USD）", "Expected \nPrice", "迈蒂报价", "迈蒂报价$"))
     else:
         payload["yt_follower"] = follower
         payload["yt_avv"] = avv
+        payload["yt_acv"] = acv
         payload["yt_full_video_price"] = to_float(first("💰1*Full Video(8-10min)", "Full Video", "定制长视频报价（10-15min）", "定制长视频报价"))
         payload["yt_live_2hr_price"] = to_float(first("💰1h*Livestream", "Livestream", "直播报价", "直播1h报价", "直播1h"))
         payload["yt_pre_roll_price"] = to_float(first("💰1*Tie-in (Pre/Mid roll)", "Pre-roll", "贴片报价(90s)", "贴片", "Integration (Tie-in) USD"))

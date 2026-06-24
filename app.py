@@ -3020,6 +3020,18 @@ def analyze():
     # 创建任务记录到数据库（标记类型为 sentiment）
     create_task(task_id, user_id, session_id, function_type='sentiment')
 
+    task_params = {
+        'urls': urls,
+        'session_id': session_id,
+        'user_id': user_id,
+        'username': username,
+        'department': department,
+    }
+    try:
+        set_task_params(task_id, task_params)
+    except Exception as e:
+        logger.error(f"❌ 写入 task_params 失败: {e}")
+
     if not USE_DB_WORKER:
         thread = threading.Thread(
             target=process_analysis_task,
@@ -3036,20 +3048,6 @@ def analyze():
         logger.info(f"✅ 任务 {task_id} 已创建并在本进程中启动（urls={len(urls)}）")
     else:
         # DB worker 模式：把参数序列化写入 task_params，由独立 worker 进程拾取
-        task_params = {
-            'urls': urls,
-            'session_id': session_id,
-            'user_id': user_id,
-            'username': username,
-            'department': department,
-        }
-        try:
-            db.execute(
-                "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
-                (json.dumps(task_params, ensure_ascii=False), task_id)
-            )
-        except Exception as e:
-            logger.error(f"❌ 写入 task_params 失败: {e}")
         logger.info(f"✅ 任务 {task_id} 已创建，等待外部 worker 处理")
 
     # 立即返回任务 ID
@@ -3058,6 +3056,185 @@ def analyze():
         'status': 'pending',
         'message': '任务已提交，正在后台处理...'
     })
+
+
+@app.route('/api/sentiment/precheck', methods=['POST'])
+@login_required
+def sentiment_precheck_api():
+    """提交前预检：识别平台、异常链接和粗略耗时。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        urls_raw = data.get('urls') or request.form.get('urls') or request.form.get('url') or ''
+        urls = sentiment_insight.parse_urls_text(urls_raw)
+        platform_counts = Counter(sentiment_insight.detect_platform(url) for url in urls)
+        unsupported = [url for url in urls if sentiment_insight.detect_platform(url) == 'UNKNOWN']
+        supported_count = len(urls) - len(unsupported)
+        min_minutes = max(1, supported_count)
+        max_minutes = max(2, supported_count * 2)
+        return jsonify({
+            'status': 'success',
+            'url_count': len(urls),
+            'supported_count': supported_count,
+            'platform_counts': dict(platform_counts),
+            'unsupported': unsupported,
+            'estimated_seconds_min': min_minutes * 60,
+            'estimated_seconds_max': max_minutes * 60,
+            'estimated_text': f'约 {min_minutes}-{max_minutes} 分钟' if supported_count else '无法估算',
+            'links': [{'url': url, 'platform': sentiment_insight.detect_platform(url)} for url in urls],
+        })
+    except Exception as e:
+        logger.error(f"❌ 舆情预检失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/sentiment/tasks')
+@login_required
+def sentiment_tasks_api():
+    """舆情工作台统一任务中心：评论分析、拉视频数据、主页同步。"""
+    try:
+        limit = max(1, min(int(request.args.get('limit') or 30), 100))
+    except (TypeError, ValueError):
+        limit = 30
+    uid = session.get('user_id')
+    rows = db.query_all(
+        """
+        SELECT task_id, function_type, status, progress, result, error, record_id,
+               created_at, updated_at, started_at, finished_at
+        FROM task_queue
+        WHERE user_id = %s
+          AND function_type IN ('sentiment', 'etl_video_metrics', 'profile_video_sync')
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (uid, limit),
+    ) or []
+
+    download_by_task = {}
+    task_ids = [row.get('task_id') for row in rows if row.get('task_id')]
+    if task_ids:
+        placeholders = ','.join(['%s'] * len(task_ids))
+        output_rows = db.query_all(
+            f"""
+            SELECT DISTINCT ON (task_id) task_id, id AS download_id, filename
+            FROM etl_file_outputs
+            WHERE user_id = %s
+              AND filename <> '_input_video_metrics.xlsx'
+              AND task_id IN ({placeholders})
+            ORDER BY task_id, id DESC
+            """,
+            tuple([uid] + task_ids),
+        ) or []
+        download_by_task = {row.get('task_id'): row for row in output_rows}
+
+    items = []
+    for row in rows:
+        result_payload = {}
+        raw_result = row.get('result')
+        if raw_result:
+            try:
+                result_payload = json.loads(raw_result) if isinstance(raw_result, str) else dict(raw_result)
+            except Exception:
+                result_payload = {}
+        task_id = row.get('task_id')
+        download_row = download_by_task.get(task_id) or {}
+        download_id = result_payload.get('download_id') or download_row.get('download_id')
+        filename = result_payload.get('filename') or download_row.get('filename')
+        success_count = result_payload.get('success_count')
+        total_count = (
+            result_payload.get('url_count')
+            or result_payload.get('profile_count')
+            or result_payload.get('total')
+        )
+        items.append({
+            'task_id': task_id,
+            'function_type': row.get('function_type'),
+            'task_name': _sentiment_task_name(row.get('function_type')),
+            'status': row.get('status'),
+            'progress': row.get('progress'),
+            'error': row.get('error'),
+            'record_id': row.get('record_id'),
+            'created_at': row.get('created_at'),
+            'updated_at': row.get('updated_at'),
+            'started_at': row.get('started_at'),
+            'finished_at': row.get('finished_at'),
+            'download_id': download_id,
+            'filename': filename,
+            'success_count': success_count,
+            'total_count': total_count,
+            'failed_count': result_payload.get('failed_count'),
+        })
+    return jsonify({'status': 'success', 'items': _json_safe_rows(items)})
+
+
+def _sentiment_task_name(function_type):
+    return {
+        'sentiment': '评论分析',
+        'etl_video_metrics': '拉视频数据',
+        'profile_video_sync': '主页同步',
+    }.get(function_type or '', function_type or '任务')
+
+
+@app.route('/api/sentiment/tasks/<task_id>/retry', methods=['POST'])
+@login_required
+def sentiment_task_retry_api(task_id):
+    """重试统一任务中心中的可恢复任务。"""
+    uid = session.get('user_id')
+    row = db.query_one(
+        """
+        SELECT task_id, function_type, task_params, session_id
+        FROM task_queue
+        WHERE task_id = %s AND user_id = %s
+        """,
+        (task_id, uid),
+    )
+    if not row:
+        return jsonify({'status': 'error', 'message': '任务不存在或无权限访问'}), 404
+    function_type = row.get('function_type')
+    if function_type not in {'sentiment', 'etl_video_metrics', 'profile_video_sync'}:
+        return jsonify({'status': 'error', 'message': '该任务类型暂不支持重试'}), 400
+    raw_params = row.get('task_params')
+    if not raw_params:
+        return jsonify({'status': 'error', 'message': '旧任务缺少原始参数，无法自动重试'}), 400
+    try:
+        params = json.loads(raw_params) if isinstance(raw_params, str) else dict(raw_params)
+    except Exception:
+        return jsonify({'status': 'error', 'message': '任务参数已损坏，无法自动重试'}), 400
+
+    new_task_id = str(uuid.uuid4())
+    session_id = params.get('session_id') or row.get('session_id') or session.get('session_id', 'default')
+    create_task(new_task_id, uid, session_id, function_type=function_type)
+    params['user_id'] = uid
+    params['session_id'] = session_id
+    set_task_params(new_task_id, params)
+
+    if not USE_DB_WORKER:
+        if function_type == 'sentiment':
+            threading.Thread(
+                target=process_analysis_task,
+                kwargs={
+                    'task_id': new_task_id,
+                    'urls': params.get('urls'),
+                    'url': params.get('url'),
+                    'session_id': session_id,
+                    'user_id': uid,
+                    'username': params.get('username') or session.get('username', 'unknown'),
+                    'department': params.get('department') or session.get('department', '未知'),
+                    'project': params.get('project', 'CFL'),
+                },
+                daemon=True,
+            ).start()
+        elif function_type == 'etl_video_metrics':
+            threading.Thread(
+                target=lambda: etl_jobs.run_etl_video_metrics_task(new_task_id, params, update_task),
+                daemon=True,
+            ).start()
+        elif function_type == 'profile_video_sync':
+            threading.Thread(
+                target=lambda: profile_video_scheduler.run_profile_video_sync_task(new_task_id, params, update_task),
+                daemon=True,
+            ).start()
+
+    return jsonify({'status': 'queued', 'task_id': new_task_id})
 
 
 @app.route('/api/tasks/summary')
@@ -7342,11 +7519,12 @@ def etl_video_metrics_start():
     }
 
     create_task(queue_task_id, user_id, session_id, function_type='etl_video_metrics')
+    try:
+        set_task_params(queue_task_id, {'source': 'etl_video_metrics', **params})
+    except Exception as e:
+        logger.error(f"❌ 写入 task_params 失败: {e}")
     if USE_DB_WORKER:
-        db.execute(
-            "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
-            (json.dumps({'source': 'etl_video_metrics', **params}, ensure_ascii=False), queue_task_id),
-        )
+        pass
     else:
 
         def _run():
@@ -7454,8 +7632,12 @@ def profile_video_sync_start():
     }
 
     create_task(queue_task_id, user_id, session_id, function_type='profile_video_sync')
-    if USE_DB_WORKER:
+    try:
         set_task_params(queue_task_id, params)
+    except Exception as e:
+        logger.error(f"❌ 写入 task_params 失败: {e}")
+    if USE_DB_WORKER:
+        pass
     else:
 
         def _run():

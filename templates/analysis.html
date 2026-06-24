@@ -46,17 +46,20 @@
     #resultArea table.insight-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     #resultArea table.insight-table th { background-color: #fff3cd !important; color: #495057; font-weight: 700; padding: 12px 10px; text-align: center; border: 1px solid #e9ecef; white-space: nowrap; font-size: 0.85rem; }
     #resultArea table.insight-table td { padding: 10px; vertical-align: top; border: 1px solid #f1f3f5; color: #333; line-height: 1.5; word-break: break-word; max-width: 320px; }
-    #resultArea table.insight-table td:nth-child(1) { width: 60px; text-align: center; font-weight: 600; color: #2962FF; }
-    #resultArea table.insight-table td:nth-child(2) { width: 130px; text-align: center; font-size: 0.8rem; color: #666; }
-    #resultArea table.insight-table td:nth-child(3) { width: 220px; font-size: 0.78rem; }
-    #resultArea table.insight-table td:nth-child(3) a { color: #d32f2f; text-decoration: none; word-break: break-all; }
-    #resultArea table.insight-table td:nth-child(5) { width: 130px; text-align: center; font-size: 0.8rem; color: #666; }
-    #resultArea table.insight-table td:nth-child(6) { width: 80px; text-align: center; }
-    #resultArea table.insight-table td:nth-child(7) { width: 90px; text-align: center; font-variant-numeric: tabular-nums; }
-    #resultArea table.insight-table td:nth-child(8) { width: 110px; text-align: center; font-size: 0.85rem; }
-    #resultArea table.insight-table td:nth-child(11) { width: 90px; text-align: center; }
-    #resultArea table.insight-table td:nth-child(12) { width: 90px; text-align: center; background: #fafafa; }
-    #resultArea table.insight-table td:nth-child(13) { width: 100px; text-align: center; font-weight: 600; }
+    #resultArea table.insight-table td:nth-child(1) { width: 70px; text-align: center; font-weight: 600; color: #2962FF; }
+    #resultArea table.insight-table td:nth-child(2) { width: 70px; text-align: center; font-size: 0.8rem; color: #666; }
+    #resultArea table.insight-table td:nth-child(3) { width: 130px; text-align: center; font-size: 0.8rem; color: #666; }
+    #resultArea table.insight-table td:nth-child(4) { width: 220px; font-size: 0.78rem; }
+    #resultArea table.insight-table td:nth-child(4) a { color: #d32f2f; text-decoration: none; word-break: break-all; }
+    #resultArea table.insight-table td:nth-child(6) { width: 130px; text-align: center; font-size: 0.8rem; color: #666; }
+    #resultArea table.insight-table td:nth-child(7) { width: 80px; text-align: center; }
+    #resultArea table.insight-table td:nth-child(8) { width: 90px; text-align: center; font-variant-numeric: tabular-nums; }
+    #resultArea table.insight-table td:nth-child(9) { width: 110px; text-align: center; font-size: 0.85rem; }
+    #resultArea table.insight-table td:nth-child(12) { width: 90px; text-align: center; }
+    #resultArea table.insight-table td:nth-child(13) { width: 90px; text-align: center; background: #fafafa; }
+    #resultArea table.insight-table td:nth-child(14) { width: 100px; text-align: center; font-weight: 600; }
+    #resultArea table.insight-table td:nth-child(15) { width: 180px; font-size: 0.78rem; color: #667085; }
+    #resultArea table.insight-table td:nth-child(17) { width: 90px; text-align: center; }
     #resultArea tr:hover { background-color: #f8fbff; transition: background-color 0.2s; }
     .table-responsive-custom { overflow-x: auto; max-height: 70vh; }
     .url-textarea { width: 100%; padding: 14px; font-size: 0.95rem; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; font-family: monospace; resize: vertical; min-height: 120px; }
@@ -87,6 +90,15 @@
     .profile-table th { background: #f8fafc; color: #475467; font-weight: 700; white-space: nowrap; }
     .profile-table td { color: #344054; }
     .video-task-table { min-width: 760px; }
+    .unified-task-table { min-width: 980px; }
+    .precheck-panel { display: none; margin-top: 12px; border: 1px solid #e6ebf2; border-radius: 10px; padding: 12px; background: #fbfcff; }
+    .precheck-panel.active { display: block; }
+    .precheck-title { font-size: 0.86rem; font-weight: 700; color: #344054; margin-bottom: 8px; }
+    .precheck-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .precheck-metric { border-radius: 8px; background: #fff; border: 1px solid #edf0f4; padding: 8px 10px; }
+    .precheck-label { color: #98a2b3; font-size: 0.74rem; margin-bottom: 2px; }
+    .precheck-value { color: #111827; font-size: 0.92rem; font-weight: 700; word-break: break-word; }
+    .precheck-warning { margin-top: 8px; color: #c62828; font-size: 0.82rem; word-break: break-all; }
     .profile-url { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .profile-url a { color: #2962FF; text-decoration: none; }
     .task-id-cell { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: #667085; }
@@ -134,7 +146,7 @@
             <div id="commentsPanel" class="tool-panel active">
             <div id="linkArea">
                 <label class="small text-muted mb-1" for="urlsInput">社媒主贴链接（每行一个，可混合平台）</label>
-                <textarea id="urlsInput" class="url-textarea" placeholder="支持 Facebook / Instagram / TikTok / YouTube / X(Twitter)&#10;一行一个链接，例如：&#10;https://www.facebook.com/gaming/posts/...&#10;https://www.instagram.com/p/.../&#10;https://www.tiktok.com/@user/video/...&#10;https://www.youtube.com/watch?v=...&#10;https://x.com/user/status/..."></textarea>
+                <textarea id="urlsInput" class="url-textarea" oninput="scheduleCommentPrecheck()" placeholder="支持 Facebook / Instagram / TikTok / YouTube / X(Twitter)&#10;一行一个链接，例如：&#10;https://www.facebook.com/gaming/posts/...&#10;https://www.instagram.com/p/.../&#10;https://www.tiktok.com/@user/video/...&#10;https://www.youtube.com/watch?v=...&#10;https://x.com/user/status/..."></textarea>
                 <div class="platform-badges">
                     <span class="badge">FB</span>
                     <span class="badge">IG</span>
@@ -146,6 +158,11 @@
                 <div class="example-hint">
                     <span>💡 一次最多 ~5 条链接为宜，过多会拉长 Apify 与 AI 耗时</span>
                     <a href="#" onclick="fillExample(); return false;">填入示例</a>
+                </div>
+                <div class="precheck-panel" id="commentPrecheck">
+                    <div class="precheck-title">评论任务预检</div>
+                    <div class="precheck-grid" id="commentPrecheckGrid"></div>
+                    <div class="precheck-warning" id="commentPrecheckWarning"></div>
                 </div>
             </div>
             <button onclick="startAnalysis()" id="analyzeBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">✨ 立即分析</button>
@@ -236,6 +253,34 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+
+            <div class="section-divider"></div>
+            <div class="subtool-head">
+                <h3>统一任务中心</h3>
+                <div class="subtool-actions">
+                    <button type="button" class="btn-soft" onclick="loadUnifiedTasks()">刷新</button>
+                </div>
+            </div>
+            <div class="profile-table-wrap">
+                <table class="profile-table unified-task-table">
+                    <thead>
+                        <tr>
+                            <th>提交时间</th>
+                            <th>任务</th>
+                            <th>状态</th>
+                            <th>进度</th>
+                            <th>成功/总数</th>
+                            <th>文件/结果</th>
+                            <th>失败原因</th>
+                            <th>操作</th>
+                            <th>任务 ID</th>
+                        </tr>
+                    </thead>
+                    <tbody id="unifiedTaskRows">
+                        <tr><td colspan="9" class="text-muted">加载中...</td></tr>
+                    </tbody>
+                </table>
             </div>
 
             <div id="loading" class="text-center py-5" style="display: none;" role="status" aria-live="polite">
@@ -332,6 +377,7 @@ let currentRecordId = null;
 const POLL_MAX = 72;
 const POLL_INTERVAL = 5000;
 let profileVideoModalInstance = null;
+let precheckTimer = null;
 
 function switchSentimentTool(kind) {
     const isVideo = kind === 'videoMetrics';
@@ -383,10 +429,11 @@ function fillExample() {
         'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
         'https://x.com/PUBGMOBILE/status/1700000000000000000'
     ].join('\n');
+    scheduleCommentPrecheck();
 }
 
 function showTutorial() {
-    alert('使用教程：\n\n1. 每行粘贴一个社媒主贴链接（FB / IG / TT / YouTube / X 均可混合）\n2. 点击"立即分析"，平台自动识别\n3. 等待 Apify 抓取 + AI 翻译/情感/分类\n4. 表格输出 12 列（与线下模板一致），可导出 Excel\n\n注：Facebook 评论时间戳通常缺失，会自动留空。');
+    alert('使用教程：\n\n1. 每行粘贴一个社媒主贴链接（FB / IG / TT / YouTube / X 均可混合）\n2. 点击"立即分析"，平台自动识别\n3. 等待 Apify 抓取 + AI 翻译/情感/分类\n4. 表格固定包含原文、翻译、评论点赞数、视频/帖子链接、来源序号和抓取状态，可导出 Excel\n\n注：Facebook 评论时间戳通常缺失，会自动留空。');
 }
 
 function applyTimeFilter(items) {
@@ -476,8 +523,18 @@ async function startAnalysis() {
     const btn = document.getElementById('analyzeBtn');
     const urlsRaw = document.getElementById('urlsInput').value;
     if (!urlsRaw || !urlsRaw.trim()) return alert('请至少粘贴一个主贴链接');
-    const urlCount = urlsRaw.split(/[\s,;\n]+/).filter(x => /^https?:\/\//.test(x.trim())).length;
+    let precheck = null;
+    try {
+        precheck = await runCommentPrecheck(urlsRaw);
+    } catch (e) {}
+    const urlCount = precheck && precheck.url_count != null
+        ? precheck.url_count
+        : urlsRaw.split(/[\s,;\n]+/).filter(x => /^https?:\/\//.test(x.trim())).length;
     if (urlCount === 0) return alert('未识别到任何 http/https 链接');
+    if (precheck && precheck.unsupported && precheck.unsupported.length) {
+        const ok = confirm('有 ' + precheck.unsupported.length + ' 条链接暂无法识别平台，会被跳过。是否继续提交？');
+        if (!ok) return;
+    }
     const formData = new FormData();
     formData.append('urls', urlsRaw);
     loadingText.innerHTML = `🕵️ 已提交 ${urlCount} 条链接，正在后台抓取与分析...<br><small>每条链接约 1-2 分钟，请耐心等待</small>`;
@@ -490,6 +547,7 @@ async function startAnalysis() {
         const resp = await fetch('/analyze', { method: 'POST', body: formData });
         const data = await resp.json();
         if (data.task_id) {
+            loadUnifiedTasks();
             pollTaskStatus(data.task_id, 0);
         } else {
             throw new Error(data.error || '未返回任务ID');
@@ -501,6 +559,64 @@ async function startAnalysis() {
         btn.disabled = false;
         btn.textContent = '✨ 立即分析';
     }
+}
+
+function scheduleCommentPrecheck() {
+    window.clearTimeout(precheckTimer);
+    precheckTimer = window.setTimeout(() => {
+        const value = document.getElementById('urlsInput').value;
+        if (!value || !value.trim()) {
+            renderCommentPrecheck(null);
+            return;
+        }
+        runCommentPrecheck(value).catch(e => {
+            const warning = document.getElementById('commentPrecheckWarning');
+            if (warning) warning.textContent = '预检失败：' + (e.message || String(e));
+        });
+    }, 450);
+}
+
+async function runCommentPrecheck(urlsRaw) {
+    const data = await fetchJsonOrThrow('/api/sentiment/precheck', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({urls: urlsRaw}),
+    });
+    renderCommentPrecheck(data);
+    return data;
+}
+
+function renderCommentPrecheck(data) {
+    const panel = document.getElementById('commentPrecheck');
+    const grid = document.getElementById('commentPrecheckGrid');
+    const warning = document.getElementById('commentPrecheckWarning');
+    if (!panel || !grid || !warning) return;
+    if (!data || data.status !== 'success' || !data.url_count) {
+        panel.classList.remove('active');
+        grid.innerHTML = '';
+        warning.textContent = '';
+        return;
+    }
+    panel.classList.add('active');
+    const platformCounts = data.platform_counts || {};
+    const platformText = Object.keys(platformCounts)
+        .filter(k => k !== 'UNKNOWN')
+        .map(k => k + ' ' + platformCounts[k])
+        .join(' / ') || '-';
+    grid.innerHTML = [
+        ['识别链接数', data.url_count],
+        ['可抓取链接', data.supported_count],
+        ['平台分布', platformText],
+        ['预计耗时', data.estimated_text || '-'],
+    ].map(item => `
+        <div class="precheck-metric">
+            <div class="precheck-label">${escapeHtml(item[0])}</div>
+            <div class="precheck-value">${escapeHtml(item[1])}</div>
+        </div>
+    `).join('');
+    warning.textContent = data.unsupported && data.unsupported.length
+        ? '异常链接：' + data.unsupported.join('；')
+        : '';
 }
 
 async function previewVideoMetricColumns() {
@@ -547,6 +663,7 @@ function pollVideoMetricsTask(taskId, attempt) {
                 btn.disabled = false;
                 showVideoMetricsDownload(result && result.download_id, (result && result.filename) || 'video_metrics.xlsx');
                 loadVideoMetricsTasks();
+                loadUnifiedTasks();
                 return;
             }
             if (data.status === 'failed') {
@@ -554,6 +671,7 @@ function pollVideoMetricsTask(taskId, attempt) {
                 statusEl.className = 'status-line err';
                 btn.disabled = false;
                 loadVideoMetricsTasks();
+                loadUnifiedTasks();
                 return;
             }
             if (attempt >= 800) {
@@ -561,6 +679,7 @@ function pollVideoMetricsTask(taskId, attempt) {
                 statusEl.className = 'status-line';
                 btn.disabled = false;
                 loadVideoMetricsTasks();
+                loadUnifiedTasks();
                 return;
             }
             setTimeout(() => pollVideoMetricsTask(taskId, attempt + 1), 2000);
@@ -570,6 +689,7 @@ function pollVideoMetricsTask(taskId, attempt) {
             statusEl.className = 'status-line err';
             btn.disabled = false;
             loadVideoMetricsTasks();
+            loadUnifiedTasks();
         });
 }
 
@@ -608,6 +728,7 @@ async function startVideoMetrics() {
         }
         statusEl.textContent = '已排队 ' + data.url_count + ' 条链接，任务 ID: ' + data.task_id;
         loadVideoMetricsTasks();
+        loadUnifiedTasks();
         pollVideoMetricsTask(data.task_id, 0);
     } catch (e) {
         statusEl.textContent = String(e);
@@ -660,6 +781,68 @@ function renderVideoMetricsTasks(items) {
             </tr>
         `;
     }).join('');
+}
+
+async function loadUnifiedTasks() {
+    const tbody = document.getElementById('unifiedTaskRows');
+    if (!tbody) return;
+    try {
+        const data = await fetchJsonOrThrow('/api/sentiment/tasks?limit=30');
+        if (data.status !== 'success') throw new Error(data.message || '加载失败');
+        renderUnifiedTasks(data.items || []);
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="9" class="task-status-err">加载失败：' + escapeHtml(e.message || String(e)) + '</td></tr>';
+    }
+}
+
+function renderUnifiedTasks(items) {
+    const tbody = document.getElementById('unifiedTaskRows');
+    if (!items.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-muted">暂无任务</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map(item => {
+        const status = item.status || '-';
+        const statusClass = status === 'completed' ? 'task-status-ok' : (status === 'failed' ? 'task-status-err' : '');
+        const progress = item.error || item.progress || '-';
+        const total = item.total_count != null ? item.total_count : '-';
+        const success = item.success_count != null ? item.success_count : (status === 'completed' && item.function_type === 'sentiment' ? '完成' : '-');
+        const taskId = item.task_id || '';
+        let fileHtml = '-';
+        if (item.download_id) {
+            fileHtml = '<a class="task-download-link" href="/api/etl/download/' + encodeURIComponent(item.download_id) + '">下载 ' + escapeHtml(item.filename || '结果.xlsx') + '</a>';
+        } else if (item.record_id && item.function_type === 'sentiment') {
+            fileHtml = '<a class="task-download-link" href="/export_insight?record_id=' + encodeURIComponent(item.record_id) + '">导出评论结果</a>';
+        }
+        const retryHtml = status === 'failed'
+            ? '<button type="button" class="btn-soft" onclick="retryUnifiedTask(\\'' + escapeHtml(taskId) + '\\')">重试</button>'
+            : '-';
+        return `
+            <tr>
+                <td>${escapeHtml(formatDateTime(item.created_at))}</td>
+                <td>${escapeHtml(item.task_name || item.function_type || '-')}</td>
+                <td class="${statusClass}">${escapeHtml(statusLabel(status))}</td>
+                <td title="${escapeHtml(progress)}">${escapeHtml(shortText(progress, 52))}</td>
+                <td>${escapeHtml(success + ' / ' + total)}</td>
+                <td>${fileHtml}</td>
+                <td title="${escapeHtml(item.error || '')}">${escapeHtml(shortText(item.error || '', 42))}</td>
+                <td>${retryHtml}</td>
+                <td class="task-id-cell" title="${escapeHtml(taskId)}">${escapeHtml(taskId)}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function retryUnifiedTask(taskId) {
+    const tbody = document.getElementById('unifiedTaskRows');
+    try {
+        const data = await fetchJsonOrThrow('/api/sentiment/tasks/' + encodeURIComponent(taskId) + '/retry', { method: 'POST' });
+        if (data.status !== 'queued') throw new Error(data.message || '重试失败');
+        if (tbody) tbody.insertAdjacentHTML('afterbegin', '<tr><td colspan="9" class="task-status-ok">已重新提交任务：' + escapeHtml(data.task_id) + '</td></tr>');
+        loadUnifiedTasks();
+    } catch (e) {
+        alert('重试失败：' + (e.message || String(e)));
+    }
 }
 
 function openProfileVideoModal() {
@@ -808,12 +991,14 @@ function pollProfileVideoTask(taskId, attempt) {
             if (data.status === 'completed') {
                 statusEl.className = 'status-line ok';
                 loadProfileVideoConfigs();
+                loadUnifiedTasks();
                 return;
             }
             if (data.status === 'failed') {
                 statusEl.textContent = data.error || '任务失败';
                 statusEl.className = 'status-line err';
                 loadProfileVideoConfigs();
+                loadUnifiedTasks();
                 return;
             }
             if (attempt < 1200) setTimeout(() => pollProfileVideoTask(taskId, attempt + 1), 3000);
@@ -880,12 +1065,14 @@ async function pollTaskStatus(taskId, attempt) {
             currentRecordId = data.record_id || null;
             updateLegacyExportVisibility((data.result || '').indexOf('insight-table') !== -1);
             const items = await loadHistory();
+            loadUnifiedTasks();
             if (!currentRecordId && items && items.length) currentRecordId = items[0].id;
             btn.disabled = false;
             btn.textContent = '✨ 立即分析';
         } else if (data.status === 'failed') {
             loading.style.display = 'none';
             alert('❌ 分析失败：' + (data.error || '未知错误'));
+            loadUnifiedTasks();
             btn.disabled = false;
             btn.textContent = '✨ 立即分析';
         } else if (attempt >= POLL_MAX) {
@@ -951,6 +1138,7 @@ window.onload = function () {
     loadHistory();
     loadVideoMetricsTasks();
     loadProfileVideoConfigs();
+    loadUnifiedTasks();
 };
 </script>
 {% endblock %}

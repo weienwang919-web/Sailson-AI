@@ -110,6 +110,7 @@ class SentimentInsightTests(unittest.TestCase):
             [
                 {
                     "_schema": sentiment_insight.SCHEMA_VERSION,
+                    "source_index": 1,
                     "platform": "TT",
                     "post_url": "https://www.tiktok.com/@game/video/123",
                     "post_date": "2026-06-18 12:00",
@@ -123,6 +124,9 @@ class SentimentInsightTests(unittest.TestCase):
                     "sentiment_ai": "正向",
                     "sentiment_manual": "",
                     "category": "产品体验",
+                    "comment_id": "TT:abc",
+                    "comment_url": "https://www.tiktok.com/comment/abc",
+                    "scrape_status": "成功",
                 }
             ]
         )
@@ -132,6 +136,11 @@ class SentimentInsightTests(unittest.TestCase):
 
         self.assertIn("评论点赞数", headers)
         self.assertEqual(ws.cell(row=2, column=headers.index("评论点赞数") + 1).value, 42)
+        self.assertIn("来源序号", headers)
+        self.assertIn("评论ID", headers)
+        self.assertIn("评论链接", headers)
+        self.assertIn("抓取状态", headers)
+        self.assertEqual(ws.cell(row=2, column=headers.index("评论ID") + 1).value, "TT:abc")
 
 
 if __name__ == "__main__":

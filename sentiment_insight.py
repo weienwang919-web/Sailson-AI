@@ -38,6 +38,7 @@ SCHEMA_VERSION = "insight_v2"
 
 # Excel/HTML 表头（图中样式）
 INSIGHT_HEADERS = [
+    "来源序号",
     "平台",
     "发布时间",
     "主贴链接",
@@ -51,6 +52,9 @@ INSIGHT_HEADERS = [
     "内容判断（正向/中立/负面）",
     "人工复核（正向/中立/负面）",
     "内容分类",
+    "评论ID",
+    "评论链接",
+    "抓取状态",
 ]
 
 # Apify Actor 配置（可通过环境变量覆盖）
@@ -1064,6 +1068,7 @@ def run_insight_pipeline(
         structured.append(
             {
                 "_schema": SCHEMA_VERSION,
+                "source_index": int(c.get("_source_index") or 0) + 1,
                 "platform": c["platform"],
                 "post_date": c["post_date"],
                 "post_url": c["post_url"],
@@ -1079,6 +1084,7 @@ def run_insight_pipeline(
                 "sentiment_ai": r.get("sentiment", "中立"),
                 "sentiment_manual": "",
                 "category": r.get("category", "其他"),
+                "scrape_status": "成功",
             }
         )
 
@@ -1133,6 +1139,7 @@ def build_html_table(rows: list[dict]) -> str:
         sentiment = _html_escape(r.get("sentiment_ai", ""))
         color = _sentiment_color(r.get("sentiment_ai", ""))
         cells = [
+            _html_escape(r.get("source_index", "")),
             _html_escape(r.get("platform", "")),
             _html_escape(r.get("post_date", "")),
             link_cell,
@@ -1146,6 +1153,9 @@ def build_html_table(rows: list[dict]) -> str:
             f"<span style='color:{color};font-weight:600;'>{sentiment}</span>",
             _html_escape(r.get("sentiment_manual", "")),
             _html_escape(r.get("category", "")),
+            _html_escape(r.get("comment_id", "")),
+            _html_escape(r.get("comment_url", "")),
+            _html_escape(r.get("scrape_status", "成功")),
         ]
         body_parts.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
 
@@ -1191,6 +1201,7 @@ def _write_insight_sheet(ws, rows: list[dict]) -> None:
 
     for r in rows:
         ws.append([
+            r.get("source_index", ""),
             r.get("platform", ""),
             r.get("post_date", ""),
             r.get("post_url", ""),
@@ -1204,9 +1215,12 @@ def _write_insight_sheet(ws, rows: list[dict]) -> None:
             r.get("sentiment_ai", ""),
             r.get("sentiment_manual", ""),
             r.get("category", ""),
+            r.get("comment_id", ""),
+            r.get("comment_url", ""),
+            r.get("scrape_status", "成功"),
         ])
 
-    widths = [8, 18, 50, 30, 18, 12, 12, 18, 50, 50, 18, 18, 16]
+    widths = [10, 8, 18, 50, 30, 18, 12, 12, 18, 50, 50, 18, 18, 16, 34, 50, 12]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
