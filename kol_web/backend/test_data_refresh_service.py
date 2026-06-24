@@ -80,6 +80,36 @@ class DataRefreshServiceTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_rows_from_workbook_detects_header_below_first_row(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Input"
+        ws.append(["达人数据更新模板"])
+        ws.append(["请勿删除说明行"])
+        ws.append(["达人", "主页链接", "备注"])
+        ws.append(["Alice", "https://www.tiktok.com/@alice", "keep me"])
+
+        rows = data_refresh_service.rows_from_workbook(wb)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["row_idx"], 4)
+        self.assertEqual(rows[0]["platform"], "tiktok")
+        self.assertEqual(rows[0]["link"], "https://www.tiktok.com/@alice")
+
+    def test_rows_from_workbook_reads_hyperlink_target(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Input"
+        ws.append(["达人", "TikTok", "备注"])
+        ws.append(["Alice", "用户附件", "keep me"])
+        ws.cell(2, 2).hyperlink = "https://www.tiktok.com/@alice"
+
+        rows = data_refresh_service.rows_from_workbook(wb)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["raw_link"], "https://www.tiktok.com/@alice")
+        self.assertEqual(rows[0]["platform"], "tiktok")
+
     def test_sync_to_pool_adds_record_and_acv_only_when_explicitly_returned(self):
         db = self.Session()
         try:
@@ -113,6 +143,27 @@ class DataRefreshServiceTests(unittest.TestCase):
             self.assertEqual(record.yt_follower, 5000)
             self.assertEqual(record.yt_avv, 300)
             self.assertIsNone(record.yt_acv)
+        finally:
+            db.close()
+
+    def test_empty_excel_rows_fail_with_clear_error(self):
+        db = self.Session()
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Input"
+            ws.append(["达人", "备注"])
+            ws.append(["Alice", "no link"])
+            rows = data_refresh_service.rows_from_workbook(wb)
+            job = DataRefreshJob(input_type="excel", status="running", total=0, include_acv=1)
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+
+            data_refresh_service._run_refresh(db, job, rows, wb, False, True, 10)
+
+            self.assertEqual(job.status, "failed")
+            self.assertIn("未识别到达人主页链接", job.error)
         finally:
             db.close()
 

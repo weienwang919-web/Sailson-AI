@@ -28,7 +28,11 @@ from app.models import DataRefreshJob, KOLRecord
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "kol-data-refresh"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-LINK_ALIASES = ("链接", "link", "url", "channel", "主页链接", "达人主页链接", "profile", "profile url")
+LINK_ALIASES = (
+    "链接", "link", "url", "channel", "主页链接", "达人主页链接",
+    "profile", "profile url", "主页", "homepage", "profile link",
+    "tiktok", "instagram", "youtube", "yt", "ins", "tt",
+)
 NAME_ALIASES = ("达人", "达人名称", "kol", "kol name", "name", "creator", "渠道名", "资源名称")
 PLATFORM_ALIASES = ("平台", "platform", "渠道")
 FOLLOWER_ALIASES = ("粉丝数", "followers", "follower", "➡️ followers")
@@ -139,15 +143,16 @@ def rows_from_workbook(wb) -> list[dict[str, Any]]:
     for ws in wb.worksheets:
         if ws.max_row < 2:
             continue
-        headers = [_cell_text(ws.cell(1, col).value) for col in range(1, ws.max_column + 1)]
-        indexes = _detect_indexes(headers)
+        header_row, headers, indexes = _find_header_row(ws)
+        if not header_row:
+            continue
         link_cols = indexes["links"]
         if not link_cols:
             continue
-        for row_idx in range(2, ws.max_row + 1):
+        for row_idx in range(header_row + 1, ws.max_row + 1):
             row_values = {headers[col - 1]: ws.cell(row_idx, col).value for col in range(1, ws.max_column + 1) if headers[col - 1]}
             for col in link_cols:
-                raw = _cell_text(ws.cell(row_idx, col).value)
+                raw = _cell_link_text(ws.cell(row_idx, col))
                 if not raw:
                     continue
                 platform = detect_link_platform(raw) or detect_platform_text(_cell_text(row_values.get(indexes.get("platform") or "")))
@@ -181,6 +186,20 @@ def _run_refresh(
     job.total = len(rows)
     job.summary_json = _job_summary_json(step=JOB_STEPS[1], total=len(rows))
     db.commit()
+    if not rows:
+        job.status = "failed"
+        job.error = "未识别到达人主页链接，请确认 Excel 表头包含链接/Link/URL/主页链接，或单元格超链接指向 TikTok/Instagram/YouTube 主页"
+        job.failed_count = 0
+        job.summary_json = _job_summary_json(
+            step=JOB_STEPS[0],
+            total=0,
+            success=0,
+            failed=0,
+            errors=[job.error],
+        )
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return
     valid_rows = [row for row in rows if row.get("platform") and row.get("link")]
     records = [_row_to_record_stub(row) for row in valid_rows]
     raw, platform_errors = _fetch_raw(records, videos_per_profile)
@@ -296,8 +315,11 @@ def write_output(rows: list[dict[str, Any]], wb, job_id: int) -> Path:
         for ws in wb.worksheets:
             if ws.max_row < 2:
                 continue
-            col_map = ensure_output_columns(ws)
-            for row_idx in range(2, ws.max_row + 1):
+            header_row, _headers, _indexes = _find_header_row(ws)
+            if not header_row:
+                continue
+            col_map = ensure_output_columns(ws, header_row=header_row)
+            for row_idx in range(header_row + 1, ws.max_row + 1):
                 row_group = by_sheet_row.get((ws.title, row_idx))
                 if not row_group:
                     continue
@@ -308,12 +330,12 @@ def write_output(rows: list[dict[str, Any]], wb, job_id: int) -> Path:
     return out_path
 
 
-def ensure_output_columns(ws: Worksheet) -> dict[str, int]:
-    headers = {_cell_text(ws.cell(1, col).value): col for col in range(1, ws.max_column + 1)}
+def ensure_output_columns(ws: Worksheet, header_row: int = 1) -> dict[str, int]:
+    headers = {_cell_text(ws.cell(header_row, col).value): col for col in range(1, ws.max_column + 1)}
     for name in OUTPUT_COLUMNS:
         if name not in headers:
             col = ws.max_column + 1
-            ws.cell(1, col).value = name
+            ws.cell(header_row, col).value = name
             headers[name] = col
     return headers
 
@@ -518,6 +540,56 @@ def _detect_indexes(headers: list[str]) -> dict[str, Any]:
         if "platform" not in out and _matches_alias(norm, PLATFORM_ALIASES):
             out["platform"] = header
     return out
+
+
+def _find_header_row(ws: Worksheet) -> tuple[int | None, list[str], dict[str, Any]]:
+    best: tuple[int | None, list[str], dict[str, Any], int] = (None, [], {"links": []}, -1)
+    max_scan = min(ws.max_row, 20)
+    for row_idx in range(1, max_scan + 1):
+        headers = [_cell_text(ws.cell(row_idx, col).value) for col in range(1, ws.max_column + 1)]
+        if not any(headers):
+            continue
+        indexes = _detect_indexes(headers)
+        link_cols = indexes.get("links") or []
+        if not link_cols:
+            continue
+        data_hits = 0
+        for data_row in range(row_idx + 1, min(ws.max_row, row_idx + 25) + 1):
+            for col in link_cols:
+                if _looks_like_supported_link(_cell_link_text(ws.cell(data_row, col))):
+                    data_hits += 1
+        strong_alias = any(
+            _matches_alias(_norm(headers[col - 1]), ("链接", "link", "url", "channel", "主页链接", "达人主页链接", "profile", "profile url", "homepage", "profile link"))
+            for col in link_cols
+        )
+        score = data_hits * 10 + len(link_cols) * 2 + (2 if "name" in indexes else 0) + (1 if "platform" in indexes else 0)
+        if not data_hits and not strong_alias:
+            continue
+        if score > best[3]:
+            best = (row_idx, headers, indexes, score)
+    return best[0], best[1], best[2]
+
+
+def _cell_link_text(cell) -> str:
+    hyperlink = getattr(cell, "hyperlink", None)
+    target = getattr(hyperlink, "target", None) if hyperlink is not None else None
+    if _looks_like_supported_link(target):
+        return clean_text(target)
+    value = _cell_text(cell.value)
+    if value.upper().startswith("=HYPERLINK("):
+        match = re.search(r"https?://[^\"')\s]+", value, re.I)
+        if match:
+            return match.group(0)
+    return value
+
+
+def _looks_like_supported_link(value: Any) -> bool:
+    text = clean_text(value)
+    if not text:
+        return False
+    if detect_link_platform(text):
+        return True
+    return bool(re.search(r"https?://[^\s,;，；)）]+", text, re.I))
 
 
 def _guess_platform_from_header(header: str) -> str | None:
