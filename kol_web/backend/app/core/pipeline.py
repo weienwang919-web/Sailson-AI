@@ -67,6 +67,15 @@ def instagram_username(url: str) -> str:
 
 def youtube_channel_seed(url: str) -> str:
     value = clean_text(url).split("?")[0].rstrip("/")
+    if not value:
+        return ""
+    parsed = urlparse(value if re.match(r"https?://", value, re.I) else f"https://{value}")
+    host = parsed.netloc.lower()
+    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if "youtu.be" in host:
+        return ""
+    if path_parts and path_parts[0].lower() in {"watch", "shorts", "embed", "live", "playlist", "results"}:
+        return ""
     for suffix in ("/videos", "/shorts", "/featured"):
         if suffix in value:
             value = value.split(suffix)[0]
@@ -204,6 +213,13 @@ def aggregate_youtube(items: list[dict[str, Any]], n: int) -> dict[str, dict[str
         if not handle:
             for field in ("inputChannelUrl", "input", "fromYTUrl", "channelUrl"):
                 source = clean_text(item.get(field))
+                seed = youtube_channel_seed(source).lower()
+                if seed:
+                    if "/@" in seed:
+                        handle = seed.split("/@")[-1].split("/")[0].lower()
+                    else:
+                        handle = seed.rstrip("/").split("/")[-1]
+                    break
                 match = re.search(r"youtube\.com/@([^/?#]+)", source, re.I)
                 if match:
                     handle = match.group(1).lower()

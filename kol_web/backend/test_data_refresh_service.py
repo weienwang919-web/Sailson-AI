@@ -111,6 +111,22 @@ class DataRefreshServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["raw_link"], "https://www.tiktok.com/@alice")
         self.assertEqual(rows[0]["platform"], "tiktok")
 
+    def test_rows_from_workbook_skips_non_profile_values_in_platform_columns(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Input"
+        ws.append(["达人", "Instagram", "YouTube", "备注"])
+        ws.append(["Noise", "Instagram", "https://www.youtube.com/watch?v=abc123", "skip these"])
+        ws.append(["Alice", "https://www.instagram.com/alice/", "https://www.youtube.com/channel/UCabc123", "keep"])
+
+        rows = data_refresh_service.rows_from_workbook(wb)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["platform"] for row in rows}, {"ins", "youtube"})
+        self.assertEqual(rows[0]["link"], "https://www.instagram.com/alice/")
+        self.assertEqual(rows[1]["link"], "https://www.youtube.com/channel/UCabc123")
+        self.assertFalse(any(row.get("error") == "链接格式无效" for row in rows))
+
     def test_sync_to_pool_adds_record_and_acv_only_when_explicitly_returned(self):
         db = self.Session()
         try:
@@ -144,6 +160,42 @@ class DataRefreshServiceTests(unittest.TestCase):
             self.assertEqual(record.yt_follower, 5000)
             self.assertEqual(record.yt_avv, 300)
             self.assertIsNone(record.yt_acv)
+        finally:
+            db.close()
+
+    def test_youtube_channel_id_links_match_raw_input_channel_url(self):
+        db = self.Session()
+        try:
+            rows = data_refresh_service.rows_from_links("https://www.youtube.com/channel/UCHePEXTqWF-lexZaIkFHTMw")
+            job = DataRefreshJob(input_type="links", status="running", total=len(rows), include_acv=0)
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+
+            old_fetch = data_refresh_service._fetch_raw
+            data_refresh_service._fetch_raw = lambda _records, _n: (
+                {
+                    "youtube": [
+                        {
+                            "inputChannelUrl": "https://www.youtube.com/channel/UCHePEXTqWF-lexZaIkFHTMw",
+                            "numberOfSubscribers": 12000,
+                            "viewCount": 900,
+                        }
+                    ],
+                    "tiktok": [],
+                    "ins": [],
+                },
+                {},
+            )
+            try:
+                data_refresh_service._run_refresh(db, job, rows, None, False, False, 10)
+            finally:
+                data_refresh_service._fetch_raw = old_fetch
+
+            self.assertEqual(job.success_count, 1)
+            self.assertEqual(job.failed_count, 0)
+            self.assertEqual(rows[0]["followers"], 12000)
+            self.assertEqual(rows[0]["avv"], 900)
         finally:
             db.close()
 

@@ -33,6 +33,11 @@ LINK_ALIASES = (
     "profile", "profile url", "主页", "homepage", "profile link",
     "tiktok", "instagram", "youtube", "yt", "ins", "tt",
 )
+STRONG_LINK_ALIASES = (
+    "链接", "link", "url", "channel", "主页链接", "达人主页链接",
+    "profile", "profile url", "主页", "homepage", "profile link",
+)
+PLATFORM_LINK_HEADERS = ("tiktok", "instagram", "youtube", "yt", "ins", "tt")
 NAME_ALIASES = ("达人", "达人名称", "kol", "kol name", "name", "creator", "渠道名", "资源名称")
 PLATFORM_ALIASES = ("平台", "platform", "渠道")
 FOLLOWER_ALIASES = ("粉丝数", "followers", "follower", "➡️ followers")
@@ -158,6 +163,8 @@ def rows_from_workbook(wb) -> list[dict[str, Any]]:
                 platform = detect_link_platform(raw) or detect_platform_text(_cell_text(row_values.get(indexes.get("platform") or "")))
                 if not platform:
                     platform = _guess_platform_from_header(headers[col - 1])
+                if not _should_create_excel_row(raw, platform, headers[col - 1]):
+                    continue
                 normalized = normalize_link(platform, raw) if platform else ""
                 if not normalized:
                     rows.append({"worksheet": ws.title, "row_idx": row_idx, "raw_link": raw, "status": "失败", "error": "链接格式无效"})
@@ -606,7 +613,7 @@ def _detect_indexes(headers: list[str]) -> dict[str, Any]:
     out: dict[str, Any] = {"links": []}
     for idx, header in enumerate(headers, start=1):
         norm = _norm(header)
-        if _matches_alias(norm, LINK_ALIASES):
+        if _is_link_header(norm):
             out["links"].append(idx)
         if "name" not in out and _matches_alias(norm, NAME_ALIASES):
             out["name"] = header
@@ -632,7 +639,7 @@ def _find_header_row(ws: Worksheet) -> tuple[int | None, list[str], dict[str, An
                 if _looks_like_supported_link(_cell_link_text(ws.cell(data_row, col))):
                     data_hits += 1
         strong_alias = any(
-            _matches_alias(_norm(headers[col - 1]), ("链接", "link", "url", "channel", "主页链接", "达人主页链接", "profile", "profile url", "homepage", "profile link"))
+            _matches_alias(_norm(headers[col - 1]), STRONG_LINK_ALIASES)
             for col in link_cols
         )
         score = data_hits * 10 + len(link_cols) * 2 + (2 if "name" in indexes else 0) + (1 if "platform" in indexes else 0)
@@ -663,6 +670,24 @@ def _looks_like_supported_link(value: Any) -> bool:
     if detect_link_platform(text):
         return True
     return bool(re.search(r"https?://[^\s,;，；)）]+", text, re.I))
+
+
+def _is_link_header(norm_header: str) -> bool:
+    return _matches_alias(norm_header, STRONG_LINK_ALIASES) or norm_header in PLATFORM_LINK_HEADERS
+
+
+def _should_create_excel_row(raw: str, platform: str | None, header: str) -> bool:
+    text = clean_text(raw)
+    if not text or not platform:
+        return False
+    if not detect_link_platform(text):
+        return False
+    header_norm = _norm(header)
+    if _matches_alias(header_norm, STRONG_LINK_ALIASES):
+        return True
+    if header_norm in PLATFORM_LINK_HEADERS:
+        return bool(normalize_link(platform, text))
+    return False
 
 
 def _guess_platform_from_header(header: str) -> str | None:

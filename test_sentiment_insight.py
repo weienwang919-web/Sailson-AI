@@ -55,6 +55,46 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(results[2]["translation_zh"], "第三条")
         self.assertEqual(results[2]["sentiment"], "正向")
 
+    def test_ai_progress_reports_batch_numbers(self):
+        original_batch = sentiment_insight.AI_BATCH_SIZE
+        sentiment_insight.AI_BATCH_SIZE = 2
+        comments = [
+            {"_analysis_id": f"C{i}", "comment_id": f"p:c{i}", "text": f"comment {i}"}
+            for i in range(3)
+        ]
+        progress_messages = []
+
+        try:
+            def ai_call(prompt, _timeout):
+                payload = []
+                section = prompt.split("《待处理评论》", 1)[1].split("只输出 JSON 数组", 1)[0]
+                for line in section.splitlines():
+                    line = line.strip()
+                    if not line.startswith("{"):
+                        continue
+                    data = json.loads(line)
+                    payload.append(
+                        {
+                            "idx": data["idx"],
+                            "id": data["id"],
+                            "translation_zh": "翻译",
+                            "sentiment": "中立",
+                            "category": "其他",
+                        }
+                    )
+                return json.dumps(payload, ensure_ascii=False), 1
+
+            sentiment_insight._run_ai_for_comments(comments, ai_call, progress_messages.append)
+        finally:
+            sentiment_insight.AI_BATCH_SIZE = original_batch
+
+        self.assertEqual(len(progress_messages), 2)
+        self.assertIn("第 1/2 批", progress_messages[0])
+        self.assertIn("第 2/2 批", progress_messages[1])
+
+    def test_default_ai_batch_size_reduces_request_count(self):
+        self.assertEqual(sentiment_insight.AI_BATCH_SIZE, 30)
+
     def test_pipeline_truncation_prioritizes_high_like_comments(self):
         original_max = sentiment_insight.MAX_AI_COMMENTS
         original_scraper = sentiment_insight.PLATFORM_SCRAPERS["TT"]

@@ -70,7 +70,7 @@ DEFAULT_ACTORS = {
 ACTOR_TIMEOUT_SECS = int(os.environ.get("INSIGHT_ACTOR_TIMEOUT_SECS", "420"))
 ACTOR_POLL_INTERVAL = int(os.environ.get("INSIGHT_ACTOR_POLL_INTERVAL", "5"))
 COMMENTS_PER_POST_LIMIT = int(os.environ.get("INSIGHT_COMMENTS_PER_POST", "500"))
-AI_BATCH_SIZE = int(os.environ.get("INSIGHT_AI_BATCH_SIZE", "15"))
+AI_BATCH_SIZE = int(os.environ.get("INSIGHT_AI_BATCH_SIZE", "30"))
 MAX_AI_COMMENTS = int(os.environ.get("INSIGHT_MAX_AI_COMMENTS", "1500"))
 
 BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
@@ -856,6 +856,7 @@ def _build_ai_prompt(batch_lines: str, expected_count: int) -> str:
 def _run_ai_for_comments(
     comments: list[dict],
     ai_call: Callable[[str, int], tuple[str, int]],
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[list[dict], int]:
     """对评论调用 AI；返回 (按原顺序对齐的 AI 结果列表, 累计 token 数)。
 
@@ -878,9 +879,13 @@ def _run_ai_for_comments(
 
     # 把需要 AI 的部分按 batch 处理
     ai_indexes = [i for i, p in enumerate(preprocessed) if p[2]]
+    total_batches = (len(ai_indexes) + AI_BATCH_SIZE - 1) // AI_BATCH_SIZE if ai_indexes else 0
     for start in range(0, len(ai_indexes), AI_BATCH_SIZE):
         idx_chunk = ai_indexes[start : start + AI_BATCH_SIZE]
         expected = len(idx_chunk)
+        batch_num = start // AI_BATCH_SIZE + 1
+        if progress:
+            progress(f"AI 翻译/分类中：第 {batch_num}/{total_batches} 批（共 {n} 条评论）")
         lines = "\n".join(
             json.dumps(
                 {
@@ -1060,7 +1065,7 @@ def run_insight_pipeline(
         all_comments_for_ai = all_comments_for_ai[:MAX_AI_COMMENTS]
 
     _p(f"AI 翻译/分类中（共 {len(all_comments_for_ai)} 条评论）")
-    ai_results, ai_tokens = _run_ai_for_comments(all_comments_for_ai, ai_call)
+    ai_results, ai_tokens = _run_ai_for_comments(all_comments_for_ai, ai_call, progress=_p)
     total_tokens += ai_tokens
 
     # 3. 合并结构化输出

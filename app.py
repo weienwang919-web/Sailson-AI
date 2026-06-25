@@ -847,7 +847,8 @@ def call_gemini(prompt, image=None, timeout=60, model=None, temperature=0.7):
             messages=[
                 {"role": "user", "content": prompt}
             ],
-            temperature=temperature
+            temperature=temperature,
+            timeout=timeout,
         )
 
         result = response.choices[0].message.content
