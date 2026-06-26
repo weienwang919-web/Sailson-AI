@@ -210,6 +210,7 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(latest_fields["平台"], "TikTok")
         self.assertEqual(latest_fields["Hashtag"], "#tag")
         self.assertEqual(snapshot_fields["抓取任务ID"], "task-1")
+        self.assertEqual(snapshot_fields["视频链接"], "https://www.tiktok.com/@demo/video/123")
         self.assertIn("快照唯一键", snapshot_fields)
 
 

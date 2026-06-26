@@ -102,6 +102,7 @@ FEISHU_LATEST_FIELDS = {
 FEISHU_SNAPSHOT_FIELDS = {
     "snapshot_key": "快照唯一键",
     "video_key": "视频唯一键",
+    "video_url": "视频链接",
     "creator_key": "达人唯一键",
     "platform": "平台",
     "project": "项目/品牌",
