@@ -24,9 +24,17 @@ import profile_video_scheduler
 class FakeFeishuClient:
     created = []
     updated = []
+    records = []
+    found = {}
 
     def find_existing_records(self, _app_token, _table_id, video_keys):
         return {"TT:old": "rec_old"} if "TT:old" in video_keys else {}
+
+    def find_records_by_field(self, _app_token, _table_id, _field_name, values):
+        return {str(v): self.found[str(v)] for v in values if str(v) in self.found}
+
+    def list_records(self, _app_token, _table_id, page_size=500):
+        return list(self.records)
 
     def batch_create_records(self, _app_token, _table_id, fields_list):
         self.created.extend(fields_list)
@@ -40,6 +48,8 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
     def setUp(self):
         FakeFeishuClient.created = []
         FakeFeishuClient.updated = []
+        FakeFeishuClient.records = []
+        FakeFeishuClient.found = {}
 
     def test_sync_rows_to_feishu_creates_and_updates_by_video_key(self):
         rows = [
@@ -111,6 +121,96 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
             )
 
         self.assertEqual(updates[-1]["status"], "completed")
+
+    def test_load_feishu_configs_parses_enabled_profile_rows(self):
+        FakeFeishuClient.records = [
+            {
+                "record_id": "rec1",
+                "fields": {
+                    "是否启用": True,
+                    "平台": "TikTok",
+                    "达人主页链接": "https://www.tiktok.com/@demo/",
+                    "达人名称": "Demo",
+                    "抓取范围": "近N天",
+                    "近N天": 3,
+                    "最大视频数": 20,
+                    "抓取小时": 9,
+                    "项目/品牌": "PUBG",
+                },
+            },
+            {
+                "record_id": "rec2",
+                "fields": {
+                    "是否启用": False,
+                    "平台": "Instagram",
+                    "达人主页链接": "https://www.instagram.com/off",
+                },
+            },
+        ]
+        with patch.dict(
+            profile_video_scheduler.os.environ,
+            {
+                "FEISHU_VIDEO_BASE_TOKEN": "base",
+                "FEISHU_VIDEO_CONFIG_TABLE_ID": "cfg",
+                "FEISHU_VIDEO_LATEST_TABLE_ID": "latest",
+                "FEISHU_VIDEO_SNAPSHOT_TABLE_ID": "snap",
+                "FEISHU_VIDEO_LOG_TABLE_ID": "log",
+            },
+            clear=False,
+        ), patch.object(profile_video_scheduler, "FeishuBitableClient", return_value=FakeFeishuClient()):
+            rows = profile_video_scheduler.load_feishu_profile_configs(enabled_only=True)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["platform"], "TT")
+        self.assertEqual(rows[0]["sync_scope"], "recent")
+        self.assertEqual(rows[0]["recent_days"], 3)
+        self.assertEqual(rows[0]["max_videos"], 20)
+        self.assertEqual(rows[0]["creator_key"], "TT:@demo")
+
+    def test_sync_rows_to_feishu_video_tables_writes_latest_and_snapshot(self):
+        rows = [
+            {
+                "video_key": "TT:123",
+                "creator_key": "TT:demo",
+                "profile_url": "https://www.tiktok.com/@demo",
+                "platform": "TT",
+                "video_url": "https://www.tiktok.com/@demo/video/123",
+                "author": "demo",
+                "post_date": "2026-06-25",
+                "caption": "#tag hi",
+                "duration": "00:30",
+                "views": 100,
+                "likes": 10,
+                "comments": 2,
+                "shares": 1,
+                "collects": 3,
+                "engagement": 13,
+                "followers": 1000,
+                "project": "PUBG",
+            }
+        ]
+        with patch.object(profile_video_scheduler, "FeishuBitableClient", return_value=FakeFeishuClient()):
+            result = profile_video_scheduler.sync_rows_to_feishu_video_tables(
+                rows,
+                task_id="task-1",
+                table_config={
+                    "base_token": "base",
+                    "latest_table_id": "latest",
+                    "snapshot_table_id": "snap",
+                    "log_table_id": "log",
+                },
+                client=FakeFeishuClient(),
+            )
+
+        self.assertEqual(result["latest_created"], 1)
+        self.assertEqual(result["snapshot_created"], 1)
+        latest_fields = FakeFeishuClient.created[0]
+        snapshot_fields = FakeFeishuClient.created[1]
+        self.assertEqual(latest_fields["视频唯一键"], "TT:123")
+        self.assertEqual(latest_fields["平台"], "TikTok")
+        self.assertEqual(latest_fields["Hashtag"], "#tag")
+        self.assertEqual(snapshot_fields["抓取任务ID"], "task-1")
+        self.assertIn("快照唯一键", snapshot_fields)
 
 
 if __name__ == "__main__":

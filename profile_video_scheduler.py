@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -20,6 +21,12 @@ logger = logging.getLogger(__name__)
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 DEFAULT_SYNC_HOUR = int(os.environ.get("PROFILE_VIDEO_SYNC_HOUR", "9"))
 DEFAULT_MAX_VIDEOS_PER_PROFILE = int(os.environ.get("PROFILE_VIDEO_MAX_VIDEOS", "50"))
+try:
+    from zoneinfo import ZoneInfo
+
+    FEISHU_TZ = ZoneInfo("Asia/Shanghai")
+except Exception:  # pragma: no cover - very old Python fallback
+    FEISHU_TZ = None
 
 FEISHU_FIELD_MAP = {
     "video_key": "视频唯一键",
@@ -39,6 +46,111 @@ FEISHU_FIELD_MAP = {
     "followers": "主页粉丝数",
     "last_synced_at": "最后同步时间",
 }
+
+FEISHU_CONFIG_FIELDS = {
+    "platform": "平台",
+    "schedule_hour": "抓取小时",
+    "owner": "负责人",
+    "recent_days": "近N天",
+    "notes": "备注",
+    "region": "国家/地区",
+    "profile_url": "达人主页链接",
+    "project": "项目/品牌",
+    "display_name": "达人名称",
+    "category": "垂类",
+    "last_status": "最后抓取状态",
+    "max_videos": "最大视频数",
+    "enabled": "是否启用",
+    "sync_scope": "抓取范围",
+    "last_run_at": "最后抓取时间",
+    "config_key": "配置唯一键",
+    "creator_key": "达人唯一键",
+    "last_error": "失败原因",
+}
+
+FEISHU_LATEST_FIELDS = {
+    "video_key": "视频唯一键",
+    "creator_key": "达人唯一键",
+    "platform": "平台",
+    "profile_url": "达人主页链接",
+    "author": "达人名称",
+    "video_id": "视频ID",
+    "video_url": "视频链接",
+    "post_date": "发布时间",
+    "first_seen_date": "首次发现日期",
+    "caption": "视频文案/标题",
+    "video_type": "视频类型",
+    "duration_seconds": "时长秒",
+    "views": "播放量",
+    "likes": "点赞量",
+    "comments": "评论量",
+    "shares": "分享量",
+    "collects": "收藏量",
+    "engagement": "互动量",
+    "followers": "主页粉丝数",
+    "engagement_rate": "互动率",
+    "views_delta_1d": "近1日新增播放",
+    "views_delta_7d": "近7日新增播放",
+    "post_age_days": "视频发布天数",
+    "hashtags": "Hashtag",
+    "last_synced_at": "最后同步时间",
+    "is_new_video": "是否新视频",
+    "status": "抓取状态",
+    "error": "失败原因",
+}
+
+FEISHU_SNAPSHOT_FIELDS = {
+    "snapshot_key": "快照唯一键",
+    "video_key": "视频唯一键",
+    "creator_key": "达人唯一键",
+    "platform": "平台",
+    "project": "项目/品牌",
+    "snapshot_date": "抓取日期",
+    "synced_at": "同步时间",
+    "task_id": "抓取任务ID",
+    "post_date": "发布时间",
+    "post_age_days": "视频发布天数",
+    "views": "播放量",
+    "likes": "点赞量",
+    "comments": "评论量",
+    "shares": "分享量",
+    "collects": "收藏量",
+    "engagement": "互动量",
+    "followers": "主页粉丝数",
+    "daily_views_delta": "日增播放",
+    "daily_engagement_delta": "日增互动",
+}
+
+FEISHU_LOG_FIELDS = {
+    "task_id": "任务ID",
+    "run_date": "执行日期",
+    "trigger_type": "触发方式",
+    "status": "状态",
+    "started_at": "开始时间",
+    "finished_at": "结束时间",
+    "profile_count": "达人主页数",
+    "success_profile_count": "成功主页数",
+    "failed_profile_count": "失败主页数",
+    "video_count": "抓到视频数",
+    "created_count": "新增视频数",
+    "updated_count": "更新视频数",
+    "snapshot_count": "快照写入数",
+    "error": "失败原因",
+}
+
+PLATFORM_LABELS = {
+    "TT": "TikTok",
+    "IG": "Instagram",
+    "YTB": "YouTube",
+}
+
+FEISHU_VIDEO_ENV_KEYS = (
+    "FEISHU_VIDEO_BASE_TOKEN",
+    "FEISHU_VIDEO_CONFIG_TABLE_ID",
+    "FEISHU_VIDEO_LATEST_TABLE_ID",
+    "FEISHU_VIDEO_SNAPSHOT_TABLE_ID",
+    "FEISHU_VIDEO_LOG_TABLE_ID",
+)
 
 
 def ensure_schema() -> None:
@@ -478,6 +590,389 @@ def run_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Call
     )
 
 
+def feishu_video_table_config() -> dict:
+    """Return the four-table Feishu target for daily homepage video automation."""
+    return {
+        "base_token": os.environ.get("FEISHU_VIDEO_BASE_TOKEN", "").strip(),
+        "config_table_id": os.environ.get("FEISHU_VIDEO_CONFIG_TABLE_ID", "").strip(),
+        "latest_table_id": os.environ.get("FEISHU_VIDEO_LATEST_TABLE_ID", "").strip(),
+        "snapshot_table_id": os.environ.get("FEISHU_VIDEO_SNAPSHOT_TABLE_ID", "").strip(),
+        "log_table_id": os.environ.get("FEISHU_VIDEO_LOG_TABLE_ID", "").strip(),
+    }
+
+
+def validate_feishu_video_table_config() -> tuple[bool, list[str]]:
+    config = feishu_video_table_config()
+    missing = [key for key in FEISHU_VIDEO_ENV_KEYS if not config.get(_env_key_to_config_key(key))]
+    return (not missing, missing)
+
+
+def enqueue_due_feishu_profile_video_sync(
+    create_task_fn,
+    *,
+    update_task_params_fn,
+    hour: Optional[int] = None,
+    after_enqueue_fn: Optional[Callable[[str, dict], None]] = None,
+) -> list[str]:
+    ok, missing = validate_feishu_video_table_config()
+    if not ok:
+        logger.warning("飞书主页视频四表同步缺少环境变量: %s", ", ".join(missing))
+        return []
+
+    try:
+        due_configs = load_due_feishu_profile_configs(hour=hour)
+    except Exception as exc:
+        logger.error("读取飞书主页配置失败: %s", exc)
+        return []
+    if not due_configs:
+        return []
+
+    task_id = str(uuid.uuid4())
+    session_id = f"feishu_profile_video_schedule_{date.today().isoformat()}"
+    create_task_fn(task_id, None, session_id, function_type="feishu_profile_video_sync")
+    params = {
+        "source": "feishu_profile_video_sync",
+        "trigger_type": "scheduled",
+        "session_id": session_id,
+        "config_record_ids": [cfg["record_id"] for cfg in due_configs if cfg.get("record_id")],
+        "config_count": len(due_configs),
+    }
+    update_task_params_fn(task_id, params)
+    mark_feishu_configs_started(due_configs, task_id=task_id)
+    if after_enqueue_fn:
+        after_enqueue_fn(task_id, params)
+    return [task_id]
+
+
+def load_due_feishu_profile_configs(hour: Optional[int] = None) -> list[dict]:
+    h = _clean_hour(default_sync_hour() if hour is None else hour)
+    configs = load_feishu_profile_configs(enabled_only=True)
+    today = _today_text()
+    due = []
+    for cfg in configs:
+        cfg_hour = _clean_hour(cfg.get("schedule_hour") if cfg.get("schedule_hour") is not None else default_sync_hour())
+        if cfg_hour != h:
+            continue
+        last_run_day = _date_text(cfg.get("last_run_at"))
+        if last_run_day and last_run_day >= today:
+            continue
+        due.append(cfg)
+    return due
+
+
+def load_feishu_profile_configs(*, enabled_only: bool = True, record_ids: Optional[list[str]] = None) -> list[dict]:
+    table_config = feishu_video_table_config()
+    app_token = table_config["base_token"]
+    table_id = table_config["config_table_id"]
+    if not app_token or not table_id:
+        raise RuntimeError("FEISHU_VIDEO_BASE_TOKEN / FEISHU_VIDEO_CONFIG_TABLE_ID 未配置")
+    client = FeishuBitableClient()
+    records = client.list_records(app_token, table_id)
+    wanted = set(str(x) for x in (record_ids or []) if x)
+    configs = []
+    for item in records:
+        if wanted and item.get("record_id") not in wanted:
+            continue
+        cfg = _feishu_config_from_record(item)
+        if enabled_only and not cfg.get("enabled"):
+            continue
+        if cfg.get("profile_url"):
+            configs.append(cfg)
+    return configs
+
+
+def mark_feishu_configs_started(configs: Iterable[dict], *, task_id: str) -> None:
+    _update_feishu_config_records(
+        configs,
+        lambda _cfg: {
+            FEISHU_CONFIG_FIELDS["last_status"]: "未开始",
+            FEISHU_CONFIG_FIELDS["last_error"]: "",
+            FEISHU_CONFIG_FIELDS["last_run_at"]: _feishu_datetime_value(datetime.now(FEISHU_TZ) if FEISHU_TZ else datetime.now()),
+        },
+    )
+
+
+def run_feishu_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Callable[..., None]) -> None:
+    """Read creator homepage configs from Feishu and write latest/snapshot/log tables."""
+    table_config = feishu_video_table_config()
+    ok, missing = validate_feishu_video_table_config()
+    if not ok:
+        update_task_fn(task_id, status="failed", error=f"缺少环境变量: {', '.join(missing)}")
+        return
+    if not tasks.APIFY_TOKEN:
+        update_task_fn(task_id, status="failed", error="Apify 未配置")
+        return
+
+    trigger_type = params.get("trigger_type") or "manual"
+    started_at = datetime.now(FEISHU_TZ) if FEISHU_TZ else datetime.now()
+    log_record_id = ""
+    client = FeishuBitableClient()
+    try:
+        configs = _configs_for_feishu_task(params)
+        if not configs:
+            update_task_fn(task_id, status="failed", error="没有可同步的飞书主页配置")
+            return
+        update_task_fn(task_id, status="processing", progress=f"读取到 {len(configs)} 个启用主页，开始抓取")
+        log_record_id = upsert_feishu_sync_log(
+            client,
+            table_config,
+            {
+                "task_id": task_id,
+                "run_date": _today_text(),
+                "trigger_type": _trigger_label(trigger_type),
+                "status": "运行中",
+                "started_at": started_at,
+                "profile_count": len(configs),
+            },
+        )
+
+        rows: list[dict] = []
+        profile_results: list[dict] = []
+        for idx, cfg in enumerate(configs, start=1):
+            update_task_fn(task_id, progress=f"正在抓取主页 {idx}/{len(configs)}: {cfg.get('profile_url')}")
+            start_date, end_date = _date_window_for_feishu_config(cfg)
+            try:
+                fetched = video_metrics_etl.fetch_profile_video_metrics(
+                    [cfg["profile_url"]],
+                    tasks.APIFY_TOKEN,
+                    start_date=start_date,
+                    end_date=end_date,
+                    max_videos=int(cfg.get("max_videos") or default_max_videos_per_profile()),
+                    progress_hook=lambda msg: update_task_fn(task_id, progress=msg),
+                )
+            except Exception as exc:
+                fetched = [{
+                    "profile_url": cfg["profile_url"],
+                    "platform": cfg.get("platform") or video_metrics_etl.detect_platform(cfg["profile_url"]),
+                    "video_url": "",
+                    "video_key": f"{cfg.get('platform') or 'UNKNOWN'}:{cfg['profile_url']}",
+                    "_error": str(exc)[:300],
+                }]
+            ok_rows = [r for r in fetched if isinstance(r, dict) and not r.get("_error")]
+            err_rows = [r for r in fetched if isinstance(r, dict) and r.get("_error")]
+            error_text = "; ".join(str(r.get("_error")) for r in err_rows if r.get("_error"))[:500]
+            status = "成功" if ok_rows and not err_rows else ("部分成功" if ok_rows else "失败")
+            profile_results.append({
+                "record_id": cfg.get("record_id"),
+                "status": status,
+                "error": error_text,
+                "video_count": len(ok_rows),
+            })
+            for row in ok_rows:
+                enriched = dict(row)
+                enriched["config_record_id"] = cfg.get("record_id")
+                enriched["config_key"] = cfg.get("config_key")
+                enriched["creator_key"] = cfg.get("creator_key") or _creator_key_for(enriched.get("platform"), cfg.get("profile_url"))
+                enriched["project"] = cfg.get("project")
+                enriched["profile_url"] = cfg.get("profile_url") or enriched.get("profile_url")
+                enriched["platform"] = enriched.get("platform") or cfg.get("platform")
+                rows.append(enriched)
+
+        update_task_fn(task_id, progress=f"抓到 {len(rows)} 条视频，正在写入飞书最新表和快照表")
+        sync_result = sync_rows_to_feishu_video_tables(rows, task_id=task_id, table_config=table_config, client=client)
+        success_profiles = sum(1 for item in profile_results if item["status"] in {"成功", "部分成功"})
+        failed_profiles = sum(1 for item in profile_results if item["status"] == "失败")
+        finished_at = datetime.now(FEISHU_TZ) if FEISHU_TZ else datetime.now()
+        status_label = "成功" if failed_profiles == 0 else ("部分成功" if success_profiles else "失败")
+        message = (
+            f"完成：主页 {len(configs)}，成功 {success_profiles}，失败 {failed_profiles}，"
+            f"视频 {len(rows)}，最新表新增 {sync_result.get('latest_created', 0)}，"
+            f"更新 {sync_result.get('latest_updated', 0)}，快照 {sync_result.get('snapshot_written', 0)}"
+        )
+        _write_feishu_config_results(profile_results)
+        upsert_feishu_sync_log(
+            client,
+            table_config,
+            {
+                "task_id": task_id,
+                "run_date": _today_text(),
+                "trigger_type": _trigger_label(trigger_type),
+                "status": status_label,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "profile_count": len(configs),
+                "success_profile_count": success_profiles,
+                "failed_profile_count": failed_profiles,
+                "video_count": len(rows),
+                "created_count": sync_result.get("latest_created", 0),
+                "updated_count": sync_result.get("latest_updated", 0),
+                "snapshot_count": sync_result.get("snapshot_written", 0),
+                "error": _profile_error_summary(profile_results),
+            },
+            record_id=log_record_id,
+        )
+        usage_service.record_usage_event(
+            module="feishu_profile_video_sync",
+            user_id=params.get("user_id"),
+            task_id=task_id,
+            item_count=len(rows),
+            crawler_items=len(rows),
+            source="actual",
+            detail={
+                "trigger_type": trigger_type,
+                "profile_count": len(configs),
+                **sync_result,
+            },
+        )
+        update_task_fn(
+            task_id,
+            status="completed" if success_profiles else "failed",
+            progress=message,
+            result=json.dumps(
+                {
+                    "profile_count": len(configs),
+                    "success_profile_count": success_profiles,
+                    "failed_profile_count": failed_profiles,
+                    "video_count": len(rows),
+                    **sync_result,
+                    "base_token": table_config["base_token"],
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+            error=None if success_profiles else _profile_error_summary(profile_results),
+        )
+    except Exception as exc:
+        logger.error("飞书主页视频四表同步失败 task=%s: %s", task_id, exc)
+        finished_at = datetime.now(FEISHU_TZ) if FEISHU_TZ else datetime.now()
+        try:
+            upsert_feishu_sync_log(
+                client,
+                table_config,
+                {
+                    "task_id": task_id,
+                    "run_date": _today_text(),
+                    "trigger_type": _trigger_label(trigger_type),
+                    "status": "失败",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "error": str(exc)[:500],
+                },
+                record_id=log_record_id,
+            )
+        except Exception as log_exc:
+            logger.warning("写入飞书失败日志也失败: %s", log_exc)
+        update_task_fn(task_id, status="failed", error=str(exc)[:500], progress="飞书主页视频同步失败")
+
+
+def sync_rows_to_feishu_video_tables(
+    rows: list[dict],
+    *,
+    task_id: str,
+    table_config: dict,
+    client: Optional["FeishuBitableClient"] = None,
+) -> dict:
+    client = client or FeishuBitableClient()
+    now_dt = datetime.now(FEISHU_TZ) if FEISHU_TZ else datetime.now()
+    snapshot_date = _today_text(now_dt)
+    latest_existing = _existing_by_key(
+        client,
+        table_config["base_token"],
+        table_config["latest_table_id"],
+        FEISHU_LATEST_FIELDS["video_key"],
+        [r.get("video_key") for r in rows],
+    )
+    snapshot_keys = [_snapshot_key(r.get("video_key"), snapshot_date) for r in rows if r.get("video_key")]
+    snapshot_existing = _existing_by_key(
+        client,
+        table_config["base_token"],
+        table_config["snapshot_table_id"],
+        FEISHU_SNAPSHOT_FIELDS["snapshot_key"],
+        snapshot_keys,
+    )
+
+    latest_creates = []
+    latest_updates = []
+    snapshot_creates = []
+    snapshot_updates = []
+    for row in rows:
+        if not row.get("video_key"):
+            continue
+        row = _normalize_video_table_row(row, now_dt=now_dt, is_new=row.get("video_key") not in latest_existing)
+        latest_fields = _row_to_named_fields(row, FEISHU_LATEST_FIELDS)
+        existing_latest_id = latest_existing.get(row["video_key"])
+        if existing_latest_id:
+            latest_updates.append({"record_id": existing_latest_id, "fields": latest_fields, "source_row": row})
+        else:
+            latest_creates.append({"fields": latest_fields, "source_row": row})
+
+        snapshot_row = dict(row)
+        snapshot_row["snapshot_date"] = snapshot_date
+        snapshot_row["synced_at"] = now_dt
+        snapshot_row["task_id"] = task_id
+        snapshot_row["snapshot_key"] = _snapshot_key(row.get("video_key"), snapshot_date)
+        snapshot_fields = _row_to_named_fields(snapshot_row, FEISHU_SNAPSHOT_FIELDS)
+        existing_snapshot_id = snapshot_existing.get(snapshot_row["snapshot_key"])
+        if existing_snapshot_id:
+            snapshot_updates.append({"record_id": existing_snapshot_id, "fields": snapshot_fields, "source_row": snapshot_row})
+        else:
+            snapshot_creates.append({"fields": snapshot_fields, "source_row": snapshot_row})
+
+    created_latest_ids = client.batch_create_records(
+        table_config["base_token"],
+        table_config["latest_table_id"],
+        [x["fields"] for x in latest_creates],
+    )
+    for item, record_id in zip(latest_creates, created_latest_ids):
+        _upsert_video_state(item["source_row"], record_id, table_config["base_token"], table_config["latest_table_id"])
+    if latest_updates:
+        client.batch_update_records(
+            table_config["base_token"],
+            table_config["latest_table_id"],
+            [{"record_id": x["record_id"], "fields": x["fields"]} for x in latest_updates],
+        )
+        for item in latest_updates:
+            _upsert_video_state(item["source_row"], item["record_id"], table_config["base_token"], table_config["latest_table_id"])
+    created_snapshot_ids = client.batch_create_records(
+        table_config["base_token"],
+        table_config["snapshot_table_id"],
+        [x["fields"] for x in snapshot_creates],
+    )
+    for item, record_id in zip(snapshot_creates, created_snapshot_ids):
+        state_row = dict(item["source_row"])
+        state_row["video_key"] = state_row.get("snapshot_key")
+        _upsert_video_state(state_row, record_id, table_config["base_token"], table_config["snapshot_table_id"])
+    if snapshot_updates:
+        client.batch_update_records(
+            table_config["base_token"],
+            table_config["snapshot_table_id"],
+            [{"record_id": x["record_id"], "fields": x["fields"]} for x in snapshot_updates],
+        )
+        for item in snapshot_updates:
+            state_row = dict(item["source_row"])
+            state_row["video_key"] = state_row.get("snapshot_key")
+            _upsert_video_state(state_row, item["record_id"], table_config["base_token"], table_config["snapshot_table_id"])
+    return {
+        "latest_created": len(created_latest_ids),
+        "latest_updated": len(latest_updates),
+        "snapshot_created": len(created_snapshot_ids),
+        "snapshot_updated": len(snapshot_updates),
+        "snapshot_written": len(created_snapshot_ids) + len(snapshot_updates),
+    }
+
+
+def upsert_feishu_sync_log(
+    client: "FeishuBitableClient",
+    table_config: dict,
+    row: dict,
+    *,
+    record_id: str = "",
+) -> str:
+    fields = _row_to_named_fields(row, FEISHU_LOG_FIELDS)
+    app_token = table_config["base_token"]
+    table_id = table_config["log_table_id"]
+    if record_id:
+        client.batch_update_records(app_token, table_id, [{"record_id": record_id, "fields": fields}])
+        return record_id
+    existing = _existing_by_key(client, app_token, table_id, FEISHU_LOG_FIELDS["task_id"], [row.get("task_id")])
+    found = existing.get(row.get("task_id"))
+    if found:
+        client.batch_update_records(app_token, table_id, [{"record_id": found, "fields": fields}])
+        return found
+    created = client.batch_create_records(app_token, table_id, [fields])
+    return created[0] if created else ""
+
+
 def sync_rows_to_feishu(rows: list[dict], *, app_token: str, table_id: str) -> dict:
     client = FeishuBitableClient()
     video_keys = [r["video_key"] for r in rows if r.get("video_key")]
@@ -537,7 +1032,10 @@ class FeishuBitableClient:
         return {"Authorization": f"Bearer {self.tenant_access_token()}", "Content-Type": "application/json; charset=utf-8"}
 
     def find_existing_records(self, app_token: str, table_id: str, video_keys: list[str]) -> dict[str, str]:
-        keys = [k for k in dict.fromkeys(video_keys) if k]
+        return self.find_records_by_field(app_token, table_id, FEISHU_FIELD_MAP["video_key"], video_keys)
+
+    def find_records_by_field(self, app_token: str, table_id: str, field_name: str, values: list) -> dict[str, str]:
+        keys = [str(k) for k in dict.fromkeys(values) if k not in (None, "")]
         if not keys:
             return {}
         existing = {}
@@ -556,7 +1054,7 @@ class FeishuBitableClient:
                             "conjunction": "and",
                             "conditions": [
                                 {
-                                    "field_name": FEISHU_FIELD_MAP["video_key"],
+                                    "field_name": field_name,
                                     "operator": "is",
                                     "value": [key],
                                 }
@@ -566,12 +1064,30 @@ class FeishuBitableClient:
                 )
                 for item in data.get("items") or []:
                     fields = item.get("fields") or {}
-                    if str(fields.get(FEISHU_FIELD_MAP["video_key"]) or "") == key:
+                    if _field_text(fields.get(field_name)) == key:
                         existing[key] = item.get("record_id")
                 page_token = data.get("page_token") or ""
                 if not data.get("has_more") or key in existing:
                     break
         return existing
+
+    def list_records(self, app_token: str, table_id: str, *, page_size: int = 500) -> list[dict]:
+        items = []
+        page_token = ""
+        while True:
+            params = {"page_size": max(1, min(int(page_size or 500), 500))}
+            if page_token:
+                params["page_token"] = page_token
+            data = self._request_json(
+                "GET",
+                f"/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+                params=params,
+            )
+            items.extend(data.get("items") or [])
+            page_token = data.get("page_token") or ""
+            if not data.get("has_more"):
+                break
+        return items
 
     def batch_create_records(self, app_token: str, table_id: str, fields_list: list[dict]) -> list[str]:
         record_ids = []
@@ -767,6 +1283,391 @@ def _mark_config_results(configs: list[dict], task_id: str, failed_count: int, m
             """,
             (task_id, ids),
         )
+
+
+def _env_key_to_config_key(env_key: str) -> str:
+    return {
+        "FEISHU_VIDEO_BASE_TOKEN": "base_token",
+        "FEISHU_VIDEO_CONFIG_TABLE_ID": "config_table_id",
+        "FEISHU_VIDEO_LATEST_TABLE_ID": "latest_table_id",
+        "FEISHU_VIDEO_SNAPSHOT_TABLE_ID": "snapshot_table_id",
+        "FEISHU_VIDEO_LOG_TABLE_ID": "log_table_id",
+    }[env_key]
+
+
+def _configs_for_feishu_task(params: dict) -> list[dict]:
+    record_ids = params.get("config_record_ids") or []
+    if record_ids:
+        return load_feishu_profile_configs(enabled_only=True, record_ids=[str(x) for x in record_ids])
+    profile_urls = params.get("profile_urls") or []
+    if isinstance(profile_urls, str):
+        profile_urls = [x.strip() for x in profile_urls.replace("\r", "").split("\n") if x.strip()]
+    if profile_urls:
+        configs = []
+        for url in profile_urls:
+            profile_url = video_metrics_etl.normalize_url(str(url or ""))
+            if not profile_url:
+                continue
+            platform = video_metrics_etl.detect_platform(profile_url)
+            configs.append({
+                "profile_url": profile_url,
+                "platform": platform,
+                "enabled": True,
+                "sync_scope": params.get("sync_scope") or "recent",
+                "recent_days": params.get("recent_days"),
+                "max_videos": params.get("max_videos") or default_max_videos_per_profile(),
+                "creator_key": _creator_key_for(platform, profile_url),
+                "project": params.get("project"),
+            })
+        return configs
+    return load_feishu_profile_configs(enabled_only=True)
+
+
+def _feishu_config_from_record(item: dict) -> dict:
+    fields = item.get("fields") or {}
+    profile_url = video_metrics_etl.normalize_url(_field_text(fields.get(FEISHU_CONFIG_FIELDS["profile_url"])))
+    platform = _platform_code(_field_text(fields.get(FEISHU_CONFIG_FIELDS["platform"]))) or video_metrics_etl.detect_platform(profile_url)
+    creator_key = _field_text(fields.get(FEISHU_CONFIG_FIELDS["creator_key"])) or _creator_key_for(platform, profile_url)
+    config_key = _field_text(fields.get(FEISHU_CONFIG_FIELDS["config_key"])) or creator_key
+    return {
+        "record_id": item.get("record_id"),
+        "profile_url": profile_url,
+        "platform": platform,
+        "display_name": _field_text(fields.get(FEISHU_CONFIG_FIELDS["display_name"])),
+        "enabled": _field_bool(fields.get(FEISHU_CONFIG_FIELDS["enabled"])),
+        "sync_scope": _sync_scope_code(_field_text(fields.get(FEISHU_CONFIG_FIELDS["sync_scope"]))),
+        "recent_days": _field_int(fields.get(FEISHU_CONFIG_FIELDS["recent_days"])) or None,
+        "max_videos": _field_int(fields.get(FEISHU_CONFIG_FIELDS["max_videos"])) or default_max_videos_per_profile(),
+        "schedule_hour": _field_int(fields.get(FEISHU_CONFIG_FIELDS["schedule_hour"])),
+        "project": _field_text(fields.get(FEISHU_CONFIG_FIELDS["project"])),
+        "owner": _field_text(fields.get(FEISHU_CONFIG_FIELDS["owner"])),
+        "region": _field_text(fields.get(FEISHU_CONFIG_FIELDS["region"])),
+        "category": _field_text(fields.get(FEISHU_CONFIG_FIELDS["category"])),
+        "notes": _field_text(fields.get(FEISHU_CONFIG_FIELDS["notes"])),
+        "config_key": config_key,
+        "creator_key": creator_key,
+        "last_run_at": fields.get(FEISHU_CONFIG_FIELDS["last_run_at"]),
+        "last_status": _field_text(fields.get(FEISHU_CONFIG_FIELDS["last_status"])),
+        "last_error": _field_text(fields.get(FEISHU_CONFIG_FIELDS["last_error"])),
+    }
+
+
+def _update_feishu_config_records(configs: Iterable[dict], fields_fn: Callable[[dict], dict]) -> None:
+    table_config = feishu_video_table_config()
+    app_token = table_config.get("base_token")
+    table_id = table_config.get("config_table_id")
+    updates = []
+    for cfg in configs:
+        record_id = cfg.get("record_id")
+        if not record_id:
+            continue
+        fields = fields_fn(cfg)
+        if fields:
+            updates.append({"record_id": record_id, "fields": fields})
+    if not updates or not app_token or not table_id:
+        return
+    FeishuBitableClient().batch_update_records(app_token, table_id, updates)
+
+
+def _write_feishu_config_results(profile_results: list[dict]) -> None:
+    by_record = {item.get("record_id"): item for item in profile_results if item.get("record_id")}
+    if not by_record:
+        return
+    now_dt = datetime.now(FEISHU_TZ) if FEISHU_TZ else datetime.now()
+    _update_feishu_config_records(
+        [{"record_id": rid} for rid in by_record],
+        lambda cfg: {
+            FEISHU_CONFIG_FIELDS["last_status"]: by_record[cfg["record_id"]].get("status") or "",
+            FEISHU_CONFIG_FIELDS["last_error"]: by_record[cfg["record_id"]].get("error") or "",
+            FEISHU_CONFIG_FIELDS["last_run_at"]: _feishu_datetime_value(now_dt),
+        },
+    )
+
+
+def _date_window_for_feishu_config(cfg: dict) -> tuple[Optional[str], Optional[str]]:
+    scope = cfg.get("sync_scope") or "recent"
+    if scope == "all":
+        return None, None
+    if scope == "range":
+        return _clean_date(cfg.get("start_date")) if cfg.get("start_date") else None, _clean_date(cfg.get("end_date")) if cfg.get("end_date") else None
+    days = _field_int(cfg.get("recent_days")) or int(os.environ.get("PROFILE_VIDEO_RECENT_DAYS", "7"))
+    return (date.today() - timedelta(days=max(days, 1))).isoformat(), None
+
+
+def _normalize_video_table_row(row: dict, *, now_dt: datetime, is_new: bool) -> dict:
+    out = dict(row)
+    platform = out.get("platform") or video_metrics_etl.detect_platform(out.get("video_url") or out.get("profile_url") or "")
+    out["platform"] = _platform_label(platform)
+    out["creator_key"] = out.get("creator_key") or _creator_key_for(platform, out.get("profile_url"))
+    out["video_id"] = _video_id_from_key(out.get("video_key"))
+    out["video_type"] = _video_type_for(platform, out.get("video_url"), out.get("duration"))
+    out["duration_seconds"] = _duration_seconds(out.get("duration"))
+    out["post_age_days"] = _post_age_days(out.get("post_date"))
+    out["hashtags"] = _hashtags(out.get("caption"))
+    out["last_synced_at"] = now_dt
+    out["first_seen_date"] = _today_text(now_dt)
+    out["is_new_video"] = bool(is_new)
+    out["status"] = "成功"
+    out["error"] = ""
+    views = _field_int(out.get("views")) or 0
+    engagement = _field_int(out.get("engagement")) or 0
+    out["engagement_rate"] = round(engagement / views, 6) if views else None
+    out["views_delta_1d"] = None
+    out["views_delta_7d"] = None
+    out["daily_views_delta"] = None
+    out["daily_engagement_delta"] = None
+    return out
+
+
+def _row_to_named_fields(row: dict, field_map: dict[str, str]) -> dict:
+    fields = {}
+    numeric_keys = {
+        "schedule_hour", "recent_days", "max_videos", "views", "likes", "comments",
+        "shares", "collects", "engagement", "followers", "duration_seconds",
+        "post_age_days", "views_delta_1d", "views_delta_7d", "daily_views_delta",
+        "daily_engagement_delta", "profile_count", "success_profile_count",
+        "failed_profile_count", "video_count", "created_count", "updated_count",
+        "snapshot_count", "engagement_rate",
+    }
+    date_keys = {
+        "post_date", "first_seen_date", "last_synced_at", "snapshot_date",
+        "synced_at", "run_date", "started_at", "finished_at", "last_run_at",
+    }
+    bool_keys = {"is_new_video", "enabled"}
+    for key, field_name in field_map.items():
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        if key in numeric_keys:
+            if key == "engagement_rate":
+                try:
+                    value = float(value)
+                except Exception:
+                    continue
+            else:
+                value = _field_int(value)
+                if value is None:
+                    continue
+        elif key in date_keys:
+            value = _feishu_datetime_value(value)
+            if value is None:
+                continue
+        elif key in bool_keys:
+            value = bool(value)
+        else:
+            value = str(value)[:2000]
+        fields[field_name] = value
+    return fields
+
+
+def _existing_by_key(client: "FeishuBitableClient", app_token: str, table_id: str, field_name: str, keys: list) -> dict[str, str]:
+    unique_keys = [str(k) for k in dict.fromkeys(keys) if k]
+    if not unique_keys:
+        return {}
+    existing = {}
+    if field_name in {FEISHU_LATEST_FIELDS["video_key"], FEISHU_SNAPSHOT_FIELDS["snapshot_key"]}:
+        existing.update(_local_existing_records(unique_keys, app_token, table_id))
+    missing = [key for key in unique_keys if key not in existing]
+    if missing:
+        existing.update(client.find_records_by_field(app_token, table_id, field_name, missing))
+    return existing
+
+
+def _snapshot_key(video_key: Optional[str], snapshot_date: str) -> str:
+    return f"{video_key or ''}:{snapshot_date}"
+
+
+def _profile_error_summary(profile_results: list[dict]) -> str:
+    errors = [item.get("error") for item in profile_results if item.get("error")]
+    return "；".join(errors)[:500]
+
+
+def _trigger_label(value: str) -> str:
+    text = str(value or "").lower()
+    if text == "scheduled":
+        return "定时"
+    if text == "retry":
+        return "重试"
+    return "手动"
+
+
+def _platform_label(platform: str) -> str:
+    return PLATFORM_LABELS.get(str(platform or "").upper(), str(platform or "") or "未知")
+
+
+def _platform_code(platform: str) -> str:
+    text = str(platform or "").strip().lower()
+    if text in {"tt", "tiktok", "tik tok", "抖音"}:
+        return "TT"
+    if text in {"ig", "instagram"}:
+        return "IG"
+    if text in {"yt", "ytb", "youtube", "you tube"}:
+        return "YTB"
+    return ""
+
+
+def _sync_scope_code(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"全部", "all"}:
+        return "all"
+    if text in {"近n天", "近 n 天", "recent", "recent_days"}:
+        return "recent"
+    if text in {"近n条", "近 n 条", "latest", "recent_count"}:
+        return "all"
+    if text in {"range", "日期范围"}:
+        return "range"
+    return "recent"
+
+
+def _creator_key_for(platform: Optional[str], profile_url: Optional[str]) -> str:
+    plat = str(platform or video_metrics_etl.detect_platform(profile_url or "") or "UNKNOWN").upper()
+    norm = video_metrics_etl.normalize_url(profile_url or "")
+    slug = norm.rstrip("/").split("/")[-1] if norm else ""
+    return f"{plat}:{slug or norm}"
+
+
+def _video_id_from_key(video_key: Optional[str]) -> str:
+    text = str(video_key or "")
+    return text.split(":", 1)[1] if ":" in text else text
+
+
+def _video_type_for(platform: str, video_url: Optional[str], duration: Optional[str]) -> str:
+    url = str(video_url or "").lower()
+    plat = str(platform or "").upper()
+    if "live" in url:
+        return "直播回放"
+    if plat in {"TT", "IG"}:
+        return "短视频"
+    return "视频"
+
+
+def _duration_seconds(value) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    parts = [p for p in text.split(":") if p.strip().isdigit()]
+    if parts:
+        total = 0
+        for part in parts:
+            total = total * 60 + int(part)
+        return total
+    match = re.search(r"(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def _post_age_days(value) -> Optional[int]:
+    day = _date_text(value)
+    if not day:
+        return None
+    try:
+        return max(0, (date.today() - datetime.strptime(day, "%Y-%m-%d").date()).days)
+    except Exception:
+        return None
+
+
+def _hashtags(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    tags = re.findall(r"#[\w\u4e00-\u9fff-]+", str(text))
+    return ", ".join(dict.fromkeys(tags))[:500]
+
+
+def _field_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("name") or item.get("value") or ""))
+            else:
+                parts.append(str(item))
+        return ", ".join([p for p in parts if p]).strip()
+    if isinstance(value, dict):
+        return str(value.get("text") or value.get("name") or value.get("value") or "").strip()
+    return str(value).strip()
+
+
+def _field_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = _field_text(value).lower()
+    return text not in {"", "false", "0", "否", "停用", "disabled", "no"}
+
+
+def _field_int(value) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = _field_text(value).replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except Exception:
+        return None
+
+
+def _date_text(value=None) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (int, float)):
+        val = float(value)
+        if val > 10_000_000_000:
+            val /= 1000
+        try:
+            return datetime.fromtimestamp(val, FEISHU_TZ).date().isoformat() if FEISHU_TZ else datetime.fromtimestamp(val).date().isoformat()
+        except Exception:
+            return ""
+    text = _field_text(value)
+    if not text:
+        return ""
+    return text[:10].replace("/", "-")
+
+
+def _today_text(value=None) -> str:
+    if value is not None:
+        return _date_text(value)
+    return datetime.now(FEISHU_TZ).date().isoformat() if FEISHU_TZ else date.today().isoformat()
+
+
+def _feishu_datetime_value(value) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        raw = int(value)
+        return raw if raw > 10_000_000_000 else raw * 1000
+    if isinstance(value, date) and not isinstance(value, datetime):
+        value = datetime.combine(value, datetime.min.time())
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = _field_text(value)
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("/", "-").replace("Z", "+00:00"))
+        except Exception:
+            try:
+                dt = datetime.strptime(text[:10].replace("/", "-"), "%Y-%m-%d")
+            except Exception:
+                return None
+    if dt.tzinfo is None and FEISHU_TZ:
+        dt = dt.replace(tzinfo=FEISHU_TZ)
+    return int(dt.timestamp() * 1000)
 
 
 def _clean_scope(value) -> str:

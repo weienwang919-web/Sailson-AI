@@ -214,6 +214,11 @@ def run_scheduled_profile_video_sync():
     enqueue_due_profile_video_sync()
 
 
+def run_scheduled_feishu_profile_video_sync():
+    """APScheduler 可序列化入口：从飞书配置表读取主页并同步视频四表。"""
+    enqueue_due_feishu_profile_video_sync()
+
+
 if not _IS_WORKER:
     jobstores = {
         'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
@@ -259,6 +264,15 @@ if not _IS_WORKER:
         trigger='cron',
         minute=5,
         id='profile_video_sync_job',
+        replace_existing=True
+    )
+
+    # 飞书四表主页视频自动化：每小时检查一次配置表中的抓取小时
+    scheduler.add_job(
+        func=run_scheduled_feishu_profile_video_sync,
+        trigger='cron',
+        minute=12,
+        id='feishu_profile_video_sync_job',
         replace_existing=True
     )
 
@@ -758,6 +772,31 @@ def enqueue_due_profile_video_sync(hour=None):
             logger.info(f"✅ 已创建主页视频定时同步任务: {task_ids}")
     except Exception as e:
         logger.error(f"❌ 创建主页视频定时同步任务失败: {e}")
+
+
+def enqueue_due_feishu_profile_video_sync(hour=None):
+    """APScheduler 回调：读取飞书配置表并创建主页视频四表同步任务。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                profile_video_scheduler.run_feishu_profile_video_sync_task(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = profile_video_scheduler.enqueue_due_feishu_profile_video_sync(
+            create_task,
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            hour=hour if hour is not None else datetime.datetime.now().hour,
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建飞书主页视频自动同步任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建飞书主页视频自动同步任务失败: {e}")
+
 
 def get_task(task_id):
     """获取任务状态"""
@@ -1989,8 +2028,8 @@ def _agent_list_recent_tasks():
             SELECT task_id, function_type, status, progress, result, error, record_id,
                    created_at, updated_at, finished_at
             FROM task_queue
-            WHERE user_id = %s
-              AND function_type IN ('sentiment', 'etl_video_metrics', 'profile_video_sync')
+            WHERE (user_id = %s OR (user_id IS NULL AND function_type = 'feishu_profile_video_sync'))
+              AND function_type IN ('sentiment', 'etl_video_metrics', 'profile_video_sync', 'feishu_profile_video_sync')
             ORDER BY created_at DESC
             LIMIT 20
             """,
@@ -3752,8 +3791,8 @@ def sentiment_tasks_api():
         SELECT task_id, function_type, status, progress, result, error, record_id,
                created_at, updated_at, started_at, finished_at
         FROM task_queue
-        WHERE user_id = %s
-          AND function_type IN ('sentiment', 'etl_video_metrics', 'profile_video_sync')
+        WHERE (user_id = %s OR (user_id IS NULL AND function_type = 'feishu_profile_video_sync'))
+          AND function_type IN ('sentiment', 'etl_video_metrics', 'profile_video_sync', 'feishu_profile_video_sync')
         ORDER BY created_at DESC
         LIMIT %s
         """,
@@ -3822,6 +3861,7 @@ def _sentiment_task_name(function_type):
         'sentiment': '评论分析',
         'etl_video_metrics': '拉视频数据',
         'profile_video_sync': '主页同步',
+        'feishu_profile_video_sync': '飞书主页同步',
     }.get(function_type or '', function_type or '任务')
 
 
@@ -3834,14 +3874,15 @@ def sentiment_task_retry_api(task_id):
         """
         SELECT task_id, function_type, task_params, session_id
         FROM task_queue
-        WHERE task_id = %s AND user_id = %s
+        WHERE task_id = %s
+          AND (user_id = %s OR (user_id IS NULL AND function_type = 'feishu_profile_video_sync'))
         """,
         (task_id, uid),
     )
     if not row:
         return jsonify({'status': 'error', 'message': '任务不存在或无权限访问'}), 404
     function_type = row.get('function_type')
-    if function_type not in {'sentiment', 'etl_video_metrics', 'profile_video_sync'}:
+    if function_type not in {'sentiment', 'etl_video_metrics', 'profile_video_sync', 'feishu_profile_video_sync'}:
         return jsonify({'status': 'error', 'message': '该任务类型暂不支持重试'}), 400
     raw_params = row.get('task_params')
     if not raw_params:
@@ -3856,6 +3897,8 @@ def sentiment_task_retry_api(task_id):
     create_task(new_task_id, uid, session_id, function_type=function_type)
     params['user_id'] = uid
     params['session_id'] = session_id
+    if function_type == 'feishu_profile_video_sync':
+        params['trigger_type'] = 'retry'
     set_task_params(new_task_id, params)
 
     if not USE_DB_WORKER:
@@ -3882,6 +3925,11 @@ def sentiment_task_retry_api(task_id):
         elif function_type == 'profile_video_sync':
             threading.Thread(
                 target=lambda: profile_video_scheduler.run_profile_video_sync_task(new_task_id, params, update_task),
+                daemon=True,
+            ).start()
+        elif function_type == 'feishu_profile_video_sync':
+            threading.Thread(
+                target=lambda: profile_video_scheduler.run_feishu_profile_video_sync_task(new_task_id, params, update_task),
                 daemon=True,
             ).start()
 
@@ -8297,6 +8345,75 @@ def profile_video_sync_start():
         threading.Thread(target=_run, daemon=True).start()
 
     return jsonify({'status': 'queued', 'task_id': queue_task_id, 'profile_count': len(config_ids) + len(profile_urls)})
+
+
+@app.route('/api/etl/feishu-profile-video/config_status')
+@login_required
+def feishu_profile_video_config_status():
+    ok, missing = profile_video_scheduler.validate_feishu_video_table_config()
+    config = profile_video_scheduler.feishu_video_table_config()
+    return jsonify({
+        'status': 'success',
+        'configured': ok,
+        'missing': missing,
+        'base_token': config.get('base_token'),
+        'tables': {
+            'config': config.get('config_table_id'),
+            'latest': config.get('latest_table_id'),
+            'snapshot': config.get('snapshot_table_id'),
+            'log': config.get('log_table_id'),
+        },
+    })
+
+
+@app.route('/api/etl/feishu-profile-video/sync_start', methods=['POST'])
+@login_required
+def feishu_profile_video_sync_start():
+    ok, missing = profile_video_scheduler.validate_feishu_video_table_config()
+    if not ok:
+        return jsonify({'status': 'error', 'message': f'缺少环境变量: {", ".join(missing)}'}), 400
+    try:
+        data = request.get_json(silent=True) or {}
+        record_ids = data.get('config_record_ids') or []
+        if isinstance(record_ids, str):
+            record_ids = [x.strip() for x in record_ids.split(',') if x.strip()]
+        profile_urls = data.get('profile_urls') or []
+        if isinstance(profile_urls, str):
+            profile_urls = [x.strip() for x in profile_urls.replace('\r', '').split('\n') if x.strip()]
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    params = {
+        'source': 'feishu_profile_video_sync',
+        'trigger_type': data.get('trigger_type') or 'manual',
+        'config_record_ids': record_ids,
+        'profile_urls': profile_urls,
+        'sync_scope': data.get('sync_scope') or 'recent',
+        'recent_days': data.get('recent_days'),
+        'max_videos': data.get('max_videos'),
+        'project': data.get('project'),
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+    create_task(queue_task_id, user_id, session_id, function_type='feishu_profile_video_sync')
+    try:
+        set_task_params(queue_task_id, params)
+    except Exception as e:
+        logger.error(f"❌ 写入 task_params 失败: {e}")
+    if not USE_DB_WORKER:
+
+        def _run():
+            profile_video_scheduler.run_feishu_profile_video_sync_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+    return jsonify({
+        'status': 'queued',
+        'task_id': queue_task_id,
+        'profile_count': len(record_ids) + len(profile_urls) if (record_ids or profile_urls) else None,
+    })
 
 
 @app.route('/api/etl/task_status/<task_id>')

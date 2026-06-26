@@ -162,6 +162,8 @@ def dispatch_task(task_row):
             _handle_etl_video_metrics(task_id, params)
         elif func_type == 'profile_video_sync':
             _handle_profile_video_sync(task_id, params)
+        elif func_type == 'feishu_profile_video_sync':
+            _handle_feishu_profile_video_sync(task_id, params)
         elif func_type == 'tiktok_official_refresh':
             _handle_tiktok_official_refresh(task_id, params)
         else:
@@ -478,6 +480,18 @@ def _handle_profile_video_sync(task_id, params):
         profile_video_scheduler.run_profile_video_sync_task(task_id, params, update_task)
     except Exception as e:
         logger.error(f"❌ profile_video_sync 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
+def _handle_feishu_profile_video_sync(task_id, params):
+    """飞书配置驱动：主页视频数据同步到最新表、快照表、日志表。"""
+    import profile_video_scheduler
+    try:
+        profile_video_scheduler.run_feishu_profile_video_sync_task(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ feishu_profile_video_sync 失败: {e}")
         import traceback
         traceback.print_exc()
         update_task(task_id, status='failed', error=str(e)[:500])

@@ -46,6 +46,18 @@ PROFILE_VIDEO_RECENT_DAYS=7
 
 飞书表建议字段：视频唯一键、主页链接、平台、视频链接、作者、发布日期、视频文案、视频时长、播放量、点赞量、评论量、转发量、收藏量、互动量、主页粉丝数、最后同步时间。
 
+每日达人主页视频自动化写入飞书四表时，配置：
+
+```
+FEISHU_VIDEO_BASE_TOKEN=WC84bWdlzacNumsp28scYugznei
+FEISHU_VIDEO_CONFIG_TABLE_ID=tblSiuLqcbxWseBg
+FEISHU_VIDEO_LATEST_TABLE_ID=tblp2I0sdiO6qWq4
+FEISHU_VIDEO_SNAPSHOT_TABLE_ID=tblIGP3NEEebnOGS
+FEISHU_VIDEO_LOG_TABLE_ID=tblif1prY2jT25k6
+```
+
+四表分别是：`达人主页配置`、`视频数据最新表`、`视频每日快照表`、`每日同步日志表`。业务同学维护配置表中的主页链接、启用状态、抓取小时、抓取范围、最大视频数；系统每小时检查一次，到点后抓取启用主页的视频数据并写入最新表、每日快照表和日志表。
+
 ### KOL 功能部署
 
 KOL 功能在 Render 的主 Web 服务中随 Flask 一起启动：`start_render.sh` 会先在 `127.0.0.1:8001` 拉起 KOL FastAPI，再启动 Gunicorn。主 Flask 服务通过 `/kol-api` 代理访问它。
