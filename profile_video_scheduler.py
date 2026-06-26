@@ -117,7 +117,7 @@ FEISHU_SNAPSHOT_FIELDS = {
     "shares": "分享量",
     "collects": "收藏量",
     "engagement": "互动量",
-    "followers": "主页粉丝数",
+    "engagement_rate": "互动率",
     "daily_views_delta": "日增播放",
     "daily_engagement_delta": "日增互动",
 }
@@ -881,6 +881,12 @@ def sync_rows_to_feishu_video_tables(
         FEISHU_SNAPSHOT_FIELDS["snapshot_key"],
         snapshot_keys,
     )
+    history_by_video = _snapshot_history_for_rows(
+        rows,
+        app_token=table_config["base_token"],
+        snapshot_table_id=table_config["snapshot_table_id"],
+        snapshot_date=snapshot_date,
+    )
 
     latest_creates = []
     latest_updates = []
@@ -890,6 +896,8 @@ def sync_rows_to_feishu_video_tables(
         if not row.get("video_key"):
             continue
         row = _normalize_video_table_row(row, now_dt=now_dt, is_new=row.get("video_key") not in latest_existing)
+        history = history_by_video.get(row.get("video_key")) or {}
+        _apply_video_growth_metrics(row, history)
         latest_fields = _row_to_named_fields(row, FEISHU_LATEST_FIELDS)
         existing_latest_id = latest_existing.get(row["video_key"])
         if existing_latest_id:
@@ -1474,8 +1482,84 @@ def _existing_by_key(client: "FeishuBitableClient", app_token: str, table_id: st
     return existing
 
 
+def _snapshot_history_for_rows(rows: list[dict], *, app_token: str, snapshot_table_id: str, snapshot_date: str) -> dict[str, dict]:
+    video_keys = [str(row.get("video_key")) for row in rows if row.get("video_key")]
+    if not video_keys:
+        return {}
+    target_day = datetime.strptime(snapshot_date, "%Y-%m-%d").date()
+    day_1 = (target_day - timedelta(days=1)).isoformat()
+    day_7 = (target_day - timedelta(days=7)).isoformat()
+    snapshot_keys = []
+    for video_key in dict.fromkeys(video_keys):
+        snapshot_keys.append(_snapshot_key(video_key, day_1))
+        snapshot_keys.append(_snapshot_key(video_key, day_7))
+    local_rows = _local_state_rows(snapshot_keys, app_token, snapshot_table_id)
+    history: dict[str, dict] = defaultdict(dict)
+    for snapshot_key, state_row in local_rows.items():
+        video_key, day = _split_snapshot_key(snapshot_key)
+        if not video_key or not day:
+            continue
+        if day == day_1:
+            history[video_key]["1d"] = state_row
+        if day == day_7:
+            history[video_key]["7d"] = state_row
+    return dict(history)
+
+
+def _apply_video_growth_metrics(row: dict, history: dict) -> None:
+    current_views = _field_int(row.get("views"))
+    current_engagement = _field_int(row.get("engagement"))
+    one_day = history.get("1d") or {}
+    seven_day = history.get("7d") or {}
+    views_1d = _field_int(one_day.get("views"))
+    engagement_1d = _field_int(one_day.get("engagement"))
+    views_7d = _field_int(seven_day.get("views"))
+    if current_views is not None and views_1d is not None:
+        row["views_delta_1d"] = max(0, current_views - views_1d)
+        row["daily_views_delta"] = row["views_delta_1d"]
+    if current_engagement is not None and engagement_1d is not None:
+        row["daily_engagement_delta"] = max(0, current_engagement - engagement_1d)
+    if current_views is not None and views_7d is not None:
+        row["views_delta_7d"] = max(0, current_views - views_7d)
+
+
+def _local_state_rows(video_keys: list[str], app_token: str, table_id: str) -> dict[str, dict]:
+    keys = [k for k in dict.fromkeys(video_keys) if k]
+    if not keys:
+        return {}
+    rows = db.query_all(
+        """
+        SELECT video_key, last_metrics_json
+        FROM video_profile_video_state
+        WHERE video_key = ANY(%s)
+          AND COALESCE(feishu_app_token, '') = %s
+          AND COALESCE(feishu_table_id, '') = %s
+          AND last_metrics_json IS NOT NULL
+          AND last_metrics_json <> ''
+        """,
+        (keys, app_token, table_id),
+    )
+    out = {}
+    for item in rows or []:
+        try:
+            out[item["video_key"]] = json.loads(item.get("last_metrics_json") or "{}")
+        except Exception:
+            continue
+    return out
+
+
 def _snapshot_key(video_key: Optional[str], snapshot_date: str) -> str:
     return f"{video_key or ''}:{snapshot_date}"
+
+
+def _split_snapshot_key(snapshot_key: str) -> tuple[str, str]:
+    text = str(snapshot_key or "")
+    if len(text) < 11:
+        return text, ""
+    day = text[-10:]
+    if re.match(r"\d{4}-\d{2}-\d{2}", day) and text.endswith(":" + day):
+        return text[: -11], day
+    return text, ""
 
 
 def _profile_error_summary(profile_results: list[dict]) -> str:

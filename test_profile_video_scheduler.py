@@ -213,6 +213,54 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(snapshot_fields["视频链接"], "https://www.tiktok.com/@demo/video/123")
         self.assertIn("快照唯一键", snapshot_fields)
 
+    def test_sync_rows_to_feishu_video_tables_calculates_growth_from_snapshots(self):
+        rows = [
+            {
+                "video_key": "TT:123",
+                "creator_key": "TT:demo",
+                "profile_url": "https://www.tiktok.com/@demo",
+                "platform": "TT",
+                "video_url": "https://www.tiktok.com/@demo/video/123",
+                "views": 180,
+                "likes": 20,
+                "comments": 4,
+                "shares": 1,
+                "engagement": 25,
+            }
+        ]
+
+        def local_state(keys, _app_token, _table_id):
+            out = {}
+            for key in keys:
+                if key.endswith(":2026-06-25"):
+                    out[key] = {"views": 100, "engagement": 10}
+                if key.endswith(":2026-06-19"):
+                    out[key] = {"views": 40, "engagement": 5}
+            return out
+
+        with patch.object(profile_video_scheduler, "FeishuBitableClient", return_value=FakeFeishuClient()), patch.object(
+            profile_video_scheduler, "_today_text", return_value="2026-06-26"
+        ), patch.object(profile_video_scheduler, "_local_state_rows", side_effect=local_state):
+            profile_video_scheduler.sync_rows_to_feishu_video_tables(
+                rows,
+                task_id="task-1",
+                table_config={
+                    "base_token": "base",
+                    "latest_table_id": "latest",
+                    "snapshot_table_id": "snap",
+                    "log_table_id": "log",
+                },
+                client=FakeFeishuClient(),
+            )
+
+        latest_fields = FakeFeishuClient.created[0]
+        snapshot_fields = FakeFeishuClient.created[1]
+        self.assertEqual(latest_fields["近1日新增播放"], 80)
+        self.assertEqual(latest_fields["近7日新增播放"], 140)
+        self.assertEqual(snapshot_fields["日增播放"], 80)
+        self.assertEqual(snapshot_fields["日增互动"], 15)
+        self.assertEqual(snapshot_fields["互动率"], round(25 / 180, 6))
+
 
 if __name__ == "__main__":
     unittest.main()
