@@ -156,6 +156,10 @@ FEISHU_VIDEO_ENV_KEYS = (
 )
 
 
+class FeishuRecordNotFound(RuntimeError):
+    pass
+
+
 def ensure_schema() -> None:
     try:
         db.execute(
@@ -960,46 +964,54 @@ def sync_rows_to_feishu_video_tables(
         else:
             snapshot_creates.append({"fields": snapshot_fields, "source_row": snapshot_row})
 
-    created_latest_ids = client.batch_create_records(
+    created_latest_ids = _create_records_with_state(
+        client,
         table_config["base_token"],
         table_config["latest_table_id"],
-        [x["fields"] for x in latest_creates],
+        latest_creates,
     )
-    for item, record_id in zip(latest_creates, created_latest_ids):
-        _upsert_video_state(item["source_row"], record_id, table_config["base_token"], table_config["latest_table_id"])
+    stale_latest_creates = []
     if latest_updates:
-        client.batch_update_records(
+        stale_latest_creates = _safe_batch_update_records(
+            client,
             table_config["base_token"],
             table_config["latest_table_id"],
-            [{"record_id": x["record_id"], "fields": x["fields"]} for x in latest_updates],
+            latest_updates,
         )
-        for item in latest_updates:
-            _upsert_video_state(item["source_row"], item["record_id"], table_config["base_token"], table_config["latest_table_id"])
-    created_snapshot_ids = client.batch_create_records(
+    stale_latest_ids = _create_records_with_state(
+        client,
+        table_config["base_token"],
+        table_config["latest_table_id"],
+        stale_latest_creates,
+    )
+    created_snapshot_ids = _create_records_with_state(
+        client,
         table_config["base_token"],
         table_config["snapshot_table_id"],
-        [x["fields"] for x in snapshot_creates],
+        snapshot_creates,
+        snapshot=True,
     )
-    for item, record_id in zip(snapshot_creates, created_snapshot_ids):
-        state_row = dict(item["source_row"])
-        state_row["video_key"] = state_row.get("snapshot_key")
-        _upsert_video_state(state_row, record_id, table_config["base_token"], table_config["snapshot_table_id"])
+    stale_snapshot_creates = []
     if snapshot_updates:
-        client.batch_update_records(
+        stale_snapshot_creates = _safe_batch_update_records(
+            client,
             table_config["base_token"],
             table_config["snapshot_table_id"],
-            [{"record_id": x["record_id"], "fields": x["fields"]} for x in snapshot_updates],
+            snapshot_updates,
         )
-        for item in snapshot_updates:
-            state_row = dict(item["source_row"])
-            state_row["video_key"] = state_row.get("snapshot_key")
-            _upsert_video_state(state_row, item["record_id"], table_config["base_token"], table_config["snapshot_table_id"])
+    stale_snapshot_ids = _create_records_with_state(
+        client,
+        table_config["base_token"],
+        table_config["snapshot_table_id"],
+        stale_snapshot_creates,
+        snapshot=True,
+    )
     return {
-        "latest_created": len(created_latest_ids),
-        "latest_updated": len(latest_updates),
-        "snapshot_created": len(created_snapshot_ids),
-        "snapshot_updated": len(snapshot_updates),
-        "snapshot_written": len(created_snapshot_ids) + len(snapshot_updates),
+        "latest_created": len(created_latest_ids) + len(stale_latest_ids),
+        "latest_updated": len(latest_updates) - len(stale_latest_creates),
+        "snapshot_created": len(created_snapshot_ids) + len(stale_snapshot_ids),
+        "snapshot_updated": len(snapshot_updates) - len(stale_snapshot_creates),
+        "snapshot_written": len(created_snapshot_ids) + len(stale_snapshot_ids) + len(snapshot_updates) - len(stale_snapshot_creates),
     }
 
 
@@ -1179,6 +1191,8 @@ class FeishuBitableClient:
         except Exception as exc:
             raise RuntimeError(f"飞书接口返回非 JSON: HTTP {resp.status_code}") from exc
         if data.get("code") != 0:
+            if data.get("code") == 1254043 or "record not found" in str(data).lower():
+                raise FeishuRecordNotFound(f"飞书记录不存在: {data}")
             raise RuntimeError(f"飞书接口失败: {data}")
         return data.get("data") or {}
 
@@ -1300,6 +1314,44 @@ def _local_existing_records(video_keys: list[str], app_token: str, table_id: str
         (keys, app_token, table_id),
     )
     return {r["video_key"]: r["feishu_record_id"] for r in rows or []}
+
+
+def _create_records_with_state(
+    client: "FeishuBitableClient",
+    app_token: str,
+    table_id: str,
+    creates: list[dict],
+    *,
+    snapshot: bool = False,
+) -> list[str]:
+    created_ids = client.batch_create_records(app_token, table_id, [x["fields"] for x in creates])
+    for item, record_id in zip(creates, created_ids):
+        state_row = dict(item["source_row"])
+        if snapshot:
+            state_row["video_key"] = state_row.get("snapshot_key")
+        _upsert_video_state(state_row, record_id, app_token, table_id)
+    return created_ids
+
+
+def _safe_batch_update_records(
+    client: "FeishuBitableClient",
+    app_token: str,
+    table_id: str,
+    updates: list[dict],
+) -> list[dict]:
+    stale_creates = []
+    for item in updates:
+        try:
+            client.batch_update_records(
+                app_token,
+                table_id,
+                [{"record_id": item["record_id"], "fields": item["fields"]}],
+            )
+            _upsert_video_state(item["source_row"], item["record_id"], app_token, table_id)
+        except FeishuRecordNotFound:
+            stale_creates.append({"fields": item["fields"], "source_row": item["source_row"]})
+            logger.warning("飞书记录已不存在，改为新增 table=%s record=%s", table_id, item.get("record_id"))
+    return stale_creates
 
 
 def _configs_missing_feishu_target(configs: list[dict]) -> list[dict]:
@@ -1516,9 +1568,13 @@ def _existing_by_key(client: "FeishuBitableClient", app_token: str, table_id: st
     unique_keys = [str(k) for k in dict.fromkeys(keys) if k]
     if not unique_keys:
         return {}
-    # Feishu records may be deleted manually after we cached their record_id
-    # locally, so write decisions must use the live table as source of truth.
-    return client.find_records_by_field(app_token, table_id, field_name, unique_keys)
+    existing = {}
+    if field_name in {FEISHU_LATEST_FIELDS["video_key"], FEISHU_SNAPSHOT_FIELDS["snapshot_key"]}:
+        existing.update(_local_existing_records(unique_keys, app_token, table_id))
+    missing = [key for key in unique_keys if key not in existing]
+    if missing:
+        existing.update(client.find_records_by_field(app_token, table_id, field_name, missing))
+    return existing
 
 
 def _snapshot_history_for_rows(rows: list[dict], *, app_token: str, snapshot_table_id: str, snapshot_date: str) -> dict[str, dict]:

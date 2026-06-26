@@ -26,6 +26,7 @@ class FakeFeishuClient:
     updated = []
     records = []
     found = {}
+    missing_record_ids = set()
 
     def find_existing_records(self, _app_token, _table_id, video_keys):
         return {"TT:old": "rec_old"} if "TT:old" in video_keys else {}
@@ -41,6 +42,13 @@ class FakeFeishuClient:
         return [f"rec_new_{idx}" for idx, _ in enumerate(fields_list)]
 
     def batch_update_records(self, _app_token, _table_id, records):
+        missing = [
+            item.get("record_id")
+            for item in records
+            if item.get("record_id") in self.missing_record_ids
+        ]
+        if missing:
+            raise profile_video_scheduler.FeishuRecordNotFound(f"missing {missing[0]}")
         self.updated.extend(records)
 
 
@@ -50,6 +58,7 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         FakeFeishuClient.updated = []
         FakeFeishuClient.records = []
         FakeFeishuClient.found = {}
+        FakeFeishuClient.missing_record_ids = set()
 
     def test_sync_rows_to_feishu_creates_and_updates_by_video_key(self):
         rows = [
@@ -279,7 +288,7 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(snapshot_fields["视频链接"], "https://www.tiktok.com/@demo/video/123")
         self.assertIn("快照唯一键", snapshot_fields)
 
-    def test_sync_rows_to_feishu_video_tables_ignores_stale_local_record_id(self):
+    def test_sync_rows_to_feishu_video_tables_recreates_stale_local_record_id(self):
         rows = [
             {
                 "video_key": "TT:stale",
@@ -297,6 +306,7 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
             "_local_existing_records",
             return_value={"TT:stale": "rec_deleted"},
         ):
+            FakeFeishuClient.missing_record_ids = {"rec_deleted"}
             result = profile_video_scheduler.sync_rows_to_feishu_video_tables(
                 rows,
                 task_id="task-stale",
