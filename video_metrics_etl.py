@@ -588,11 +588,24 @@ def _scrape_batch(platform: str, urls: List[str], apify_token: str) -> List[dict
     return radar._call_actor(actor, _actor_inputs(platform, urls), apify_token)
 
 
-def _scrape_profile(platform: str, profile_url: str, apify_token: str, results_limit: int = 20) -> List[dict]:
+def _scrape_profile(
+    platform: str,
+    profile_url: str,
+    apify_token: str,
+    results_limit: int = 20,
+    *,
+    should_abort: Optional[Callable[[], bool]] = None,
+) -> List[dict]:
     actor = VIDEO_ACTORS.get(platform)
     if not actor:
         raise RuntimeError(f"不支持的平台: {platform}")
-    return radar._call_actor(actor, _profile_actor_inputs(platform, profile_url, results_limit), apify_token)
+    return radar._call_actor(
+        actor,
+        _profile_actor_inputs(platform, profile_url, results_limit),
+        apify_token,
+        should_abort=should_abort,
+        allow_input_fallback=False,
+    )
 
 
 def _index_items(items: Iterable[dict]) -> Dict[str, dict]:
@@ -681,6 +694,7 @@ def fetch_profile_video_metrics(
     end_date: Optional[str] = None,
     max_videos: int = 50,
     progress_hook: Optional[Callable[[str], None]] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> List[dict]:
     """按主页链接抓取视频基础指标，返回一行一个视频的结构化数据。"""
     rows: List[dict] = []
@@ -689,6 +703,8 @@ def fetch_profile_video_metrics(
     normalized_profiles = [normalize_url(u) for u in profile_urls if normalize_url(u)]
 
     for idx, profile_url in enumerate(normalized_profiles, start=1):
+        if should_abort and should_abort():
+            raise RuntimeError("任务已停止，未继续抓取主页视频")
         platform = detect_platform(profile_url)
         if progress_hook:
             progress_hook(f"正在抓取主页视频 {idx}/{len(normalized_profiles)}: {profile_url}")
@@ -702,8 +718,10 @@ def fetch_profile_video_metrics(
             })
             continue
         try:
-            items = _scrape_profile(platform, profile_url, apify_token, results_limit=limit)
+            items = _scrape_profile(platform, profile_url, apify_token, results_limit=limit, should_abort=should_abort)
         except Exception as e:
+            if should_abort and should_abort():
+                raise
             rows.append({
                 "profile_url": profile_url,
                 "platform": platform,

@@ -8301,6 +8301,8 @@ def profile_video_configs_update(config_id):
 @app.route('/api/etl/profile-video/sync_start', methods=['POST'])
 @login_required
 def profile_video_sync_start():
+    if not profile_video_scheduler.profile_video_sync_enabled():
+        return jsonify({'status': 'error', 'message': '主页视频同步未启用，请先配置 PROFILE_VIDEO_SYNC_ENABLED=true'}), 403
     try:
         data = request.get_json(silent=True) or {}
         config_ids = data.get('config_ids') or []
@@ -8369,6 +8371,8 @@ def feishu_profile_video_config_status():
 @app.route('/api/etl/feishu-profile-video/sync_start', methods=['POST'])
 @login_required
 def feishu_profile_video_sync_start():
+    if not profile_video_scheduler.feishu_profile_video_sync_enabled():
+        return jsonify({'status': 'error', 'message': '飞书主页视频同步未启用，请先配置 FEISHU_PROFILE_VIDEO_SYNC_ENABLED=true'}), 403
     ok, missing = profile_video_scheduler.validate_feishu_video_table_config()
     if not ok:
         return jsonify({'status': 'error', 'message': f'缺少环境变量: {", ".join(missing)}'}), 400

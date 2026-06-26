@@ -24,6 +24,7 @@ fake_tasks.APIFY_TOKEN = "token"
 sys.modules.setdefault("tasks", fake_tasks)
 
 import video_metrics_etl
+import competitor_radar
 
 
 class VideoMetricsEtlTests(unittest.TestCase):
@@ -176,7 +177,7 @@ class VideoMetricsEtlTests(unittest.TestCase):
     def test_fetch_profile_video_metrics_extracts_video_rows(self):
         profile_url = "https://www.tiktok.com/@bunnyhack04"
 
-        def fake_profile(platform, url, _token, results_limit=20):
+        def fake_profile(platform, url, _token, results_limit=20, **_kwargs):
             self.assertEqual(platform, "TT")
             self.assertEqual(url, video_metrics_etl.normalize_url(profile_url))
             self.assertEqual(results_limit, 3)
@@ -206,6 +207,43 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertEqual(rows[0]["video_key"], "TT:123")
         self.assertEqual(rows[0]["views"], 1000)
         self.assertEqual(rows[0]["followers"], 777)
+
+    def test_call_actor_aborts_running_run_when_stop_requested(self):
+        calls = {"get": 0, "abort": 0}
+
+        class FakeResponse:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.text = str(payload)
+
+            def json(self):
+                return self._payload
+
+        def fake_post(url, **kwargs):
+            if url.endswith("/runs"):
+                return FakeResponse(201, {"data": {"id": "run-1"}})
+            if url.endswith("/actor-runs/run-1/abort"):
+                calls["abort"] += 1
+                return FakeResponse(200, {"data": {"status": "ABORTING"}})
+            raise AssertionError(url)
+
+        def fake_get(url, **kwargs):
+            calls["get"] += 1
+            return FakeResponse(200, {"data": {"status": "RUNNING"}})
+
+        with patch.object(competitor_radar.requests, "post", side_effect=fake_post), patch.object(
+            competitor_radar.requests, "get", side_effect=fake_get
+        ), patch.object(competitor_radar, "ACTOR_POLL_INTERVAL", 1):
+            with self.assertRaisesRegex(RuntimeError, "已因任务停止而中断"):
+                competitor_radar._call_actor(
+                    "clockworks/tiktok-scraper",
+                    [{"profiles": ["demo"]}],
+                    "token",
+                    should_abort=lambda: calls["get"] >= 1,
+                )
+
+        self.assertEqual(calls["abort"], 1)
 
 
 if __name__ == "__main__":

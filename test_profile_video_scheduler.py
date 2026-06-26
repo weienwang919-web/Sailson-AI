@@ -95,7 +95,9 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
             }
         ]
 
-        with patch.object(profile_video_scheduler, "_load_task_configs", return_value=[]), patch.object(
+        with patch.dict(profile_video_scheduler.os.environ, {"PROFILE_VIDEO_SYNC_ENABLED": "true"}, clear=False), patch.object(
+            profile_video_scheduler, "_load_task_configs", return_value=[]
+        ), patch.object(
             profile_video_scheduler, "_configs_missing_feishu_target", return_value=[]
         ), patch.object(profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics", return_value=rows), patch.object(
             profile_video_scheduler, "sync_rows_to_feishu", return_value={"created": 1, "updated": 0}
@@ -121,6 +123,21 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
             )
 
         self.assertEqual(updates[-1]["status"], "completed")
+
+    def test_profile_video_sync_disabled_does_not_run(self):
+        updates = []
+
+        def update_task(_task_id, **kwargs):
+            updates.append(kwargs)
+
+        with patch.dict(profile_video_scheduler.os.environ, {"PROFILE_VIDEO_SYNC_ENABLED": "false"}, clear=False), patch.object(
+            profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics"
+        ) as fetch_metrics:
+            profile_video_scheduler.run_profile_video_sync_task("task-disabled", {}, update_task)
+
+        self.assertEqual(updates[-1]["status"], "failed")
+        self.assertIn("PROFILE_VIDEO_SYNC_ENABLED=true", updates[-1]["error"])
+        fetch_metrics.assert_not_called()
 
     def test_load_feishu_configs_parses_enabled_profile_rows(self):
         FakeFeishuClient.records = [
@@ -166,6 +183,55 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(rows[0]["recent_days"], 3)
         self.assertEqual(rows[0]["max_videos"], 20)
         self.assertEqual(rows[0]["creator_key"], "TT:@demo")
+
+    def test_feishu_profile_sync_disabled_does_not_enqueue(self):
+        with patch.dict(profile_video_scheduler.os.environ, {"FEISHU_PROFILE_VIDEO_SYNC_ENABLED": "false"}, clear=False):
+            task_ids = profile_video_scheduler.enqueue_due_feishu_profile_video_sync(
+                lambda *args, **kwargs: None,
+                update_task_params_fn=lambda *args, **kwargs: None,
+                hour=9,
+            )
+
+        self.assertEqual(task_ids, [])
+
+    def test_feishu_profile_sync_blocks_oversized_manual_run(self):
+        updates = []
+
+        def update_task(_task_id, **kwargs):
+            updates.append(kwargs)
+
+        configs = [
+            {"record_id": f"rec{i}", "profile_url": f"https://www.tiktok.com/@demo{i}", "platform": "TT", "enabled": True}
+            for i in range(3)
+        ]
+
+        with patch.dict(
+            profile_video_scheduler.os.environ,
+            {
+                "FEISHU_PROFILE_VIDEO_SYNC_ENABLED": "true",
+                "FEISHU_VIDEO_BASE_TOKEN": "base",
+                "FEISHU_VIDEO_CONFIG_TABLE_ID": "cfg",
+                "FEISHU_VIDEO_LATEST_TABLE_ID": "latest",
+                "FEISHU_VIDEO_SNAPSHOT_TABLE_ID": "snap",
+                "FEISHU_VIDEO_LOG_TABLE_ID": "log",
+            },
+            clear=False,
+        ), patch.object(profile_video_scheduler, "_configs_for_feishu_task", return_value=configs), patch.object(
+            profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics"
+        ) as fetch_metrics:
+            profile_video_scheduler.run_feishu_profile_video_sync_task(
+                "task-oversize",
+                {"trigger_type": "manual", "max_profiles_per_run": 2},
+                update_task,
+            )
+
+        self.assertEqual(updates[-1]["status"], "failed")
+        self.assertIn("超过安全上限 2", updates[-1]["error"])
+        fetch_metrics.assert_not_called()
+
+    def test_clean_max_videos_uses_hard_cap(self):
+        with patch.object(profile_video_scheduler, "DEFAULT_PROFILE_VIDEO_HARD_MAX_VIDEOS", 30):
+            self.assertEqual(profile_video_scheduler._clean_max_videos(500), 30)
 
     def test_sync_rows_to_feishu_video_tables_writes_latest_and_snapshot(self):
         rows = [

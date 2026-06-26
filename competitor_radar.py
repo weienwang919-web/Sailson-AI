@@ -141,12 +141,30 @@ def _start_actor(actor_id: str, run_input: dict, apify_token: str) -> dict:
     return resp.json().get("data", {})
 
 
-def _wait_actor(run_id: str, apify_token: str, timeout: int = ACTOR_TIMEOUT_SECS) -> dict:
+def _abort_actor_run(run_id: str, apify_token: str) -> None:
+    headers = {"Authorization": f"Bearer {apify_token}"}
+    try:
+        resp = requests.post(
+            f"https://api.apify.com/v2/actor-runs/{run_id}/abort",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            logger.warning("⚠️ abort actor run %s 失败 status=%s body=%s", run_id, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("⚠️ abort actor run %s 异常: %s", run_id, exc)
+
+
+def _wait_actor(run_id: str, apify_token: str, timeout: int = ACTOR_TIMEOUT_SECS, should_abort: Callable[[], bool] | None = None) -> dict:
     headers = {"Authorization": f"Bearer {apify_token}"}
     api_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
     start = time.time()
     while True:
+        if should_abort and should_abort():
+            _abort_actor_run(run_id, apify_token)
+            raise RuntimeError(f"actor run {run_id} 已因任务停止而中断")
         if time.time() - start > timeout:
+            _abort_actor_run(run_id, apify_token)
             raise TimeoutError(f"actor run {run_id} 等待超时（{timeout}s）")
         resp = requests.get(api_url, headers=headers, timeout=15)
         if resp.status_code != 200:
@@ -155,7 +173,11 @@ def _wait_actor(run_id: str, apify_token: str, timeout: int = ACTOR_TIMEOUT_SECS
         status = data.get("status")
         if status in {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}:
             return data
-        time.sleep(ACTOR_POLL_INTERVAL)
+        for _ in range(max(1, int(ACTOR_POLL_INTERVAL))):
+            if should_abort and should_abort():
+                _abort_actor_run(run_id, apify_token)
+                raise RuntimeError(f"actor run {run_id} 已因任务停止而中断")
+            time.sleep(1)
 
 
 def _fetch_dataset(dataset_id: str, apify_token: str) -> list[dict]:
@@ -168,15 +190,25 @@ def _fetch_dataset(dataset_id: str, apify_token: str) -> list[dict]:
     return items if isinstance(items, list) else []
 
 
-def _call_actor(actor_id: str, candidate_inputs: list[dict], apify_token: str) -> list[dict]:
+def _call_actor(
+    actor_id: str,
+    candidate_inputs: list[dict],
+    apify_token: str,
+    *,
+    should_abort: Callable[[], bool] | None = None,
+    allow_input_fallback: bool = True,
+) -> list[dict]:
     last_err = None
-    for run_input in candidate_inputs:
+    inputs = candidate_inputs if allow_input_fallback else candidate_inputs[:1]
+    for run_input in inputs:
+        if should_abort and should_abort():
+            raise RuntimeError("任务已停止，未继续启动 Apify actor")
         try:
             run = _start_actor(actor_id, run_input, apify_token)
             run_id = run.get("id")
             if not run_id:
                 raise RuntimeError("actor 返回缺少 run id")
-            final = _wait_actor(run_id, apify_token)
+            final = _wait_actor(run_id, apify_token, should_abort=should_abort)
             if final.get("status") != "SUCCEEDED":
                 raise RuntimeError(f"run 结束状态={final.get('status')}")
             dataset_id = final.get("defaultDatasetId")
@@ -187,6 +219,8 @@ def _call_actor(actor_id: str, candidate_inputs: list[dict], apify_token: str) -
         except Exception as e:
             last_err = e
             logger.warning(f"⚠️ actor {actor_id} 调用失败（input keys={list(run_input.keys())}）: {e}")
+            if should_abort and should_abort():
+                raise RuntimeError(f"actor {actor_id} 已停止: {e}") from e
             continue
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
 

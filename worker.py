@@ -74,22 +74,46 @@ logger.info("✅ app 模块加载完成")
 # ============================================
 _shutdown = False
 _running_task_ids = set()  # 当前正在处理的 task_id，用于 SIGTERM 时回写状态
+_running_task_types = {}
+
+COSTLY_APIFY_TASK_TYPES = {
+    'feishu_profile_video_sync',
+    'profile_video_sync',
+    'etl_video_metrics',
+    'etl_hashtag',
+    'etl_comments',
+    'fb_scrape',
+    'thai_scrape',
+    'competitor',
+    'sentiment',
+}
 
 def _signal_handler(signum, frame):
     global _shutdown
     logger.info(f"📛 收到信号 {signum}，准备优雅退出...")
     _shutdown = True
-    # Render 重新部署时会发 SIGTERM：把当前任务回退到 pending，新 Worker 会自动重试
+    # Render 重新部署/暂停时会发 SIGTERM。高成本 Apify 任务不能自动重试，
+    # 否则已经启动的 actor runs 可能继续计费，新 Worker 又会再开一批。
     for cur in list(_running_task_ids):
         try:
-            update_task(
-                cur,
-                status='pending',
-                error='',
-                progress='服务重启，任务已重新排队',
-            )
+            func_type = _running_task_types.get(cur)
+            if func_type in COSTLY_APIFY_TASK_TYPES:
+                update_task(
+                    cur,
+                    status='failed',
+                    error='Worker 停止，任务已中断且不会自动重试',
+                    progress='Worker 停止，任务已中断',
+                )
+                logger.warning(f"⚠️ 高成本任务 {cur} type={func_type} 已标记失败，不自动重试")
+            else:
+                update_task(
+                    cur,
+                    status='pending',
+                    error='',
+                    progress='服务重启，任务已重新排队',
+                )
+                logger.warning(f"⚠️ 当前任务 {cur} 已回退为 pending（等待新 Worker 重试）")
             db.execute("UPDATE task_queue SET worker_id = NULL WHERE task_id = %s", (cur,))
-            logger.warning(f"⚠️ 当前任务 {cur} 已回退为 pending（等待新 Worker 重试）")
         except Exception as e:
             logger.error(f"❌ SIGTERM 时回写任务状态失败: {e}")
 
@@ -143,6 +167,7 @@ def dispatch_task(task_row):
 
     logger.info(f"🚀 开始处理任务 {task_id}  type={func_type} worker={WORKER_ID}")
     _running_task_ids.add(task_id)
+    _running_task_types[task_id] = func_type
     update_task(task_id, status='processing', progress=f'Worker 执行中（{WORKER_ID}）')
 
     try:
@@ -176,6 +201,7 @@ def dispatch_task(task_row):
         update_task(task_id, status='failed', error=f'Worker 异常: {str(e)[:500]}')
     finally:
         _running_task_ids.discard(task_id)
+        _running_task_types.pop(task_id, None)
 
 
 # ============================================

@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 DEFAULT_SYNC_HOUR = int(os.environ.get("PROFILE_VIDEO_SYNC_HOUR", "9"))
 DEFAULT_MAX_VIDEOS_PER_PROFILE = int(os.environ.get("PROFILE_VIDEO_MAX_VIDEOS", "50"))
+DEFAULT_FEISHU_MAX_PROFILES_PER_RUN = int(os.environ.get("FEISHU_PROFILE_VIDEO_MAX_PROFILES_PER_RUN", "5"))
+DEFAULT_PROFILE_VIDEO_HARD_MAX_VIDEOS = int(os.environ.get("PROFILE_VIDEO_HARD_MAX_VIDEOS_PER_PROFILE", "50"))
 try:
     from zoneinfo import ZoneInfo
 
@@ -426,6 +428,9 @@ def enqueue_due_profile_video_sync(
     hour: Optional[int] = None,
     after_enqueue_fn: Optional[Callable[[str, dict], None]] = None,
 ) -> list[str]:
+    if not profile_video_sync_enabled():
+        logger.info("主页视频同步未启用，跳过定时入队")
+        return []
     configs = due_configs_for_hour(hour)
     by_user: dict[Optional[int], list[dict]] = defaultdict(list)
     for cfg in configs:
@@ -452,6 +457,9 @@ def enqueue_due_profile_video_sync(
 
 
 def run_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Callable[..., None]) -> None:
+    if not profile_video_sync_enabled():
+        update_task_fn(task_id, status="failed", error="主页视频同步未启用，请配置 PROFILE_VIDEO_SYNC_ENABLED=true")
+        return
     user_id = params.get("user_id")
     trigger_type = params.get("trigger_type") or "manual"
     config_ids = params.get("config_ids") or []
@@ -501,6 +509,7 @@ def run_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Call
     all_rows = []
     failed_profiles = 0
     for idx, cfg in enumerate(configs, start=1):
+        _raise_if_task_stopped(task_id)
         update_task_fn(task_id, progress=f"正在同步主页 {idx}/{len(configs)}")
         start_date, end_date = _date_window_for_config(cfg)
         rows = video_metrics_etl.fetch_profile_video_metrics(
@@ -508,8 +517,9 @@ def run_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Call
             apify_token,
             start_date=start_date,
             end_date=end_date,
-            max_videos=int(cfg.get("max_videos") or default_max_videos_per_profile()),
+            max_videos=_clean_max_videos(cfg.get("max_videos") or default_max_videos_per_profile()),
             progress_hook=lambda msg: update_task_fn(task_id, progress=msg),
+            should_abort=lambda: _task_stop_requested(task_id),
         )
         for row in rows:
             row["config_id"] = cfg.get("id")
@@ -519,6 +529,7 @@ def run_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Call
                 failed_profiles += 1
         all_rows.extend(rows)
 
+    _raise_if_task_stopped(task_id)
     update_task_fn(task_id, progress=f"抓到 {len(all_rows)} 条视频，正在写入飞书")
     created_count = 0
     updated_count = 0
@@ -608,6 +619,14 @@ def validate_feishu_video_table_config() -> tuple[bool, list[str]]:
     return (not missing, missing)
 
 
+def profile_video_sync_enabled() -> bool:
+    return os.environ.get("PROFILE_VIDEO_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def feishu_profile_video_sync_enabled() -> bool:
+    return os.environ.get("FEISHU_PROFILE_VIDEO_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def enqueue_due_feishu_profile_video_sync(
     create_task_fn,
     *,
@@ -615,6 +634,9 @@ def enqueue_due_feishu_profile_video_sync(
     hour: Optional[int] = None,
     after_enqueue_fn: Optional[Callable[[str, dict], None]] = None,
 ) -> list[str]:
+    if not feishu_profile_video_sync_enabled():
+        logger.info("飞书主页视频四表同步未启用，跳过定时入队")
+        return []
     ok, missing = validate_feishu_video_table_config()
     if not ok:
         logger.warning("飞书主页视频四表同步缺少环境变量: %s", ", ".join(missing))
@@ -628,21 +650,26 @@ def enqueue_due_feishu_profile_video_sync(
     if not due_configs:
         return []
 
-    task_id = str(uuid.uuid4())
     session_id = f"feishu_profile_video_schedule_{date.today().isoformat()}"
-    create_task_fn(task_id, None, session_id, function_type="feishu_profile_video_sync")
-    params = {
-        "source": "feishu_profile_video_sync",
-        "trigger_type": "scheduled",
-        "session_id": session_id,
-        "config_record_ids": [cfg["record_id"] for cfg in due_configs if cfg.get("record_id")],
-        "config_count": len(due_configs),
-    }
-    update_task_params_fn(task_id, params)
-    mark_feishu_configs_started(due_configs, task_id=task_id)
-    if after_enqueue_fn:
-        after_enqueue_fn(task_id, params)
-    return [task_id]
+    max_profiles = _feishu_max_profiles_per_run()
+    task_ids = []
+    for batch in _chunks(due_configs, max_profiles):
+        task_id = str(uuid.uuid4())
+        create_task_fn(task_id, None, session_id, function_type="feishu_profile_video_sync")
+        params = {
+            "source": "feishu_profile_video_sync",
+            "trigger_type": "scheduled",
+            "session_id": session_id,
+            "config_record_ids": [cfg["record_id"] for cfg in batch if cfg.get("record_id")],
+            "config_count": len(batch),
+            "max_profiles_per_run": max_profiles,
+        }
+        update_task_params_fn(task_id, params)
+        mark_feishu_configs_started(batch, task_id=task_id)
+        if after_enqueue_fn:
+            after_enqueue_fn(task_id, params)
+        task_ids.append(task_id)
+    return task_ids
 
 
 def load_due_feishu_profile_configs(hour: Optional[int] = None) -> list[dict]:
@@ -695,6 +722,9 @@ def mark_feishu_configs_started(configs: Iterable[dict], *, task_id: str) -> Non
 
 def run_feishu_profile_video_sync_task(task_id: str, params: dict, update_task_fn: Callable[..., None]) -> None:
     """Read creator homepage configs from Feishu and write latest/snapshot/log tables."""
+    if not feishu_profile_video_sync_enabled():
+        update_task_fn(task_id, status="failed", error="飞书主页视频同步未启用，请配置 FEISHU_PROFILE_VIDEO_SYNC_ENABLED=true")
+        return
     table_config = feishu_video_table_config()
     ok, missing = validate_feishu_video_table_config()
     if not ok:
@@ -713,6 +743,14 @@ def run_feishu_profile_video_sync_task(task_id: str, params: dict, update_task_f
         if not configs:
             update_task_fn(task_id, status="failed", error="没有可同步的飞书主页配置")
             return
+        max_profiles = _feishu_max_profiles_per_run(params)
+        if len(configs) > max_profiles:
+            update_task_fn(
+                task_id,
+                status="failed",
+                error=f"本次识别到 {len(configs)} 个主页，超过安全上限 {max_profiles}。请分批执行或调整 FEISHU_PROFILE_VIDEO_MAX_PROFILES_PER_RUN。",
+            )
+            return
         update_task_fn(task_id, status="processing", progress=f"读取到 {len(configs)} 个启用主页，开始抓取")
         log_record_id = upsert_feishu_sync_log(
             client,
@@ -730,6 +768,7 @@ def run_feishu_profile_video_sync_task(task_id: str, params: dict, update_task_f
         rows: list[dict] = []
         profile_results: list[dict] = []
         for idx, cfg in enumerate(configs, start=1):
+            _raise_if_task_stopped(task_id)
             update_task_fn(task_id, progress=f"正在抓取主页 {idx}/{len(configs)}: {cfg.get('profile_url')}")
             start_date, end_date = _date_window_for_feishu_config(cfg)
             try:
@@ -738,10 +777,13 @@ def run_feishu_profile_video_sync_task(task_id: str, params: dict, update_task_f
                     tasks.APIFY_TOKEN,
                     start_date=start_date,
                     end_date=end_date,
-                    max_videos=int(cfg.get("max_videos") or default_max_videos_per_profile()),
+                    max_videos=_clean_max_videos(cfg.get("max_videos") or default_max_videos_per_profile()),
                     progress_hook=lambda msg: update_task_fn(task_id, progress=msg),
+                    should_abort=lambda: _task_stop_requested(task_id),
                 )
             except Exception as exc:
+                if _task_stop_requested(task_id):
+                    raise
                 fetched = [{
                     "profile_url": cfg["profile_url"],
                     "platform": cfg.get("platform") or video_metrics_etl.detect_platform(cfg["profile_url"]),
@@ -769,6 +811,7 @@ def run_feishu_profile_video_sync_task(task_id: str, params: dict, update_task_f
                 enriched["platform"] = enriched.get("platform") or cfg.get("platform")
                 rows.append(enriched)
 
+        _raise_if_task_stopped(task_id)
         update_task_fn(task_id, progress=f"抓到 {len(rows)} 条视频，正在写入飞书最新表和快照表")
         sync_result = sync_rows_to_feishu_video_tables(rows, task_id=task_id, table_config=table_config, client=client)
         success_profiles = sum(1 for item in profile_results if item["status"] in {"成功", "部分成功"})
@@ -1781,7 +1824,8 @@ def _clean_max_videos(value) -> int:
         count = int(value)
     except Exception:
         count = default_max_videos_per_profile()
-    return max(1, min(count, 500))
+    hard_max = max(1, DEFAULT_PROFILE_VIDEO_HARD_MAX_VIDEOS)
+    return max(1, min(count, hard_max))
 
 
 def _escape_formula_value(value: str) -> str:
@@ -1807,6 +1851,31 @@ def default_max_videos_per_profile() -> int:
         return int(os.environ.get("PROFILE_VIDEO_MAX_VIDEOS", str(DEFAULT_MAX_VIDEOS_PER_PROFILE)))
     except Exception:
         return DEFAULT_MAX_VIDEOS_PER_PROFILE
+
+
+def _feishu_max_profiles_per_run(params: Optional[dict] = None) -> int:
+    raw = (params or {}).get("max_profiles_per_run")
+    if raw in (None, ""):
+        raw = os.environ.get("FEISHU_PROFILE_VIDEO_MAX_PROFILES_PER_RUN", str(DEFAULT_FEISHU_MAX_PROFILES_PER_RUN))
+    try:
+        value = int(raw)
+    except Exception:
+        value = DEFAULT_FEISHU_MAX_PROFILES_PER_RUN
+    return max(1, min(value, 200))
+
+
+def _task_stop_requested(task_id: str) -> bool:
+    try:
+        row = db.query_one("SELECT status FROM task_queue WHERE task_id = %s", (task_id,))
+        return bool(row and row.get("status") not in {"claimed", "processing"})
+    except Exception as exc:
+        logger.warning("检查任务停止状态失败 task=%s: %s", task_id, exc)
+        return False
+
+
+def _raise_if_task_stopped(task_id: str) -> None:
+    if _task_stop_requested(task_id):
+        raise RuntimeError("任务已被停止，已中断后续 Apify 调用")
 
 
 def _chunks(items: list, size: int):
