@@ -279,6 +279,40 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(snapshot_fields["视频链接"], "https://www.tiktok.com/@demo/video/123")
         self.assertIn("快照唯一键", snapshot_fields)
 
+    def test_sync_rows_to_feishu_video_tables_ignores_stale_local_record_id(self):
+        rows = [
+            {
+                "video_key": "TT:stale",
+                "creator_key": "TT:demo",
+                "profile_url": "https://www.tiktok.com/@demo",
+                "platform": "TT",
+                "video_url": "https://www.tiktok.com/@demo/video/stale",
+                "views": 100,
+                "engagement": 10,
+            }
+        ]
+
+        with patch.object(
+            profile_video_scheduler,
+            "_local_existing_records",
+            return_value={"TT:stale": "rec_deleted"},
+        ):
+            result = profile_video_scheduler.sync_rows_to_feishu_video_tables(
+                rows,
+                task_id="task-stale",
+                table_config={
+                    "base_token": "base",
+                    "latest_table_id": "latest",
+                    "snapshot_table_id": "snap",
+                    "log_table_id": "log",
+                },
+                client=FakeFeishuClient(),
+            )
+
+        self.assertEqual(result["latest_created"], 1)
+        self.assertEqual(result["latest_updated"], 0)
+        self.assertFalse(FakeFeishuClient.updated)
+
     def test_sync_rows_to_feishu_video_tables_calculates_growth_from_snapshots(self):
         rows = [
             {

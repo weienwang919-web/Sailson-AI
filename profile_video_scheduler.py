@@ -1516,13 +1516,9 @@ def _existing_by_key(client: "FeishuBitableClient", app_token: str, table_id: st
     unique_keys = [str(k) for k in dict.fromkeys(keys) if k]
     if not unique_keys:
         return {}
-    existing = {}
-    if field_name in {FEISHU_LATEST_FIELDS["video_key"], FEISHU_SNAPSHOT_FIELDS["snapshot_key"]}:
-        existing.update(_local_existing_records(unique_keys, app_token, table_id))
-    missing = [key for key in unique_keys if key not in existing]
-    if missing:
-        existing.update(client.find_records_by_field(app_token, table_id, field_name, missing))
-    return existing
+    # Feishu records may be deleted manually after we cached their record_id
+    # locally, so write decisions must use the live table as source of truth.
+    return client.find_records_by_field(app_token, table_id, field_name, unique_keys)
 
 
 def _snapshot_history_for_rows(rows: list[dict], *, app_token: str, snapshot_table_id: str, snapshot_date: str) -> dict[str, dict]:
