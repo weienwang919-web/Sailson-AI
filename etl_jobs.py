@@ -183,7 +183,7 @@ def run_etl_comments_task(task_id: str, params: dict, update_task_fn) -> None:
 
 def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> None:
     """
-    params: input_file_id, url_column, selected_fields, user_id
+    params: input_file_id, url_column, manual_urls, selected_fields, user_id
     """
     user_id = params.get("user_id")
     input_file_id = params.get("input_file_id")
@@ -193,33 +193,44 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
     header_row = params.get("header_row")
     selected_fields = params.get("selected_fields") or ["views", "likes", "comments"]
     urls = params.get("urls") or []
+    excel_urls = params.get("excel_urls") or []
+    manual_urls = params.get("manual_urls") or []
+    extra_manual_urls = params.get("extra_manual_urls") or []
+    file_bytes = None
 
-    if not input_file_id:
-        update_task_fn(task_id, status="failed", error="缺少输入文件")
-        return
+    if input_file_id:
+        row = db.query_one(
+            "SELECT content, filename FROM etl_file_outputs WHERE id = %s AND user_id = %s",
+            (input_file_id, user_id),
+        )
+        if not row or not row.get("content"):
+            update_task_fn(task_id, status="failed", error="输入文件不存在或已过期")
+            return
 
-    row = db.query_one(
-        "SELECT content, filename FROM etl_file_outputs WHERE id = %s AND user_id = %s",
-        (input_file_id, user_id),
-    )
-    if not row or not row.get("content"):
-        update_task_fn(task_id, status="failed", error="输入文件不存在或已过期")
-        return
-
-    file_bytes = row["content"]
-    if isinstance(file_bytes, memoryview):
-        file_bytes = file_bytes.tobytes()
+        file_bytes = row["content"]
+        if isinstance(file_bytes, memoryview):
+            file_bytes = file_bytes.tobytes()
 
     try:
-        if not urls:
+        if file_bytes is not None and not excel_urls:
             parsed = etl_tools.parse_excel_urls(file_bytes, url_column)
-            urls = parsed.urls
+            excel_urls = parsed.urls
             resolved_url_column = parsed.url_column
             sheet_name = parsed.sheet_name
             header_row = parsed.header_row
     except Exception as e:
         update_task_fn(task_id, status="failed", error=f"解析链接失败: {e}")
         return
+
+    if not urls:
+        deduped_urls = []
+        seen = set()
+        for raw_url in [*excel_urls, *manual_urls]:
+            key = video_metrics_etl.normalize_url(raw_url)
+            if key and key not in seen:
+                seen.add(key)
+                deduped_urls.append(raw_url)
+        urls = deduped_urls
 
     if not urls:
         update_task_fn(task_id, status="failed", error="未解析到有效 http(s) 链接")
@@ -242,15 +253,23 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
 
     update_task_fn(task_id, progress="正在写回 Excel...")
     try:
-        xbytes = video_metrics_etl.merge_metrics_into_excel(
-            file_bytes,
-            url_column,
-            metrics_map,
-            selected_fields,
-            sheet_name=sheet_name,
-            header_row=header_row,
-            resolved_url_column=resolved_url_column,
-        )
+        if file_bytes is not None:
+            xbytes = video_metrics_etl.merge_metrics_into_excel(
+                file_bytes,
+                url_column,
+                metrics_map,
+                selected_fields,
+                sheet_name=sheet_name,
+                header_row=header_row,
+                resolved_url_column=resolved_url_column,
+                extra_urls=extra_manual_urls,
+            )
+        else:
+            xbytes = video_metrics_etl.build_manual_metrics_excel(
+                urls,
+                metrics_map,
+                selected_fields,
+            )
     except Exception as e:
         update_task_fn(task_id, status="failed", error=f"写回 Excel 失败: {e}")
         return
@@ -283,7 +302,12 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
         item_count=len(urls),
         crawler_items=len(urls),
         source="actual",
-        detail={"success_count": ok_count, "selected_fields": selected_fields},
+        detail={
+            "success_count": ok_count,
+            "selected_fields": selected_fields,
+            "excel_url_count": len(excel_urls),
+            "manual_url_count": len(manual_urls),
+        },
     )
     update_task_fn(
         task_id,

@@ -39,6 +39,8 @@ METRIC_FIELDS: Dict[str, str] = {
     "duration": "视频时长",
 }
 DEFAULT_VIDEO_METRIC_FIELDS = list(METRIC_FIELDS.keys())
+MANUAL_URL_COLUMN = "视频链接"
+MANUAL_PLATFORM_COLUMN = "平台"
 
 VIDEO_ACTORS = {
     "TT": os.environ.get("APIFY_TIKTOK_PROFILE_ACTOR_ID", "clockworks/tiktok-scraper"),
@@ -95,6 +97,31 @@ def normalize_url(url: str) -> str:
         return f"{p.scheme.lower()}://{host}{path}"
     except Exception:
         return s.rstrip("/")
+
+
+def parse_manual_urls(text: str) -> List[str]:
+    """Parse pasted links, one per line, with lightweight cleanup and de-dupe."""
+    urls: List[str] = []
+    seen = set()
+    for line in str(text or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        # Allow accidental numbered/bulleted lists copied from docs or chats.
+        raw = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", raw).strip()
+        if not raw:
+            continue
+        match = re.search(r"(?:https?://|www\.)\S+", raw, re.I)
+        value = match.group(0) if match else raw
+        value = value.strip().strip("<>\"'，,。；;)")
+        normalized_cell = etl_tools._normalize_url_cell(value)
+        if not normalized_cell or not etl_tools._looks_like_url(normalized_cell):
+            continue
+        normalized = normalize_url(normalized_cell)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized_cell)
+    return urls
 
 
 def _host(url: str) -> str:
@@ -834,6 +861,7 @@ def merge_metrics_into_excel(
     sheet_name: Optional[str] = None,
     header_row: Optional[int] = None,
     resolved_url_column: Optional[str] = None,
+    extra_urls: Optional[List[str]] = None,
 ) -> bytes:
     """在原 Excel 上追加/更新所选指标列。"""
     if sheet_name is not None and header_row is not None:
@@ -848,6 +876,22 @@ def merge_metrics_into_excel(
 
     row_links = etl_tools._hyperlink_rows_by_excel_row(file_bytes, sheet_name or "Sheet1")
     df = etl_tools._inject_row_hyperlinks(df, col, header_row or 0, row_links)
+
+    if extra_urls:
+        existing = set()
+        for value in df[col]:
+            raw = etl_tools._normalize_url_cell(value)
+            if raw:
+                existing.add(normalize_url(raw))
+        extra_rows = []
+        for raw_url in extra_urls:
+            raw = etl_tools._normalize_url_cell(raw_url)
+            normalized = normalize_url(raw)
+            if raw and normalized and normalized not in existing:
+                existing.add(normalized)
+                extra_rows.append({col: raw})
+        if extra_rows:
+            df = pd.concat([df, pd.DataFrame(extra_rows)], ignore_index=True)
 
     selected = [f for f in selected_fields if f in METRIC_FIELDS]
     if not selected:
@@ -890,6 +934,54 @@ def merge_metrics_into_excel(
             df.at[idx, header] = value
         df.at[idx, status_col] = "成功"
 
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="video_metrics", index=False)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_manual_metrics_excel(
+    urls: List[str],
+    metrics_by_url: Dict[str, dict],
+    selected_fields: List[str],
+) -> bytes:
+    """Create a metrics workbook for links pasted manually without an input Excel."""
+    selected = [f for f in selected_fields if f in METRIC_FIELDS]
+    if not selected:
+        selected = list(DEFAULT_VIDEO_METRIC_FIELDS)
+
+    rows = []
+    seen = set()
+    for raw_url in urls:
+        raw = etl_tools._normalize_url_cell(raw_url)
+        if not raw:
+            continue
+        normalized = normalize_url(raw)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        metrics = metrics_by_url.get(normalized) or metrics_by_url.get(raw) or {}
+        row = {
+            MANUAL_URL_COLUMN: raw,
+            MANUAL_PLATFORM_COLUMN: detect_platform(raw),
+        }
+        if metrics.get("_error"):
+            for field in selected:
+                row[METRIC_FIELDS[field]] = None
+            row["抓取状态"] = metrics["_error"]
+        elif metrics:
+            for field in selected:
+                row[METRIC_FIELDS[field]] = metrics.get(field, "")
+            row["抓取状态"] = "成功"
+        else:
+            for field in selected:
+                row[METRIC_FIELDS[field]] = None
+            row["抓取状态"] = "未抓取"
+        rows.append(row)
+
+    columns = [MANUAL_URL_COLUMN, MANUAL_PLATFORM_COLUMN] + [METRIC_FIELDS[f] for f in selected] + ["抓取状态"]
+    df = pd.DataFrame(rows, columns=columns)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="video_metrics", index=False)

@@ -170,17 +170,19 @@
             </div>
 
             <div id="videoMetricsPanel" class="tool-panel">
-                <label class="small text-muted mb-1" for="videoMetricsFile">上传含视频链接的 Excel</label>
+                <label class="small text-muted mb-1" for="videoMetricsFile">上传含视频链接的 Excel（可选）</label>
                 <input type="file" id="videoMetricsFile" class="form-control" accept=".xlsx,.xls" onchange="previewVideoMetricColumns()">
                 <label class="small text-muted mb-1 mt-3" for="videoMetricsCol">链接列名（可选，留空自动识别）</label>
                 <input type="text" id="videoMetricsCol" class="form-control" placeholder="例如：视频链接 / 短链 / post_url">
                 <div class="status-line" id="videoMetricsCols"></div>
+                <label class="small text-muted mb-1 mt-3" for="videoMetricsManualUrls">手动输入视频链接（可选，每行一个，可混合平台）</label>
+                <textarea id="videoMetricsManualUrls" class="url-textarea" style="min-height: 110px;" placeholder="https://www.tiktok.com/@user/video/...&#10;https://www.instagram.com/reel/...&#10;https://www.youtube.com/watch?v=...&#10;https://www.facebook.com/reel/..."></textarea>
                 <div class="platform-badges">
                     <span class="badge">TT</span>
                     <span class="badge">IG</span>
                     <span class="badge">YTB</span>
                     <span class="badge">FB</span>
-                    <span style="margin-left:auto;color:#999;">自动按约 {{ video_metrics_batch_size }} 条/批抓取，支持 TikTok 短链</span>
+                    <span style="margin-left:auto;color:#999;">Excel 或手动链接至少填一种，自动按约 {{ video_metrics_batch_size }} 条/批抓取</span>
                 </div>
                 <label class="small text-muted mb-1 mt-3">写回字段</label>
                 <div class="metric-grid" id="videoMetricsFields">
@@ -699,8 +701,9 @@ async function startVideoMetrics() {
     const dlEl = document.getElementById('videoMetricsDownload');
     const btn = document.getElementById('videoMetricsBtn');
     const file = document.getElementById('videoMetricsFile').files[0];
-    if (!file) {
-        statusEl.textContent = '请选择 Excel 文件';
+    const manualUrls = document.getElementById('videoMetricsManualUrls').value.trim();
+    if (!file && !manualUrls) {
+        statusEl.textContent = '请上传 Excel，或手动输入至少一条视频链接';
         statusEl.className = 'status-line err';
         return;
     }
@@ -711,9 +714,10 @@ async function startVideoMetrics() {
         return;
     }
     const fd = new FormData();
-    fd.append('file', file);
+    if (file) fd.append('file', file);
     const col = document.getElementById('videoMetricsCol').value.trim();
     if (col) fd.append('url_column', col);
+    if (manualUrls) fd.append('manual_urls', manualUrls);
     fd.append('selected_fields', selected.join(','));
     btn.disabled = true;
     dlEl.innerHTML = '';

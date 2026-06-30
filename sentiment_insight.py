@@ -973,6 +973,18 @@ def _run_ai_for_comments(
 # ============================================
 
 
+def _scrape_summary_item(idx: int, payload: dict) -> dict:
+    items = payload.get("items") or []
+    return {
+        "source_index": idx,
+        "platform": payload.get("platform") or "UNKNOWN",
+        "url": payload.get("url") or "",
+        "item_count": len(items) if isinstance(items, list) else 0,
+        "comment_count": 0,
+        "error": str(payload.get("error") or "")[:300],
+    }
+
+
 def run_insight_pipeline(
     urls: list[str],
     apify_token: str,
@@ -1005,12 +1017,15 @@ def run_insight_pipeline(
 
     # 1. 抓取各平台
     per_url_payloads: list[dict] = []
+    scrape_summary: list[dict] = []
     for idx, url in enumerate(urls, 1):
         platform = detect_platform(url)
         _p(f"抓取 {idx}/{len(urls)} [{platform}] {url[:60]}")
         if platform == "UNKNOWN" or platform not in PLATFORM_SCRAPERS:
             logger.warning(f"⚠️ 不支持的平台，跳过: {url}")
-            per_url_payloads.append({"platform": platform or "UNKNOWN", "url": url, "items": []})
+            payload = {"platform": platform or "UNKNOWN", "url": url, "items": [], "error": "不支持的平台"}
+            per_url_payloads.append(payload)
+            scrape_summary.append(_scrape_summary_item(idx, payload))
             continue
         try:
             payload = PLATFORM_SCRAPERS[platform](url, apify_token)
@@ -1018,10 +1033,11 @@ def run_insight_pipeline(
             logger.error(f"❌ 抓取失败 {url}: {e}")
             payload = {"platform": platform, "url": url, "items": [], "error": str(e)}
         per_url_payloads.append(payload)
+        scrape_summary.append(_scrape_summary_item(idx, payload))
 
     # 2. 收集评论列表（带主贴元信息），准备给 AI
     all_comments_for_ai: list[dict] = []
-    for payload in per_url_payloads:
+    for payload_index, payload in enumerate(per_url_payloads):
         platform = payload.get("platform", "UNKNOWN")
         url = payload.get("url", "")
         items = payload.get("items") or []
@@ -1033,6 +1049,7 @@ def run_insight_pipeline(
             c = _extract_comment(it, platform, row_post_url)
             if not c:
                 continue
+            scrape_summary[payload_index]["comment_count"] += 1
             analysis_id = f"C{len(all_comments_for_ai)}"
             all_comments_for_ai.append(
                 {
@@ -1100,6 +1117,7 @@ def run_insight_pipeline(
         "html": html_table,
         "total_comments": len(structured),
         "total_tokens": total_tokens,
+        "scrape_summary": scrape_summary,
         "per_url": per_url_payloads,  # 调试用
     }
 

@@ -182,6 +182,29 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertIn("抓取状态", headers)
         self.assertEqual(ws.cell(row=2, column=headers.index("评论ID") + 1).value, "TT:abc")
 
+    def test_run_insight_pipeline_reports_empty_scrape_summary(self):
+        original_scraper = sentiment_insight.PLATFORM_SCRAPERS["TT"]
+        try:
+            sentiment_insight.PLATFORM_SCRAPERS["TT"] = lambda url, token: {
+                "platform": "TT",
+                "url": url,
+                "items": [],
+                "error": "启动 actor 失败 status=401",
+            }
+
+            result = sentiment_insight.run_insight_pipeline(
+                ["https://www.tiktok.com/@game/video/123"],
+                "token",
+                lambda _prompt, _timeout=60: ("[]", 0),
+            )
+
+            self.assertEqual(result["structured"], [])
+            self.assertEqual(result["scrape_summary"][0]["item_count"], 0)
+            self.assertEqual(result["scrape_summary"][0]["comment_count"], 0)
+            self.assertIn("401", result["scrape_summary"][0]["error"])
+        finally:
+            sentiment_insight.PLATFORM_SCRAPERS["TT"] = original_scraper
+
 
 if __name__ == "__main__":
     unittest.main()

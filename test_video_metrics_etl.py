@@ -146,6 +146,45 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertEqual(int(out_df.loc[0, "评论量"]), 6)
         self.assertEqual(out_df.loc[0, "抓取状态"], "成功")
 
+    def test_parse_manual_urls_accepts_multiplatform_lines(self):
+        text = """
+        1. https://www.tiktok.com/@user/video/123
+        - https://www.instagram.com/reel/abc/
+        https://youtu.be/xyz,
+        www.facebook.com/reel/555
+        not a url
+        """
+
+        urls = video_metrics_etl.parse_manual_urls(text)
+
+        self.assertEqual(len(urls), 4)
+        self.assertTrue(urls[0].startswith("https://www.tiktok.com"))
+        self.assertIn("instagram.com/reel/abc", urls[1])
+        self.assertIn("youtu.be/xyz", urls[2])
+        self.assertEqual(video_metrics_etl.detect_platform(urls[3]), "FB")
+
+    def test_build_manual_metrics_excel_creates_result_workbook(self):
+        url = "https://www.youtube.com/watch?v=abc123"
+        metrics = {
+            video_metrics_etl.normalize_url(url): {
+                "views": 1000,
+                "likes": 20,
+                "comments": 3,
+            }
+        }
+
+        out = video_metrics_etl.build_manual_metrics_excel(
+            [url],
+            metrics,
+            ["views", "likes", "comments"],
+        )
+        out_df = pd.read_excel(io.BytesIO(out))
+
+        self.assertEqual(out_df.loc[0, "视频链接"], url)
+        self.assertEqual(out_df.loc[0, "平台"], "YTB")
+        self.assertEqual(int(out_df.loc[0, "播放量"]), 1000)
+        self.assertEqual(out_df.loc[0, "抓取状态"], "成功")
+
     def test_single_retry_uses_only_returned_item_when_url_keys_differ(self):
         short_url = "https://vt.tiktok.com/ZSQoKaT60/"
         calls = []

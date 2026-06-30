@@ -1047,6 +1047,24 @@ def log_usage(user_id, username, department, function_type, comments_count, ai_t
         return 0
 
 
+def _format_insight_scrape_failure(summary):
+    parts = []
+    for item in summary[:5]:
+        platform = item.get('platform') or 'UNKNOWN'
+        item_count = item.get('item_count', 0)
+        comment_count = item.get('comment_count', 0)
+        error = (item.get('error') or '').strip()
+        url = (item.get('url') or '').strip()
+        short_url = url[:80] + ('...' if len(url) > 80 else '')
+        if error:
+            parts.append(f"{platform} 返回 {item_count} 条原始数据/{comment_count} 条评论，错误: {error}，链接: {short_url}")
+        else:
+            parts.append(f"{platform} 返回 {item_count} 条原始数据/{comment_count} 条评论，链接: {short_url}")
+    if len(summary) > 5:
+        parts.append(f"另有 {len(summary) - 5} 条链接未展示")
+    return "；".join(parts)[:1000]
+
+
 def process_analysis_task(task_id, url=None, file_data=None, session_id='default', user_id=None,
                           username='unknown', department='未知', project='CFL', urls=None):
     """异步处理分析任务。project 为 CFL/PUBGM/HOK，用于选择提示词。
@@ -1141,7 +1159,12 @@ def process_analysis_task(task_id, url=None, file_data=None, session_id='default
                 total_comments = pipeline_result['total_comments']
 
                 if not all_results:
-                    update_task(task_id, status='failed', error='未抓取到任何评论（请检查链接或 Actor 兼容性）')
+                    detail = _format_insight_scrape_failure(pipeline_result.get('scrape_summary') or [])
+                    update_task(
+                        task_id,
+                        status='failed',
+                        error='未抓取到任何评论' + (f'：{detail}' if detail else '（请检查链接或 Actor 兼容性）'),
+                    )
                     return
 
                 LATEST_ANALYSIS_RESULTS[session_id] = all_results
@@ -8169,15 +8192,29 @@ def etl_comments_start():
 @app.route('/api/etl/video_metrics_start', methods=['POST'])
 @login_required
 def etl_video_metrics_start():
-    """功能5：上传含视频链接的 Excel，批量拉取播放量等指标并写回。"""
+    """功能5：批量拉取视频播放量等指标并写回 Excel。"""
     try:
         f = request.files.get('file')
-        if not f or not f.filename:
-            return jsonify({'status': 'error', 'message': '请上传 Excel'}), 400
         url_col = (request.form.get('url_column') or '').strip() or None
-        raw = f.read()
-        parsed = etl_tools.parse_excel_urls(raw, url_col)
-        urls = parsed.urls
+        manual_urls_text = request.form.get('manual_urls') or ''
+        manual_urls = video_metrics_etl.parse_manual_urls(manual_urls_text)
+
+        raw = None
+        parsed = None
+        excel_urls = []
+        if f and f.filename:
+            raw = f.read()
+            parsed = etl_tools.parse_excel_urls(raw, url_col)
+            excel_urls = parsed.urls
+
+        urls = []
+        seen_urls = set()
+        for raw_url in [*excel_urls, *manual_urls]:
+            key = video_metrics_etl.normalize_url(raw_url)
+            if key and key not in seen_urls:
+                seen_urls.add(key)
+                urls.append(raw_url)
+
         if not urls:
             return jsonify({'status': 'error', 'message': '未解析到有效 http(s) 链接'}), 400
 
@@ -8193,25 +8230,36 @@ def etl_video_metrics_start():
     session_id = session.get('session_id', 'default')
     queue_task_id = str(uuid.uuid4())
 
-    input_row = db.execute_and_fetch_one(
-        """
-        INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
-        VALUES (%s, %s, %s, %s)
-        RETURNING id
-        """,
-        (queue_task_id, user_id, '_input_video_metrics.xlsx', raw),
-    )
-    input_file_id = input_row['id'] if input_row else None
-    if not input_file_id:
-        return jsonify({'status': 'error', 'message': '保存输入文件失败'}), 500
+    input_file_id = None
+    if raw is not None:
+        input_row = db.execute_and_fetch_one(
+            """
+            INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (queue_task_id, user_id, '_input_video_metrics.xlsx', raw),
+        )
+        input_file_id = input_row['id'] if input_row else None
+        if not input_file_id:
+            return jsonify({'status': 'error', 'message': '保存输入文件失败'}), 500
+
+    excel_keys = {video_metrics_etl.normalize_url(u) for u in excel_urls}
+    extra_manual_urls = [
+        u for u in manual_urls
+        if video_metrics_etl.normalize_url(u) not in excel_keys
+    ]
 
     params = {
         'input_file_id': input_file_id,
         'url_column': url_col,
-        'resolved_url_column': parsed.url_column,
-        'sheet_name': parsed.sheet_name,
-        'header_row': parsed.header_row,
+        'resolved_url_column': parsed.url_column if parsed else None,
+        'sheet_name': parsed.sheet_name if parsed else None,
+        'header_row': parsed.header_row if parsed else None,
         'urls': urls,
+        'excel_urls': excel_urls,
+        'manual_urls': manual_urls,
+        'extra_manual_urls': extra_manual_urls,
         'selected_fields': selected_fields,
         'user_id': user_id,
         'session_id': session_id,
