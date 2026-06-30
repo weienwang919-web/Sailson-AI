@@ -631,6 +631,41 @@ def feishu_profile_video_sync_enabled() -> bool:
     return os.environ.get("FEISHU_PROFILE_VIDEO_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def stop_pending_profile_video_tasks(reason: str = "主页视频同步已手动停止") -> dict:
+    """Mark queued homepage-video sync tasks as failed so workers will not start new Apify runs."""
+    message = (reason or "主页视频同步已手动停止").strip()[:500]
+    stopped_pending = db.execute(
+        """
+        UPDATE task_queue
+        SET status = 'failed',
+            error = %s,
+            progress = %s,
+            finished_at = COALESCE(finished_at, NOW()),
+            updated_at = NOW()
+        WHERE function_type IN ('profile_video_sync', 'feishu_profile_video_sync')
+          AND status IN ('pending', 'claimed')
+        """,
+        (message, message),
+    )
+    stop_requested_running = db.execute(
+        """
+        UPDATE task_queue
+        SET status = 'failed',
+            error = %s,
+            progress = %s,
+            finished_at = COALESCE(finished_at, NOW()),
+            updated_at = NOW()
+        WHERE function_type IN ('profile_video_sync', 'feishu_profile_video_sync')
+          AND status = 'processing'
+        """,
+        (message, message),
+    )
+    return {
+        "stopped_pending": int(stopped_pending or 0),
+        "stop_requested_running": int(stop_requested_running or 0),
+    }
+
+
 def enqueue_due_feishu_profile_video_sync(
     create_task_fn,
     *,
@@ -1777,8 +1812,10 @@ def _field_text(value) -> str:
 def _field_bool(value) -> bool:
     if isinstance(value, bool):
         return value
-    text = _field_text(value).lower()
-    return text not in {"", "false", "0", "否", "停用", "disabled", "no"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = _field_text(value).strip().lower()
+    return text in {"1", "true", "yes", "on", "是", "启用", "开启", "勾选", "checked", "enable", "enabled"}
 
 
 def _field_int(value) -> Optional[int]:

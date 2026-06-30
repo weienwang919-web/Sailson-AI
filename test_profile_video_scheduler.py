@@ -4,6 +4,18 @@ import unittest
 from unittest.mock import patch
 
 fake_tasks = types.ModuleType("tasks")
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or isinstance(value, bool):
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+fake_tasks._safe_int = _safe_int
 fake_tasks.APIFY_TOKEN = "token"
 sys.modules.setdefault("tasks", fake_tasks)
 
@@ -192,6 +204,34 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertEqual(rows[0]["recent_days"], 3)
         self.assertEqual(rows[0]["max_videos"], 20)
         self.assertEqual(rows[0]["creator_key"], "TT:@demo")
+
+    def test_feishu_enabled_field_requires_explicit_truthy_value(self):
+        false_values = [None, "", False, 0, "false", "0", "否", "停用", "unchecked", "随机文本"]
+        true_values = [True, 1, "true", "yes", "on", "是", "启用", "开启", "checked", "enabled"]
+
+        for value in false_values:
+            self.assertFalse(profile_video_scheduler._field_bool(value), value)
+        for value in true_values:
+            self.assertTrue(profile_video_scheduler._field_bool(value), value)
+
+    def test_stop_pending_profile_video_tasks_marks_only_profile_video_tasks_failed(self):
+        calls = []
+
+        def fake_execute(sql, params=None):
+            calls.append((sql, params))
+            if "status IN ('pending', 'claimed')" in sql:
+                return 2
+            if "status = 'processing'" in sql:
+                return 1
+            return 0
+
+        with patch.object(profile_video_scheduler.db, "execute", side_effect=fake_execute):
+            result = profile_video_scheduler.stop_pending_profile_video_tasks("stop now")
+
+        self.assertEqual(result, {"stopped_pending": 2, "stop_requested_running": 1})
+        self.assertEqual(len(calls), 2)
+        self.assertIn("profile_video_sync", calls[0][0])
+        self.assertIn("feishu_profile_video_sync", calls[1][0])
 
     def test_feishu_profile_sync_disabled_does_not_enqueue(self):
         with patch.dict(profile_video_scheduler.os.environ, {"FEISHU_PROFILE_VIDEO_SYNC_ENABLED": "false"}, clear=False):

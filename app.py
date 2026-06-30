@@ -8416,6 +8416,32 @@ def feishu_profile_video_config_status():
     })
 
 
+@app.route('/api/etl/feishu-profile-video/stop_all', methods=['POST'])
+@admin_required
+def feishu_profile_video_stop_all():
+    """Hard-stop queued/running homepage video automation tasks without calling Apify."""
+    reason = ''
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        reason = str(data.get('reason') or '').strip()
+    if not reason:
+        reason = '主页视频同步已手动停止，请重新启用后再执行'
+    try:
+        result = profile_video_scheduler.stop_pending_profile_video_tasks(reason)
+        result.update({
+            'status': 'success',
+            'message': reason,
+            'env': {
+                'PROFILE_VIDEO_SYNC_ENABLED': os.environ.get('PROFILE_VIDEO_SYNC_ENABLED', 'false'),
+                'FEISHU_PROFILE_VIDEO_SYNC_ENABLED': os.environ.get('FEISHU_PROFILE_VIDEO_SYNC_ENABLED', 'false'),
+            },
+        })
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"停止主页视频同步任务失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)[:500]}), 500
+
+
 @app.route('/api/etl/feishu-profile-video/sync_start', methods=['POST'])
 @login_required
 def feishu_profile_video_sync_start():
