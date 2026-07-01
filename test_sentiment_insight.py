@@ -139,6 +139,26 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(len(starts), 2)
         self.assertEqual(result["items"], [{"commentId": "c1", "commentText": "real comment"}])
 
+    def test_facebook_actor_uses_original_share_url_with_results_limit_first(self):
+        starts = []
+
+        def fake_start(_actor_id, run_input, _token):
+            starts.append(run_input)
+            return {"id": "run-1"}
+
+        with patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
+             patch("sentiment_insight._fetch_dataset", return_value=[{"commentId": "c1", "commentText": "real comment"}]):
+            sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        self.assertEqual(starts[0], {
+            "startUrls": [{"url": "https://www.facebook.com/share/p/abc/"}],
+            "resultsLimit": 500,
+            "includeNestedComments": True,
+            "viewOption": "RANKED_UNFILTERED",
+        })
+
     def test_pipeline_passes_comment_limit_to_scraper(self):
         original_scraper = sentiment_insight.PLATFORM_SCRAPERS["TT"]
         seen_limits = []

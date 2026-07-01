@@ -26,7 +26,7 @@ import os
 import re
 import time
 from typing import Callable, Iterable
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from openpyxl import Workbook
@@ -272,6 +272,19 @@ def _call_actor(
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
 
 
+def _dedupe_actor_inputs(candidate_inputs: list[dict]) -> list[dict]:
+    """Keep candidate ordering stable while removing exact duplicate payloads."""
+    seen: set[str] = set()
+    result: list[dict] = []
+    for item in candidate_inputs:
+        key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
 def _facebook_url_needs_resolution(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -300,30 +313,59 @@ def _clean_resolved_facebook_url(url: str) -> str:
     return url
 
 
+def _facebook_redirect_location(current_url: str, location: str) -> str:
+    if not location:
+        return ""
+    next_url = urljoin(current_url, location.strip())
+    try:
+        parsed = urlparse(next_url)
+    except Exception:
+        return next_url
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() in {"u", "url", "next", "target", "href"} and value.startswith(("http://", "https://")):
+            return value
+    return next_url
+
+
 def _resolve_facebook_url(url: str) -> str:
     """Expand FB share/fb.watch URLs before sending them to Apify actors."""
     if not _facebook_url_needs_resolution(url):
         return url
     headers = {"Accept": "*/*"}
-    try:
-        resp = requests.head(url, headers=headers, allow_redirects=False, timeout=15)
-        redirect_url = resp.headers.get("location") or ""
-        if redirect_url:
+
+    def _follow_once(method: str) -> str:
+        current = url
+        seen = {url}
+        for _ in range(4):
+            resp = None
+            try:
+                if method == "HEAD":
+                    resp = requests.head(current, headers=headers, allow_redirects=False, timeout=15)
+                else:
+                    resp = requests.get(current, headers=headers, allow_redirects=False, timeout=15, stream=True)
+                redirect_url = _facebook_redirect_location(current, resp.headers.get("location") or "")
+            except requests.RequestException as e:
+                logger.warning(f"⚠️ FB share URL {method} 展开失败: {e}")
+                return ""
+            finally:
+                if resp is not None and method != "HEAD":
+                    resp.close()
+            if not redirect_url:
+                return ""
             resolved = _clean_resolved_facebook_url(redirect_url)
+            if resolved in seen:
+                return resolved
+            seen.add(resolved)
+            if not _facebook_url_needs_resolution(resolved):
+                return resolved
+            current = resolved
+        return _clean_resolved_facebook_url(current)
+
+    for method in ("HEAD", "GET"):
+        resolved = _follow_once(method)
+        if resolved and resolved != url:
             logger.info(f"🔁 FB share URL 已展开: {url} -> {resolved}")
             return resolved
-    except requests.RequestException as e:
-        logger.warning(f"⚠️ FB share URL HEAD 展开失败: {e}")
-    try:
-        resp = requests.get(url, headers=headers, allow_redirects=False, timeout=15, stream=True)
-        redirect_url = resp.headers.get("location") or ""
-        resp.close()
-        if redirect_url:
-            resolved = _clean_resolved_facebook_url(redirect_url)
-            logger.info(f"🔁 FB share URL 已展开: {url} -> {resolved}")
-            return resolved
-    except requests.RequestException as e:
-        logger.warning(f"⚠️ FB share URL GET 展开失败: {e}")
     return url
 
 
@@ -742,26 +784,44 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
     actor = DEFAULT_ACTORS["FB"]
     limit = normalize_comments_per_post_limit(comments_per_post_limit)
     scrape_url = _resolve_facebook_url(url)
-    candidates = [
-        {
-            "startUrls": [{"url": scrape_url}],
-            "maxComments": limit,
-            "language": "en",
-        },
-        {
-            "startUrls": [{"url": scrape_url}],
+    urls_to_try = [url]
+    if scrape_url and scrape_url != url:
+        urls_to_try.append(scrape_url)
+
+    candidates: list[dict] = []
+    for candidate_url in urls_to_try:
+        candidates.append({
+            "startUrls": [{"url": candidate_url}],
             "resultsLimit": limit,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
-        },
-        {
-            "startUrls": [{"url": scrape_url}],
+        })
+    for candidate_url in urls_to_try:
+        candidates.append({
+            "startUrls": [{"url": candidate_url}],
+            "resultsLimit": limit,
+            "includeNestedComments": False,
+            "viewOption": "RANKED_UNFILTERED",
+        })
+    for candidate_url in urls_to_try:
+        candidates.append({
+            "startUrls": [{"url": candidate_url}],
             "maxComments": limit,
             "maxPostCount": 1,
             "maxCommentsPerPost": limit,
+            "resultsLimit": limit,
+            "includeNestedComments": True,
             "scrapeCommentReplies": False,
-        },
-    ]
+            "viewOption": "RANKED_UNFILTERED",
+        })
+    for candidate_url in urls_to_try:
+        candidates.append({
+            "startUrls": [{"url": candidate_url}],
+            "maxComments": limit,
+            "resultsLimit": limit,
+            "language": "en",
+        })
+    candidates = _dedupe_actor_inputs(candidates)
     items = _call_actor(
         actor,
         candidates,
