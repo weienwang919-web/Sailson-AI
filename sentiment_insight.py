@@ -211,7 +211,8 @@ def _start_actor(actor_id: str, run_input: dict, apify_token: str) -> dict:
     headers = {"Authorization": f"Bearer {apify_token}", "Content-Type": "application/json"}
     resp = requests.post(api_url, json=run_input, headers=headers, timeout=30)
     if resp.status_code != 201:
-        raise RuntimeError(f"启动 {actor_id} 失败 status={resp.status_code} body={resp.text[:200]}")
+        body = _brief_raw_value(resp.text, 180)
+        raise RuntimeError(f"启动 {actor_id} 失败 status={resp.status_code} body={body}")
     return resp.json().get("data", {})
 
 
@@ -1258,21 +1259,6 @@ def _facebook_cookie_fallback_input(url: str, limit: int, cookies: list[dict]) -
     }
 
 
-def _facebook_cookie_fallback_inputs(urls: Iterable[str], limit: int, cookies: list[dict]) -> list[dict]:
-    fallback_limit = 0 if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
-    inputs: list[dict] = []
-    for url in _dedupe_urls(urls):
-        base = {
-            "maxCommentsPerUrl": fallback_limit,
-            "fetchReplies": True,
-            "commentsIntentToken": FB_COOKIE_FALLBACK_SORT,
-            "customCookies": cookies,
-        }
-        inputs.append({"urls": [{"url": url}], **base})
-        inputs.append({"urls": [url], **base})
-    return _dedupe_actor_inputs(inputs)
-
-
 def _scrape_facebook_with_cookie_fallback(
     original_url: str,
     url: str,
@@ -1287,12 +1273,11 @@ def _scrape_facebook_with_cookie_fallback(
         return primary_items, primary_meta, primary_error
 
     fallback_actor = FB_COOKIE_FALLBACK_ACTOR_ID
-    fallback_inputs = _facebook_cookie_fallback_inputs([original_url, url], limit, cookies)
-    fallback_input = fallback_inputs[0] if fallback_inputs else {}
+    fallback_input = _facebook_cookie_fallback_input(url, limit, cookies)
     try:
         fallback_items, fallback_meta = _call_actor_with_meta(
             fallback_actor,
-            fallback_inputs,
+            [fallback_input],
             apify_token,
             accept_items=lambda rows: _items_have_comments(rows, "FB", url),
         )

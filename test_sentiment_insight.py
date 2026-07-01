@@ -259,7 +259,7 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["comment"]["text"], "fallback comment")
         self.assertEqual(result["error"], "")
 
-    def test_facebook_cookie_fallback_tries_share_url_string_variant(self):
+    def test_facebook_cookie_fallback_uses_resolved_post_url(self):
         starts = []
 
         def fake_start(actor_id, run_input, _token):
@@ -270,12 +270,10 @@ class SentimentInsightTests(unittest.TestCase):
             actor_id, run_input = starts[-1]
             if actor_id != sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID:
                 return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
-            if run_input["urls"] == [{"url": "https://www.facebook.com/share/p/abc/"}]:
-                return []
-            if run_input["urls"] == ["https://www.facebook.com/share/p/abc/"]:
+            if run_input["urls"] == [{"url": "https://www.facebook.com/page/posts/pfbid1"}]:
                 return [
                     {
-                        "source": {"url": "https://www.facebook.com/share/p/abc/"},
+                        "source": {"url": "https://www.facebook.com/page/posts/pfbid1"},
                         "comment": {"id": "c1", "text": "fallback comment", "author": {"name": "player"}},
                     }
                 ]
@@ -291,8 +289,7 @@ class SentimentInsightTests(unittest.TestCase):
              patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
-        self.assertEqual(starts[2][1]["urls"], [{"url": "https://www.facebook.com/share/p/abc/"}])
-        self.assertEqual(starts[3][1]["urls"], ["https://www.facebook.com/share/p/abc/"])
+        self.assertEqual(starts[2][1]["urls"], [{"url": "https://www.facebook.com/page/posts/pfbid1"}])
         self.assertEqual(result["items"][0]["comment"]["text"], "fallback comment")
         self.assertEqual(result["error"], "")
 
@@ -319,7 +316,7 @@ class SentimentInsightTests(unittest.TestCase):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         self.assertTrue(result["actor_meta"]["used_fallback"])
-        self.assertEqual(result["actor_meta"]["run_id"], "run-6")
+        self.assertEqual(result["actor_meta"]["run_id"], "run-3")
         self.assertEqual(result["actor_meta"]["dataset_id"], "dataset-empty")
         self.assertIn("dataset 为空", result["error"])
         self.assertNotIn("所有候选 input 均失败: None", result["error"])
