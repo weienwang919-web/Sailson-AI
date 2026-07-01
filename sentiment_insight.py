@@ -74,6 +74,11 @@ FB_COOKIE_FALLBACK_SORT = os.environ.get(
     "FB_COOKIE_FALLBACK_SORT",
     "RANKED_UNFILTERED_CHRONOLOGICAL_REPLIES_INTENT_V1",
 )
+FB_PUBLIC_FALLBACK_ACTOR_ID = os.environ.get(
+    "APIFY_FB_PUBLIC_FALLBACK_ACTOR_ID",
+    "crawlerbros/facebook-comments-scraper",
+)
+FB_PUBLIC_FALLBACK_MODE = os.environ.get("FB_PUBLIC_FALLBACK_MODE", "ALL")
 
 # 单个 actor 最长等待时间（秒）
 ACTOR_TIMEOUT_SECS = int(os.environ.get("INSIGHT_ACTOR_TIMEOUT_SECS", "420"))
@@ -1259,6 +1264,62 @@ def _facebook_cookie_fallback_input(url: str, limit: int, cookies: list[dict]) -
     }
 
 
+def _facebook_public_fallback_input(urls: Iterable[str], limit: int) -> dict:
+    fallback_limit = UNLIMITED_COMMENTS_PER_POST_LIMIT if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
+    return {
+        "startUrls": [{"url": candidate_url} for candidate_url in _dedupe_urls(urls)],
+        "maxItems": fallback_limit,
+        "commentsMode": FB_PUBLIC_FALLBACK_MODE,
+        "includeNestedComments": True,
+        "maxConcurrency": 2,
+        "minConcurrency": 1,
+        "maxRequestRetries": 3,
+        "proxy": {
+            "useApifyProxy": True,
+            "apifyProxyGroups": ["RESIDENTIAL"],
+        },
+    }
+
+
+def _scrape_facebook_with_public_fallback(
+    original_url: str,
+    url: str,
+    apify_token: str,
+    limit: int,
+    primary_items: list[dict],
+    primary_meta: dict,
+    primary_error: str,
+) -> tuple[list[dict], dict, str]:
+    fallback_actor = (FB_PUBLIC_FALLBACK_ACTOR_ID or "").strip()
+    if not fallback_actor:
+        return primary_items, primary_meta, primary_error
+
+    fallback_input = _facebook_public_fallback_input([original_url, url], limit)
+    try:
+        fallback_items, fallback_meta = _call_actor_with_meta(
+            fallback_actor,
+            [fallback_input],
+            apify_token,
+            accept_items=lambda rows: _items_have_comments(rows, "FB", url),
+        )
+    except Exception as e:
+        safe_error = _redact_sensitive_text(str(e), fallback_input)
+        fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
+        merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
+        detail = f"{primary_error}; public fallback 失败: {safe_error}" if primary_error else f"public fallback 失败: {safe_error}"
+        return primary_items, merged_meta, detail[:300]
+
+    fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
+    merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
+    if _items_have_comments(fallback_items, "FB", url):
+        logger.info(f"✅ FB public fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
+        return fallback_items, merged_meta, ""
+
+    fallback_detail = fallback_error or fallback_meta.get("error") or f"返回 {len(fallback_items or [])} 条/0 条评论"
+    detail_parts = [part for part in (primary_error, f"public fallback: {fallback_detail}" if fallback_detail else "") if part]
+    return primary_items, merged_meta, "; ".join(detail_parts)[:300]
+
+
 def _scrape_facebook_with_cookie_fallback(
     original_url: str,
     url: str,
@@ -1326,6 +1387,16 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
         error = f"primary actor 失败: {meta['error']}"
     if not _items_have_comments(items, "FB", scrape_url):
         items, meta, error = _scrape_facebook_with_cookie_fallback(
+            url,
+            scrape_url,
+            apify_token,
+            limit,
+            items,
+            meta,
+            error,
+        )
+    if not _items_have_comments(items, "FB", scrape_url):
+        items, meta, error = _scrape_facebook_with_public_fallback(
             url,
             scrape_url,
             apify_token,
