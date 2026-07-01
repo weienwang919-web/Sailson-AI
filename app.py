@@ -1077,11 +1077,23 @@ def _format_insight_scrape_failure(summary):
         comment_count = item.get('comment_count', 0)
         error = (item.get('error') or '').strip()
         url = (item.get('url') or '').strip()
+        resolved_url = (item.get('resolved_url') or '').strip()
+        actor_run_id = (item.get('actor_run_id') or '').strip()
+        actor_dataset_id = (item.get('actor_dataset_id') or '').strip()
         short_url = url[:80] + ('...' if len(url) > 80 else '')
+        extras = []
+        if resolved_url and resolved_url != url:
+            short_resolved = resolved_url[:80] + ('...' if len(resolved_url) > 80 else '')
+            extras.append(f"解析后: {short_resolved}")
+        if actor_run_id:
+            extras.append(f"run: {actor_run_id}")
+        if actor_dataset_id:
+            extras.append(f"dataset: {actor_dataset_id}")
+        extra_text = f"，{'，'.join(extras)}" if extras else ""
         if error:
-            parts.append(f"{platform} 返回 {item_count} 条原始数据/{comment_count} 条评论，错误: {error}，链接: {short_url}")
+            parts.append(f"{platform} 返回 {item_count} 条原始数据/{comment_count} 条评论，错误: {error}，链接: {short_url}{extra_text}")
         else:
-            parts.append(f"{platform} 返回 {item_count} 条原始数据/{comment_count} 条评论，链接: {short_url}")
+            parts.append(f"{platform} 返回 {item_count} 条原始数据/{comment_count} 条评论，链接: {short_url}{extra_text}")
     if len(summary) > 5:
         parts.append(f"另有 {len(summary) - 5} 条链接未展示")
     return "；".join(parts)[:1000]

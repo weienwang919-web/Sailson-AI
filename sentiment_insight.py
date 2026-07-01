@@ -241,9 +241,23 @@ def _call_actor(
     accept_items: Callable[[list[dict]], bool] | None = None,
 ) -> list[dict]:
     """依次尝试多个 input schema 直到一个成功返回可接受的数据。"""
+    return _call_actor_with_meta(actor_id, candidate_inputs, apify_token, accept_items)[0]
+
+
+def _call_actor_with_meta(
+    actor_id: str,
+    candidate_inputs: list[dict],
+    apify_token: str,
+    accept_items: Callable[[list[dict]], bool] | None = None,
+) -> tuple[list[dict], dict]:
+    """Call an actor and preserve run/dataset metadata for diagnostics."""
     last_err = None
     last_items: list[dict] = []
+    last_meta: dict = {}
+    attempts: list[dict] = []
     for run_input in candidate_inputs:
+        run_id = ""
+        dataset_id = ""
         try:
             run = _start_actor(actor_id, run_input, apify_token)
             run_id = run.get("id")
@@ -257,18 +271,40 @@ def _call_actor(
                 raise RuntimeError("run 缺少 defaultDatasetId")
             items = _fetch_dataset(dataset_id, apify_token)
             last_items = items
+            last_meta = {
+                "actor_id": actor_id,
+                "run_id": run_id,
+                "dataset_id": dataset_id,
+                "status": final.get("status"),
+                "started_at": final.get("startedAt") or run.get("startedAt"),
+                "finished_at": final.get("finishedAt"),
+                "input": run_input,
+            }
             if accept_items and not accept_items(items):
+                attempts.append({**last_meta, "item_count": len(items), "accepted": False})
                 logger.warning(
-                    f"⚠️ actor {actor_id} 返回 {len(items)} 条但未通过校验，继续尝试下一个 input"
+                    f"⚠️ actor {actor_id} run={run_id} dataset={dataset_id} "
+                    f"返回 {len(items)} 条但未通过校验，继续尝试下一个 input"
                 )
                 continue
-            return items
+            attempts.append({**last_meta, "item_count": len(items), "accepted": True})
+            return items, {**last_meta, "attempts": attempts}
         except Exception as e:
             last_err = e
-            logger.warning(f"⚠️ actor {actor_id} 调用失败（input={list(run_input.keys())}）: {e}")
+            last_meta = {
+                "actor_id": actor_id,
+                "run_id": run_id,
+                "dataset_id": dataset_id,
+                "input": run_input,
+                "error": str(e),
+            }
+            attempts.append({**last_meta, "item_count": 0, "accepted": False})
+            logger.warning(
+                f"⚠️ actor {actor_id} 调用失败（run={run_id or '-'}, input={list(run_input.keys())}）: {e}"
+            )
             continue
     if last_items:
-        return last_items
+        return last_items, {**last_meta, "attempts": attempts}
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
 
 
@@ -490,6 +526,75 @@ def _first_url(item: dict, keys: Iterable[str]) -> str:
     return ""
 
 
+_COMMENT_MEDIA_HINTS = (
+    "attachment",
+    "attachments",
+    "image",
+    "photo",
+    "picture",
+    "media",
+    "thumbnail",
+)
+_COMMENT_PROFILE_MEDIA_HINTS = ("avatar", "profile", "author", "owner", "user")
+
+
+def _extract_comment_media_url(item: dict) -> str:
+    """Best-effort image/attachment URL extraction for media-only comments."""
+    explicit = _first_url(
+        item,
+        [
+            "imageUrl",
+            "imageURL",
+            "image.url",
+            "image.uri",
+            "photoUrl",
+            "photoURL",
+            "photo.url",
+            "picture",
+            "picture.url",
+            "mediaUrl",
+            "mediaURL",
+            "media.url",
+            "attachmentUrl",
+            "attachmentURL",
+            "attachment.url",
+            "attachment.media.image.uri",
+            "attachment.media.image.url",
+            "attachments.media.image.uri",
+            "attachments.media.image.url",
+            "thumbnailUrl",
+            "thumbnailURL",
+        ],
+    )
+    if explicit:
+        return explicit
+
+    def _walk(value, in_media_context: bool = False) -> str:
+        if isinstance(value, list):
+            for entry in value:
+                found = _walk(entry, in_media_context)
+                if found:
+                    return found
+            return ""
+        if not isinstance(value, dict):
+            return ""
+
+        for key, nested in value.items():
+            key_lower = str(key).lower()
+            has_media_hint = any(hint in key_lower for hint in _COMMENT_MEDIA_HINTS)
+            is_profile_media = any(hint in key_lower for hint in _COMMENT_PROFILE_MEDIA_HINTS)
+            next_media_context = in_media_context or (has_media_hint and not is_profile_media)
+
+            if _is_http_url(nested) and next_media_context:
+                return nested.strip()
+            found = _walk(nested, next_media_context)
+            if found:
+                return found
+        return ""
+
+    return _walk(item)
+
+
 def _is_probable_post_url(url: str, platform: str) -> bool:
     if not _is_http_url(url):
         return False
@@ -579,6 +684,40 @@ def _extract_comment_like_count(item: dict) -> int:
             "feedback.reaction_count.count",
             "feedback.reactionCount",
         ],
+    )
+
+
+def _has_comment_identity(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if _first_value_as_str(
+        item,
+        [
+            "commentId",
+            "comment_id",
+            "commentPk",
+            "replyId",
+            "comment.id",
+            "comment.commentId",
+            "commentUrl",
+            "commentURL",
+            "comment_url",
+            "commentLink",
+            "comment_link",
+        ],
+    ):
+        return True
+    return bool(
+        _first_str(
+            item,
+            [
+                "profileName",
+                "authorName",
+                "author.name",
+                "from.name",
+                "user.name",
+            ],
+        )
     )
 
 
@@ -738,8 +877,13 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
         return None
 
     text = _first_str(item, ["text", "fullText", "full_text", "content", "comment", "message", "commentText"])
+    media_url = _extract_comment_media_url(item)
     if not text:
-        return None
+        if not media_url or not _has_comment_identity(item):
+            return None
+        text = f"（图片评论）{media_url}"
+    elif media_url and media_url not in text:
+        text = f"{text}\n（图片）{media_url}"
 
     author = _first_str(
         item,
@@ -812,6 +956,82 @@ _COMMENT_CONTEXT_KEYS = (
     "facebookId",
     "pageAdLibrary",
 )
+
+_RAW_ERROR_KEYS = (
+    "error",
+    "errorMessage",
+    "error_message",
+    "failedReason",
+    "failReason",
+    "reason",
+    "message",
+    "statusMessage",
+    "debugMessage",
+    "requestErrorMessages",
+    "errors",
+)
+
+
+def _brief_raw_value(value, limit: int = 180) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _extract_raw_item_error(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in _RAW_ERROR_KEYS:
+        value = _deep_get(item, key)
+        brief = _brief_raw_value(value)
+        if brief:
+            return brief
+
+    for key, value in item.items():
+        key_lower = str(key).lower()
+        if any(marker in key_lower for marker in ("error", "fail", "reason")):
+            brief = _brief_raw_value(value)
+            if brief:
+                return brief
+    return ""
+
+
+def _summarize_non_comment_items(items: list[dict], platform: str, post_url: str = "") -> str:
+    if not isinstance(items, list) or not items:
+        return ""
+    if _flatten_comment_items(items, platform, post_url):
+        return ""
+
+    details: list[str] = []
+    for idx, item in enumerate(items[:3], 1):
+        if not isinstance(item, dict):
+            continue
+        parts: list[str] = []
+        item_url = _first_url(item, ["inputUrl", "sourceUrl", "url", "facebookUrl", "postUrl", "post.url"])
+        if item_url:
+            short_url = item_url[:90] + ("..." if len(item_url) > 90 else "")
+            parts.append(f"第{idx}条URL={short_url}")
+        raw_error = _extract_raw_item_error(item)
+        if raw_error:
+            parts.append(f"错误={raw_error}")
+        else:
+            keys = ", ".join(list(item.keys())[:12])
+            if keys:
+                parts.append(f"字段={keys}")
+        if parts:
+            details.append("，".join(parts))
+
+    if not details:
+        return "actor 原始返回未包含可识别评论字段"
+    return "actor 原始返回未包含可识别评论字段；" + "；".join(details)
 
 
 def _with_comment_parent_context(parent: dict, child: dict) -> dict:
@@ -888,22 +1108,30 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
     actor = DEFAULT_ACTORS["FB"]
     limit = normalize_comments_per_post_limit(comments_per_post_limit)
     scrape_url = _resolve_facebook_url(url)
-    start_urls = [{"url": candidate_url} for candidate_url in _dedupe_urls([url, scrape_url])]
     candidates = [
         {
-            "startUrls": start_urls,
+            "startUrls": [{"url": candidate_url}],
             "resultsLimit": limit,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
         }
+        for candidate_url in _dedupe_urls([url, scrape_url])
     ]
-    items = _call_actor(
+    items, meta = _call_actor_with_meta(
         actor,
         candidates,
         apify_token,
         accept_items=lambda rows: _items_have_comments(rows, "FB", scrape_url),
     )
-    return {"items": items, "platform": "FB", "url": url, "resolved_url": scrape_url}
+    error = _summarize_non_comment_items(items, "FB", scrape_url)
+    return {
+        "items": items,
+        "platform": "FB",
+        "url": url,
+        "resolved_url": scrape_url,
+        "actor_meta": meta,
+        "error": error,
+    }
 
 
 def _scrape_instagram(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
@@ -1229,13 +1457,25 @@ def _run_ai_for_comments(
 
 def _scrape_summary_item(idx: int, payload: dict) -> dict:
     items = payload.get("items") or []
+    platform = payload.get("platform") or "UNKNOWN"
+    url = payload.get("url") or ""
+    comment_count = 0
+    if isinstance(items, list):
+        comment_count = len(_flatten_comment_items(items, platform, url))
+    actor_meta = payload.get("actor_meta") if isinstance(payload.get("actor_meta"), dict) else {}
+    error = str(payload.get("error") or "")[:300]
+    if not error and isinstance(items, list) and items and comment_count == 0:
+        error = _summarize_non_comment_items(items, platform, url)[:300]
     return {
         "source_index": idx,
-        "platform": payload.get("platform") or "UNKNOWN",
-        "url": payload.get("url") or "",
+        "platform": platform,
+        "url": url,
+        "resolved_url": payload.get("resolved_url") or "",
         "item_count": len(items) if isinstance(items, list) else 0,
-        "comment_count": 0,
-        "error": str(payload.get("error") or "")[:300],
+        "comment_count": comment_count,
+        "error": error,
+        "actor_run_id": actor_meta.get("run_id") or "",
+        "actor_dataset_id": actor_meta.get("dataset_id") or "",
     }
 
 
@@ -1310,7 +1550,6 @@ def run_insight_pipeline(
             c = _extract_comment(it, platform, row_post_url)
             if not c:
                 continue
-            scrape_summary[payload_index]["comment_count"] += 1
             analysis_id = f"C{len(all_comments_for_ai)}"
             all_comments_for_ai.append(
                 {

@@ -131,28 +131,73 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(len(starts), 1)
         self.assertEqual(result["items"], [{"commentId": "c1", "commentText": "real comment"}])
 
-    def test_facebook_actor_uses_original_share_url_with_results_limit_first(self):
+    def test_facebook_actor_tries_original_share_url_before_resolved_url(self):
         starts = []
 
         def fake_start(_actor_id, run_input, _token):
             starts.append(run_input)
-            return {"id": "run-1"}
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_fetch(_dataset_id, _token):
+            if len(starts) == 1:
+                return [{"inputUrl": "https://www.facebook.com/share/p/abc/", "error": "Could not extract feedback ID"}]
+            return [{"commentId": "c1", "commentText": "real comment"}]
 
         with patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
              patch("sentiment_insight._start_actor", side_effect=fake_start), \
              patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
-             patch("sentiment_insight._fetch_dataset", return_value=[{"commentId": "c1", "commentText": "real comment"}]):
-            sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
+        self.assertEqual(len(starts), 2)
         self.assertEqual(starts[0], {
-            "startUrls": [
-                {"url": "https://www.facebook.com/share/p/abc/"},
-                {"url": "https://www.facebook.com/page/posts/pfbid1"},
-            ],
+            "startUrls": [{"url": "https://www.facebook.com/share/p/abc/"}],
             "resultsLimit": 500,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
         })
+        self.assertEqual(starts[1]["startUrls"], [{"url": "https://www.facebook.com/page/posts/pfbid1"}])
+        self.assertEqual(result["items"], [{"commentId": "c1", "commentText": "real comment"}])
+        self.assertEqual(result["actor_meta"]["run_id"], "run-2")
+        self.assertEqual(result["actor_meta"]["attempts"][0]["accepted"], False)
+
+    def test_scrape_summary_includes_actor_diagnostics_for_empty_facebook_items(self):
+        payload = {
+            "platform": "FB",
+            "url": "https://www.facebook.com/share/p/abc/",
+            "resolved_url": "https://www.facebook.com/page/posts/pfbid1",
+            "items": [
+                {
+                    "inputUrl": "https://www.facebook.com/share/p/abc/",
+                    "error": "Could not extract feedback ID",
+                }
+            ],
+            "actor_meta": {
+                "run_id": "run-1",
+                "dataset_id": "dataset-1",
+            },
+        }
+
+        summary = sentiment_insight._scrape_summary_item(1, payload)
+
+        self.assertEqual(summary["item_count"], 1)
+        self.assertEqual(summary["comment_count"], 0)
+        self.assertEqual(summary["actor_run_id"], "run-1")
+        self.assertEqual(summary["actor_dataset_id"], "dataset-1")
+        self.assertIn("Could not extract feedback ID", summary["error"])
+
+    def test_extract_comment_keeps_media_only_comment(self):
+        item = {
+            "commentId": "img1",
+            "profileName": "player",
+            "attachment": {"media": {"image": {"uri": "https://cdn.example.com/comment.jpg"}}},
+        }
+
+        comment = sentiment_insight._extract_comment(item, "FB", "https://www.facebook.com/page/posts/pfbid1")
+
+        self.assertEqual(comment["comment_id"], "FB:img1")
+        self.assertIn("图片评论", comment["text"])
+        self.assertIn("https://cdn.example.com/comment.jpg", comment["text"])
 
     def test_pipeline_flattens_nested_facebook_comments_from_single_post_item(self):
         original_scraper = sentiment_insight.PLATFORM_SCRAPERS["FB"]
