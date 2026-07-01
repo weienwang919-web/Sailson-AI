@@ -145,7 +145,10 @@ class SentimentInsightTests(unittest.TestCase):
             sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         self.assertEqual(starts[0], {
-            "startUrls": [{"url": "https://www.facebook.com/share/p/abc/"}],
+            "startUrls": [
+                {"url": "https://www.facebook.com/share/p/abc/"},
+                {"url": "https://www.facebook.com/page/posts/pfbid1"},
+            ],
             "resultsLimit": 500,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",

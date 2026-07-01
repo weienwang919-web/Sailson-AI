@@ -285,6 +285,18 @@ def _dedupe_actor_inputs(candidate_inputs: list[dict]) -> list[dict]:
     return result
 
 
+def _dedupe_urls(urls: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for url in urls:
+        cleaned = str(url or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
 def _facebook_url_needs_resolution(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -876,9 +888,10 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
     actor = DEFAULT_ACTORS["FB"]
     limit = normalize_comments_per_post_limit(comments_per_post_limit)
     scrape_url = _resolve_facebook_url(url)
+    start_urls = [{"url": candidate_url} for candidate_url in _dedupe_urls([url, scrape_url])]
     candidates = [
         {
-            "startUrls": [{"url": url}],
+            "startUrls": start_urls,
             "resultsLimit": limit,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
