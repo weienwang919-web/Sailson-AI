@@ -623,11 +623,19 @@ def validate_feishu_video_table_config() -> tuple[bool, list[str]]:
     return (not missing, missing)
 
 
+def profile_video_sync_hard_disabled() -> bool:
+    return os.environ.get("PROFILE_VIDEO_SYNC_HARD_DISABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def profile_video_sync_enabled() -> bool:
+    if profile_video_sync_hard_disabled():
+        return False
     return os.environ.get("PROFILE_VIDEO_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def feishu_profile_video_sync_enabled() -> bool:
+    if profile_video_sync_hard_disabled():
+        return False
     return os.environ.get("FEISHU_PROFILE_VIDEO_SYNC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 

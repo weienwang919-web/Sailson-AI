@@ -116,9 +116,11 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
             }
         ]
 
-        with patch.dict(profile_video_scheduler.os.environ, {"PROFILE_VIDEO_SYNC_ENABLED": "true"}, clear=False), patch.object(
-            profile_video_scheduler, "_load_task_configs", return_value=[]
-        ), patch.object(
+        with patch.dict(
+            profile_video_scheduler.os.environ,
+            {"PROFILE_VIDEO_SYNC_ENABLED": "true", "PROFILE_VIDEO_SYNC_HARD_DISABLED": "false"},
+            clear=False,
+        ), patch.object(profile_video_scheduler, "_load_task_configs", return_value=[]), patch.object(
             profile_video_scheduler, "_configs_missing_feishu_target", return_value=[]
         ), patch.object(profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics", return_value=rows), patch.object(
             profile_video_scheduler, "sync_rows_to_feishu", return_value={"created": 1, "updated": 0}
@@ -145,15 +147,32 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
 
         self.assertEqual(updates[-1]["status"], "completed")
 
+    def test_profile_video_sync_hard_disabled_blocks_even_when_enabled(self):
+        updates = []
+
+        def update_task(_task_id, **kwargs):
+            updates.append(kwargs)
+
+        with patch.dict(profile_video_scheduler.os.environ, {"PROFILE_VIDEO_SYNC_ENABLED": "true"}, clear=False), patch.object(
+            profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics"
+        ) as fetch_metrics:
+            profile_video_scheduler.run_profile_video_sync_task("task-hard-disabled", {}, update_task)
+
+        self.assertEqual(updates[-1]["status"], "failed")
+        self.assertIn("PROFILE_VIDEO_SYNC_ENABLED=true", updates[-1]["error"])
+        fetch_metrics.assert_not_called()
+
     def test_profile_video_sync_disabled_does_not_run(self):
         updates = []
 
         def update_task(_task_id, **kwargs):
             updates.append(kwargs)
 
-        with patch.dict(profile_video_scheduler.os.environ, {"PROFILE_VIDEO_SYNC_ENABLED": "false"}, clear=False), patch.object(
-            profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics"
-        ) as fetch_metrics:
+        with patch.dict(
+            profile_video_scheduler.os.environ,
+            {"PROFILE_VIDEO_SYNC_ENABLED": "false", "PROFILE_VIDEO_SYNC_HARD_DISABLED": "false"},
+            clear=False,
+        ), patch.object(profile_video_scheduler.video_metrics_etl, "fetch_profile_video_metrics") as fetch_metrics:
             profile_video_scheduler.run_profile_video_sync_task("task-disabled", {}, update_task)
 
         self.assertEqual(updates[-1]["status"], "failed")
@@ -234,7 +253,11 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
         self.assertIn("feishu_profile_video_sync", calls[1][0])
 
     def test_feishu_profile_sync_disabled_does_not_enqueue(self):
-        with patch.dict(profile_video_scheduler.os.environ, {"FEISHU_PROFILE_VIDEO_SYNC_ENABLED": "false"}, clear=False):
+        with patch.dict(
+            profile_video_scheduler.os.environ,
+            {"FEISHU_PROFILE_VIDEO_SYNC_ENABLED": "false", "PROFILE_VIDEO_SYNC_HARD_DISABLED": "false"},
+            clear=False,
+        ):
             task_ids = profile_video_scheduler.enqueue_due_feishu_profile_video_sync(
                 lambda *args, **kwargs: None,
                 update_task_params_fn=lambda *args, **kwargs: None,
@@ -258,6 +281,7 @@ class ProfileVideoSchedulerTests(unittest.TestCase):
             profile_video_scheduler.os.environ,
             {
                 "FEISHU_PROFILE_VIDEO_SYNC_ENABLED": "true",
+                "PROFILE_VIDEO_SYNC_HARD_DISABLED": "false",
                 "FEISHU_VIDEO_BASE_TOKEN": "base",
                 "FEISHU_VIDEO_CONFIG_TABLE_ID": "cfg",
                 "FEISHU_VIDEO_LATEST_TABLE_ID": "latest",

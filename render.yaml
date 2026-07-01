@@ -11,6 +11,12 @@ services:
         value: "5000"
       - key: USE_DB_WORKER
         value: "true"
+      - key: PROFILE_VIDEO_SYNC_HARD_DISABLED
+        value: "true"
+      - key: PROFILE_VIDEO_SYNC_ENABLED
+        value: "false"
+      - key: FEISHU_PROFILE_VIDEO_SYNC_ENABLED
+        value: "false"
       - key: ETL_VIDEO_METRICS_PROFILE_FALLBACK_ENABLED
         value: "false"
       - key: KOL_API_BASE_URL
@@ -63,6 +69,12 @@ services:
     envVars:
       - key: USE_DB_WORKER
         value: "true"
+      - key: PROFILE_VIDEO_SYNC_HARD_DISABLED
+        value: "true"
+      - key: PROFILE_VIDEO_SYNC_ENABLED
+        value: "false"
+      - key: FEISHU_PROFILE_VIDEO_SYNC_ENABLED
+        value: "false"
       - key: ETL_VIDEO_METRICS_PROFILE_FALLBACK_ENABLED
         value: "false"
       - key: WORKER_POLL_INTERVAL

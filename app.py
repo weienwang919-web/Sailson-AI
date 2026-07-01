@@ -258,26 +258,36 @@ if not _IS_WORKER:
         replace_existing=True
     )
 
-    # 主页视频基础数据定时同步：每小时检查一次当前小时配置
-    scheduler.add_job(
-        func=run_scheduled_profile_video_sync,
-        trigger='cron',
-        minute=5,
-        id='profile_video_sync_job',
-        replace_existing=True
-    )
+    if profile_video_scheduler.profile_video_sync_hard_disabled():
+        scheduler.start(paused=True)
+        for stale_job_id in ('profile_video_sync_job', 'feishu_profile_video_sync_job'):
+            try:
+                scheduler.remove_job(stale_job_id)
+            except Exception:
+                pass
+        scheduler.resume()
+        logger.warning("⛔ 主页视频定时同步已硬禁用，未注册 profile_video_sync / feishu_profile_video_sync 定时任务")
+    else:
+        # 主页视频基础数据定时同步：每小时检查一次当前小时配置
+        scheduler.add_job(
+            func=run_scheduled_profile_video_sync,
+            trigger='cron',
+            minute=5,
+            id='profile_video_sync_job',
+            replace_existing=True
+        )
 
-    # 飞书四表主页视频自动化：每小时检查一次配置表中的抓取小时
-    scheduler.add_job(
-        func=run_scheduled_feishu_profile_video_sync,
-        trigger='cron',
-        minute=12,
-        id='feishu_profile_video_sync_job',
-        replace_existing=True
-    )
+        # 飞书四表主页视频自动化：每小时检查一次配置表中的抓取小时
+        scheduler.add_job(
+            func=run_scheduled_feishu_profile_video_sync,
+            trigger='cron',
+            minute=12,
+            id='feishu_profile_video_sync_job',
+            replace_existing=True
+        )
 
-    scheduler.start()
-    logger.info("✅ APScheduler 已启动，定时任务已注册")
+        scheduler.start()
+        logger.info("✅ APScheduler 已启动，定时任务已注册")
 else:
     scheduler = None
     logger.info("⏭️ Worker 模式，跳过 APScheduler 初始化")
@@ -1930,6 +1940,8 @@ def _agent_create_video_metrics_task(params):
 
 
 def _agent_create_profile_sync_task(params):
+    if profile_video_scheduler.profile_video_sync_hard_disabled():
+        raise ValueError('主页视频同步已被硬禁用，当前不允许创建主页抓取任务')
     profile_urls = [u for u in (params.get('urls') or []) if agent_service.is_profile_url(u)]
     if not profile_urls:
         raise ValueError('未识别到可同步的达人主页链接')
@@ -8391,6 +8403,8 @@ def profile_video_configs_update(config_id):
 @app.route('/api/etl/profile-video/sync_start', methods=['POST'])
 @login_required
 def profile_video_sync_start():
+    if profile_video_scheduler.profile_video_sync_hard_disabled():
+        return jsonify({'status': 'error', 'message': '主页视频同步已被硬禁用，当前不允许创建主页抓取任务'}), 403
     if not profile_video_scheduler.profile_video_sync_enabled():
         return jsonify({'status': 'error', 'message': '主页视频同步未启用，请先配置 PROFILE_VIDEO_SYNC_ENABLED=true'}), 403
     try:
@@ -8487,6 +8501,8 @@ def feishu_profile_video_stop_all():
 @app.route('/api/etl/feishu-profile-video/sync_start', methods=['POST'])
 @login_required
 def feishu_profile_video_sync_start():
+    if profile_video_scheduler.profile_video_sync_hard_disabled():
+        return jsonify({'status': 'error', 'message': '飞书主页视频同步已被硬禁用，当前不允许创建主页抓取任务'}), 403
     if not profile_video_scheduler.feishu_profile_video_sync_enabled():
         return jsonify({'status': 'error', 'message': '飞书主页视频同步未启用，请先配置 FEISHU_PROFILE_VIDEO_SYNC_ENABLED=true'}), 403
     ok, missing = profile_video_scheduler.validate_feishu_video_table_config()
