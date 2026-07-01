@@ -230,6 +230,7 @@ def _handle_sentiment(task_id, params):
         username=params.get('username', 'unknown'),
         department=params.get('department', '未知'),
         project=params.get('project', 'CFL'),
+        comments_per_post_limit=params.get('comments_per_post_limit'),
     )
 
 

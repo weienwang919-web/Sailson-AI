@@ -15,6 +15,20 @@ class AgentServiceTests(unittest.TestCase):
         self.assertEqual(draft.card["link_count"], 1)
         self.assertEqual(draft.card["platform_counts"]["TT"], 1)
 
+    def test_detects_unlimited_sentiment_comment_limit(self):
+        draft = agent_service.build_draft(
+            "帮我分析这个视频评论舆情，不设上限 https://www.tiktok.com/@game/video/123",
+            qwen_client=None,
+        )
+
+        self.assertEqual(draft.intent, "sentiment_comments")
+        self.assertTrue(draft.params["comment_limit_unlimited"])
+        self.assertEqual(
+            draft.params["comments_per_post_limit"],
+            agent_service.sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT,
+        )
+        self.assertIn("不设上限", draft.card["params_preview"]["单条评论上限"])
+
     def test_detects_video_metrics_task(self):
         draft = agent_service.build_draft(
             "拉一下播放量和基础视频数据 https://vt.tiktok.com/ZSQoKaT60/",

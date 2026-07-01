@@ -998,6 +998,18 @@ def save_history(user_id, title, result, type_tag, structured=None):
         return None
 
 
+def _truthy_form_value(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on', 'unlimited', 'none', 'no_limit', '不设上限', '不限'}
+
+
+def normalize_insight_comment_limit(value=None, unlimited=False):
+    return sentiment_insight.normalize_comments_per_post_limit(value, unlimited=unlimited)
+
+
 def call_veo_api(prompt):
     """调用 Google Veo API（模拟）"""
     logger.info(f"🎬 模拟 Veo API 调用: {prompt[:50]}...")
@@ -1066,7 +1078,8 @@ def _format_insight_scrape_failure(summary):
 
 
 def process_analysis_task(task_id, url=None, file_data=None, session_id='default', user_id=None,
-                          username='unknown', department='未知', project='CFL', urls=None):
+                          username='unknown', department='未知', project='CFL', urls=None,
+                          comments_per_post_limit=None):
     """异步处理分析任务。project 为 CFL/PUBGM/HOK，用于选择提示词。
 
     入参兼容：
@@ -1080,10 +1093,11 @@ def process_analysis_task(task_id, url=None, file_data=None, session_id='default
         urls = [urls]
     if not urls and url:
         urls = [url]
+    comments_per_post_limit = normalize_insight_comment_limit(comments_per_post_limit)
 
     logger.info(f"🔄 后台线程已启动，任务ID: {task_id}，项目: {project}")
     logger.info(f"👤 用户信息: user_id={user_id}, username={username}, department={department}")
-    logger.info(f"📋 任务参数: urls={len(urls)} 条, has_file={file_data is not None}")
+    logger.info(f"📋 任务参数: urls={len(urls)} 条, has_file={file_data is not None}, comments_per_post_limit={comments_per_post_limit}")
 
     # 在线程中创建新的 Apify 客户端（避免线程安全问题）
     thread_apify_client = None
@@ -1151,6 +1165,7 @@ def process_analysis_task(task_id, url=None, file_data=None, session_id='default
                     apify_token=APIFY_TOKEN,
                     ai_call=_ai_call,
                     progress=_progress,
+                    comments_per_post_limit=comments_per_post_limit,
                 )
 
                 all_results = pipeline_result['structured']
@@ -1842,6 +1857,11 @@ def _agent_create_sentiment_task(params):
         'username': username,
         'department': department,
         'project': params.get('project', 'CFL'),
+        'comments_per_post_limit': normalize_insight_comment_limit(
+            params.get('comments_per_post_limit') or params.get('comment_limit'),
+            unlimited=params.get('comment_limit_unlimited'),
+        ),
+        'comment_limit_unlimited': _truthy_form_value(params.get('comment_limit_unlimited')),
     }
     set_task_params(task_id, task_params)
     if not USE_DB_WORKER:
@@ -1855,6 +1875,7 @@ def _agent_create_sentiment_task(params):
                 'username': username,
                 'department': department,
                 'project': params.get('project', 'CFL'),
+                'comments_per_post_limit': task_params['comments_per_post_limit'],
             },
             daemon=True,
         ).start()
@@ -2624,6 +2645,8 @@ def sentiment_tool():
         'analysis.html',
         has_used_sentiment=has_used_sentiment,
         video_metrics_batch_size=video_metrics_etl.BATCH_SIZE,
+        insight_comments_default=sentiment_insight.DEFAULT_COMMENTS_PER_POST_LIMIT,
+        insight_comments_unlimited=sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT,
     )
 
 
@@ -3716,6 +3739,12 @@ def analyze():
     if not urls:
         return jsonify({'error': '请至少提供一个有效链接'}), 400
 
+    comment_limit_unlimited = _truthy_form_value(request.form.get('comment_limit_unlimited'))
+    comments_per_post_limit = normalize_insight_comment_limit(
+        request.form.get('comments_per_post_limit') or request.form.get('comment_limit'),
+        unlimited=comment_limit_unlimited,
+    )
+
     # 标注无法识别平台的链接
     unsupported = [u for u in urls if sentiment_insight.detect_platform(u) == 'UNKNOWN']
     if unsupported:
@@ -3739,6 +3768,8 @@ def analyze():
         'user_id': user_id,
         'username': username,
         'department': department,
+        'comments_per_post_limit': comments_per_post_limit,
+        'comment_limit_unlimited': comment_limit_unlimited,
     }
     try:
         set_task_params(task_id, task_params)
@@ -3755,6 +3786,7 @@ def analyze():
                 'user_id': user_id,
                 'username': username,
                 'department': department,
+                'comments_per_post_limit': comments_per_post_limit,
             }
         )
         thread.start()
@@ -3779,6 +3811,13 @@ def sentiment_precheck_api():
         data = request.get_json(silent=True) or {}
         urls_raw = data.get('urls') or request.form.get('urls') or request.form.get('url') or ''
         urls = sentiment_insight.parse_urls_text(urls_raw)
+        comment_limit_unlimited = _truthy_form_value(
+            data.get('comment_limit_unlimited') if 'comment_limit_unlimited' in data else request.form.get('comment_limit_unlimited')
+        )
+        comments_per_post_limit = normalize_insight_comment_limit(
+            data.get('comments_per_post_limit') or data.get('comment_limit') or request.form.get('comments_per_post_limit'),
+            unlimited=comment_limit_unlimited,
+        )
         platform_counts = Counter(sentiment_insight.detect_platform(url) for url in urls)
         unsupported = [url for url in urls if sentiment_insight.detect_platform(url) == 'UNKNOWN']
         supported_count = len(urls) - len(unsupported)
@@ -3793,6 +3832,8 @@ def sentiment_precheck_api():
             'estimated_seconds_min': min_minutes * 60,
             'estimated_seconds_max': max_minutes * 60,
             'estimated_text': f'约 {min_minutes}-{max_minutes} 分钟' if supported_count else '无法估算',
+            'comments_per_post_limit': comments_per_post_limit,
+            'comment_limit_unlimited': comment_limit_unlimited,
             'links': [{'url': url, 'platform': sentiment_insight.detect_platform(url)} for url in urls],
         })
     except Exception as e:
@@ -3937,6 +3978,7 @@ def sentiment_task_retry_api(task_id):
                     'username': params.get('username') or session.get('username', 'unknown'),
                     'department': params.get('department') or session.get('department', '未知'),
                     'project': params.get('project', 'CFL'),
+                    'comments_per_post_limit': params.get('comments_per_post_limit'),
                 },
                 daemon=True,
             ).start()

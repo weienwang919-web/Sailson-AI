@@ -170,7 +170,9 @@ def _llm_extract_intent(message: str, qwen_client) -> dict[str, Any]:
     "start_date": "YYYY-MM-DD",
     "end_date": "YYYY-MM-DD",
     "max_videos": 50,
-    "videos_per_profile": 10
+    "videos_per_profile": 10,
+    "comments_per_post_limit": {sentiment_insight.DEFAULT_COMMENTS_PER_POST_LIMIT},
+    "comment_limit_unlimited": false
   }}
 }}
 
@@ -248,7 +250,16 @@ def _heuristic_params(message: str, urls: list[str]) -> dict[str, Any]:
         "recent_days": 7,
         "max_videos": 50,
         "videos_per_profile": 10,
+        "comments_per_post_limit": sentiment_insight.DEFAULT_COMMENTS_PER_POST_LIMIT,
+        "comment_limit_unlimited": False,
     }
+    if _truthy_text(message, ("不设上限", "不限评论", "评论不限", "无上限")):
+        params["comment_limit_unlimited"] = True
+        params["comments_per_post_limit"] = sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT
+    else:
+        comment_limit_match = re.search(r"(?:评论|留言|单条|每帖|每条)(?:拉取)?(?:数量)?(?:上限|最多|限制)?\D{0,8}(\d{1,5})", message)
+        if comment_limit_match:
+            params["comments_per_post_limit"] = sentiment_insight.normalize_comments_per_post_limit(comment_limit_match.group(1))
     if "全部" in message or "全量" in message:
         params["sync_scope"] = "all"
     days_match = re.search(r"近\s*(\d{1,3})\s*天", message)
@@ -288,14 +299,16 @@ def _clean_llm_params(params: dict[str, Any]) -> dict[str, Any]:
         "schedule_hour",
         "max_videos",
         "videos_per_profile",
+        "comments_per_post_limit",
+        "comment_limit_unlimited",
         "attachment_id",
     ):
         if key not in params:
             continue
         value = params[key]
-        if key in {"sync_to_pool", "include_acv", "write_feishu", "schedule"}:
+        if key in {"sync_to_pool", "include_acv", "write_feishu", "schedule", "comment_limit_unlimited"}:
             out[key] = bool(value)
-        elif key in {"recent_days", "schedule_hour", "max_videos", "videos_per_profile"}:
+        elif key in {"recent_days", "schedule_hour", "max_videos", "videos_per_profile", "comments_per_post_limit"}:
             try:
                 out[key] = int(value)
             except Exception:
@@ -422,6 +435,14 @@ def _params_preview(intent: str, params: dict[str, Any]) -> dict[str, Any]:
             "同步范围": _time_range_label(params),
             "每天几点": params.get("schedule_hour", 9) if params.get("schedule") else "不启用定时",
             "每主页上限": params.get("max_videos", 50),
+        })
+    if intent == "sentiment_comments":
+        preview.update({
+            "单条评论上限": (
+                f"不设上限（{sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT}）"
+                if params.get("comment_limit_unlimited")
+                else params.get("comments_per_post_limit", sentiment_insight.DEFAULT_COMMENTS_PER_POST_LIMIT)
+            ),
         })
     if intent.startswith("kol_data_refresh"):
         preview.update({

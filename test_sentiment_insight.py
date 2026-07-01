@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import Mock, patch
 
 import sentiment_insight
 
@@ -94,6 +95,63 @@ class SentimentInsightTests(unittest.TestCase):
 
     def test_default_ai_batch_size_reduces_request_count(self):
         self.assertEqual(sentiment_insight.AI_BATCH_SIZE, 30)
+
+    def test_resolve_facebook_share_url_cleans_redirect_url(self):
+        response = Mock()
+        response.url = (
+            "https://www.facebook.com/SolitaireClashAvia/posts/"
+            "pfbid0PZNDkBbrYdTsQ8qLoUM2Z6ouqdGf8skhSWEud3xZFCX4ytHzSb3wz5yXjtJ7pasnl"
+            "?rdid=1oSLtJZIMxGbaYMB&share_url=https%3A%2F%2Fwww.facebook.com%2Fshare%2Fp%2F185zpnK9rv%2F"
+        )
+
+        with patch("sentiment_insight.requests.head", return_value=response):
+            resolved = sentiment_insight._resolve_facebook_url("https://www.facebook.com/share/p/185zpnK9rv/")
+
+        self.assertEqual(
+            resolved,
+            "https://www.facebook.com/SolitaireClashAvia/posts/"
+            "pfbid0PZNDkBbrYdTsQ8qLoUM2Z6ouqdGf8skhSWEud3xZFCX4ytHzSb3wz5yXjtJ7pasnl",
+        )
+
+    def test_pipeline_passes_comment_limit_to_scraper(self):
+        original_scraper = sentiment_insight.PLATFORM_SCRAPERS["TT"]
+        seen_limits = []
+        try:
+            def fake_scraper(_url, _token, comments_per_post_limit):
+                seen_limits.append(comments_per_post_limit)
+                return {
+                    "platform": "TT",
+                    "url": "https://www.tiktok.com/@game/video/123",
+                    "items": [{"commentId": "one", "text": "first"}],
+                }
+
+            sentiment_insight.PLATFORM_SCRAPERS["TT"] = fake_scraper
+
+            result = sentiment_insight.run_insight_pipeline(
+                ["https://www.tiktok.com/@game/video/123"],
+                "token",
+                lambda _prompt, _timeout=60: (
+                    json.dumps(
+                        [
+                            {
+                                "idx": 0,
+                                "id": "C0",
+                                "translation_zh": "第一条",
+                                "sentiment": "中立",
+                                "category": "其他",
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    1,
+                ),
+                comments_per_post_limit=sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT,
+            )
+
+            self.assertEqual(seen_limits, [sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT])
+            self.assertEqual(result["total_comments"], 1)
+        finally:
+            sentiment_insight.PLATFORM_SCRAPERS["TT"] = original_scraper
 
     def test_pipeline_truncation_prioritizes_high_like_comments(self):
         original_max = sentiment_insight.MAX_AI_COMMENTS

@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import inspect
 import json
 import logging
 import os
 import re
 import time
 from typing import Callable, Iterable
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 from openpyxl import Workbook
@@ -69,7 +70,9 @@ DEFAULT_ACTORS = {
 # 单个 actor 最长等待时间（秒）
 ACTOR_TIMEOUT_SECS = int(os.environ.get("INSIGHT_ACTOR_TIMEOUT_SECS", "420"))
 ACTOR_POLL_INTERVAL = int(os.environ.get("INSIGHT_ACTOR_POLL_INTERVAL", "5"))
-COMMENTS_PER_POST_LIMIT = int(os.environ.get("INSIGHT_COMMENTS_PER_POST", "500"))
+DEFAULT_COMMENTS_PER_POST_LIMIT = int(os.environ.get("INSIGHT_COMMENTS_PER_POST", "500"))
+UNLIMITED_COMMENTS_PER_POST_LIMIT = int(os.environ.get("INSIGHT_COMMENTS_UNLIMITED_PER_POST", "50000"))
+COMMENTS_PER_POST_LIMIT = DEFAULT_COMMENTS_PER_POST_LIMIT
 AI_BATCH_SIZE = int(os.environ.get("INSIGHT_AI_BATCH_SIZE", "30"))
 MAX_AI_COMMENTS = int(os.environ.get("INSIGHT_MAX_AI_COMMENTS", "1500"))
 
@@ -94,6 +97,33 @@ _EMOJI_OR_PUNCT_RE = re.compile(
     r"[\u2600-\u27BF\U0001F300-\U0001FAFF\U0001F000-\U0001F2FF\u2300-\u23FF\u2B00-\u2BFF\s\W_]+",
     re.UNICODE,
 )
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "unlimited", "none", "no_limit", "不设上限", "不限"}
+
+
+def normalize_comments_per_post_limit(value=None, unlimited=False) -> int:
+    """Normalize a per-link comment scraping cap.
+
+    "No limit" is represented as 50,000 rows because Apify actors still need a
+    finite upper bound.
+    """
+    upper_bound = max(1, UNLIMITED_COMMENTS_PER_POST_LIMIT)
+    if _truthy(unlimited):
+        return upper_bound
+    if value is None or str(value).strip() == "":
+        raw_limit = DEFAULT_COMMENTS_PER_POST_LIMIT
+    else:
+        try:
+            raw_limit = int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            raw_limit = DEFAULT_COMMENTS_PER_POST_LIMIT
+    return max(1, min(raw_limit, upper_bound))
 
 
 def _preprocess_comment(text: str) -> tuple[str, str]:
@@ -226,6 +256,66 @@ def _call_actor(actor_id: str, candidate_inputs: list[dict], apify_token: str) -
             logger.warning(f"⚠️ actor {actor_id} 调用失败（input={list(run_input.keys())}）: {e}")
             continue
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
+
+
+def _facebook_url_needs_resolution(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    return "fb.watch" in host or ("facebook.com" in host and path.startswith("/share/"))
+
+
+def _clean_resolved_facebook_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    path = (parsed.path or "").rstrip("/") or parsed.path
+    lower_path = path.lower()
+    if any(part in lower_path for part in ("/posts/", "/videos/", "/reel/", "/watch/")) or "pfbid" in lower_path:
+        return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+    if lower_path.endswith(("/story.php", "/permalink.php")):
+        keep_keys = {"story_fbid", "id", "fbid", "v"}
+        query = urlencode(
+            [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k in keep_keys]
+        )
+        return urlunparse((parsed.scheme, parsed.netloc, path, "", query, ""))
+    return url
+
+
+def _resolve_facebook_url(url: str) -> str:
+    """Expand FB share/fb.watch URLs before sending them to Apify actors."""
+    if not _facebook_url_needs_resolution(url):
+        return url
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+        )
+    }
+    try:
+        resp = requests.head(url, headers=headers, allow_redirects=True, timeout=15)
+        final_url = getattr(resp, "url", "") or ""
+        if final_url and final_url != url:
+            resolved = _clean_resolved_facebook_url(final_url)
+            logger.info(f"🔁 FB share URL 已展开: {url} -> {resolved}")
+            return resolved
+    except requests.RequestException as e:
+        logger.warning(f"⚠️ FB share URL HEAD 展开失败: {e}")
+    try:
+        resp = requests.get(url, headers=headers, allow_redirects=True, timeout=15, stream=True)
+        final_url = getattr(resp, "url", "") or ""
+        resp.close()
+        if final_url and final_url != url:
+            resolved = _clean_resolved_facebook_url(final_url)
+            logger.info(f"🔁 FB share URL 已展开: {url} -> {resolved}")
+            return resolved
+    except requests.RequestException as e:
+        logger.warning(f"⚠️ FB share URL GET 展开失败: {e}")
+    return url
 
 
 # ============================================
@@ -635,83 +725,89 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
 # ============================================
 
 
-def _scrape_facebook(url: str, apify_token: str) -> dict:
+def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["FB"]
+    limit = normalize_comments_per_post_limit(comments_per_post_limit)
+    scrape_url = _resolve_facebook_url(url)
     candidates = [
         {
-            "startUrls": [{"url": url}],
-            "resultsLimit": COMMENTS_PER_POST_LIMIT,
+            "startUrls": [{"url": scrape_url}],
+            "resultsLimit": limit,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
         },
         {
-            "startUrls": [{"url": url}],
-            "maxComments": COMMENTS_PER_POST_LIMIT,
+            "startUrls": [{"url": scrape_url}],
+            "maxComments": limit,
             "maxPostCount": 1,
-            "maxCommentsPerPost": COMMENTS_PER_POST_LIMIT,
+            "maxCommentsPerPost": limit,
             "scrapeCommentReplies": False,
         },
     ]
     items = _call_actor(actor, candidates, apify_token)
-    return {"items": items, "platform": "FB", "url": url}
+    return {"items": items, "platform": "FB", "url": url, "resolved_url": scrape_url}
 
 
-def _scrape_instagram(url: str, apify_token: str) -> dict:
+def _scrape_instagram(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["IG"]
+    limit = normalize_comments_per_post_limit(comments_per_post_limit)
     candidates = [
-        {"directUrls": [url], "resultsLimit": COMMENTS_PER_POST_LIMIT},
-        {"postUrls": [url], "resultsLimit": COMMENTS_PER_POST_LIMIT},
-        {"startUrls": [{"url": url}], "resultsLimit": COMMENTS_PER_POST_LIMIT},
+        {"directUrls": [url], "resultsLimit": limit},
+        {"postUrls": [url], "resultsLimit": limit},
+        {"startUrls": [{"url": url}], "resultsLimit": limit},
     ]
     items = _call_actor(actor, candidates, apify_token)
     return {"items": items, "platform": "IG", "url": url}
 
 
-def _scrape_tiktok(url: str, apify_token: str) -> dict:
+def _scrape_tiktok(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["TT"]
+    limit = normalize_comments_per_post_limit(comments_per_post_limit)
     candidates = [
-        {"postURLs": [url], "commentsPerPost": COMMENTS_PER_POST_LIMIT, "maxRepliesPerComment": 0},
-        {"postUrls": [url], "commentsPerPost": COMMENTS_PER_POST_LIMIT},
-        {"startUrls": [{"url": url}], "maxItems": COMMENTS_PER_POST_LIMIT},
+        {"postURLs": [url], "commentsPerPost": limit, "maxRepliesPerComment": 0},
+        {"postUrls": [url], "commentsPerPost": limit},
+        {"startUrls": [{"url": url}], "maxItems": limit},
     ]
     items = _call_actor(actor, candidates, apify_token)
     return {"items": items, "platform": "TT", "url": url}
 
 
-def _scrape_youtube(url: str, apify_token: str) -> dict:
+def _scrape_youtube(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["YTB"]
+    limit = normalize_comments_per_post_limit(comments_per_post_limit)
     candidates = [
-        {"startUrls": [{"url": url}], "maxComments": COMMENTS_PER_POST_LIMIT, "includeReplies": False},
-        {"videoUrls": [url], "maxComments": COMMENTS_PER_POST_LIMIT},
-        {"startUrls": [{"url": url}], "maxResults": COMMENTS_PER_POST_LIMIT},
+        {"startUrls": [{"url": url}], "maxComments": limit, "includeReplies": False},
+        {"videoUrls": [url], "maxComments": limit},
+        {"startUrls": [{"url": url}], "maxResults": limit},
     ]
     items = _call_actor(actor, candidates, apify_token)
     return {"items": items, "platform": "YTB", "url": url}
 
 
-def _scrape_x(url: str, apify_token: str) -> dict:
+def _scrape_x(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     """X（Twitter）回复抓取。
 
     默认 actor 是 apidojo/tweet-scraper，它通过 startUrls 直接抓主贴 + 回复。
     """
     actor = DEFAULT_ACTORS["X"]
+    limit = normalize_comments_per_post_limit(comments_per_post_limit)
     candidates = [
         {
             "startUrls": [url],
-            "maxItems": COMMENTS_PER_POST_LIMIT,
+            "maxItems": limit,
             "onlyImage": False,
             "onlyVerifiedUsers": False,
         },
-        {"startUrls": [{"url": url}], "maxItems": COMMENTS_PER_POST_LIMIT},
-        {"tweetUrls": [url], "maxItems": COMMENTS_PER_POST_LIMIT},
-        {"conversationIds": [url], "maxItems": COMMENTS_PER_POST_LIMIT},
-        {"searchTerms": [url], "maxItems": COMMENTS_PER_POST_LIMIT},
+        {"startUrls": [{"url": url}], "maxItems": limit},
+        {"tweetUrls": [url], "maxItems": limit},
+        {"conversationIds": [url], "maxItems": limit},
+        {"searchTerms": [url], "maxItems": limit},
     ]
     items = _call_actor(actor, candidates, apify_token)
     return {"items": items, "platform": "X", "url": url}
 
 
-PLATFORM_SCRAPERS: dict[str, Callable[[str, str], dict]] = {
+PLATFORM_SCRAPERS: dict[str, Callable[..., dict]] = {
     "FB": _scrape_facebook,
     "IG": _scrape_instagram,
     "TT": _scrape_tiktok,
@@ -990,6 +1086,7 @@ def run_insight_pipeline(
     apify_token: str,
     ai_call: Callable[[str, int], tuple[str, int]],
     progress: Callable[[str], None] | None = None,
+    comments_per_post_limit: int | None = None,
 ) -> dict:
     """跑完整的：多平台抓取 → AI 翻译/分类 → 结构化结果 + HTML 表格。
 
@@ -998,6 +1095,7 @@ def run_insight_pipeline(
         apify_token: Apify Token
         ai_call: 用于调用大模型的函数 (prompt, timeout) -> (text, tokens)
         progress: 可选，进度回调
+        comments_per_post_limit: 单条链接评论抓取上限；None 时默认 500
     Returns:
         dict 含 structured / html / total_comments / total_tokens
     """
@@ -1006,6 +1104,7 @@ def run_insight_pipeline(
 
     structured: list[dict] = []
     total_tokens = 0
+    comment_limit = normalize_comments_per_post_limit(comments_per_post_limit)
 
     def _p(msg: str):
         logger.info(f"[insight] {msg}")
@@ -1020,7 +1119,7 @@ def run_insight_pipeline(
     scrape_summary: list[dict] = []
     for idx, url in enumerate(urls, 1):
         platform = detect_platform(url)
-        _p(f"抓取 {idx}/{len(urls)} [{platform}] {url[:60]}")
+        _p(f"抓取 {idx}/{len(urls)} [{platform}] {url[:60]}（单条上限 {comment_limit}）")
         if platform == "UNKNOWN" or platform not in PLATFORM_SCRAPERS:
             logger.warning(f"⚠️ 不支持的平台，跳过: {url}")
             payload = {"platform": platform or "UNKNOWN", "url": url, "items": [], "error": "不支持的平台"}
@@ -1028,7 +1127,11 @@ def run_insight_pipeline(
             scrape_summary.append(_scrape_summary_item(idx, payload))
             continue
         try:
-            payload = PLATFORM_SCRAPERS[platform](url, apify_token)
+            scraper = PLATFORM_SCRAPERS[platform]
+            if len(inspect.signature(scraper).parameters) >= 3:
+                payload = scraper(url, apify_token, comment_limit)
+            else:
+                payload = scraper(url, apify_token)
         except Exception as e:
             logger.error(f"❌ 抓取失败 {url}: {e}")
             payload = {"platform": platform, "url": url, "items": [], "error": str(e)}

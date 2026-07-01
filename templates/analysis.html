@@ -99,6 +99,10 @@
     .precheck-label { color: #98a2b3; font-size: 0.74rem; margin-bottom: 2px; }
     .precheck-value { color: #111827; font-size: 0.92rem; font-weight: 700; word-break: break-word; }
     .precheck-warning { margin-top: 8px; color: #c62828; font-size: 0.82rem; word-break: break-all; }
+    .comment-limit-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-top: 14px; }
+    .comment-limit-field { width: 220px; }
+    .comment-limit-toggle { display: flex; align-items: center; gap: 6px; margin: 0 0 10px 0; color: #344054; font-size: 0.88rem; }
+    .comment-limit-hint { flex: 1; min-width: 240px; margin-bottom: 10px; color: #98a2b3; font-size: 0.82rem; line-height: 1.5; }
     .profile-url { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .profile-url a { color: #2962FF; text-decoration: none; }
     .task-id-cell { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: #667085; }
@@ -155,6 +159,17 @@
                     <span class="badge">YTB</span>
                     <span class="badge">X</span>
                     <span style="margin-left:auto;color:#999;">FB 评论无时间戳时自动留空</span>
+                </div>
+                <div class="comment-limit-row">
+                    <div class="comment-limit-field">
+                        <label class="small text-muted mb-1" for="commentsPerPostLimit">单条评论拉取上限</label>
+                        <input type="number" id="commentsPerPostLimit" class="form-control" value="{{ insight_comments_default }}" min="1" max="{{ insight_comments_unlimited }}" step="1" oninput="scheduleCommentPrecheck()">
+                    </div>
+                    <label class="comment-limit-toggle">
+                        <input type="checkbox" id="commentLimitUnlimited" onchange="toggleCommentLimitUnlimited()">
+                        不设上限
+                    </label>
+                    <div class="comment-limit-hint" id="commentLimitHint">默认每条链接最多抓取 {{ insight_comments_default }} 条评论；选择不设上限时后台按 {{ insight_comments_unlimited }} 条提交。</div>
                 </div>
                 <div class="example-hint">
                     <span>💡 一次最多 ~5 条链接为宜，过多会拉长 Apify 与 AI 耗时</span>
@@ -439,6 +454,37 @@ function showTutorial() {
     alert('使用教程：\n\n1. 每行粘贴一个社媒主贴链接（FB / IG / TT / YouTube / X 均可混合）\n2. 点击"立即分析"，平台自动识别\n3. 等待 Apify 抓取 + AI 翻译/情感/分类\n4. 表格固定包含原文、翻译、评论点赞数、视频/帖子链接、来源序号和抓取状态，可导出 Excel\n\n注：Facebook 评论时间戳通常缺失，会自动留空。');
 }
 
+function getCommentLimitConfig() {
+    const unlimitedEl = document.getElementById('commentLimitUnlimited');
+    const inputEl = document.getElementById('commentsPerPostLimit');
+    const defaultLimit = parseInt((inputEl && inputEl.defaultValue) || '500', 10) || 500;
+    const unlimitedLimit = parseInt((inputEl && inputEl.max) || '50000', 10) || 50000;
+    const unlimited = !!(unlimitedEl && unlimitedEl.checked);
+    let limit = parseInt((inputEl && inputEl.value) || String(defaultLimit), 10);
+    if (!Number.isFinite(limit) || limit < 1) limit = defaultLimit;
+    if (limit > unlimitedLimit) limit = unlimitedLimit;
+    if (inputEl && !unlimited) inputEl.value = String(limit);
+    return {
+        comments_per_post_limit: unlimited ? unlimitedLimit : limit,
+        comment_limit_unlimited: unlimited,
+        default_limit: defaultLimit,
+        unlimited_limit: unlimitedLimit,
+    };
+}
+
+function toggleCommentLimitUnlimited() {
+    const inputEl = document.getElementById('commentsPerPostLimit');
+    const hintEl = document.getElementById('commentLimitHint');
+    const config = getCommentLimitConfig();
+    if (inputEl) inputEl.disabled = config.comment_limit_unlimited;
+    if (hintEl) {
+        hintEl.textContent = config.comment_limit_unlimited
+            ? '已选择不设上限：后台会按单条 ' + config.unlimited_limit + ' 条评论提交抓取。'
+            : '默认每条链接最多抓取 ' + config.default_limit + ' 条评论；选择不设上限时后台按 ' + config.unlimited_limit + ' 条提交。';
+    }
+    scheduleCommentPrecheck();
+}
+
 function applyTimeFilter(items) {
     if (currentFilter === 'all') return items;
     const now = new Date();
@@ -538,8 +584,11 @@ async function startAnalysis() {
         const ok = confirm('有 ' + precheck.unsupported.length + ' 条链接暂无法识别平台，会被跳过。是否继续提交？');
         if (!ok) return;
     }
+    const commentLimitConfig = getCommentLimitConfig();
     const formData = new FormData();
     formData.append('urls', urlsRaw);
+    formData.append('comments_per_post_limit', String(commentLimitConfig.comments_per_post_limit));
+    formData.append('comment_limit_unlimited', commentLimitConfig.comment_limit_unlimited ? '1' : '0');
     loadingText.innerHTML = `🕵️ 已提交 ${urlCount} 条链接，正在后台抓取与分析...<br><small>每条链接约 1-2 分钟，请耐心等待</small>`;
     loading.style.display = 'block';
     resContainer.style.display = 'none';
@@ -580,10 +629,15 @@ function scheduleCommentPrecheck() {
 }
 
 async function runCommentPrecheck(urlsRaw) {
+    const commentLimitConfig = getCommentLimitConfig();
     const data = await fetchJsonOrThrow('/api/sentiment/precheck', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({urls: urlsRaw}),
+        body: JSON.stringify({
+            urls: urlsRaw,
+            comments_per_post_limit: commentLimitConfig.comments_per_post_limit,
+            comment_limit_unlimited: commentLimitConfig.comment_limit_unlimited,
+        }),
     });
     renderCommentPrecheck(data);
     return data;
@@ -610,6 +664,7 @@ function renderCommentPrecheck(data) {
         ['识别链接数', data.url_count],
         ['可抓取链接', data.supported_count],
         ['平台分布', platformText],
+        ['单条上限', (data.comment_limit_unlimited ? '不设上限（' + getCommentLimitConfig().unlimited_limit + '）' : ((data.comments_per_post_limit || getCommentLimitConfig().default_limit) + ' 条'))],
         ['预计耗时', data.estimated_text || '-'],
     ].map(item => `
         <div class="precheck-metric">
@@ -1140,6 +1195,7 @@ async function loadHistory() {
 }
 
 window.onload = function () {
+    toggleCommentLimitUnlimited();
     loadHistory();
     loadVideoMetricsTasks();
     loadProfileVideoConfigs();
