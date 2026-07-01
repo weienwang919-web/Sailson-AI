@@ -66,6 +66,14 @@ DEFAULT_ACTORS = {
     "YTB": os.environ.get("APIFY_YT_COMMENTS_ACTOR_ID", "streamers/youtube-comments-scraper"),
     "X": os.environ.get("APIFY_X_TWEET_ACTOR_ID", "apidojo/tweet-scraper"),
 }
+FB_COOKIE_FALLBACK_ACTOR_ID = os.environ.get(
+    "APIFY_FB_COOKIE_COMMENTS_ACTOR_ID",
+    "dz_omar/facebook-comment-scraper",
+)
+FB_COOKIE_FALLBACK_SORT = os.environ.get(
+    "FB_COOKIE_FALLBACK_SORT",
+    "RANKED_UNFILTERED_CHRONOLOGICAL_REPLIES_INTENT_V1",
+)
 
 # 单个 actor 最长等待时间（秒）
 ACTOR_TIMEOUT_SECS = int(os.environ.get("INSIGHT_ACTOR_TIMEOUT_SECS", "420"))
@@ -234,6 +242,56 @@ def _fetch_dataset(dataset_id: str, apify_token: str) -> list[dict]:
     return items if isinstance(items, list) else []
 
 
+def _cookie_values_from_actor_input(value) -> list[str]:
+    values: list[str] = []
+    if isinstance(value, list):
+        for entry in value:
+            values.extend(_cookie_values_from_actor_input(entry))
+        return values
+    if not isinstance(value, dict):
+        return values
+    for key, nested in value.items():
+        key_lower = str(key).lower()
+        if key_lower in {"customcookies", "cookies"} and isinstance(nested, list):
+            for cookie in nested:
+                if not isinstance(cookie, dict):
+                    continue
+                cookie_value = str(cookie.get("value") or "")
+                if len(cookie_value) >= 4:
+                    values.append(cookie_value)
+        else:
+            values.extend(_cookie_values_from_actor_input(nested))
+    return values
+
+
+def _redact_sensitive_text(text: str, actor_input: dict | None = None) -> str:
+    redacted = str(text or "")
+    for value in _cookie_values_from_actor_input(actor_input or {}):
+        redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
+
+
+def _redact_actor_input(value):
+    if isinstance(value, list):
+        return [_redact_actor_input(entry) for entry in value]
+    if not isinstance(value, dict):
+        return value
+
+    redacted = {}
+    for key, nested in value.items():
+        key_lower = str(key).lower()
+        if key_lower in {"customcookies", "cookies"} and isinstance(nested, list):
+            redacted[key] = [
+                {**cookie, "value": "[REDACTED]"} if isinstance(cookie, dict) else "[REDACTED]"
+                for cookie in nested
+            ]
+        elif key_lower in {"cookie", "authorization", "access_token", "token", "api_key", "apikey", "password", "secret"}:
+            redacted[key] = "[REDACTED]" if nested else nested
+        else:
+            redacted[key] = _redact_actor_input(nested)
+    return redacted
+
+
 def _call_actor(
     actor_id: str,
     candidate_inputs: list[dict],
@@ -258,6 +316,7 @@ def _call_actor_with_meta(
     for run_input in candidate_inputs:
         run_id = ""
         dataset_id = ""
+        safe_input = _redact_actor_input(run_input)
         try:
             run = _start_actor(actor_id, run_input, apify_token)
             run_id = run.get("id")
@@ -278,7 +337,7 @@ def _call_actor_with_meta(
                 "status": final.get("status"),
                 "started_at": final.get("startedAt") or run.get("startedAt"),
                 "finished_at": final.get("finishedAt"),
-                "input": run_input,
+                "input": safe_input,
             }
             if accept_items and not accept_items(items):
                 attempts.append({**last_meta, "item_count": len(items), "accepted": False})
@@ -290,17 +349,18 @@ def _call_actor_with_meta(
             attempts.append({**last_meta, "item_count": len(items), "accepted": True})
             return items, {**last_meta, "attempts": attempts}
         except Exception as e:
-            last_err = e
+            safe_error = _redact_sensitive_text(str(e), run_input)
+            last_err = safe_error
             last_meta = {
                 "actor_id": actor_id,
                 "run_id": run_id,
                 "dataset_id": dataset_id,
-                "input": run_input,
-                "error": str(e),
+                "input": safe_input,
+                "error": safe_error,
             }
             attempts.append({**last_meta, "item_count": 0, "accepted": False})
             logger.warning(
-                f"⚠️ actor {actor_id} 调用失败（run={run_id or '-'}, input={list(run_input.keys())}）: {e}"
+                f"⚠️ actor {actor_id} 调用失败（run={run_id or '-'}, input={list(run_input.keys())}）: {safe_error}"
             )
             continue
     if last_items:
@@ -330,6 +390,56 @@ def _dedupe_urls(urls: Iterable[str]) -> list[str]:
             continue
         seen.add(cleaned)
         result.append(cleaned)
+    return result
+
+
+def _load_fb_comment_fallback_cookies() -> list[dict]:
+    raw = os.environ.get("FB_COMMENT_FALLBACK_COOKIES_JSON") or ""
+    raw = raw.strip()
+    if not raw:
+        return []
+    try:
+        cookies = json.loads(raw)
+    except Exception as e:
+        logger.warning(f"⚠️ FB cookie fallback 配置不是合法 JSON: {e}")
+        return []
+    if not isinstance(cookies, list):
+        logger.warning("⚠️ FB cookie fallback 配置必须是 cookie 数组")
+        return []
+    cleaned: list[dict] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "").strip()
+        value = str(cookie.get("value") or "").strip()
+        if not name or not value:
+            continue
+        normalized = dict(cookie)
+        normalized["name"] = name
+        normalized["value"] = value
+        cleaned.append(normalized)
+    return cleaned
+
+
+def _merge_actor_meta(primary: dict, fallback: dict | None = None) -> dict:
+    result = dict(primary or {})
+    attempts: list[dict] = []
+    for meta in (primary or {}, fallback or {}):
+        if not isinstance(meta, dict):
+            continue
+        meta_attempts = meta.get("attempts")
+        if isinstance(meta_attempts, list):
+            attempts.extend([attempt for attempt in meta_attempts if isinstance(attempt, dict)])
+        elif meta:
+            attempts.append(meta)
+    if fallback:
+        result["fallback"] = fallback
+        for key in ("actor_id", "run_id", "dataset_id", "status", "started_at", "finished_at", "input"):
+            if fallback.get(key):
+                result[key] = fallback.get(key)
+        result["used_fallback"] = True
+    if attempts:
+        result["attempts"] = attempts
     return result
 
 
@@ -618,6 +728,7 @@ def _extract_item_post_url(item: dict, platform: str, fallback_url: str) -> str:
     direct = _first_url(
         item,
         [
+            "source.url",
             "postUrl",
             "postURL",
             "post_url",
@@ -651,6 +762,7 @@ def _extract_comment_url(item: dict) -> str:
     return _first_url(
         item,
         [
+            "comment.url",
             "commentUrl",
             "commentURL",
             "comment_url",
@@ -658,7 +770,6 @@ def _extract_comment_url(item: dict) -> str:
             "comment_link",
             "commentPermalink",
             "comment.permalink",
-            "comment.url",
         ],
     )
 
@@ -667,6 +778,8 @@ def _extract_comment_like_count(item: dict) -> int:
     return _first_count(
         item,
         [
+            "comment.like_count",
+            "comment.total_reactions",
             "commentLikeCount",
             "commentLikesCount",
             "comment_likes_count",
@@ -698,6 +811,7 @@ def _has_comment_identity(item: dict) -> bool:
             "commentPk",
             "replyId",
             "comment.id",
+            "comment.parent_id",
             "comment.commentId",
             "commentUrl",
             "commentURL",
@@ -727,6 +841,7 @@ def _stable_comment_id(item: dict, platform: str, post_url: str, author: str, te
         [
             "commentId",
             "comment_id",
+            "comment.id",
             "id",
             "cid",
             "pk",
@@ -876,7 +991,19 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
     if platform == "X" and _is_x_original_tweet(item):
         return None
 
-    text = _first_str(item, ["text", "fullText", "full_text", "content", "comment", "message", "commentText"])
+    text = _first_str(
+        item,
+        [
+            "comment.text",
+            "text",
+            "fullText",
+            "full_text",
+            "content",
+            "comment",
+            "message",
+            "commentText",
+        ],
+    )
     media_url = _extract_comment_media_url(item)
     if not text:
         if not media_url or not _has_comment_identity(item):
@@ -887,7 +1014,17 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
 
     author = _first_str(
         item,
-        ["authorName", "ownerUsername", "username", "userName", "uniqueId", "name", "author", "profileName"],
+        [
+            "comment.author.name",
+            "authorName",
+            "ownerUsername",
+            "username",
+            "userName",
+            "uniqueId",
+            "name",
+            "author",
+            "profileName",
+        ],
     )
 
     # 评论时间
@@ -898,6 +1035,8 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
     for k in (
         "commentDate",
         "commentTime",
+        "comment.created_at",
+        "comment.created_time_unix",
         "createdAtTimestamp",
         "createdAtTimestampSeconds",
         "createTime",
@@ -911,7 +1050,7 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
         "time",
         "date",
     ):
-        cand = _to_beijing_dt(item.get(k))
+        cand = _to_beijing_dt(_deep_get(item, k))
         if cand:
             created_dt = cand
             break
@@ -1104,6 +1243,55 @@ def _items_have_comments(items: list[dict], platform: str, post_url: str = "") -
     return bool(_flatten_comment_items(items or [], platform, post_url))
 
 
+def _facebook_cookie_fallback_input(url: str, limit: int, cookies: list[dict]) -> dict:
+    fallback_limit = 0 if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
+    return {
+        "urls": [{"url": url}],
+        "maxCommentsPerUrl": fallback_limit,
+        "fetchReplies": True,
+        "commentsIntentToken": FB_COOKIE_FALLBACK_SORT,
+        "customCookies": cookies,
+    }
+
+
+def _scrape_facebook_with_cookie_fallback(
+    url: str,
+    apify_token: str,
+    limit: int,
+    primary_items: list[dict],
+    primary_meta: dict,
+    primary_error: str,
+) -> tuple[list[dict], dict, str]:
+    cookies = _load_fb_comment_fallback_cookies()
+    if not cookies:
+        return primary_items, primary_meta, primary_error
+
+    fallback_actor = FB_COOKIE_FALLBACK_ACTOR_ID
+    fallback_input = _facebook_cookie_fallback_input(url, limit, cookies)
+    try:
+        fallback_items, fallback_meta = _call_actor_with_meta(
+            fallback_actor,
+            [fallback_input],
+            apify_token,
+            accept_items=lambda rows: _items_have_comments(rows, "FB", url),
+        )
+    except Exception as e:
+        safe_error = _redact_sensitive_text(str(e), fallback_input)
+        fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
+        merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
+        detail = f"{primary_error}; cookie fallback 失败: {safe_error}" if primary_error else f"cookie fallback 失败: {safe_error}"
+        return primary_items, merged_meta, detail[:300]
+
+    fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
+    merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
+    if _items_have_comments(fallback_items, "FB", url):
+        logger.info(f"✅ FB cookie fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
+        return fallback_items, merged_meta, ""
+
+    detail_parts = [part for part in (primary_error, f"cookie fallback: {fallback_error}" if fallback_error else "") if part]
+    return primary_items, merged_meta, "; ".join(detail_parts)[:300]
+
+
 def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["FB"]
     limit = normalize_comments_per_post_limit(comments_per_post_limit)
@@ -1117,13 +1305,27 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
         }
         for candidate_url in _dedupe_urls([url, scrape_url])
     ]
-    items, meta = _call_actor_with_meta(
-        actor,
-        candidates,
-        apify_token,
-        accept_items=lambda rows: _items_have_comments(rows, "FB", scrape_url),
-    )
-    error = _summarize_non_comment_items(items, "FB", scrape_url)
+    try:
+        items, meta = _call_actor_with_meta(
+            actor,
+            candidates,
+            apify_token,
+            accept_items=lambda rows: _items_have_comments(rows, "FB", scrape_url),
+        )
+        error = _summarize_non_comment_items(items, "FB", scrape_url)
+    except Exception as e:
+        items = []
+        meta = {"actor_id": actor, "error": _redact_sensitive_text(str(e))}
+        error = f"primary actor 失败: {meta['error']}"
+    if not _items_have_comments(items, "FB", scrape_url):
+        items, meta, error = _scrape_facebook_with_cookie_fallback(
+            scrape_url,
+            apify_token,
+            limit,
+            items,
+            meta,
+            error,
+        )
     return {
         "items": items,
         "platform": "FB",

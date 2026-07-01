@@ -31,6 +31,9 @@ services:
       # Apify Token（用于爬取 TikTok 等）
       - key: APIFY_TOKEN
         sync: false
+      # Facebook 受限帖评论备用抓取登录态 cookies（JSON 数组，仅后台环境变量配置）
+      - key: FB_COMMENT_FALLBACK_COOKIES_JSON
+        sync: false
       # TikTok Business API（官号监控）
       - key: TIKTOK_APP_ID
         sync: false
@@ -84,6 +87,8 @@ services:
       - key: DASHSCOPE_API_KEY
         sync: false
       - key: APIFY_TOKEN
+        sync: false
+      - key: FB_COMMENT_FALLBACK_COOKIES_JSON
         sync: false
       - key: TIKTOK_BUSINESS_ACCESS_TOKEN
         sync: false
