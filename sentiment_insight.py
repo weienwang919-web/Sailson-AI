@@ -79,6 +79,7 @@ FB_PUBLIC_FALLBACK_ACTOR_ID = os.environ.get(
     "crawlerbros/facebook-comments-scraper",
 )
 FB_PUBLIC_FALLBACK_MODE = os.environ.get("FB_PUBLIC_FALLBACK_MODE", "ALL")
+ACTOR_LOG_DIAGNOSTIC_LIMIT = int(os.environ.get("INSIGHT_ACTOR_LOG_DIAGNOSTIC_LIMIT", "900"))
 
 # 单个 actor 最长等待时间（秒）
 ACTOR_TIMEOUT_SECS = int(os.environ.get("INSIGHT_ACTOR_TIMEOUT_SECS", "420"))
@@ -248,6 +249,89 @@ def _fetch_dataset(dataset_id: str, apify_token: str) -> list[dict]:
     return items if isinstance(items, list) else []
 
 
+_ACTOR_LOG_DIAGNOSTIC_PATTERNS = (
+    "customcookies",
+    "cookie",
+    "session active",
+    "no cookies provided",
+    "authenticated",
+    "feedbackid",
+    "feedback id",
+    "fb_dtsg",
+    "login wall",
+    "could not extract",
+    "not found",
+    "not_available",
+    "0 comments",
+    "total: 0",
+    "failed",
+    "error",
+    "warn",
+    "cannot proceed",
+    "empty",
+)
+
+
+def _fetch_actor_log(run_id: str, apify_token: str = "") -> str:
+    if not run_id:
+        return ""
+    headers = {"Authorization": f"Bearer {apify_token}"} if apify_token else {}
+    urls = [
+        f"https://api.apify.com/v2/actor-runs/{run_id}/log",
+        f"https://api.apify.com/v2/logs/{run_id}",
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+        except Exception as e:
+            logger.warning(f"⚠️ 获取 Apify run 日志失败 run={run_id}: {e}")
+            continue
+        if resp.status_code == 200:
+            return resp.text or ""
+        logger.info(f"ℹ️ Apify run 日志不可用 run={run_id} status={resp.status_code}")
+    return ""
+
+
+def _summarize_actor_log(log_text: str, actor_input: dict | None = None, limit: int = ACTOR_LOG_DIAGNOSTIC_LIMIT) -> str:
+    if not log_text:
+        return ""
+
+    matched: list[str] = []
+    seen: set[str] = set()
+    for raw_line in str(log_text).splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if not any(pattern in lowered for pattern in _ACTOR_LOG_DIAGNOSTIC_PATTERNS):
+            continue
+        line = _redact_sensitive_text(line, actor_input)
+        line = _brief_raw_value(line, 180)
+        if line and line not in seen:
+            seen.add(line)
+            matched.append(line)
+        if len(matched) >= 6:
+            break
+
+    if not matched:
+        tail_lines = [re.sub(r"\s+", " ", line).strip() for line in str(log_text).splitlines() if line.strip()]
+        matched = [_brief_raw_value(_redact_sensitive_text(line, actor_input), 180) for line in tail_lines[-3:]]
+
+    summary = " | ".join(line for line in matched if line)
+    return summary[:limit] + ("..." if len(summary) > limit else "")
+
+
+def _attach_actor_log_diagnostics(meta: dict, apify_token: str, actor_input: dict | None = None) -> dict:
+    run_id = (meta or {}).get("run_id")
+    if not run_id or meta.get("log_excerpt"):
+        return meta
+    log_text = _fetch_actor_log(str(run_id), apify_token)
+    excerpt = _summarize_actor_log(log_text, actor_input)
+    if not excerpt:
+        return meta
+    return {**meta, "log_excerpt": excerpt}
+
+
 def _cookie_values_from_actor_input(value) -> list[str]:
     values: list[str] = []
     if isinstance(value, list):
@@ -274,6 +358,22 @@ def _redact_sensitive_text(text: str, actor_input: dict | None = None) -> str:
     redacted = str(text or "")
     for value in _cookie_values_from_actor_input(actor_input or {}):
         redacted = redacted.replace(value, "[REDACTED]")
+    redacted = re.sub(
+        r"(?i)\b(c_user|xs|fr|datr|sb|ps_l|ps_n|presence|wd|ar_debug)\s*=\s*[^;\s,}]+",
+        lambda m: f"{m.group(1)}=[REDACTED]",
+        redacted,
+    )
+    if "cookie" in redacted.lower():
+        redacted = re.sub(
+            r'(?i)("value"\s*:\s*")[^"]+(")',
+            r"\1[REDACTED]\2",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)('value'\s*:\s*')[^']+(')",
+            r"\1[REDACTED]\2",
+            redacted,
+        )
     return redacted
 
 
@@ -313,6 +413,7 @@ def _call_actor_with_meta(
     candidate_inputs: list[dict],
     apify_token: str,
     accept_items: Callable[[list[dict]], bool] | None = None,
+    include_log_diagnostics: bool = False,
 ) -> tuple[list[dict], dict]:
     """Call an actor and preserve run/dataset metadata for diagnostics."""
     last_err = None
@@ -350,6 +451,8 @@ def _call_actor_with_meta(
                 if not items:
                     last_err += "（dataset 为空）"
                 last_meta = {**last_meta, "error": last_err}
+                if include_log_diagnostics:
+                    last_meta = _attach_actor_log_diagnostics(last_meta, apify_token, run_input)
                 attempts.append({**last_meta, "item_count": len(items), "accepted": False})
                 logger.warning(
                     f"⚠️ actor {actor_id} run={run_id} dataset={dataset_id} "
@@ -368,6 +471,8 @@ def _call_actor_with_meta(
                 "input": safe_input,
                 "error": safe_error,
             }
+            if include_log_diagnostics:
+                last_meta = _attach_actor_log_diagnostics(last_meta, apify_token, run_input)
             attempts.append({**last_meta, "item_count": 0, "accepted": False})
             logger.warning(
                 f"⚠️ actor {actor_id} 调用失败（run={run_id or '-'}, input={list(run_input.keys())}）: {safe_error}"
@@ -375,6 +480,8 @@ def _call_actor_with_meta(
             continue
     if last_items or last_meta.get("dataset_id"):
         return last_items, {**last_meta, "attempts": attempts}
+    if last_meta.get("log_excerpt"):
+        last_err = f"{last_err}; log: {last_meta['log_excerpt']}" if last_err else f"log: {last_meta['log_excerpt']}"
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
 
 
@@ -1281,6 +1388,19 @@ def _facebook_public_fallback_input(urls: Iterable[str], limit: int) -> dict:
     }
 
 
+def _actor_failure_detail(meta: dict, fallback_error: str = "", items_count: int = 0) -> str:
+    detail = fallback_error or meta.get("error") or f"返回 {items_count} 条/0 条评论"
+    log_excerpt = meta.get("log_excerpt")
+    if log_excerpt:
+        detail = f"{detail}; log: {log_excerpt}" if detail else f"log: {log_excerpt}"
+    return detail
+
+
+def _join_error_parts(*parts: str, limit: int = ACTOR_LOG_DIAGNOSTIC_LIMIT) -> str:
+    detail = "; ".join(part for part in parts if part)
+    return detail[:limit] + ("..." if len(detail) > limit else "")
+
+
 def _scrape_facebook_with_public_fallback(
     original_url: str,
     url: str,
@@ -1301,13 +1421,14 @@ def _scrape_facebook_with_public_fallback(
             [fallback_input],
             apify_token,
             accept_items=lambda rows: _items_have_comments(rows, "FB", url),
+            include_log_diagnostics=True,
         )
     except Exception as e:
         safe_error = _redact_sensitive_text(str(e), fallback_input)
         fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
         merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
         detail = f"{primary_error}; public fallback 失败: {safe_error}" if primary_error else f"public fallback 失败: {safe_error}"
-        return primary_items, merged_meta, detail[:300]
+        return primary_items, merged_meta, detail[:ACTOR_LOG_DIAGNOSTIC_LIMIT]
 
     fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
     merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
@@ -1315,9 +1436,11 @@ def _scrape_facebook_with_public_fallback(
         logger.info(f"✅ FB public fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
         return fallback_items, merged_meta, ""
 
-    fallback_detail = fallback_error or fallback_meta.get("error") or f"返回 {len(fallback_items or [])} 条/0 条评论"
-    detail_parts = [part for part in (primary_error, f"public fallback: {fallback_detail}" if fallback_detail else "") if part]
-    return primary_items, merged_meta, "; ".join(detail_parts)[:300]
+    fallback_detail = _actor_failure_detail(fallback_meta, fallback_error, len(fallback_items or []))
+    return primary_items, merged_meta, _join_error_parts(
+        primary_error,
+        f"public fallback: {fallback_detail}" if fallback_detail else "",
+    )
 
 
 def _scrape_facebook_with_cookie_fallback(
@@ -1341,13 +1464,14 @@ def _scrape_facebook_with_cookie_fallback(
             [fallback_input],
             apify_token,
             accept_items=lambda rows: _items_have_comments(rows, "FB", url),
+            include_log_diagnostics=True,
         )
     except Exception as e:
         safe_error = _redact_sensitive_text(str(e), fallback_input)
         fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
         merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
         detail = f"{primary_error}; cookie fallback 失败: {safe_error}" if primary_error else f"cookie fallback 失败: {safe_error}"
-        return primary_items, merged_meta, detail[:300]
+        return primary_items, merged_meta, detail[:ACTOR_LOG_DIAGNOSTIC_LIMIT]
 
     fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
     merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
@@ -1355,9 +1479,11 @@ def _scrape_facebook_with_cookie_fallback(
         logger.info(f"✅ FB cookie fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
         return fallback_items, merged_meta, ""
 
-    fallback_detail = fallback_error or fallback_meta.get("error") or f"返回 {len(fallback_items or [])} 条/0 条评论"
-    detail_parts = [part for part in (primary_error, f"cookie fallback: {fallback_detail}" if fallback_detail else "") if part]
-    return primary_items, merged_meta, "; ".join(detail_parts)[:300]
+    fallback_detail = _actor_failure_detail(fallback_meta, fallback_error, len(fallback_items or []))
+    return primary_items, merged_meta, _join_error_parts(
+        primary_error,
+        f"cookie fallback: {fallback_detail}" if fallback_detail else "",
+    )
 
 
 def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
@@ -1744,9 +1870,10 @@ def _scrape_summary_item(idx: int, payload: dict) -> dict:
     if isinstance(items, list):
         comment_count = len(_flatten_comment_items(items, platform, url))
     actor_meta = payload.get("actor_meta") if isinstance(payload.get("actor_meta"), dict) else {}
-    error = str(payload.get("error") or "")[:300]
+    error = str(payload.get("error") or "")
     if not error and isinstance(items, list) and items and comment_count == 0:
-        error = _summarize_non_comment_items(items, platform, url)[:300]
+        error = _summarize_non_comment_items(items, platform, url)
+    error = error[:ACTOR_LOG_DIAGNOSTIC_LIMIT] + ("..." if len(error) > ACTOR_LOG_DIAGNOSTIC_LIMIT else "")
     return {
         "source_index": idx,
         "platform": platform,

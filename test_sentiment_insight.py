@@ -312,7 +312,8 @@ class SentimentInsightTests(unittest.TestCase):
              patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
              patch("sentiment_insight._start_actor", side_effect=fake_start), \
              patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-empty"}), \
-             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch), \
+             patch("sentiment_insight._fetch_actor_log", return_value=""):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         self.assertTrue(result["actor_meta"]["used_fallback"])
@@ -320,6 +321,47 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(result["actor_meta"]["dataset_id"], "dataset-empty")
         self.assertIn("public fallback", result["error"])
         self.assertNotIn("所有候选 input 均失败: None", result["error"])
+
+    def test_facebook_cookie_fallback_empty_dataset_includes_log_diagnostics(self):
+        starts = []
+        cookie_value = "secret_cookie_value"
+
+        def fake_start(actor_id, run_input, _token):
+            starts.append((actor_id, run_input))
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_fetch(_dataset_id, _token):
+            if starts[-1][0] != sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID:
+                return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
+            return []
+
+        log_text = "\n".join(
+            [
+                "INFO Session active: Authenticated",
+                f"WARN customCookies c_user={cookie_value}",
+                "INFO feedbackId not found (attempt 1/4) — login wall likely",
+                "ERROR Could not extract fb_dtsg from page",
+            ]
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"FB_COMMENT_FALLBACK_COOKIES_JSON": json.dumps([{"name": "c_user", "value": cookie_value}])},
+        ), \
+             patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-empty"}), \
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch), \
+             patch("sentiment_insight._fetch_actor_log", return_value=log_text):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        self.assertIn("log:", result["error"])
+        self.assertIn("feedbackId not found", result["error"])
+        self.assertIn("[REDACTED]", result["error"])
+        self.assertNotIn(cookie_value, result["error"])
+        meta_text = json.dumps(result["actor_meta"], ensure_ascii=False)
+        self.assertIn("feedbackId not found", meta_text)
+        self.assertNotIn(cookie_value, meta_text)
 
     def test_facebook_public_fallback_runs_when_cookie_fallback_empty(self):
         starts = []
@@ -360,7 +402,8 @@ class SentimentInsightTests(unittest.TestCase):
              patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
              patch("sentiment_insight._start_actor", side_effect=fake_start), \
              patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
-             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch), \
+             patch("sentiment_insight._fetch_actor_log", return_value=""):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         self.assertEqual(starts[-1][0], sentiment_insight.FB_PUBLIC_FALLBACK_ACTOR_ID)
@@ -385,7 +428,8 @@ class SentimentInsightTests(unittest.TestCase):
              patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
              patch("sentiment_insight._start_actor", side_effect=fake_start), \
              patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
-             patch("sentiment_insight._fetch_dataset", return_value=[{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]):
+             patch("sentiment_insight._fetch_dataset", return_value=[{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]), \
+             patch("sentiment_insight._fetch_actor_log", return_value=""):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         meta_text = json.dumps(result["actor_meta"], ensure_ascii=False)
