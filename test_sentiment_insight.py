@@ -259,6 +259,71 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["comment"]["text"], "fallback comment")
         self.assertEqual(result["error"], "")
 
+    def test_facebook_cookie_fallback_tries_share_url_string_variant(self):
+        starts = []
+
+        def fake_start(actor_id, run_input, _token):
+            starts.append((actor_id, run_input))
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_fetch(_dataset_id, _token):
+            actor_id, run_input = starts[-1]
+            if actor_id != sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID:
+                return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
+            if run_input["urls"] == [{"url": "https://www.facebook.com/share/p/abc/"}]:
+                return []
+            if run_input["urls"] == ["https://www.facebook.com/share/p/abc/"]:
+                return [
+                    {
+                        "source": {"url": "https://www.facebook.com/share/p/abc/"},
+                        "comment": {"id": "c1", "text": "fallback comment", "author": {"name": "player"}},
+                    }
+                ]
+            return []
+
+        with patch.dict(
+            "os.environ",
+            {"FB_COMMENT_FALLBACK_COOKIES_JSON": json.dumps([{"name": "c_user", "value": "1"}])},
+        ), \
+             patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        self.assertEqual(starts[2][1]["urls"], [{"url": "https://www.facebook.com/share/p/abc/"}])
+        self.assertEqual(starts[3][1]["urls"], ["https://www.facebook.com/share/p/abc/"])
+        self.assertEqual(result["items"][0]["comment"]["text"], "fallback comment")
+        self.assertEqual(result["error"], "")
+
+    def test_facebook_cookie_fallback_preserves_empty_dataset_diagnostics(self):
+        starts = []
+
+        def fake_start(actor_id, run_input, _token):
+            starts.append((actor_id, run_input))
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_fetch(_dataset_id, _token):
+            if starts[-1][0] != sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID:
+                return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
+            return []
+
+        with patch.dict(
+            "os.environ",
+            {"FB_COMMENT_FALLBACK_COOKIES_JSON": json.dumps([{"name": "c_user", "value": "1"}])},
+        ), \
+             patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-empty"}), \
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        self.assertTrue(result["actor_meta"]["used_fallback"])
+        self.assertEqual(result["actor_meta"]["run_id"], "run-6")
+        self.assertEqual(result["actor_meta"]["dataset_id"], "dataset-empty")
+        self.assertIn("dataset 为空", result["error"])
+        self.assertNotIn("所有候选 input 均失败: None", result["error"])
+
     def test_facebook_cookie_fallback_redacts_cookie_from_failure_metadata(self):
         starts = []
         cookie_value = "secret_cookie_value"

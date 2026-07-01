@@ -340,6 +340,10 @@ def _call_actor_with_meta(
                 "input": safe_input,
             }
             if accept_items and not accept_items(items):
+                last_err = f"run={run_id} dataset={dataset_id} 返回 {len(items)} 条但未通过校验"
+                if not items:
+                    last_err += "（dataset 为空）"
+                last_meta = {**last_meta, "error": last_err}
                 attempts.append({**last_meta, "item_count": len(items), "accepted": False})
                 logger.warning(
                     f"⚠️ actor {actor_id} run={run_id} dataset={dataset_id} "
@@ -363,7 +367,7 @@ def _call_actor_with_meta(
                 f"⚠️ actor {actor_id} 调用失败（run={run_id or '-'}, input={list(run_input.keys())}）: {safe_error}"
             )
             continue
-    if last_items:
+    if last_items or last_meta.get("dataset_id"):
         return last_items, {**last_meta, "attempts": attempts}
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
 
@@ -1254,7 +1258,23 @@ def _facebook_cookie_fallback_input(url: str, limit: int, cookies: list[dict]) -
     }
 
 
+def _facebook_cookie_fallback_inputs(urls: Iterable[str], limit: int, cookies: list[dict]) -> list[dict]:
+    fallback_limit = 0 if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
+    inputs: list[dict] = []
+    for url in _dedupe_urls(urls):
+        base = {
+            "maxCommentsPerUrl": fallback_limit,
+            "fetchReplies": True,
+            "commentsIntentToken": FB_COOKIE_FALLBACK_SORT,
+            "customCookies": cookies,
+        }
+        inputs.append({"urls": [{"url": url}], **base})
+        inputs.append({"urls": [url], **base})
+    return _dedupe_actor_inputs(inputs)
+
+
 def _scrape_facebook_with_cookie_fallback(
+    original_url: str,
     url: str,
     apify_token: str,
     limit: int,
@@ -1267,11 +1287,12 @@ def _scrape_facebook_with_cookie_fallback(
         return primary_items, primary_meta, primary_error
 
     fallback_actor = FB_COOKIE_FALLBACK_ACTOR_ID
-    fallback_input = _facebook_cookie_fallback_input(url, limit, cookies)
+    fallback_inputs = _facebook_cookie_fallback_inputs([original_url, url], limit, cookies)
+    fallback_input = fallback_inputs[0] if fallback_inputs else {}
     try:
         fallback_items, fallback_meta = _call_actor_with_meta(
             fallback_actor,
-            [fallback_input],
+            fallback_inputs,
             apify_token,
             accept_items=lambda rows: _items_have_comments(rows, "FB", url),
         )
@@ -1288,7 +1309,8 @@ def _scrape_facebook_with_cookie_fallback(
         logger.info(f"✅ FB cookie fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
         return fallback_items, merged_meta, ""
 
-    detail_parts = [part for part in (primary_error, f"cookie fallback: {fallback_error}" if fallback_error else "") if part]
+    fallback_detail = fallback_error or fallback_meta.get("error") or f"返回 {len(fallback_items or [])} 条/0 条评论"
+    detail_parts = [part for part in (primary_error, f"cookie fallback: {fallback_detail}" if fallback_detail else "") if part]
     return primary_items, merged_meta, "; ".join(detail_parts)[:300]
 
 
@@ -1319,6 +1341,7 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
         error = f"primary actor 失败: {meta['error']}"
     if not _items_have_comments(items, "FB", scrape_url):
         items, meta, error = _scrape_facebook_with_cookie_fallback(
+            url,
             scrape_url,
             apify_token,
             limit,
