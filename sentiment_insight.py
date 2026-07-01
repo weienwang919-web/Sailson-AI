@@ -510,6 +510,7 @@ def _extract_item_post_url(item: dict, platform: str, fallback_url: str) -> str:
             "post.permalink",
             "post.url",
             "post.link",
+            "facebookUrl",
             "webVideoUrl",
             "videoWebUrl",
             "video.webVideoUrl",
@@ -771,57 +772,118 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
     }
 
 
+_COMMENT_CHILD_KEYS = (
+    "comments",
+    "commentList",
+    "comment_list",
+    "replies",
+    "replyComments",
+    "commentReplies",
+    "children",
+    "edges",
+    "nodes",
+)
+
+_COMMENT_CONTEXT_KEYS = (
+    "facebookUrl",
+    "postUrl",
+    "postURL",
+    "post_url",
+    "postLink",
+    "postPermalink",
+    "inputUrl",
+    "sourceUrl",
+    "postTitle",
+    "postText",
+    "postCaption",
+    "caption",
+    "facebookId",
+    "pageAdLibrary",
+)
+
+
+def _with_comment_parent_context(parent: dict, child: dict) -> dict:
+    merged = dict(child)
+    for key in _COMMENT_CONTEXT_KEYS:
+        if key not in merged and parent.get(key) not in (None, ""):
+            merged[key] = parent.get(key)
+    return merged
+
+
+def _nested_comment_candidates(parent: dict) -> list[dict]:
+    nested: list[dict] = []
+
+    def _collect(value, context: dict):
+        if isinstance(value, list):
+            for entry in value:
+                _collect(entry, context)
+            return
+        if not isinstance(value, dict):
+            return
+
+        node = value.get("node")
+        if isinstance(node, dict):
+            value = _with_comment_parent_context(value, node)
+
+        nested.append(_with_comment_parent_context(context, value))
+        for key in _COMMENT_CHILD_KEYS:
+            child_value = value.get(key)
+            if child_value:
+                _collect(child_value, value)
+
+    for key in _COMMENT_CHILD_KEYS:
+        value = parent.get(key)
+        if value:
+            _collect(value, parent)
+    return nested
+
+
+def _flatten_comment_items(items: list[dict], platform: str, post_url: str = "") -> list[tuple[int, dict]]:
+    """Return top-level comment rows plus nested replies/comments from post-shell rows."""
+    flattened: list[tuple[int, dict]] = []
+    seen: set[str] = set()
+
+    def _add(raw_index: int, item: dict):
+        row_post_url = _extract_item_post_url(item, platform, post_url)
+        comment = _extract_comment(item, platform, row_post_url)
+        if not comment:
+            return
+        key = comment.get("comment_id") or json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+        if key in seen:
+            return
+        seen.add(key)
+        flattened.append((raw_index, item))
+
+    for raw_index, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            continue
+        _add(raw_index, item)
+        for child in _nested_comment_candidates(item):
+            _add(raw_index, child)
+    return flattened
+
+
 # ============================================
 # 平台抓取入口
 # ============================================
 
 
 def _items_have_comments(items: list[dict], platform: str, post_url: str = "") -> bool:
-    return any(_extract_comment(item, platform, post_url) for item in items or [])
+    return bool(_flatten_comment_items(items or [], platform, post_url))
 
 
 def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["FB"]
     limit = normalize_comments_per_post_limit(comments_per_post_limit)
     scrape_url = _resolve_facebook_url(url)
-    urls_to_try = [url]
-    if scrape_url and scrape_url != url:
-        urls_to_try.append(scrape_url)
-
-    candidates: list[dict] = []
-    for candidate_url in urls_to_try:
-        candidates.append({
-            "startUrls": [{"url": candidate_url}],
+    candidates = [
+        {
+            "startUrls": [{"url": url}],
             "resultsLimit": limit,
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
-        })
-    for candidate_url in urls_to_try:
-        candidates.append({
-            "startUrls": [{"url": candidate_url}],
-            "resultsLimit": limit,
-            "includeNestedComments": False,
-            "viewOption": "RANKED_UNFILTERED",
-        })
-    for candidate_url in urls_to_try:
-        candidates.append({
-            "startUrls": [{"url": candidate_url}],
-            "maxComments": limit,
-            "maxPostCount": 1,
-            "maxCommentsPerPost": limit,
-            "resultsLimit": limit,
-            "includeNestedComments": True,
-            "scrapeCommentReplies": False,
-            "viewOption": "RANKED_UNFILTERED",
-        })
-    for candidate_url in urls_to_try:
-        candidates.append({
-            "startUrls": [{"url": candidate_url}],
-            "maxComments": limit,
-            "resultsLimit": limit,
-            "language": "en",
-        })
-    candidates = _dedupe_actor_inputs(candidates)
+        }
+    ]
     items = _call_actor(
         actor,
         candidates,
@@ -1230,7 +1292,7 @@ def run_insight_pipeline(
         if not items:
             continue
         meta = _extract_post_meta(items, platform, url)
-        for raw_index, it in enumerate(items):
+        for raw_index, it in _flatten_comment_items(items, platform, url):
             row_post_url = _extract_item_post_url(it, platform, url)
             c = _extract_comment(it, platform, row_post_url)
             if not c:

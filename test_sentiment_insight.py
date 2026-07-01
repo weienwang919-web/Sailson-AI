@@ -115,28 +115,20 @@ class SentimentInsightTests(unittest.TestCase):
             "pfbid0PZNDkBbrYdTsQ8qLoUM2Z6ouqdGf8skhSWEud3xZFCX4ytHzSb3wz5yXjtJ7pasnl",
         )
 
-    def test_facebook_actor_continues_when_first_schema_has_no_comments(self):
+    def test_facebook_actor_does_not_repeat_fallback_schemas(self):
         starts = []
 
         def fake_start(_actor_id, run_input, _token):
             starts.append(run_input)
-            return {"id": f"run-{len(starts)}"}
-
-        def fake_wait(run_id, _token):
-            return {"status": "SUCCEEDED", "defaultDatasetId": run_id}
-
-        def fake_fetch(dataset_id, _token):
-            if dataset_id == "run-1":
-                return [{"postText": "post shell only"}]
-            return [{"commentId": "c1", "commentText": "real comment"}]
+            return {"id": "run-1"}
 
         with patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
              patch("sentiment_insight._start_actor", side_effect=fake_start), \
-             patch("sentiment_insight._wait_actor", side_effect=fake_wait), \
-             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
+             patch("sentiment_insight._fetch_dataset", return_value=[{"commentId": "c1", "commentText": "real comment"}]):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
-        self.assertEqual(len(starts), 2)
+        self.assertEqual(len(starts), 1)
         self.assertEqual(result["items"], [{"commentId": "c1", "commentText": "real comment"}])
 
     def test_facebook_actor_uses_original_share_url_with_results_limit_first(self):
@@ -158,6 +150,65 @@ class SentimentInsightTests(unittest.TestCase):
             "includeNestedComments": True,
             "viewOption": "RANKED_UNFILTERED",
         })
+
+    def test_pipeline_flattens_nested_facebook_comments_from_single_post_item(self):
+        original_scraper = sentiment_insight.PLATFORM_SCRAPERS["FB"]
+        try:
+            sentiment_insight.PLATFORM_SCRAPERS["FB"] = lambda _url, _token, _limit: {
+                "platform": "FB",
+                "url": "https://www.facebook.com/share/p/abc/",
+                "items": [
+                    {
+                        "facebookUrl": "https://www.facebook.com/page/posts/pfbid1",
+                        "postTitle": "Post shell",
+                        "comments": [
+                            {
+                                "commentId": "c1",
+                                "text": "first nested",
+                                "profileName": "player one",
+                                "likesCount": "2",
+                            },
+                            {
+                                "commentId": "c2",
+                                "text": "second nested",
+                                "profileName": "player two",
+                                "likesCount": "3",
+                            },
+                        ],
+                    }
+                ],
+            }
+
+            def ai_call(prompt, _timeout):
+                payload = []
+                section = prompt.split("《待处理评论》", 1)[1].split("只输出 JSON 数组", 1)[0]
+                for line in section.splitlines():
+                    line = line.strip()
+                    if not line.startswith("{"):
+                        continue
+                    data = json.loads(line)
+                    payload.append({
+                        "idx": data["idx"],
+                        "id": data["id"],
+                        "translation_zh": f"翻译{data['id']}",
+                        "sentiment": "中立",
+                        "category": "其他",
+                    })
+                return json.dumps(payload, ensure_ascii=False), 1
+
+            result = sentiment_insight.run_insight_pipeline(
+                ["https://www.facebook.com/share/p/abc/"],
+                "token",
+                ai_call,
+                comments_per_post_limit=500,
+            )
+
+            self.assertEqual(result["total_comments"], 2)
+            self.assertEqual([r["comment_id"] for r in result["structured"]], ["FB:c1", "FB:c2"])
+            self.assertEqual(result["structured"][0]["post_url"], "https://www.facebook.com/page/posts/pfbid1")
+            self.assertEqual(result["structured"][1]["comment_like_count"], 3)
+        finally:
+            sentiment_insight.PLATFORM_SCRAPERS["FB"] = original_scraper
 
     def test_pipeline_passes_comment_limit_to_scraper(self):
         original_scraper = sentiment_insight.PLATFORM_SCRAPERS["TT"]
