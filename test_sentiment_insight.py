@@ -317,10 +317,51 @@ class SentimentInsightTests(unittest.TestCase):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         self.assertTrue(result["actor_meta"]["used_fallback"])
-        self.assertEqual(result["actor_meta"]["run_id"], "run-4")
+        self.assertEqual(result["actor_meta"]["run_id"], "run-5")
         self.assertEqual(result["actor_meta"]["dataset_id"], "dataset-empty")
         self.assertIn("public fallback", result["error"])
         self.assertNotIn("所有候选 input 均失败: None", result["error"])
+
+    def test_facebook_cookie_fallback_retries_mobile_url_variants(self):
+        starts = []
+
+        def fake_start(actor_id, run_input, _token):
+            starts.append((actor_id, run_input))
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_fetch(_dataset_id, _token):
+            actor_id, run_input = starts[-1]
+            if actor_id != sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID:
+                return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
+            urls = [entry["url"] for entry in run_input["urls"]]
+            if "https://mbasic.facebook.com/page/posts/pfbid1" in urls:
+                return [
+                    {
+                        "source": {"url": "https://mbasic.facebook.com/page/posts/pfbid1"},
+                        "comment": {"id": "c1", "text": "mobile fallback comment", "author": {"name": "player"}},
+                    }
+                ]
+            return []
+
+        with patch.dict(
+            "os.environ",
+            {"FB_COMMENT_FALLBACK_COOKIES_JSON": json.dumps([{"name": "c_user", "value": "1"}])},
+        ), \
+             patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch), \
+             patch("sentiment_insight._fetch_actor_log", return_value=""):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        fallback_calls = [call for call in starts if call[0] == sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID]
+        self.assertEqual(fallback_calls[0][1]["urls"], [{"url": "https://www.facebook.com/page/posts/pfbid1"}])
+        second_urls = [entry["url"] for entry in fallback_calls[1][1]["urls"]]
+        self.assertIn("https://m.facebook.com/page/posts/pfbid1", second_urls)
+        self.assertIn("https://mbasic.facebook.com/page/posts/pfbid1", second_urls)
+        self.assertIn("https://m.facebook.com/share/p/abc/", second_urls)
+        self.assertEqual(result["items"][0]["comment"]["text"], "mobile fallback comment")
+        self.assertEqual(result["error"], "")
 
     def test_facebook_cookie_fallback_empty_dataset_includes_log_diagnostics(self):
         starts = []

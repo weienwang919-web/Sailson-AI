@@ -1360,10 +1360,43 @@ def _items_have_comments(items: list[dict], platform: str, post_url: str = "") -
     return bool(_flatten_comment_items(items or [], platform, post_url))
 
 
+def _facebook_host_variant(url: str, host: str) -> str:
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except Exception:
+        return ""
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    original_host = (parsed.netloc or "").lower()
+    if "facebook.com" not in original_host:
+        return ""
+    return urlunparse(parsed._replace(scheme="https", netloc=host))
+
+
+def _facebook_cookie_fallback_urls(original_url: str, resolved_url: str) -> list[str]:
+    urls: list[str] = []
+    for base_url in _dedupe_urls([resolved_url, original_url]):
+        urls.append(base_url)
+        urls.append(_facebook_host_variant(base_url, "m.facebook.com"))
+        urls.append(_facebook_host_variant(base_url, "mbasic.facebook.com"))
+    return _dedupe_urls(urls)
+
+
 def _facebook_cookie_fallback_input(url: str, limit: int, cookies: list[dict]) -> dict:
     fallback_limit = 0 if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
     return {
         "urls": [{"url": url}],
+        "maxCommentsPerUrl": fallback_limit,
+        "fetchReplies": True,
+        "commentsIntentToken": FB_COOKIE_FALLBACK_SORT,
+        "customCookies": cookies,
+    }
+
+
+def _facebook_cookie_fallback_input_for_urls(urls: Iterable[str], limit: int, cookies: list[dict]) -> dict:
+    fallback_limit = 0 if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
+    return {
+        "urls": [{"url": candidate_url} for candidate_url in _dedupe_urls(urls)],
         "maxCommentsPerUrl": fallback_limit,
         "fetchReplies": True,
         "commentsIntentToken": FB_COOKIE_FALLBACK_SORT,
@@ -1458,10 +1491,14 @@ def _scrape_facebook_with_cookie_fallback(
 
     fallback_actor = FB_COOKIE_FALLBACK_ACTOR_ID
     fallback_input = _facebook_cookie_fallback_input(url, limit, cookies)
+    fallback_inputs = _dedupe_actor_inputs([
+        fallback_input,
+        _facebook_cookie_fallback_input_for_urls(_facebook_cookie_fallback_urls(original_url, url), limit, cookies),
+    ])
     try:
         fallback_items, fallback_meta = _call_actor_with_meta(
             fallback_actor,
-            [fallback_input],
+            fallback_inputs,
             apify_token,
             accept_items=lambda rows: _items_have_comments(rows, "FB", url),
             include_log_diagnostics=True,
