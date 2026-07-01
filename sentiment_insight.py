@@ -296,7 +296,7 @@ def _summarize_actor_log(log_text: str, actor_input: dict | None = None, limit: 
     if not log_text:
         return ""
 
-    matched: list[str] = []
+    candidates: list[str] = []
     seen: set[str] = set()
     for raw_line in str(log_text).splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
@@ -309,11 +309,14 @@ def _summarize_actor_log(log_text: str, actor_input: dict | None = None, limit: 
         line = _brief_raw_value(line, 180)
         if line and line not in seen:
             seen.add(line)
-            matched.append(line)
-        if len(matched) >= 6:
-            break
+            candidates.append(line)
 
-    if not matched:
+    if candidates:
+        matched = candidates[:3]
+        for line in candidates[-3:]:
+            if line not in matched:
+                matched.append(line)
+    else:
         tail_lines = [re.sub(r"\s+", " ", line).strip() for line in str(log_text).splitlines() if line.strip()]
         matched = [_brief_raw_value(_redact_sensitive_text(line, actor_input), 180) for line in tail_lines[-3:]]
 
@@ -1378,7 +1381,6 @@ def _facebook_cookie_fallback_urls(original_url: str, resolved_url: str) -> list
     for base_url in _dedupe_urls([resolved_url, original_url]):
         urls.append(base_url)
         urls.append(_facebook_host_variant(base_url, "m.facebook.com"))
-        urls.append(_facebook_host_variant(base_url, "mbasic.facebook.com"))
     return _dedupe_urls(urls)
 
 

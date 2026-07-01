@@ -334,10 +334,10 @@ class SentimentInsightTests(unittest.TestCase):
             if actor_id != sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID:
                 return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
             urls = [entry["url"] for entry in run_input["urls"]]
-            if "https://mbasic.facebook.com/page/posts/pfbid1" in urls:
+            if "https://m.facebook.com/page/posts/pfbid1" in urls:
                 return [
                     {
-                        "source": {"url": "https://mbasic.facebook.com/page/posts/pfbid1"},
+                        "source": {"url": "https://m.facebook.com/page/posts/pfbid1"},
                         "comment": {"id": "c1", "text": "mobile fallback comment", "author": {"name": "player"}},
                     }
                 ]
@@ -358,8 +358,8 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(fallback_calls[0][1]["urls"], [{"url": "https://www.facebook.com/page/posts/pfbid1"}])
         second_urls = [entry["url"] for entry in fallback_calls[1][1]["urls"]]
         self.assertIn("https://m.facebook.com/page/posts/pfbid1", second_urls)
-        self.assertIn("https://mbasic.facebook.com/page/posts/pfbid1", second_urls)
         self.assertIn("https://m.facebook.com/share/p/abc/", second_urls)
+        self.assertNotIn("https://mbasic.facebook.com/page/posts/pfbid1", second_urls)
         self.assertEqual(result["items"][0]["comment"]["text"], "mobile fallback comment")
         self.assertEqual(result["error"], "")
 
@@ -478,6 +478,24 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(cookie_call[1]["customCookies"][0]["value"], cookie_value)
         self.assertNotIn(cookie_value, meta_text)
         self.assertIn("[REDACTED]", meta_text)
+
+    def test_actor_log_summary_keeps_late_failure_lines(self):
+        log_text = "\n".join(
+            [
+                "INFO Initialising session from user-provided cookies",
+                "INFO Session established from user-provided cookies",
+                "INFO Session active: YES",
+                "WARN Rejected 2 URL(s) — only facebook.com URLs are accepted",
+                "WARN invalid domain: mbasic.facebook.com",
+                "WARN Could not extract page tokens",
+                "ERROR Could not extract feedbackId from page HTML. Cannot proceed without it.",
+            ]
+        )
+
+        summary = sentiment_insight._summarize_actor_log(log_text)
+
+        self.assertIn("Session active", summary)
+        self.assertIn("Could not extract feedbackId", summary)
 
     def test_facebook_cookie_fallback_runs_when_primary_actor_raises(self):
         starts = []
