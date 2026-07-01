@@ -234,9 +234,15 @@ def _fetch_dataset(dataset_id: str, apify_token: str) -> list[dict]:
     return items if isinstance(items, list) else []
 
 
-def _call_actor(actor_id: str, candidate_inputs: list[dict], apify_token: str) -> list[dict]:
-    """依次尝试多个 input schema 直到一个成功返回数据；任一非空就返回。"""
+def _call_actor(
+    actor_id: str,
+    candidate_inputs: list[dict],
+    apify_token: str,
+    accept_items: Callable[[list[dict]], bool] | None = None,
+) -> list[dict]:
+    """依次尝试多个 input schema 直到一个成功返回可接受的数据。"""
     last_err = None
+    last_items: list[dict] = []
     for run_input in candidate_inputs:
         try:
             run = _start_actor(actor_id, run_input, apify_token)
@@ -250,11 +256,19 @@ def _call_actor(actor_id: str, candidate_inputs: list[dict], apify_token: str) -
             if not dataset_id:
                 raise RuntimeError("run 缺少 defaultDatasetId")
             items = _fetch_dataset(dataset_id, apify_token)
+            last_items = items
+            if accept_items and not accept_items(items):
+                logger.warning(
+                    f"⚠️ actor {actor_id} 返回 {len(items)} 条但未通过校验，继续尝试下一个 input"
+                )
+                continue
             return items
         except Exception as e:
             last_err = e
             logger.warning(f"⚠️ actor {actor_id} 调用失败（input={list(run_input.keys())}）: {e}")
             continue
+    if last_items:
+        return last_items
     raise RuntimeError(f"actor {actor_id} 所有候选 input 均失败: {last_err}")
 
 
@@ -725,11 +739,20 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
 # ============================================
 
 
+def _items_have_comments(items: list[dict], platform: str, post_url: str = "") -> bool:
+    return any(_extract_comment(item, platform, post_url) for item in items or [])
+
+
 def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:
     actor = DEFAULT_ACTORS["FB"]
     limit = normalize_comments_per_post_limit(comments_per_post_limit)
     scrape_url = _resolve_facebook_url(url)
     candidates = [
+        {
+            "startUrls": [{"url": scrape_url}],
+            "maxComments": limit,
+            "language": "en",
+        },
         {
             "startUrls": [{"url": scrape_url}],
             "resultsLimit": limit,
@@ -744,7 +767,12 @@ def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | 
             "scrapeCommentReplies": False,
         },
     ]
-    items = _call_actor(actor, candidates, apify_token)
+    items = _call_actor(
+        actor,
+        candidates,
+        apify_token,
+        accept_items=lambda rows: _items_have_comments(rows, "FB", scrape_url),
+    )
     return {"items": items, "platform": "FB", "url": url, "resolved_url": scrape_url}
 
 

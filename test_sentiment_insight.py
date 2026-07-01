@@ -113,6 +113,30 @@ class SentimentInsightTests(unittest.TestCase):
             "pfbid0PZNDkBbrYdTsQ8qLoUM2Z6ouqdGf8skhSWEud3xZFCX4ytHzSb3wz5yXjtJ7pasnl",
         )
 
+    def test_facebook_actor_continues_when_first_schema_has_no_comments(self):
+        starts = []
+
+        def fake_start(_actor_id, run_input, _token):
+            starts.append(run_input)
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_wait(run_id, _token):
+            return {"status": "SUCCEEDED", "defaultDatasetId": run_id}
+
+        def fake_fetch(dataset_id, _token):
+            if dataset_id == "run-1":
+                return [{"postText": "post shell only"}]
+            return [{"commentId": "c1", "commentText": "real comment"}]
+
+        with patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", side_effect=fake_wait), \
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(result["items"], [{"commentId": "c1", "commentText": "real comment"}])
+
     def test_pipeline_passes_comment_limit_to_scraper(self):
         original_scraper = sentiment_insight.PLATFORM_SCRAPERS["TT"]
         seen_limits = []
