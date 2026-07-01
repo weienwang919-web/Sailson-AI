@@ -304,27 +304,22 @@ def _resolve_facebook_url(url: str) -> str:
     """Expand FB share/fb.watch URLs before sending them to Apify actors."""
     if not _facebook_url_needs_resolution(url):
         return url
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
-        )
-    }
+    headers = {"Accept": "*/*"}
     try:
-        resp = requests.head(url, headers=headers, allow_redirects=True, timeout=15)
-        final_url = getattr(resp, "url", "") or ""
-        if final_url and final_url != url:
-            resolved = _clean_resolved_facebook_url(final_url)
+        resp = requests.head(url, headers=headers, allow_redirects=False, timeout=15)
+        redirect_url = resp.headers.get("location") or ""
+        if redirect_url:
+            resolved = _clean_resolved_facebook_url(redirect_url)
             logger.info(f"🔁 FB share URL 已展开: {url} -> {resolved}")
             return resolved
     except requests.RequestException as e:
         logger.warning(f"⚠️ FB share URL HEAD 展开失败: {e}")
     try:
-        resp = requests.get(url, headers=headers, allow_redirects=True, timeout=15, stream=True)
-        final_url = getattr(resp, "url", "") or ""
+        resp = requests.get(url, headers=headers, allow_redirects=False, timeout=15, stream=True)
+        redirect_url = resp.headers.get("location") or ""
         resp.close()
-        if final_url and final_url != url:
-            resolved = _clean_resolved_facebook_url(final_url)
+        if redirect_url:
+            resolved = _clean_resolved_facebook_url(redirect_url)
             logger.info(f"🔁 FB share URL 已展开: {url} -> {resolved}")
             return resolved
     except requests.RequestException as e:

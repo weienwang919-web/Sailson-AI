@@ -98,11 +98,13 @@ class SentimentInsightTests(unittest.TestCase):
 
     def test_resolve_facebook_share_url_cleans_redirect_url(self):
         response = Mock()
-        response.url = (
-            "https://www.facebook.com/SolitaireClashAvia/posts/"
-            "pfbid0PZNDkBbrYdTsQ8qLoUM2Z6ouqdGf8skhSWEud3xZFCX4ytHzSb3wz5yXjtJ7pasnl"
-            "?rdid=1oSLtJZIMxGbaYMB&share_url=https%3A%2F%2Fwww.facebook.com%2Fshare%2Fp%2F185zpnK9rv%2F"
-        )
+        response.headers = {
+            "location": (
+                "https://www.facebook.com/SolitaireClashAvia/posts/"
+                "pfbid0PZNDkBbrYdTsQ8qLoUM2Z6ouqdGf8skhSWEud3xZFCX4ytHzSb3wz5yXjtJ7pasnl"
+                "?rdid=1oSLtJZIMxGbaYMB&share_url=https%3A%2F%2Fwww.facebook.com%2Fshare%2Fp%2F185zpnK9rv%2F"
+            )
+        }
 
         with patch("sentiment_insight.requests.head", return_value=response):
             resolved = sentiment_insight._resolve_facebook_url("https://www.facebook.com/share/p/185zpnK9rv/")
