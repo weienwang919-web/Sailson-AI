@@ -11,8 +11,12 @@ services:
         value: "5000"
       - key: USE_DB_WORKER
         value: "true"
+      - key: ETL_VIDEO_METRICS_PROFILE_FALLBACK_ENABLED
+        value: "false"
       - key: KOL_API_BASE_URL
         value: "http://127.0.0.1:8001"
+      - key: KOL_APIFY_REFRESH_ENABLED
+        value: "true"
       - key: KOL_PORT
         value: "8001"
       # DashScope API Key（用于大模型和向量）
@@ -59,8 +63,12 @@ services:
     envVars:
       - key: USE_DB_WORKER
         value: "true"
+      - key: ETL_VIDEO_METRICS_PROFILE_FALLBACK_ENABLED
+        value: "false"
       - key: WORKER_POLL_INTERVAL
         value: "3"
+      - key: KOL_APIFY_REFRESH_ENABLED
+        value: "true"
       - key: DASHSCOPE_API_KEY
         sync: false
       - key: APIFY_TOKEN

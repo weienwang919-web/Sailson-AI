@@ -24,6 +24,10 @@ BATCH_SIZE = int(os.environ.get("ETL_VIDEO_METRICS_BATCH_SIZE", "80"))
 BATCH_WORKERS = max(1, int(os.environ.get("ETL_VIDEO_METRICS_BATCH_WORKERS", "2")))
 SHORT_URL_TIMEOUT_SECS = int(os.environ.get("ETL_SHORT_URL_TIMEOUT_SECS", "4"))
 SHORT_URL_WORKERS = max(1, int(os.environ.get("ETL_SHORT_URL_WORKERS", "16")))
+VIDEO_METRICS_PROFILE_FALLBACK_ENABLED = os.environ.get(
+    "ETL_VIDEO_METRICS_PROFILE_FALLBACK_ENABLED",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 METRIC_FIELDS: Dict[str, str] = {
     "views": "播放量",
@@ -646,6 +650,8 @@ def _index_items(items: Iterable[dict]) -> Dict[str, dict]:
 
 
 def _fallback_via_profile(platform: str, url: str, apify_token: str) -> dict:
+    if not VIDEO_METRICS_PROFILE_FALLBACK_ENABLED:
+        return {}
     profile_url = _profile_url_from_url(url, platform)
     if not profile_url:
         return {}
@@ -682,21 +688,27 @@ def _fetch_video_metrics_batch(platform: str, batch: List[str], apify_token: str
             if item:
                 results[actor_url] = _extract_metrics(item, platform)
             else:
-                try:
-                    fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
-                except Exception as e:
-                    logger.warning("主页兜底失败 %s: %s", actor_url, e)
-                    fallback_metrics = {}
-                results[actor_url] = fallback_metrics or {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
+                if VIDEO_METRICS_PROFILE_FALLBACK_ENABLED:
+                    try:
+                        fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
+                    except Exception as e:
+                        logger.warning("主页兜底失败 %s: %s", actor_url, e)
+                        fallback_metrics = {}
+                    results[actor_url] = fallback_metrics or {"_error": "Apify 未返回该链接数据，主页兜底也未返回可用数据"}
+                else:
+                    results[actor_url] = {"_error": "Apify 未返回该链接数据，已跳过主页兜底以避免额外主页抓取成本"}
     except Exception as e:
         logger.error("批次抓取失败 platform=%s: %s", platform, e)
         for actor_url in batch:
-            try:
-                fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
-            except Exception as fallback_exc:
-                logger.warning("批次失败后的主页兜底失败 %s: %s", actor_url, fallback_exc)
-                fallback_metrics = {}
-            results[actor_url] = fallback_metrics or {"_error": str(e)[:200]}
+            if VIDEO_METRICS_PROFILE_FALLBACK_ENABLED:
+                try:
+                    fallback_metrics = _fallback_via_profile(platform, actor_url, apify_token)
+                except Exception as fallback_exc:
+                    logger.warning("批次失败后的主页兜底失败 %s: %s", actor_url, fallback_exc)
+                    fallback_metrics = {}
+                results[actor_url] = fallback_metrics or {"_error": str(e)[:200]}
+            else:
+                results[actor_url] = {"_error": str(e)[:200]}
     return results
 
 

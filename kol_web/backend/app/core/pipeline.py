@@ -291,6 +291,8 @@ def build_apify_inputs(records: list[Any], videos_per_profile: int) -> dict[str,
 
 
 def call_apify(actor_id: str, run_input: dict[str, Any], timeout_secs: int = 3600) -> list[dict[str, Any]]:
+    if os.getenv("KOL_APIFY_REFRESH_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"}:
+        raise RuntimeError("KOL_APIFY_REFRESH_ENABLED=false")
     token = os.getenv("APIFY_TOKEN", "").strip()
     if not token:
         raise RuntimeError("APIFY_TOKEN is not configured")

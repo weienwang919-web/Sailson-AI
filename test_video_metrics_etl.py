@@ -213,6 +213,18 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(result[short_key]["views"], 2468)
 
+    def test_video_metrics_profile_fallback_disabled_by_default(self):
+        url = "https://www.tiktok.com/@someone/video/999"
+
+        with patch.object(video_metrics_etl, "_scrape_batch", side_effect=RuntimeError("batch failed")), patch.object(
+            video_metrics_etl, "_scrape_profile"
+        ) as scrape_profile:
+            result = video_metrics_etl.fetch_video_metrics([url], "token")
+
+        scrape_profile.assert_not_called()
+        metrics = result[video_metrics_etl.normalize_url(url)]
+        self.assertIn("_error", metrics)
+
     def test_fetch_profile_video_metrics_extracts_video_rows(self):
         profile_url = "https://www.tiktok.com/@bunnyhack04"
 
