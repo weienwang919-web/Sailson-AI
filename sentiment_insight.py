@@ -37,6 +37,21 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "insight_v2"
 
+
+def _csv_env_values(name: str, default: str = "") -> list[str]:
+    """Read a comma-separated env var while keeping order and removing duplicates."""
+    raw = os.environ.get(name, default) or ""
+    seen: set[str] = set()
+    values: list[str] = []
+    for part in str(raw).split(","):
+        value = part.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    return values
+
+
 # Excel/HTML 表头（图中样式）
 INSIGHT_HEADERS = [
     "来源序号",
@@ -70,6 +85,10 @@ FB_COOKIE_FALLBACK_ACTOR_ID = os.environ.get(
     "APIFY_FB_COOKIE_COMMENTS_ACTOR_ID",
     "dz_omar/facebook-comment-scraper",
 )
+FB_COOKIE_FALLBACK_ACTOR_IDS = _csv_env_values(
+    "APIFY_FB_COOKIE_FALLBACK_ACTORS",
+    FB_COOKIE_FALLBACK_ACTOR_ID,
+)
 FB_COOKIE_FALLBACK_SORT = os.environ.get(
     "FB_COOKIE_FALLBACK_SORT",
     "RANKED_UNFILTERED_CHRONOLOGICAL_REPLIES_INTENT_V1",
@@ -77,6 +96,17 @@ FB_COOKIE_FALLBACK_SORT = os.environ.get(
 FB_PUBLIC_FALLBACK_ACTOR_ID = os.environ.get(
     "APIFY_FB_PUBLIC_FALLBACK_ACTOR_ID",
     "crawlerbros/facebook-comments-scraper",
+)
+FB_PUBLIC_FALLBACK_ACTOR_IDS = _csv_env_values(
+    "APIFY_FB_PUBLIC_FALLBACK_ACTORS",
+    ",".join(
+        [
+            FB_PUBLIC_FALLBACK_ACTOR_ID,
+            "premiumscraper/facebook-comments-scraper",
+            "memo23/facebook-comments-scraper",
+            "thedoor/facebook-comment-scraper",
+        ]
+    ),
 )
 FB_PUBLIC_FALLBACK_MODE = os.environ.get("FB_PUBLIC_FALLBACK_MODE", "ALL")
 ACTOR_LOG_DIAGNOSTIC_LIMIT = int(os.environ.get("INSIGHT_ACTOR_LOG_DIAGNOSTIC_LIMIT", "900"))
@@ -668,6 +698,12 @@ def _first_str(item: dict, keys: Iterable[str]) -> str:
 def _deep_get(item: dict, path: str):
     current = item
     for part in str(path).split("."):
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                return None
+            continue
         if not isinstance(current, dict):
             return None
         current = current.get(part)
@@ -745,6 +781,16 @@ def _is_http_url(value: str) -> bool:
 def _first_url(item: dict, keys: Iterable[str]) -> str:
     for k in keys:
         v = _deep_get(item, k)
+        if isinstance(v, list):
+            for entry in v:
+                if _is_http_url(entry):
+                    return entry.strip()
+                if isinstance(entry, dict):
+                    for sub in ("url", "link", "permalink", "webVideoUrl", "postUrl"):
+                        vv = entry.get(sub)
+                        if _is_http_url(vv):
+                            return vv.strip()
+            continue
         if isinstance(v, dict):
             for sub in ("url", "link", "permalink", "webVideoUrl", "postUrl"):
                 vv = v.get(sub)
@@ -775,6 +821,7 @@ def _extract_comment_media_url(item: dict) -> str:
         [
             "imageUrl",
             "imageURL",
+            "image_url",
             "image.url",
             "image.uri",
             "photoUrl",
@@ -788,6 +835,8 @@ def _extract_comment_media_url(item: dict) -> str:
             "attachmentUrl",
             "attachmentURL",
             "attachment.url",
+            "attachments.url",
+            "attachments.image_url",
             "attachment.media.image.uri",
             "attachment.media.image.url",
             "attachments.media.image.uri",
@@ -849,6 +898,8 @@ def _extract_item_post_url(item: dict, platform: str, fallback_url: str) -> str:
         item,
         [
             "source.url",
+            "source_post_url",
+            "post_url",
             "postUrl",
             "postURL",
             "post_url",
@@ -883,6 +934,9 @@ def _extract_comment_url(item: dict) -> str:
         item,
         [
             "comment.url",
+            "comment_links",
+            "comment_links.0",
+            "comment.link",
             "commentUrl",
             "commentURL",
             "comment_url",
@@ -900,6 +954,10 @@ def _extract_comment_like_count(item: dict) -> int:
         [
             "comment.like_count",
             "comment.total_reactions",
+            "engagement.reaction_count_total",
+            "engagement.reaction_count_reduced",
+            "reactions_count",
+            "reactionsCount",
             "commentLikeCount",
             "commentLikesCount",
             "comment_likes_count",
@@ -929,9 +987,13 @@ def _has_comment_identity(item: dict) -> bool:
             "commentId",
             "comment_id",
             "commentPk",
+            "comment_legacy_fbid",
             "replyId",
+            "replyto_comment_id",
+            "replyToCommentId",
             "comment.id",
             "comment.parent_id",
+            "parent_comment_id",
             "comment.commentId",
             "commentUrl",
             "commentURL",
@@ -961,12 +1023,15 @@ def _stable_comment_id(item: dict, platform: str, post_url: str, author: str, te
         [
             "commentId",
             "comment_id",
+            "comment_legacy_fbid",
             "comment.id",
             "id",
             "cid",
             "pk",
             "commentPk",
             "replyId",
+            "replyto_comment_id",
+            "replyToCommentId",
             "uid",
         ],
     )
@@ -1121,6 +1186,8 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
             "content",
             "comment",
             "message",
+            "message_text",
+            "comment.message_text",
             "commentText",
         ],
     )
@@ -1136,6 +1203,8 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
         item,
         [
             "comment.author.name",
+            "author.profile_name",
+            "author_name",
             "authorName",
             "ownerUsername",
             "username",
@@ -1155,6 +1224,7 @@ def _extract_comment(item: dict, platform: str, post_url: str = "") -> dict | No
     for k in (
         "commentDate",
         "commentTime",
+        "comment_time",
         "comment.created_at",
         "comment.created_time_unix",
         "createdAtTimestamp",
@@ -1192,6 +1262,7 @@ _COMMENT_CHILD_KEYS = (
     "commentList",
     "comment_list",
     "replies",
+    "all_replies",
     "replyComments",
     "commentReplies",
     "children",
@@ -1201,6 +1272,8 @@ _COMMENT_CHILD_KEYS = (
 
 _COMMENT_CONTEXT_KEYS = (
     "facebookUrl",
+    "source_post_url",
+    "post_url",
     "postUrl",
     "postURL",
     "post_url",
@@ -1406,6 +1479,32 @@ def _facebook_cookie_fallback_input_for_urls(urls: Iterable[str], limit: int, co
     }
 
 
+def _facebook_cookie_fallback_inputs(
+    actor_id: str,
+    original_url: str,
+    resolved_url: str,
+    limit: int,
+    cookies: list[dict],
+) -> list[dict]:
+    actor = (actor_id or "").strip().lower()
+    urls = _facebook_cookie_fallback_urls(original_url, resolved_url)
+    if actor in {"dz_omar/facebook-comment-scraper", ""}:
+        return _dedupe_actor_inputs(
+            [
+                _facebook_cookie_fallback_input(resolved_url, limit, cookies),
+                _facebook_cookie_fallback_input_for_urls(urls, limit, cookies),
+            ]
+        )
+
+    # Best-effort support for forks or compatible actors configured by env.
+    return _dedupe_actor_inputs(
+        [
+            _facebook_cookie_fallback_input(resolved_url, limit, cookies),
+            _facebook_cookie_fallback_input_for_urls(urls, limit, cookies),
+        ]
+    )
+
+
 def _facebook_public_fallback_input(urls: Iterable[str], limit: int) -> dict:
     fallback_limit = UNLIMITED_COMMENTS_PER_POST_LIMIT if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
     return {
@@ -1421,6 +1520,47 @@ def _facebook_public_fallback_input(urls: Iterable[str], limit: int) -> dict:
             "apifyProxyGroups": ["RESIDENTIAL"],
         },
     }
+
+
+def _facebook_thedoor_fallback_input(urls: Iterable[str], limit: int) -> dict:
+    target_comments = -1 if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
+    return {
+        "postUrls": _dedupe_urls(urls),
+        "targetComments": target_comments,
+        "includeReplies": True,
+        "includeReactions": True,
+        "orderingMode": "RANKED",
+    }
+
+
+def _facebook_premiumscraper_fallback_input(urls: Iterable[str], limit: int) -> dict:
+    fallback_limit = UNLIMITED_COMMENTS_PER_POST_LIMIT if limit >= UNLIMITED_COMMENTS_PER_POST_LIMIT else limit
+    return {
+        "facebook_urls": [{"url": candidate_url} for candidate_url in _dedupe_urls(urls)],
+        "comments_limit": fallback_limit,
+        "include_comment_replies": True,
+        "comment_replies_limit": fallback_limit,
+        "comment_filter": "all_comments",
+    }
+
+
+def _facebook_public_fallback_inputs(actor_id: str, urls: Iterable[str], limit: int) -> list[dict]:
+    actor = (actor_id or "").strip().lower()
+    cleaned_urls = _dedupe_urls(urls)
+    if actor == "thedoor/facebook-comment-scraper":
+        return [_facebook_thedoor_fallback_input(cleaned_urls, limit)]
+    if actor == "premiumscraper/facebook-comments-scraper":
+        return [_facebook_premiumscraper_fallback_input(cleaned_urls, limit)]
+    if actor in {"memo23/facebook-comments-scraper", "crawlerbros/facebook-comments-scraper"}:
+        return [_facebook_public_fallback_input(cleaned_urls, limit)]
+
+    return _dedupe_actor_inputs(
+        [
+            _facebook_public_fallback_input(cleaned_urls, limit),
+            _facebook_thedoor_fallback_input(cleaned_urls, limit),
+            _facebook_premiumscraper_fallback_input(cleaned_urls, limit),
+        ]
+    )
 
 
 def _actor_failure_detail(meta: dict, fallback_error: str = "", items_count: int = 0) -> str:
@@ -1445,37 +1585,43 @@ def _scrape_facebook_with_public_fallback(
     primary_meta: dict,
     primary_error: str,
 ) -> tuple[list[dict], dict, str]:
-    fallback_actor = (FB_PUBLIC_FALLBACK_ACTOR_ID or "").strip()
-    if not fallback_actor:
+    fallback_actors = FB_PUBLIC_FALLBACK_ACTOR_IDS
+    if not fallback_actors:
         return primary_items, primary_meta, primary_error
 
-    fallback_input = _facebook_public_fallback_input([original_url, url], limit)
-    try:
-        fallback_items, fallback_meta = _call_actor_with_meta(
-            fallback_actor,
-            [fallback_input],
-            apify_token,
-            accept_items=lambda rows: _items_have_comments(rows, "FB", url),
-            include_log_diagnostics=True,
-        )
-    except Exception as e:
-        safe_error = _redact_sensitive_text(str(e), fallback_input)
-        fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
-        merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
-        detail = f"{primary_error}; public fallback 失败: {safe_error}" if primary_error else f"public fallback 失败: {safe_error}"
-        return primary_items, merged_meta, detail[:ACTOR_LOG_DIAGNOSTIC_LIMIT]
+    current_items = primary_items
+    current_meta = primary_meta
+    fallback_details: list[str] = []
+    for fallback_actor in fallback_actors:
+        fallback_inputs = _facebook_public_fallback_inputs(fallback_actor, [original_url, url], limit)
+        fallback_input = fallback_inputs[0] if fallback_inputs else {}
+        try:
+            fallback_items, fallback_meta = _call_actor_with_meta(
+                fallback_actor,
+                fallback_inputs,
+                apify_token,
+                accept_items=lambda rows: _items_have_comments(rows, "FB", url),
+                include_log_diagnostics=True,
+            )
+        except Exception as e:
+            safe_error = _redact_sensitive_text(str(e), fallback_input)
+            fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
+            current_meta = _merge_actor_meta(current_meta, fallback_meta)
+            fallback_details.append(f"public fallback {fallback_actor} 失败: {safe_error}")
+            continue
 
-    fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
-    merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
-    if _items_have_comments(fallback_items, "FB", url):
-        logger.info(f"✅ FB public fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
-        return fallback_items, merged_meta, ""
+        fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
+        current_meta = _merge_actor_meta(current_meta, fallback_meta)
+        if _items_have_comments(fallback_items, "FB", url):
+            logger.info(f"✅ FB public fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
+            return fallback_items, current_meta, ""
 
-    fallback_detail = _actor_failure_detail(fallback_meta, fallback_error, len(fallback_items or []))
-    return primary_items, merged_meta, _join_error_parts(
-        primary_error,
-        f"public fallback: {fallback_detail}" if fallback_detail else "",
-    )
+        current_items = primary_items
+        fallback_detail = _actor_failure_detail(fallback_meta, fallback_error, len(fallback_items or []))
+        if fallback_detail:
+            fallback_details.append(f"public fallback {fallback_actor}: {fallback_detail}")
+
+    return current_items, current_meta, _join_error_parts(primary_error, *fallback_details)
 
 
 def _scrape_facebook_with_cookie_fallback(
@@ -1491,38 +1637,37 @@ def _scrape_facebook_with_cookie_fallback(
     if not cookies:
         return primary_items, primary_meta, primary_error
 
-    fallback_actor = FB_COOKIE_FALLBACK_ACTOR_ID
-    fallback_input = _facebook_cookie_fallback_input(url, limit, cookies)
-    fallback_inputs = _dedupe_actor_inputs([
-        fallback_input,
-        _facebook_cookie_fallback_input_for_urls(_facebook_cookie_fallback_urls(original_url, url), limit, cookies),
-    ])
-    try:
-        fallback_items, fallback_meta = _call_actor_with_meta(
-            fallback_actor,
-            fallback_inputs,
-            apify_token,
-            accept_items=lambda rows: _items_have_comments(rows, "FB", url),
-            include_log_diagnostics=True,
-        )
-    except Exception as e:
-        safe_error = _redact_sensitive_text(str(e), fallback_input)
-        fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
-        merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
-        detail = f"{primary_error}; cookie fallback 失败: {safe_error}" if primary_error else f"cookie fallback 失败: {safe_error}"
-        return primary_items, merged_meta, detail[:ACTOR_LOG_DIAGNOSTIC_LIMIT]
+    current_meta = primary_meta
+    fallback_details: list[str] = []
+    for fallback_actor in FB_COOKIE_FALLBACK_ACTOR_IDS:
+        fallback_inputs = _facebook_cookie_fallback_inputs(fallback_actor, original_url, url, limit, cookies)
+        fallback_input = fallback_inputs[0] if fallback_inputs else {}
+        try:
+            fallback_items, fallback_meta = _call_actor_with_meta(
+                fallback_actor,
+                fallback_inputs,
+                apify_token,
+                accept_items=lambda rows: _items_have_comments(rows, "FB", url),
+                include_log_diagnostics=True,
+            )
+        except Exception as e:
+            safe_error = _redact_sensitive_text(str(e), fallback_input)
+            fallback_meta = {"actor_id": fallback_actor, "input": _redact_actor_input(fallback_input), "error": safe_error}
+            current_meta = _merge_actor_meta(current_meta, fallback_meta)
+            fallback_details.append(f"cookie fallback {fallback_actor} 失败: {safe_error}")
+            continue
 
-    fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
-    merged_meta = _merge_actor_meta(primary_meta, fallback_meta)
-    if _items_have_comments(fallback_items, "FB", url):
-        logger.info(f"✅ FB cookie fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
-        return fallback_items, merged_meta, ""
+        fallback_error = _summarize_non_comment_items(fallback_items, "FB", url)
+        current_meta = _merge_actor_meta(current_meta, fallback_meta)
+        if _items_have_comments(fallback_items, "FB", url):
+            logger.info(f"✅ FB cookie fallback 成功: actor={fallback_actor}, rows={len(fallback_items)}")
+            return fallback_items, current_meta, ""
 
-    fallback_detail = _actor_failure_detail(fallback_meta, fallback_error, len(fallback_items or []))
-    return primary_items, merged_meta, _join_error_parts(
-        primary_error,
-        f"cookie fallback: {fallback_detail}" if fallback_detail else "",
-    )
+        fallback_detail = _actor_failure_detail(fallback_meta, fallback_error, len(fallback_items or []))
+        if fallback_detail:
+            fallback_details.append(f"cookie fallback {fallback_actor}: {fallback_detail}")
+
+    return primary_items, current_meta, _join_error_parts(primary_error, *fallback_details)
 
 
 def _scrape_facebook(url: str, apify_token: str, comments_per_post_limit: int | None = None) -> dict:

@@ -221,6 +221,41 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(comment["comment_url"], "https://www.facebook.com/page/posts/pfbid1?comment_id=c1")
         self.assertEqual(comment["created_str"], "2026-07-01 17:00")
 
+    def test_extract_comment_supports_premiumscraper_shape(self):
+        item = {
+            "source_post_url": "https://www.facebook.com/page/posts/pfbid1",
+            "comment_id": "c1",
+            "comment_legacy_fbid": "legacy-c1",
+            "message_text": "premium fallback comment",
+            "comment_links": ["https://www.facebook.com/page/posts/pfbid1?comment_id=c1"],
+            "author": {"profile_name": "player"},
+            "engagement": {"reaction_count_total": 8},
+            "created_at": "2026-07-01T09:00:00.000Z",
+            "all_replies": [
+                {
+                    "comment_id": "r1",
+                    "message_text": "nested reply",
+                    "author": {"profile_name": "reply player"},
+                    "created_at": "2026-07-01T09:01:00.000Z",
+                }
+            ],
+        }
+
+        flattened = sentiment_insight._flatten_comment_items(
+            [item],
+            "FB",
+            "https://www.facebook.com/page/posts/pfbid1",
+        )
+        comments = [
+            sentiment_insight._extract_comment(raw, "FB", "https://www.facebook.com/page/posts/pfbid1")
+            for _, raw in flattened
+        ]
+
+        self.assertEqual([comment["text"] for comment in comments], ["premium fallback comment", "nested reply"])
+        self.assertEqual(comments[0]["author"], "player")
+        self.assertEqual(comments[0]["like_count"], 8)
+        self.assertEqual(comments[0]["comment_url"], "https://www.facebook.com/page/posts/pfbid1?comment_id=c1")
+
     def test_facebook_cookie_fallback_runs_when_primary_has_no_comments(self):
         starts = []
 
@@ -317,8 +352,14 @@ class SentimentInsightTests(unittest.TestCase):
             result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
 
         self.assertTrue(result["actor_meta"]["used_fallback"])
-        self.assertEqual(result["actor_meta"]["run_id"], "run-5")
         self.assertEqual(result["actor_meta"]["dataset_id"], "dataset-empty")
+        self.assertTrue(
+            any(
+                attempt.get("actor_id") == sentiment_insight.FB_COOKIE_FALLBACK_ACTOR_ID
+                and attempt.get("dataset_id") == "dataset-empty"
+                for attempt in result["actor_meta"]["attempts"]
+            )
+        )
         self.assertIn("public fallback", result["error"])
         self.assertNotIn("所有候选 input 均失败: None", result["error"])
 
@@ -450,6 +491,48 @@ class SentimentInsightTests(unittest.TestCase):
         self.assertEqual(starts[-1][0], sentiment_insight.FB_PUBLIC_FALLBACK_ACTOR_ID)
         self.assertTrue(result["actor_meta"]["used_fallback"])
         self.assertEqual(result["items"][0]["text"], "public fallback comment")
+        self.assertEqual(result["error"], "")
+
+    def test_facebook_public_fallback_tries_premiumscraper_input(self):
+        starts = []
+
+        def fake_start(actor_id, run_input, _token):
+            starts.append((actor_id, run_input))
+            return {"id": f"run-{len(starts)}"}
+
+        def fake_fetch(_dataset_id, _token):
+            actor_id, run_input = starts[-1]
+            if actor_id == "premiumscraper/facebook-comments-scraper":
+                self.assertEqual(run_input["facebook_urls"], [
+                    {"url": "https://www.facebook.com/share/p/abc/"},
+                    {"url": "https://www.facebook.com/page/posts/pfbid1"},
+                ])
+                self.assertEqual(run_input["comments_limit"], 500)
+                self.assertEqual(run_input["comment_filter"], "all_comments")
+                return [
+                    {
+                        "source_post_url": "https://www.facebook.com/page/posts/pfbid1",
+                        "comment_id": "c1",
+                        "message_text": "premium fallback comment",
+                        "author": {"profile_name": "player"},
+                    }
+                ]
+            return [{"url": "https://www.facebook.com/page/posts/pfbid1", "error": "not_available"}]
+
+        with patch("sentiment_insight.FB_PUBLIC_FALLBACK_ACTOR_IDS", [
+            "crawlerbros/facebook-comments-scraper",
+            "premiumscraper/facebook-comments-scraper",
+        ]), \
+             patch("sentiment_insight._load_fb_comment_fallback_cookies", return_value=[]), \
+             patch("sentiment_insight._resolve_facebook_url", return_value="https://www.facebook.com/page/posts/pfbid1"), \
+             patch("sentiment_insight._start_actor", side_effect=fake_start), \
+             patch("sentiment_insight._wait_actor", return_value={"status": "SUCCEEDED", "defaultDatasetId": "dataset-1"}), \
+             patch("sentiment_insight._fetch_dataset", side_effect=fake_fetch), \
+             patch("sentiment_insight._fetch_actor_log", return_value=""):
+            result = sentiment_insight._scrape_facebook("https://www.facebook.com/share/p/abc/", "token", 500)
+
+        self.assertEqual(starts[-1][0], "premiumscraper/facebook-comments-scraper")
+        self.assertEqual(result["items"][0]["message_text"], "premium fallback comment")
         self.assertEqual(result["error"], "")
 
     def test_facebook_cookie_fallback_redacts_cookie_from_failure_metadata(self):

@@ -34,6 +34,12 @@ services:
       # Facebook 受限帖评论备用抓取登录态 cookies（JSON 数组，仅后台环境变量配置）
       - key: FB_COMMENT_FALLBACK_COOKIES_JSON
         sync: false
+      # Facebook 公开帖备用 actor 链，按顺序尝试，逗号分隔
+      - key: APIFY_FB_PUBLIC_FALLBACK_ACTORS
+        value: "crawlerbros/facebook-comments-scraper,premiumscraper/facebook-comments-scraper,memo23/facebook-comments-scraper,thedoor/facebook-comment-scraper"
+      # Facebook 登录态备用 actor 链，按顺序尝试，逗号分隔
+      - key: APIFY_FB_COOKIE_FALLBACK_ACTORS
+        value: "dz_omar/facebook-comment-scraper"
       # TikTok Business API（官号监控）
       - key: TIKTOK_APP_ID
         sync: false
@@ -90,6 +96,10 @@ services:
         sync: false
       - key: FB_COMMENT_FALLBACK_COOKIES_JSON
         sync: false
+      - key: APIFY_FB_PUBLIC_FALLBACK_ACTORS
+        value: "crawlerbros/facebook-comments-scraper,premiumscraper/facebook-comments-scraper,memo23/facebook-comments-scraper,thedoor/facebook-comment-scraper"
+      - key: APIFY_FB_COOKIE_FALLBACK_ACTORS
+        value: "dz_omar/facebook-comment-scraper"
       - key: TIKTOK_BUSINESS_ACCESS_TOKEN
         sync: false
       - key: TIKTOK_OFFICIAL_ACCOUNTS_JSON
