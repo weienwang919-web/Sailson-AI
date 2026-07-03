@@ -2669,6 +2669,8 @@ def sentiment_tool():
         'analysis.html',
         has_used_sentiment=has_used_sentiment,
         video_metrics_batch_size=video_metrics_etl.BATCH_SIZE,
+        profile_video_max_profiles=ETL_PROFILE_VIDEO_MAX_PROFILES,
+        profile_video_max_per_profile=ETL_PROFILE_VIDEO_MAX_PER_PROFILE,
         insight_comments_default=sentiment_insight.DEFAULT_COMMENTS_PER_POST_LIMIT,
         insight_comments_unlimited=sentiment_insight.UNLIMITED_COMMENTS_PER_POST_LIMIT,
     )
@@ -3926,7 +3928,11 @@ def sentiment_tasks_api():
         items.append({
             'task_id': task_id,
             'function_type': row.get('function_type'),
-            'task_name': _sentiment_task_name(row.get('function_type')),
+            'task_name': (
+                '主页视频导出'
+                if row.get('function_type') == 'etl_video_metrics' and result_payload.get('mode') == 'profile_videos'
+                else _sentiment_task_name(row.get('function_type'))
+            ),
             'status': row.get('status'),
             'progress': row.get('progress'),
             'error': row.get('error'),
@@ -8076,6 +8082,8 @@ def thai_report_top5():
 # ============================================
 
 ETL_COMMENTS_MAX_URLS = int(os.environ.get('ETL_COMMENTS_MAX_URLS', '200'))
+ETL_PROFILE_VIDEO_MAX_PROFILES = int(os.environ.get('ETL_PROFILE_VIDEO_MAX_PROFILES', '200'))
+ETL_PROFILE_VIDEO_MAX_PER_PROFILE = int(os.environ.get('ETL_PROFILE_VIDEO_MAX_PER_PROFILE', '300'))
 DEFAULT_VIDEO_METRIC_FIELDS = list(video_metrics_etl.DEFAULT_VIDEO_METRIC_FIELDS)
 
 
@@ -8346,6 +8354,91 @@ def etl_video_metrics_start():
         threading.Thread(target=_run, daemon=True).start()
 
     return jsonify({'status': 'queued', 'task_id': queue_task_id, 'url_count': len(urls)})
+
+
+@app.route('/api/etl/profile_video_export_start', methods=['POST'])
+@login_required
+def etl_profile_video_export_start():
+    """按主页链接拉取日期范围内的视频数据，并导出一行一个视频。"""
+    try:
+        f = request.files.get('file')
+        url_col = (request.form.get('url_column') or '').strip() or None
+        manual_urls_text = request.form.get('profile_urls') or request.form.get('manual_urls') or ''
+        manual_urls = video_metrics_etl.parse_manual_urls(manual_urls_text)
+
+        excel_urls = []
+        if f and f.filename:
+            parsed = etl_tools.parse_excel_urls(f.read(), url_col)
+            excel_urls = parsed.urls
+
+        profile_urls = []
+        seen_urls = set()
+        for raw_url in [*excel_urls, *manual_urls]:
+            key = video_metrics_etl.normalize_url(raw_url)
+            if not key or key in seen_urls:
+                continue
+            if video_metrics_etl.detect_platform(key) == 'UNKNOWN':
+                continue
+            seen_urls.add(key)
+            profile_urls.append(raw_url)
+
+        if not profile_urls:
+            return jsonify({'status': 'error', 'message': '未解析到有效主页链接'}), 400
+        if len(profile_urls) > ETL_PROFILE_VIDEO_MAX_PROFILES:
+            return jsonify({
+                'status': 'error',
+                'message': f'主页链接数超过上限 {ETL_PROFILE_VIDEO_MAX_PROFILES}，请分批上传',
+            }), 400
+
+        start_date = (request.form.get('start_date') or '')[:10]
+        end_date = (request.form.get('end_date') or '')[:10]
+        if not start_date or not end_date:
+            return jsonify({'status': 'error', 'message': '请选择开始与结束日期'}), 400
+        if start_date > end_date:
+            return jsonify({'status': 'error', 'message': '开始日期不能晚于结束日期'}), 400
+
+        max_videos = int(request.form.get('max_videos') or 100)
+        max_videos = max(1, min(max_videos, ETL_PROFILE_VIDEO_MAX_PER_PROFILE))
+        hashtag_enabled = _truthy_form_value(request.form.get('hashtag_enabled'))
+        hashtag = (request.form.get('hashtag') or '').strip()
+        if hashtag_enabled and not video_metrics_etl.parse_hashtag_terms(hashtag):
+            return jsonify({'status': 'error', 'message': '启用 hashtag 匹配时请填写 hashtag'}), 400
+    except (TypeError, ValueError) as e:
+        return jsonify({'status': 'error', 'message': f'参数错误: {e}'}), 400
+
+    user_id = session.get('user_id')
+    session_id = session.get('session_id', 'default')
+    queue_task_id = str(uuid.uuid4())
+    params = {
+        'source': 'etl_profile_video_export',
+        'mode': 'profile_videos',
+        'profile_urls': profile_urls,
+        'start_date': start_date,
+        'end_date': end_date,
+        'max_videos': max_videos,
+        'hashtag_enabled': hashtag_enabled,
+        'hashtag': hashtag,
+        'user_id': user_id,
+        'session_id': session_id,
+    }
+
+    create_task(queue_task_id, user_id, session_id, function_type='etl_video_metrics')
+    try:
+        set_task_params(queue_task_id, params)
+    except Exception as e:
+        logger.error(f"❌ 写入主页视频导出 task_params 失败: {e}")
+    if not USE_DB_WORKER:
+
+        def _run():
+            etl_jobs.run_etl_video_metrics_task(queue_task_id, params, update_task)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    return jsonify({
+        'status': 'queued',
+        'task_id': queue_task_id,
+        'profile_count': len(profile_urls),
+    })
 
 
 @app.route('/api/etl/profile-video/configs')
@@ -8660,7 +8753,10 @@ def api_etl_video_metrics_tasks():
             'finished_at': row.get('finished_at'),
             'download_id': download_id,
             'filename': filename,
+            'mode': result_payload.get('mode'),
             'url_count': result_payload.get('url_count'),
+            'profile_count': result_payload.get('profile_count'),
+            'video_count': result_payload.get('video_count'),
             'success_count': result_payload.get('success_count'),
         })
 

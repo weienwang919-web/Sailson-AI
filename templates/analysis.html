@@ -73,6 +73,9 @@
     .tool-panel.active { display: block; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 14px; margin-top: 8px; }
     .metric-grid label { display: flex; align-items: center; gap: 6px; margin: 0; color: #344054; font-size: 0.88rem; }
+    .profile-export-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .profile-export-grid .span-2 { grid-column: 1 / -1; }
+    .inline-check { display: flex; align-items: center; gap: 8px; margin: 12px 0 0 0; color: #344054; font-size: 0.88rem; }
     .status-line { margin-top: 10px; min-height: 20px; font-size: 0.86rem; color: #667085; word-break: break-word; }
     .status-line.ok { color: #2e7d32; }
     .status-line.err { color: #c62828; }
@@ -113,6 +116,9 @@
     .toggle-cell { text-align: center; }
     .modal-textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
     .fade-in { animation: fadeIn 0.5s ease-out; }
+    @media (max-width: 760px) {
+        .profile-export-grid { grid-template-columns: 1fr; }
+    }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 {% endblock %}
@@ -216,6 +222,55 @@
                 <button onclick="startVideoMetrics()" id="videoMetricsBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">开始拉视频数据</button>
                 <div class="status-line" id="videoMetricsStatus"></div>
                 <div class="download-line" id="videoMetricsDownload"></div>
+
+                <div class="section-divider"></div>
+                <div class="subtool-head">
+                    <h3>按主页链接导出视频数据</h3>
+                </div>
+                <div class="profile-export-grid">
+                    <div>
+                        <label class="small text-muted mb-1" for="profileVideoExportFile">上传含主页链接的 Excel（可选）</label>
+                        <input type="file" id="profileVideoExportFile" class="form-control" accept=".xlsx,.xls" onchange="previewProfileVideoExportColumns()">
+                    </div>
+                    <div>
+                        <label class="small text-muted mb-1" for="profileVideoExportCol">主页链接列名（可选，留空自动识别）</label>
+                        <input type="text" id="profileVideoExportCol" class="form-control" placeholder="例如：主页链接 / profile_url / 链接">
+                    </div>
+                    <div class="span-2">
+                        <div class="status-line" id="profileVideoExportCols"></div>
+                        <label class="small text-muted mb-1 mt-3" for="profileVideoExportUrls">手动输入主页链接（可选，每行一个，可混合平台）</label>
+                        <textarea id="profileVideoExportUrls" class="url-textarea" style="min-height: 110px;" placeholder="https://www.tiktok.com/@user&#10;https://www.instagram.com/user/&#10;https://www.youtube.com/@channel&#10;https://www.facebook.com/page"></textarea>
+                    </div>
+                    <div>
+                        <label class="small text-muted mb-1" for="profileVideoStartDate">开始日期</label>
+                        <input type="date" id="profileVideoStartDate" class="form-control">
+                    </div>
+                    <div>
+                        <label class="small text-muted mb-1" for="profileVideoEndDate">结束日期</label>
+                        <input type="date" id="profileVideoEndDate" class="form-control">
+                    </div>
+                    <div>
+                        <label class="small text-muted mb-1" for="profileVideoMaxVideos">每主页最大视频数</label>
+                        <input type="number" id="profileVideoMaxVideos" class="form-control" value="100" min="1" max="{{ profile_video_max_per_profile }}">
+                    </div>
+                    <div>
+                        <label class="inline-check">
+                            <input type="checkbox" id="profileVideoHashtagEnabled" onchange="toggleProfileVideoHashtag()">
+                            启用 hashtag 标题匹配
+                        </label>
+                        <input type="text" id="profileVideoHashtag" class="form-control mt-2" placeholder="#mlbb，可填多个，用空格或逗号分隔" disabled>
+                    </div>
+                </div>
+                <div class="platform-badges">
+                    <span class="badge">TT</span>
+                    <span class="badge">IG</span>
+                    <span class="badge">YTB</span>
+                    <span class="badge">FB</span>
+                    <span style="margin-left:auto;color:#999;">最多 {{ profile_video_max_profiles }} 个主页；Apify 返回后按日期与 hashtag 过滤</span>
+                </div>
+                <button onclick="startProfileVideoExport()" id="profileVideoExportBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">按主页拉取并导出</button>
+                <div class="status-line" id="profileVideoExportStatus"></div>
+                <div class="download-line" id="profileVideoExportDownload"></div>
 
                 <div class="section-divider"></div>
                 <div class="subtool-head">
@@ -703,6 +758,39 @@ async function previewVideoMetricColumns() {
     }
 }
 
+async function previewProfileVideoExportColumns() {
+    const el = document.getElementById('profileVideoExportCols');
+    const f = document.getElementById('profileVideoExportFile').files[0];
+    if (!f) {
+        el.textContent = '';
+        return;
+    }
+    el.textContent = '正在读取表头...';
+    el.className = 'status-line';
+    try {
+        const fd = new FormData();
+        fd.append('file', f);
+        const data = await fetchJsonOrThrow('/api/etl/preview_columns', { method: 'POST', body: fd });
+        if (data.status === 'success' && data.columns && data.columns.length) {
+            el.textContent = '检测到列：' + data.columns.join(' | ');
+            el.className = 'status-line ok';
+        } else {
+            el.textContent = data.message || '未能读取列名';
+            el.className = 'status-line err';
+        }
+    } catch (e) {
+        el.textContent = String(e);
+        el.className = 'status-line err';
+    }
+}
+
+function toggleProfileVideoHashtag() {
+    const enabled = document.getElementById('profileVideoHashtagEnabled').checked;
+    const input = document.getElementById('profileVideoHashtag');
+    input.disabled = !enabled;
+    if (enabled) input.focus();
+}
+
 function pollVideoMetricsTask(taskId, attempt) {
     const statusEl = document.getElementById('videoMetricsStatus');
     const dlEl = document.getElementById('videoMetricsDownload');
@@ -741,6 +829,55 @@ function pollVideoMetricsTask(taskId, attempt) {
                 return;
             }
             setTimeout(() => pollVideoMetricsTask(taskId, attempt + 1), 2000);
+        })
+        .catch(e => {
+            statusEl.textContent = '查询任务失败：' + e.message + '；可刷新下方最近任务查看完成文件';
+            statusEl.className = 'status-line err';
+            btn.disabled = false;
+            loadVideoMetricsTasks();
+            loadUnifiedTasks();
+        });
+}
+
+function pollProfileVideoExportTask(taskId, attempt) {
+    const statusEl = document.getElementById('profileVideoExportStatus');
+    const btn = document.getElementById('profileVideoExportBtn');
+    fetchJsonOrThrow('/api/etl/task_status/' + encodeURIComponent(taskId))
+        .then(data => {
+            statusEl.textContent = data.progress || data.status || '';
+            statusEl.className = 'status-line';
+            if (data.status === 'completed') {
+                let result = {};
+                try {
+                    result = typeof data.result === 'string' ? JSON.parse(data.result) : (data.result || {});
+                } catch (e) {}
+                const videoCount = result.video_count != null ? result.video_count : result.success_count;
+                const profileCount = result.profile_count;
+                statusEl.textContent = '完成' + (videoCount != null ? '：导出 ' + videoCount + ' 条视频' : '') + (profileCount != null ? ' / ' + profileCount + ' 个主页' : '');
+                statusEl.className = 'status-line ok';
+                btn.disabled = false;
+                showProfileVideoExportDownload(result && result.download_id, (result && result.filename) || 'profile_video_metrics.xlsx');
+                loadVideoMetricsTasks();
+                loadUnifiedTasks();
+                return;
+            }
+            if (data.status === 'failed') {
+                statusEl.textContent = data.error || '任务失败';
+                statusEl.className = 'status-line err';
+                btn.disabled = false;
+                loadVideoMetricsTasks();
+                loadUnifiedTasks();
+                return;
+            }
+            if (attempt >= 800) {
+                statusEl.textContent = '轮询超时，任务可能仍在后台继续；完成后可在下方最近任务下载文件';
+                statusEl.className = 'status-line';
+                btn.disabled = false;
+                loadVideoMetricsTasks();
+                loadUnifiedTasks();
+                return;
+            }
+            setTimeout(() => pollProfileVideoExportTask(taskId, attempt + 1), 2000);
         })
         .catch(e => {
             statusEl.textContent = '查询任务失败：' + e.message + '；可刷新下方最近任务查看完成文件';
@@ -797,10 +934,79 @@ async function startVideoMetrics() {
     }
 }
 
+async function startProfileVideoExport() {
+    const statusEl = document.getElementById('profileVideoExportStatus');
+    const dlEl = document.getElementById('profileVideoExportDownload');
+    const btn = document.getElementById('profileVideoExportBtn');
+    const file = document.getElementById('profileVideoExportFile').files[0];
+    const manualUrls = document.getElementById('profileVideoExportUrls').value.trim();
+    const startDate = document.getElementById('profileVideoStartDate').value;
+    const endDate = document.getElementById('profileVideoEndDate').value;
+    const hashtagEnabled = document.getElementById('profileVideoHashtagEnabled').checked;
+    const hashtag = document.getElementById('profileVideoHashtag').value.trim();
+    if (!file && !manualUrls) {
+        statusEl.textContent = '请上传 Excel，或手动输入至少一个主页链接';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    if (!startDate || !endDate) {
+        statusEl.textContent = '请选择开始与结束日期';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    if (startDate > endDate) {
+        statusEl.textContent = '开始日期不能晚于结束日期';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    if (hashtagEnabled && !hashtag) {
+        statusEl.textContent = '启用 hashtag 匹配时请填写 hashtag';
+        statusEl.className = 'status-line err';
+        return;
+    }
+    const fd = new FormData();
+    if (file) fd.append('file', file);
+    const col = document.getElementById('profileVideoExportCol').value.trim();
+    if (col) fd.append('url_column', col);
+    if (manualUrls) fd.append('profile_urls', manualUrls);
+    fd.append('start_date', startDate);
+    fd.append('end_date', endDate);
+    fd.append('max_videos', document.getElementById('profileVideoMaxVideos').value || '100');
+    fd.append('hashtag_enabled', hashtagEnabled ? '1' : '0');
+    if (hashtag) fd.append('hashtag', hashtag);
+    btn.disabled = true;
+    dlEl.innerHTML = '';
+    statusEl.textContent = '上传并排队...';
+    statusEl.className = 'status-line';
+    try {
+        const data = await fetchJsonOrThrow('/api/etl/profile_video_export_start', { method: 'POST', body: fd });
+        if (data.status !== 'queued') {
+            statusEl.textContent = data.message || JSON.stringify(data);
+            statusEl.className = 'status-line err';
+            btn.disabled = false;
+            return;
+        }
+        statusEl.textContent = '已排队 ' + data.profile_count + ' 个主页，任务 ID: ' + data.task_id;
+        loadVideoMetricsTasks();
+        loadUnifiedTasks();
+        pollProfileVideoExportTask(data.task_id, 0);
+    } catch (e) {
+        statusEl.textContent = String(e);
+        statusEl.className = 'status-line err';
+        btn.disabled = false;
+    }
+}
+
 function showVideoMetricsDownload(downloadId, filename) {
     const dlEl = document.getElementById('videoMetricsDownload');
     if (!dlEl || !downloadId) return;
     dlEl.innerHTML = '<a href="/api/etl/download/' + encodeURIComponent(downloadId) + '">下载 ' + escapeHtml(filename || 'video_metrics.xlsx') + '</a>';
+}
+
+function showProfileVideoExportDownload(downloadId, filename) {
+    const dlEl = document.getElementById('profileVideoExportDownload');
+    if (!dlEl || !downloadId) return;
+    dlEl.innerHTML = '<a href="/api/etl/download/' + encodeURIComponent(downloadId) + '">下载 ' + escapeHtml(filename || 'profile_video_metrics.xlsx') + '</a>';
 }
 
 async function loadVideoMetricsTasks() {
@@ -825,7 +1031,9 @@ function renderVideoMetricsTasks(items) {
         const status = item.status || '-';
         const statusClass = status === 'completed' ? 'task-status-ok' : (status === 'failed' ? 'task-status-err' : '');
         const progress = item.error || item.progress || '-';
-        const countText = item.url_count != null ? (item.success_count != null ? item.success_count + ' / ' + item.url_count : item.url_count) : '-';
+        const countText = item.mode === 'profile_videos'
+            ? ((item.video_count != null ? item.video_count : (item.success_count != null ? item.success_count : '-')) + ' 视频 / ' + (item.profile_count != null ? item.profile_count : '-') + ' 主页')
+            : (item.url_count != null ? (item.success_count != null ? item.success_count + ' / ' + item.url_count : item.url_count) : '-');
         const fileHtml = item.download_id
             ? '<a class="task-download-link" href="/api/etl/download/' + encodeURIComponent(item.download_id) + '">下载 ' + escapeHtml(item.filename || 'video_metrics.xlsx') + '</a>'
             : (status === 'completed' ? '文件生成中' : '-');
@@ -1194,7 +1402,23 @@ async function loadHistory() {
     }
 }
 
+function initProfileVideoExportDates() {
+    const endEl = document.getElementById('profileVideoEndDate');
+    const startEl = document.getElementById('profileVideoStartDate');
+    if (!endEl || !startEl || endEl.value || startEl.value) return;
+    const localDateValue = date => {
+        const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+        return shifted.toISOString().slice(0, 10);
+    };
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 7);
+    endEl.value = localDateValue(end);
+    startEl.value = localDateValue(start);
+}
+
 window.onload = function () {
+    initProfileVideoExportDates();
     toggleCommentLimitUnlimited();
     loadHistory();
     loadVideoMetricsTasks();

@@ -45,6 +45,20 @@ METRIC_FIELDS: Dict[str, str] = {
 DEFAULT_VIDEO_METRIC_FIELDS = list(METRIC_FIELDS.keys())
 MANUAL_URL_COLUMN = "视频链接"
 MANUAL_PLATFORM_COLUMN = "平台"
+PROFILE_VIDEO_EXPORT_COLUMNS = [
+    "视频链接",
+    "达人主页链接",
+    "达人名称",
+    "视频发布时间",
+    "视频标题",
+    "视频时长",
+    "播放量",
+    "点赞量",
+    "评论量",
+    "转发量",
+    "收藏量",
+    "抓取状态",
+]
 
 VIDEO_ACTORS = {
     "TT": os.environ.get("APIFY_TIKTOK_PROFILE_ACTOR_ID", "clockworks/tiktok-scraper"),
@@ -126,6 +140,48 @@ def parse_manual_urls(text: str) -> List[str]:
             seen.add(normalized)
             urls.append(normalized_cell)
     return urls
+
+
+def parse_hashtag_terms(value) -> List[str]:
+    """Normalize one or many hashtag values into bare, de-duplicated terms."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_parts = []
+        for item in value:
+            raw_parts.extend(re.split(r"[\s,，;；\n\r]+", str(item or "")))
+    else:
+        raw_parts = re.split(r"[\s,，;；\n\r]+", str(value or ""))
+
+    terms: List[str] = []
+    seen = set()
+    for part in raw_parts:
+        token = part.strip().strip("\"'`").lstrip("#").strip()
+        if not token:
+            continue
+        key = token.lower()
+        if key not in seen:
+            seen.add(key)
+            terms.append(token)
+    return terms
+
+
+def _caption_matches_hashtags(caption: str, hashtag_terms: List[str]) -> bool:
+    if not hashtag_terms:
+        return True
+    text = str(caption or "").lower()
+    return any(f"#{term.lower()}" in text for term in hashtag_terms if term)
+
+
+def filter_profile_video_rows_by_hashtag(rows: List[dict], hashtag_terms) -> List[dict]:
+    """Keep only video rows whose title/caption contains one of the hashtags."""
+    terms = parse_hashtag_terms(hashtag_terms)
+    if not terms:
+        return list(rows or [])
+    return [
+        row for row in (rows or [])
+        if not row.get("_error") and _caption_matches_hashtags(row.get("caption") or "", terms)
+    ]
 
 
 def _host(url: str) -> str:
@@ -997,5 +1053,41 @@ def build_manual_metrics_excel(
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="video_metrics", index=False)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_profile_video_export_excel(rows: List[dict]) -> bytes:
+    """Create a workbook for profile URL video exports."""
+    out_rows = []
+    numeric_fields = {
+        "播放量": "views",
+        "点赞量": "likes",
+        "评论量": "comments",
+        "转发量": "shares",
+        "收藏量": "collects",
+    }
+    for row in rows or []:
+        item = {
+            "视频链接": row.get("video_url") or "",
+            "达人主页链接": row.get("profile_url") or "",
+            "达人名称": row.get("author") or "",
+            "视频发布时间": row.get("post_date") or "",
+            "视频标题": row.get("caption") or "",
+            "视频时长": row.get("duration") or "",
+            "抓取状态": row.get("_error") or "成功",
+        }
+        for header, key in numeric_fields.items():
+            value = row.get(key)
+            try:
+                item[header] = int(value) if value not in ("", None) else None
+            except (TypeError, ValueError):
+                item[header] = value
+        out_rows.append(item)
+
+    df = pd.DataFrame(out_rows, columns=PROFILE_VIDEO_EXPORT_COLUMNS)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="profile_videos", index=False)
     buf.seek(0)
     return buf.read()

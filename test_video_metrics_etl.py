@@ -259,6 +259,58 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertEqual(rows[0]["views"], 1000)
         self.assertEqual(rows[0]["followers"], 777)
 
+    def test_filter_profile_video_rows_by_hashtag_uses_title_hashtag(self):
+        rows = [
+            {"video_url": "https://example.com/1", "caption": "Launch day #MLBB"},
+            {"video_url": "https://example.com/2", "caption": "Launch day mlbb without tag"},
+            {"video_url": "https://example.com/3", "caption": "Another #spd"},
+            {"profile_url": "https://example.com/profile", "_error": "failed"},
+        ]
+
+        filtered = video_metrics_etl.filter_profile_video_rows_by_hashtag(rows, "mlbb")
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["video_url"], "https://example.com/1")
+
+    def test_build_profile_video_export_excel_uses_required_columns(self):
+        rows = [
+            {
+                "video_url": "https://www.tiktok.com/@user/video/123",
+                "profile_url": "https://www.tiktok.com/@user",
+                "author": "user",
+                "post_date": "2026-06-18",
+                "caption": "hello #mlbb",
+                "duration": "12",
+                "views": "1000",
+                "likes": 20,
+                "comments": 3,
+                "shares": 4,
+                "collects": 5,
+            }
+        ]
+
+        out = video_metrics_etl.build_profile_video_export_excel(rows)
+        out_df = pd.read_excel(io.BytesIO(out))
+
+        required = [
+            "视频链接",
+            "达人主页链接",
+            "达人名称",
+            "视频发布时间",
+            "视频标题",
+            "视频时长",
+            "播放量",
+            "点赞量",
+            "评论量",
+            "转发量",
+            "收藏量",
+        ]
+        for col in required:
+            self.assertIn(col, out_df.columns)
+        self.assertEqual(out_df.loc[0, "视频链接"], rows[0]["video_url"])
+        self.assertEqual(out_df.loc[0, "达人主页链接"], rows[0]["profile_url"])
+        self.assertEqual(int(out_df.loc[0, "播放量"]), 1000)
+
     def test_call_actor_aborts_running_run_when_stop_requested(self):
         calls = {"get": 0, "abort": 0}
 

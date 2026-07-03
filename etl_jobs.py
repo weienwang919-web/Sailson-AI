@@ -185,6 +185,9 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
     """
     params: input_file_id, url_column, manual_urls, selected_fields, user_id
     """
+    if params.get("mode") == "profile_videos":
+        return run_etl_profile_video_export_task(task_id, params, update_task_fn)
+
     user_id = params.get("user_id")
     input_file_id = params.get("input_file_id")
     url_column = (params.get("url_column") or "").strip() or None
@@ -307,6 +310,120 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
             "selected_fields": selected_fields,
             "excel_url_count": len(excel_urls),
             "manual_url_count": len(manual_urls),
+        },
+    )
+    update_task_fn(
+        task_id,
+        status="completed",
+        progress="完成",
+        result=json.dumps(result_payload, ensure_ascii=False),
+    )
+
+
+def run_etl_profile_video_export_task(task_id: str, params: dict, update_task_fn) -> None:
+    """
+    params: profile_urls, start_date, end_date, max_videos, hashtag_enabled, hashtag, user_id
+    """
+    user_id = params.get("user_id")
+    profile_urls = params.get("profile_urls") or params.get("urls") or []
+    start_date = (params.get("start_date") or "")[:10] or None
+    end_date = (params.get("end_date") or "")[:10] or None
+    max_videos = int(params.get("max_videos") or 100)
+    raw_hashtag_enabled = params.get("hashtag_enabled")
+    hashtag_enabled = (
+        raw_hashtag_enabled
+        if isinstance(raw_hashtag_enabled, bool)
+        else str(raw_hashtag_enabled or "").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    hashtag_terms = video_metrics_etl.parse_hashtag_terms(params.get("hashtag") or params.get("hashtags") or [])
+
+    if not profile_urls:
+        update_task_fn(task_id, status="failed", error="未解析到有效主页链接")
+        return
+    if not start_date or not end_date:
+        update_task_fn(task_id, status="failed", error="请选择开始与结束日期")
+        return
+    if start_date > end_date:
+        update_task_fn(task_id, status="failed", error="开始日期不能晚于结束日期")
+        return
+    if hashtag_enabled and not hashtag_terms:
+        update_task_fn(task_id, status="failed", error="启用 hashtag 匹配时请填写 hashtag")
+        return
+
+    apify_token = tasks.APIFY_TOKEN
+    if not apify_token:
+        update_task_fn(task_id, status="failed", error="Apify 未配置")
+        return
+
+    def hook(msg):
+        update_task_fn(task_id, progress=msg)
+
+    update_task_fn(
+        task_id,
+        progress=f"共 {len(profile_urls)} 个主页，抓取 {start_date} 至 {end_date} 的视频数据...",
+    )
+    try:
+        rows = video_metrics_etl.fetch_profile_video_metrics(
+            profile_urls,
+            apify_token,
+            start_date=start_date,
+            end_date=end_date,
+            max_videos=max_videos,
+            progress_hook=hook,
+        )
+    except Exception as e:
+        update_task_fn(task_id, status="failed", error=str(e)[:500])
+        return
+
+    fetched_count = len([row for row in rows if not row.get("_error")])
+    if hashtag_enabled:
+        update_task_fn(task_id, progress="正在按 hashtag 过滤视频标题...")
+        rows = video_metrics_etl.filter_profile_video_rows_by_hashtag(rows, hashtag_terms)
+
+    update_task_fn(task_id, progress="正在生成 Excel...")
+    try:
+        xbytes = video_metrics_etl.build_profile_video_export_excel(rows)
+    except Exception as e:
+        update_task_fn(task_id, status="failed", error=f"生成 Excel 失败: {e}")
+        return
+
+    out_row = db.execute_and_fetch_one(
+        """
+        INSERT INTO etl_file_outputs (task_id, user_id, filename, content)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (task_id, user_id, "profile_video_metrics.xlsx", xbytes),
+    )
+    rid = out_row["id"] if out_row else None
+    result_payload = {
+        "download_id": rid,
+        "filename": "profile_video_metrics.xlsx",
+        "mode": "profile_videos",
+        "profile_count": len(profile_urls),
+        "video_count": len(rows),
+        "success_count": len(rows),
+        "fetched_count": fetched_count,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hashtag_enabled": hashtag_enabled,
+        "hashtags": hashtag_terms,
+    }
+    usage_service.record_usage_event(
+        module="etl_video_metrics",
+        user_id=user_id,
+        task_id=task_id,
+        item_count=len(rows),
+        crawler_items=fetched_count,
+        source="actual",
+        detail={
+            "mode": "profile_videos",
+            "profile_count": len(profile_urls),
+            "max_videos": max_videos,
+            "start_date": start_date,
+            "end_date": end_date,
+            "hashtag_enabled": hashtag_enabled,
+            "hashtags": hashtag_terms,
         },
     )
     update_task_fn(
