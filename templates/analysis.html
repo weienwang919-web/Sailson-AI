@@ -71,6 +71,14 @@
     .tool-tab.active { background: #fff; color: #2962FF; box-shadow: 0 1px 4px rgba(16,24,40,0.08); }
     .tool-panel { display: none; }
     .tool-panel.active { display: block; }
+    .video-mode-toolbar { display: flex; justify-content: flex-end; margin-bottom: 18px; }
+    .video-mode-switch { position: relative; display: grid; grid-template-columns: 1fr 1fr; width: min(100%, 320px); padding: 4px; background: #f3f6fb; border: 1px solid #e6ebf2; border-radius: 12px; }
+    .video-mode-switch::before { content: ""; position: absolute; top: 4px; left: 4px; width: calc(50% - 4px); height: calc(100% - 8px); background: #fff; border-radius: 9px; box-shadow: 0 1px 4px rgba(16,24,40,0.08); transition: transform 0.18s ease; }
+    .video-mode-switch.profile::before { transform: translateX(100%); }
+    .video-mode-btn { position: relative; z-index: 1; border: none; background: transparent; color: #667085; padding: 9px 14px; border-radius: 9px; font-size: 0.88rem; font-weight: 700; cursor: pointer; }
+    .video-mode-btn.active { color: #2962FF; }
+    .video-mode-panel { display: none; }
+    .video-mode-panel.active { display: block; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 14px; margin-top: 8px; }
     .metric-grid label { display: flex; align-items: center; gap: 6px; margin: 0; color: #344054; font-size: 0.88rem; }
     .profile-export-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -117,6 +125,8 @@
     .modal-textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
     .fade-in { animation: fadeIn 0.5s ease-out; }
     @media (max-width: 760px) {
+        .video-mode-toolbar { justify-content: stretch; }
+        .video-mode-switch { width: 100%; }
         .profile-export-grid { grid-template-columns: 1fr; }
     }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -191,6 +201,14 @@
             </div>
 
             <div id="videoMetricsPanel" class="tool-panel">
+                <div class="video-mode-toolbar">
+                    <div class="video-mode-switch" id="videoDataModeSwitch" role="tablist" aria-label="拉视频数据方式">
+                        <button type="button" class="video-mode-btn active" id="videoLinkModeBtn" onclick="switchVideoDataMode('video')">按视频链接</button>
+                        <button type="button" class="video-mode-btn" id="profileLinkModeBtn" onclick="switchVideoDataMode('profile')">按主页链接</button>
+                    </div>
+                </div>
+
+                <div id="videoLinkModePanel" class="video-mode-panel active">
                 <label class="small text-muted mb-1" for="videoMetricsFile">上传含视频链接的 Excel（可选）</label>
                 <input type="file" id="videoMetricsFile" class="form-control" accept=".xlsx,.xls" onchange="previewVideoMetricColumns()">
                 <label class="small text-muted mb-1 mt-3" for="videoMetricsCol">链接列名（可选，留空自动识别）</label>
@@ -222,7 +240,9 @@
                 <button onclick="startVideoMetrics()" id="videoMetricsBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">开始拉视频数据</button>
                 <div class="status-line" id="videoMetricsStatus"></div>
                 <div class="download-line" id="videoMetricsDownload"></div>
+                </div>
 
+                <div id="profileLinkModePanel" class="video-mode-panel">
                 <div class="section-divider"></div>
                 <div class="subtool-head">
                     <h3>按主页链接导出视频数据</h3>
@@ -271,6 +291,7 @@
                 <button onclick="startProfileVideoExport()" id="profileVideoExportBtn" class="btn btn-primary w-100 mt-4 py-3 fw-bold" style="background-color: #2962FF; color: white; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer;">按主页拉取并导出</button>
                 <div class="status-line" id="profileVideoExportStatus"></div>
                 <div class="download-line" id="profileVideoExportDownload"></div>
+                </div>
 
                 <div class="section-divider"></div>
                 <div class="subtool-head">
@@ -451,6 +472,7 @@ const POLL_MAX = 72;
 const POLL_INTERVAL = 5000;
 let profileVideoModalInstance = null;
 let precheckTimer = null;
+let currentVideoDataMode = 'video';
 
 function switchSentimentTool(kind) {
     const isVideo = kind === 'videoMetrics';
@@ -461,9 +483,31 @@ function switchSentimentTool(kind) {
     document.getElementById('commentsTabBtn').setAttribute('aria-selected', String(!isVideo));
     document.getElementById('videoMetricsTabBtn').setAttribute('aria-selected', String(isVideo));
     if (isVideo) {
+        switchVideoDataMode(currentVideoDataMode);
         loadVideoMetricsTasks();
         loadProfileVideoConfigs();
     }
+}
+
+function switchVideoDataMode(mode) {
+    currentVideoDataMode = mode === 'profile' ? 'profile' : 'video';
+    const isProfile = currentVideoDataMode === 'profile';
+    const modeSwitch = document.getElementById('videoDataModeSwitch');
+    const videoBtn = document.getElementById('videoLinkModeBtn');
+    const profileBtn = document.getElementById('profileLinkModeBtn');
+    const videoPanel = document.getElementById('videoLinkModePanel');
+    const profilePanel = document.getElementById('profileLinkModePanel');
+    if (modeSwitch) modeSwitch.classList.toggle('profile', isProfile);
+    if (videoBtn) {
+        videoBtn.classList.toggle('active', !isProfile);
+        videoBtn.setAttribute('aria-selected', String(!isProfile));
+    }
+    if (profileBtn) {
+        profileBtn.classList.toggle('active', isProfile);
+        profileBtn.setAttribute('aria-selected', String(isProfile));
+    }
+    if (videoPanel) videoPanel.classList.toggle('active', !isProfile);
+    if (profilePanel) profilePanel.classList.toggle('active', isProfile);
 }
 
 async function fetchJsonOrThrow(url, options) {
