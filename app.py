@@ -3985,6 +3985,7 @@ def sentiment_tasks_api():
             except Exception:
                 result_payload = {}
         task_id = row.get('task_id')
+        queue_info = get_task_queue_position(task_id, row.get('status')) if task_id else {}
         download_row = download_by_task.get(task_id) or {}
         download_id = result_payload.get('download_id') or download_row.get('download_id')
         filename = result_payload.get('filename') or download_row.get('filename')
@@ -4015,6 +4016,10 @@ def sentiment_tasks_api():
             'success_count': success_count,
             'total_count': total_count,
             'failed_count': result_payload.get('failed_count'),
+            'queue_position': queue_info.get('queue_position'),
+            'tasks_ahead': queue_info.get('tasks_ahead', 0),
+            'pending_count': queue_info.get('pending_count', 0),
+            'running_count': queue_info.get('running_count', 0),
         })
     return jsonify({'status': 'success', 'items': _json_safe_rows(items)})
 

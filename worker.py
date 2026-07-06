@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # ============================================
 POLL_INTERVAL = int(os.environ.get('WORKER_POLL_INTERVAL', '3'))  # 秒
 WORKER_MAX_IDLE = int(os.environ.get('WORKER_MAX_IDLE', '0'))     # 0 = 永不退出
-WORKER_CONCURRENCY = max(1, int(os.environ.get('WORKER_CONCURRENCY', '2')))
+WORKER_CONCURRENCY = max(1, int(os.environ.get('WORKER_CONCURRENCY', '3')))
 WORKER_ID = os.environ.get('WORKER_ID') or f"worker-{os.getpid()}"
 
 # ============================================

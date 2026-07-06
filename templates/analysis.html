@@ -1123,7 +1123,7 @@ function renderUnifiedTasks(items) {
     tbody.innerHTML = items.map(item => {
         const status = item.status || '-';
         const statusClass = status === 'completed' ? 'task-status-ok' : (status === 'failed' ? 'task-status-err' : '');
-        const progress = item.error || item.progress || '-';
+        const progress = progressWithQueue(item);
         const total = item.total_count != null ? item.total_count : '-';
         const success = item.success_count != null ? item.success_count : (status === 'completed' && item.function_type === 'sentiment' ? '完成' : '-');
         const taskId = item.task_id || '';
@@ -1350,6 +1350,20 @@ function statusLabel(status) {
     return labels[status] || status || '-';
 }
 
+function queueStatusText(item) {
+    if (!item || item.status !== 'pending' || item.queue_position == null) return '';
+    const parts = ['排队第 ' + item.queue_position + ' 位'];
+    if (item.tasks_ahead != null) parts.push('前方 ' + item.tasks_ahead + ' 个');
+    if (item.running_count != null) parts.push('运行中 ' + item.running_count + ' 个');
+    return parts.join('，');
+}
+
+function progressWithQueue(item) {
+    const base = item && (item.error || item.progress) ? (item.error || item.progress) : '-';
+    const queueText = queueStatusText(item);
+    return queueText ? base + '（' + queueText + '）' : base;
+}
+
 function shortText(value, maxLen) {
     const text = String(value == null ? '' : value);
     if (text.length <= maxLen) return text;
@@ -1374,7 +1388,8 @@ async function pollTaskStatus(taskId, attempt) {
     try {
         const data = await fetchJsonOrThrow('/task_status/' + encodeURIComponent(taskId));
         if (data.progress) {
-            loadingText.innerHTML = '⏳ ' + data.progress + '<br><small>任务ID: ' + taskId.substring(0, 8) + '...</small>';
+            const progressText = progressWithQueue(data);
+            loadingText.innerHTML = '⏳ ' + escapeHtml(progressText) + '<br><small>任务ID: ' + taskId.substring(0, 8) + '...</small>';
         }
         if (data.status === 'completed') {
             loading.style.display = 'none';

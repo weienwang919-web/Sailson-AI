@@ -88,6 +88,8 @@ services:
         value: "false"
       - key: WORKER_POLL_INTERVAL
         value: "3"
+      - key: WORKER_CONCURRENCY
+        value: "3"
       - key: KOL_APIFY_REFRESH_ENABLED
         value: "true"
       - key: DASHSCOPE_API_KEY
