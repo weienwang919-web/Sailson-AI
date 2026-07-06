@@ -25,6 +25,7 @@ sys.modules.setdefault("tasks", fake_tasks)
 
 import video_metrics_etl
 import competitor_radar
+import etl_tools
 
 
 class VideoMetricsEtlTests(unittest.TestCase):
@@ -185,6 +186,19 @@ class VideoMetricsEtlTests(unittest.TestCase):
         self.assertEqual(int(out_df.loc[0, "播放量"]), 1000)
         self.assertEqual(out_df.loc[0, "抓取状态"], "成功")
 
+    def test_headerless_profile_url_excel_keeps_first_url(self):
+        urls = ["https://www.tiktok.com/@first", "https://www.tiktok.com/@second"]
+        df = pd.DataFrame(urls)
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, header=False)
+
+        parsed = etl_tools.parse_excel_urls(buf.getvalue())
+
+        self.assertEqual(parsed.url_column, "视频链接")
+        self.assertEqual(parsed.header_row, -1)
+        self.assertEqual(parsed.urls, urls)
+
     def test_single_retry_uses_only_returned_item_when_url_keys_differ(self):
         short_url = "https://vt.tiktok.com/ZSQoKaT60/"
         calls = []
@@ -224,6 +238,29 @@ class VideoMetricsEtlTests(unittest.TestCase):
         scrape_profile.assert_not_called()
         metrics = result[video_metrics_etl.normalize_url(url)]
         self.assertIn("_error", metrics)
+
+    def test_fetch_video_metrics_uses_profile_path_for_tiktok_profile_followers(self):
+        profile_url = "https://www.tiktok.com/@f.lashclip"
+
+        def fake_scrape_profiles(platform, profile_urls, _token, results_limit=1):
+            self.assertEqual(platform, "TT")
+            self.assertEqual(profile_urls, [video_metrics_etl.normalize_url(profile_url)])
+            self.assertEqual(results_limit, 1)
+            return [
+                {
+                    "webVideoUrl": "https://www.tiktok.com/@f.lashclip/video/123",
+                    "authorMeta": {"uniqueId": "f.lashclip", "fans": 54321},
+                }
+            ]
+
+        with patch.object(video_metrics_etl, "_scrape_batch") as scrape_batch, patch.object(
+            video_metrics_etl, "_scrape_profiles", side_effect=fake_scrape_profiles
+        ):
+            result = video_metrics_etl.fetch_video_metrics([profile_url], "token")
+
+        scrape_batch.assert_not_called()
+        metrics = result[video_metrics_etl.normalize_url(profile_url)]
+        self.assertEqual(metrics["followers"], 54321)
 
     def test_fetch_profile_video_metrics_extracts_video_rows(self):
         profile_url = "https://www.tiktok.com/@bunnyhack04"

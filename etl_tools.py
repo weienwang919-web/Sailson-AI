@@ -184,9 +184,13 @@ def load_best_excel_table(
     best_score = -1
 
     for sheet in xl.sheet_names:
-        for header_row in range(0, 8):
+        for header_row in [-1, *range(0, 8)]:
             try:
-                df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet, header=header_row)
+                df = pd.read_excel(
+                    io.BytesIO(file_bytes),
+                    sheet_name=sheet,
+                    header=None if header_row < 0 else header_row,
+                )
             except Exception:
                 continue
             if df is None or df.empty:
@@ -194,6 +198,10 @@ def load_best_excel_table(
             df = df.dropna(axis=1, how="all")
             if df.empty:
                 continue
+            if header_row < 0:
+                if not any(_looks_like_url(v) for v in df.iloc[0].values):
+                    continue
+                df.columns = [f"列{i + 1}" for i in range(len(df.columns))]
             try:
                 col = resolve_url_column(df, url_column)
                 score = _column_url_score(df, col)
@@ -204,6 +212,9 @@ def load_best_excel_table(
                 if score <= 0:
                     continue
                 col = max(df.columns, key=lambda c: _column_url_score(df, c))
+            if header_row < 0 and col in df.columns:
+                df = df.rename(columns={col: "视频链接"})
+                col = "视频链接"
             if score > best_score:
                 best_score = score
                 best_df = df

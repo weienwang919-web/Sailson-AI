@@ -331,6 +331,30 @@ def _profile_url_from_url(url: str, platform: str) -> str:
     return ""
 
 
+def _is_profile_url(platform: str, url: str) -> bool:
+    """Return true when a URL points at an account/channel page, not a post/video."""
+    u = normalize_url(url)
+    if not u:
+        return False
+    try:
+        p = urlparse(u)
+        host = (p.netloc or "").lower()
+        parts = [x for x in (p.path or "").strip("/").split("/") if x]
+    except Exception:
+        return False
+    if platform == "TT":
+        return bool(_tiktok_username(u)) and not any(part.lower() in {"video", "photo"} for part in parts)
+    if platform == "IG":
+        return bool(_instagram_username(u))
+    if platform == "YTB":
+        return bool(parts and (parts[0].startswith("@") or parts[0].lower() in {"channel", "c", "user"}))
+    if platform == "FB":
+        if host in {"fb.watch", "www.fb.watch"} or not parts:
+            return False
+        return parts[0].lower() not in {"watch", "reel", "videos", "photo", "photos", "posts", "share"}
+    return False
+
+
 def _item_url_keys(item: dict) -> List[str]:
     keys = (
         "webVideoUrl", "url", "postUrl", "postURL", "inputUrl", "videoUrl",
@@ -633,39 +657,52 @@ def _actor_inputs(platform: str, urls: List[str]) -> List[dict]:
 
 
 def _profile_actor_inputs(platform: str, profile_url: str, results_limit: int = 20) -> List[dict]:
+    return _profile_actor_inputs_batch(platform, [profile_url], results_limit)
+
+
+def _profile_actor_inputs_batch(platform: str, profile_urls: List[str], results_limit: int = 20) -> List[dict]:
     limit = max(1, int(results_limit or 20))
+    urls = [normalize_url(u) for u in profile_urls if normalize_url(u)]
     if platform == "TT":
-        user = _tiktok_username(profile_url)
-        profile_seed = user or profile_url
-        return [
+        users = [u for u in (_tiktok_username(url) for url in urls) if u]
+        candidates = [
             {
-                "profiles": [profile_seed],
+                "profiles": urls,
                 "resultsPerPage": limit,
                 "shouldDownloadVideos": False,
                 "shouldDownloadCovers": False,
                 "shouldDownloadSubtitles": False,
-            },
-            {
-                "profileUrls": [profile_url],
+            }
+        ]
+        if users:
+            candidates.append({
+                "profiles": users,
                 "resultsPerPage": limit,
                 "shouldDownloadVideos": False,
-            },
-        ]
+                "shouldDownloadCovers": False,
+                "shouldDownloadSubtitles": False,
+            })
+        candidates.append({
+            "profileUrls": urls,
+            "resultsPerPage": limit,
+            "shouldDownloadVideos": False,
+        })
+        return candidates
     if platform == "IG":
         return [
-            {"directUrls": [profile_url], "resultsType": "posts", "resultsLimit": limit, "searchType": "user"},
-            {"startUrls": [{"url": profile_url}], "resultsLimit": limit},
+            {"directUrls": urls, "resultsType": "posts", "resultsLimit": limit, "searchType": "user"},
+            {"startUrls": [{"url": url} for url in urls], "resultsLimit": limit},
         ]
     if platform == "YTB":
         return [
-            {"startUrls": [{"url": profile_url}], "maxResults": limit},
+            {"startUrls": [{"url": url} for url in urls], "maxResults": limit},
         ]
     if platform == "FB":
         return [
-            {"startUrls": [{"url": profile_url}], "maxPosts": limit},
-            {"startUrls": [profile_url], "resultsLimit": limit},
+            {"startUrls": [{"url": url} for url in urls], "maxPosts": limit},
+            {"startUrls": urls, "resultsLimit": limit},
         ]
-    return [{"startUrls": [{"url": profile_url}]}]
+    return [{"startUrls": [{"url": url} for url in urls]}]
 
 
 def _scrape_batch(platform: str, urls: List[str], apify_token: str) -> List[dict]:
@@ -691,7 +728,24 @@ def _scrape_profile(
         _profile_actor_inputs(platform, profile_url, results_limit),
         apify_token,
         should_abort=should_abort,
-        allow_input_fallback=False,
+        allow_input_fallback=True,
+    )
+
+
+def _scrape_profiles(
+    platform: str,
+    profile_urls: List[str],
+    apify_token: str,
+    results_limit: int = 1,
+) -> List[dict]:
+    actor = VIDEO_ACTORS.get(platform)
+    if not actor:
+        raise RuntimeError(f"不支持的平台: {platform}")
+    return radar._call_actor(
+        actor,
+        _profile_actor_inputs_batch(platform, profile_urls, results_limit),
+        apify_token,
+        allow_input_fallback=True,
     )
 
 
@@ -703,6 +757,88 @@ def _index_items(items: Iterable[dict]) -> Dict[str, dict]:
         for u in _item_url_keys(item):
             out.setdefault(u, item)
     return out
+
+
+def _profile_url_keys_from_item(item: dict, platform: str) -> List[str]:
+    keys: List[str] = []
+    if platform == "TT":
+        author = item.get("authorMeta") or {}
+        if isinstance(author, dict):
+            for user in (author.get("uniqueId"), author.get("name")):
+                if user:
+                    keys.append(normalize_url(f"https://www.tiktok.com/@{str(user).lstrip('@')}"))
+    elif platform == "IG":
+        owner = item.get("owner") or {}
+        users = [
+            item.get("ownerUsername"),
+            item.get("username"),
+            owner.get("username") if isinstance(owner, dict) else None,
+        ]
+        for user in users:
+            if user:
+                keys.append(normalize_url(f"https://www.instagram.com/{str(user).lstrip('@')}"))
+    elif platform == "YTB":
+        for url_key in ("channelUrl", "channelURL", "channelExternalUrl"):
+            value = item.get(url_key)
+            if isinstance(value, str) and value.startswith("http"):
+                keys.append(normalize_url(value))
+    elif platform == "FB":
+        for url_key in ("pageUrl", "facebookUrl", "url"):
+            value = item.get(url_key)
+            if isinstance(value, str) and value.startswith("http"):
+                profile = _profile_url_from_url(value, "FB")
+                if profile:
+                    keys.append(normalize_url(profile))
+
+    for raw in _item_raw_urls(item):
+        profile = _profile_url_from_url(raw, platform)
+        if profile:
+            keys.append(normalize_url(profile))
+    return list(dict.fromkeys(k for k in keys if k))
+
+
+def _extract_profile_metrics(item: dict, platform: str) -> dict:
+    followers = _extract_followers(item, platform)
+    if not followers:
+        return {}
+    metrics = {"followers": followers}
+    extracted = _extract_metrics(item, platform) or {}
+    if extracted.get("author"):
+        metrics["author"] = extracted.get("author")
+    return metrics
+
+
+def _fetch_profile_metrics_batch(platform: str, profile_urls: List[str], apify_token: str) -> Dict[str, dict]:
+    normalized_profiles = list(dict.fromkeys(normalize_url(u) for u in profile_urls if normalize_url(u)))
+    results: Dict[str, dict] = {}
+    try:
+        items = _scrape_profiles(platform, normalized_profiles, apify_token, results_limit=1)
+    except Exception as e:
+        logger.error("主页粉丝抓取失败 platform=%s: %s", platform, e)
+        return {url: {"_error": str(e)[:200]} for url in normalized_profiles}
+
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        metrics = _extract_profile_metrics(item, platform)
+        if not metrics:
+            continue
+        for key in _profile_url_keys_from_item(item, platform):
+            if key in normalized_profiles and key not in results:
+                results[key] = metrics
+
+    # 单主页 actor 有时只返回 item URL 不带可映射主页，保守兜底给单输入使用。
+    if len(normalized_profiles) == 1 and normalized_profiles[0] not in results:
+        for item in items or []:
+            if isinstance(item, dict):
+                metrics = _extract_profile_metrics(item, platform)
+                if metrics:
+                    results[normalized_profiles[0]] = metrics
+                    break
+
+    for profile_url in normalized_profiles:
+        results.setdefault(profile_url, {"_error": "Apify 未返回主页粉丝数"})
+    return results
 
 
 def _fallback_via_profile(platform: str, url: str, apify_token: str) -> dict:
@@ -865,11 +1001,15 @@ def fetch_video_metrics(
     """按平台分批调用 Apify，返回 {normalized_url: metrics_dict}。"""
     input_urls, actor_url_by_input = _resolve_input_urls(urls)
     grouped: Dict[str, List[str]] = {}
+    profile_grouped: Dict[str, List[str]] = {}
     input_urls_by_actor_url: Dict[str, List[str]] = {}
     for input_url in input_urls:
         actor_url = actor_url_by_input.get(input_url) or input_url
         plat = detect_platform(actor_url)
-        grouped.setdefault(plat, []).append(actor_url)
+        if _is_profile_url(plat, actor_url):
+            profile_grouped.setdefault(plat, []).append(actor_url)
+        else:
+            grouped.setdefault(plat, []).append(actor_url)
         input_urls_by_actor_url.setdefault(actor_url, []).append(input_url)
 
     results: Dict[str, dict] = {}
@@ -917,6 +1057,29 @@ def fetch_video_metrics(
                 if progress_hook:
                     progress_hook(f"正在抓取 {platform} 视频数据，已完成 {min(done, total)}/{total}...")
 
+    for platform, profile_urls in profile_grouped.items():
+        if platform == "UNKNOWN":
+            for actor_url in profile_urls:
+                for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                    results[input_url] = {"_error": "无法识别平台"}
+            done += sum(len(input_urls_by_actor_url.get(u, [u])) for u in profile_urls)
+            continue
+
+        unique_profiles = list(dict.fromkeys(profile_urls))
+        profile_batches = [unique_profiles[i : i + BATCH_SIZE] for i in range(0, len(unique_profiles), BATCH_SIZE)]
+        if progress_hook:
+            progress_hook(f"正在抓取 {platform} 主页粉丝，共 {len(unique_profiles)} 个主页...")
+        for batch in profile_batches:
+            batch_results = _fetch_profile_metrics_batch(platform, batch, apify_token)
+            for actor_url in batch:
+                metrics = batch_results.get(actor_url) or {"_error": "未返回结果"}
+                for input_url in input_urls_by_actor_url.get(actor_url, [actor_url]):
+                    results[input_url] = metrics
+                results[actor_url] = metrics
+            done += sum(len(input_urls_by_actor_url.get(u, [u])) for u in batch)
+            if progress_hook:
+                progress_hook(f"正在抓取 {platform} 主页粉丝，已完成 {min(done, total)}/{total}...")
+
     return results
 
 
@@ -933,12 +1096,17 @@ def merge_metrics_into_excel(
 ) -> bytes:
     """在原 Excel 上追加/更新所选指标列。"""
     if sheet_name is not None and header_row is not None:
-        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header_row)
-        col = resolved_url_column or url_column
-        if not col or col not in df.columns:
+        if int(header_row) < 0:
             df, col, sheet_name, header_row = etl_tools.load_best_excel_table(
                 file_bytes, resolved_url_column or url_column
             )
+        else:
+            df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header_row)
+            col = resolved_url_column or url_column
+            if not col or col not in df.columns:
+                df, col, sheet_name, header_row = etl_tools.load_best_excel_table(
+                    file_bytes, resolved_url_column or url_column
+                )
     else:
         df, col, sheet_name, header_row = etl_tools.load_best_excel_table(file_bytes, url_column)
 
