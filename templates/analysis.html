@@ -511,24 +511,29 @@ function switchVideoDataMode(mode) {
 }
 
 async function fetchJsonOrThrow(url, options) {
-    const res = await fetch(url, options || {});
+    const requestOptions = Object.assign({}, options || {});
+    requestOptions.headers = new Headers(requestOptions.headers || {});
+    if (!requestOptions.headers.has('X-Requested-With')) {
+        requestOptions.headers.set('X-Requested-With', 'XMLHttpRequest');
+    }
+    const res = await fetch(url, requestOptions);
     const text = await res.text();
     let data = null;
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    if (contentType.indexOf('json') !== -1) {
+    const trimmed = (text || '').trim();
+    if (contentType.indexOf('json') !== -1 || trimmed.startsWith('{') || trimmed.startsWith('[')) {
         try {
             data = text ? JSON.parse(text) : {};
         } catch (e) {
             throw new Error('服务返回的 JSON 格式异常，请刷新后重试');
         }
     } else {
-        const trimmed = (text || '').trim();
         const lowered = trimmed.toLowerCase();
         if (lowered.startsWith('<!doctype') || lowered.startsWith('<html') || res.redirected) {
             if (res.redirected || res.status === 401 || res.status === 403) {
                 throw new Error('登录状态可能已失效，请刷新页面或重新登录后查看任务');
             }
-            throw new Error('服务返回了错误页面，请稍后刷新任务或联系管理员查看后台日志');
+            throw new Error('服务返回了错误页面（HTTP ' + (res.status || '未知') + '），请稍后刷新任务或联系管理员查看后台日志');
         }
         throw new Error(trimmed.slice(0, 200) || '服务返回了非 JSON 内容');
     }
@@ -647,17 +652,20 @@ function renderHistory(items) {
         li.appendChild(icon);
         li.appendChild(content);
         li.onclick = async () => {
-            const r = await fetch('/get_record/' + item.id);
-            const d = await r.json();
-            document.getElementById('resultContainer').style.display = 'block';
-            document.getElementById('resultArea').innerHTML = d.result;
-            document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
-            currentRecordId = item.id;
-            // 简单判断：含 insight-table 的就是新版
-            const isV2 = (d.result || '').indexOf('insight-table') !== -1;
-            updateLegacyExportVisibility(isV2);
-            document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
-            li.classList.add('active');
+            try {
+                const d = await fetchJsonOrThrow('/get_record/' + item.id);
+                document.getElementById('resultContainer').style.display = 'block';
+                document.getElementById('resultArea').innerHTML = d.result;
+                document.getElementById('resultContainer').scrollIntoView({ behavior: 'smooth' });
+                currentRecordId = item.id;
+                // 简单判断：含 insight-table 的就是新版
+                const isV2 = (d.result || '').indexOf('insight-table') !== -1;
+                updateLegacyExportVisibility(isV2);
+                document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+                li.classList.add('active');
+            } catch (e) {
+                alert('加载历史记录失败：' + (e.message || String(e)));
+            }
         };
         list.appendChild(li);
     });
@@ -695,8 +703,7 @@ async function startAnalysis() {
     btn.disabled = true;
     btn.textContent = '🚀 任务执行中...';
     try {
-        const resp = await fetch('/analyze', { method: 'POST', body: formData });
-        const data = await resp.json();
+        const data = await fetchJsonOrThrow('/analyze', { method: 'POST', body: formData });
         if (data.task_id) {
             loadUnifiedTasks();
             pollTaskStatus(data.task_id, 0);
@@ -1365,8 +1372,7 @@ async function pollTaskStatus(taskId, attempt) {
     const resArea = document.getElementById('resultArea');
     const btn = document.getElementById('analyzeBtn');
     try {
-        const resp = await fetch('/task_status/' + taskId);
-        const data = await resp.json();
+        const data = await fetchJsonOrThrow('/task_status/' + encodeURIComponent(taskId));
         if (data.progress) {
             loadingText.innerHTML = '⏳ ' + data.progress + '<br><small>任务ID: ' + taskId.substring(0, 8) + '...</small>';
         }
@@ -1428,8 +1434,7 @@ function updateLegacyExportVisibility(isV2) {
 
 async function loadHistory() {
     try {
-        const resp = await fetch('/get_history');
-        const list = await resp.json();
+        const list = await fetchJsonOrThrow('/get_history');
         const sentimentList = list.filter(i => i.type === 'sentiment');
         allHistory = sentimentList;
         const timeFiltered = applyTimeFilter(sentimentList);

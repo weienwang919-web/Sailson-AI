@@ -19,6 +19,7 @@ from io import BytesIO
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file, Response
 from flask_bcrypt import Bcrypt
+from werkzeug.exceptions import HTTPException
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -653,11 +654,32 @@ def recover_interrupted_tasks():
 # 装饰器：权限控制
 # ============================================
 
+def _wants_json_response():
+    """Return JSON errors for in-page fetch/API calls instead of HTML redirects."""
+    if request.path.startswith('/api/') or request.path in {'/analyze'}:
+        return True
+    if request.is_json:
+        return True
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    best = request.accept_mimetypes.best
+    return (
+        best == 'application/json'
+        and request.accept_mimetypes[best] >= request.accept_mimetypes['text/html']
+    )
+
+
 def login_required(f):
     """需要登录才能访问"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get('logged_in'):
+            if _wants_json_response():
+                return jsonify({
+                    'status': 'error',
+                    'message': '登录状态已失效，请重新登录后再提交任务',
+                    'error': '登录状态已失效，请重新登录后再提交任务'
+                }), 401
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -667,11 +689,37 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get('logged_in'):
+            if _wants_json_response():
+                return jsonify({
+                    'status': 'error',
+                    'message': '登录状态已失效，请重新登录后再操作',
+                    'error': '登录状态已失效，请重新登录后再操作'
+                }), 401
             return redirect(url_for('login'))
         if session.get('role') != 'admin':
             return jsonify({'error': '需要管理员权限'}), 403
         return f(*args, **kwargs)
     return decorated_function
+
+
+@app.errorhandler(Exception)
+def handle_fetch_exception(error):
+    if not _wants_json_response():
+        if isinstance(error, HTTPException):
+            return error
+        raise error
+
+    status_code = error.code if isinstance(error, HTTPException) else 500
+    if status_code >= 500:
+        logger.exception("❌ API 请求异常: %s", error)
+        message = '服务器处理请求失败，请稍后重试或联系管理员查看后台日志'
+    else:
+        message = getattr(error, 'description', None) or str(error)
+    return jsonify({
+        'status': 'error',
+        'message': message,
+        'error': message
+    }), status_code
 
 # ============================================
 # 核心工具函数
@@ -3748,6 +3796,7 @@ def spd_report_data():
 
 
 @app.route('/analyze', methods=['POST'])
+@login_required
 def analyze():
     """舆情分析 API - 异步版本（v2：支持多链接 FB/IG/TT/YTB）"""
     logger.info("\n" + "=" * 60)
@@ -3786,7 +3835,15 @@ def analyze():
     department = session.get('department', '未知')
 
     # 创建任务记录到数据库（标记类型为 sentiment）
-    create_task(task_id, user_id, session_id, function_type='sentiment')
+    try:
+        create_task(task_id, user_id, session_id, function_type='sentiment')
+    except Exception as e:
+        logger.exception(f"❌ 创建舆情任务失败: {e}")
+        return jsonify({
+            'status': 'error',
+            'error': '任务创建失败，请稍后重试或联系管理员查看后台日志',
+            'message': '任务创建失败，请稍后重试或联系管理员查看后台日志',
+        }), 500
 
     task_params = {
         'urls': urls,
@@ -3815,7 +3872,19 @@ def analyze():
                 'comments_per_post_limit': comments_per_post_limit,
             }
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception as e:
+            logger.exception(f"❌ 启动舆情任务线程失败: {e}")
+            try:
+                update_task(task_id, status='failed', error=str(e), progress='任务启动失败')
+            except Exception:
+                pass
+            return jsonify({
+                'status': 'error',
+                'error': '任务启动失败，请稍后重试或联系管理员查看后台日志',
+                'message': '任务启动失败，请稍后重试或联系管理员查看后台日志',
+            }), 500
         logger.info(f"✅ 任务 {task_id} 已创建并在本进程中启动（urls={len(urls)}）")
     else:
         # DB worker 模式：把参数序列化写入 task_params，由独立 worker 进程拾取
