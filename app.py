@@ -775,8 +775,14 @@ def update_task(task_id, status=None, progress=None, result=None, error=None, re
             if status in {'processing', 'claimed'}:
                 updates.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
                 updates.append("finished_at = NULL")
+                if error is None:
+                    updates.append("error = NULL")
             elif status in {'completed', 'failed'}:
                 updates.append("finished_at = CURRENT_TIMESTAMP")
+                if status == 'completed' and error is None:
+                    updates.append("error = NULL")
+            elif status == 'pending' and error is None:
+                updates.append("error = NULL")
         if progress is not None:
             updates.append("progress = %s")
             params.append(progress)
