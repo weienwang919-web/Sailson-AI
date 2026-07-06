@@ -2717,6 +2717,8 @@ def sentiment_tool():
         'analysis.html',
         has_used_sentiment=has_used_sentiment,
         video_metrics_batch_size=video_metrics_etl.BATCH_SIZE,
+        video_metrics_max_upload_bytes=ETL_VIDEO_METRICS_MAX_UPLOAD_BYTES,
+        video_metrics_max_upload_mb=round(ETL_VIDEO_METRICS_MAX_UPLOAD_BYTES / 1024 / 1024, 1),
         profile_video_max_profiles=ETL_PROFILE_VIDEO_MAX_PROFILES,
         profile_video_max_per_profile=ETL_PROFILE_VIDEO_MAX_PER_PROFILE,
         insight_comments_default=sentiment_insight.DEFAULT_COMMENTS_PER_POST_LIMIT,
@@ -8158,6 +8160,7 @@ def thai_report_top5():
 ETL_COMMENTS_MAX_URLS = int(os.environ.get('ETL_COMMENTS_MAX_URLS', '200'))
 ETL_PROFILE_VIDEO_MAX_PROFILES = int(os.environ.get('ETL_PROFILE_VIDEO_MAX_PROFILES', '200'))
 ETL_PROFILE_VIDEO_MAX_PER_PROFILE = int(os.environ.get('ETL_PROFILE_VIDEO_MAX_PER_PROFILE', '300'))
+ETL_VIDEO_METRICS_MAX_UPLOAD_BYTES = int(os.environ.get('ETL_VIDEO_METRICS_MAX_UPLOAD_BYTES', str(20 * 1024 * 1024)))
 DEFAULT_VIDEO_METRIC_FIELDS = list(video_metrics_etl.DEFAULT_VIDEO_METRIC_FIELDS)
 
 
@@ -8348,22 +8351,16 @@ def etl_video_metrics_start():
         manual_urls = video_metrics_etl.parse_manual_urls(manual_urls_text)
 
         raw = None
-        parsed = None
-        excel_urls = []
         if f and f.filename:
             raw = f.read()
-            parsed = etl_tools.parse_excel_urls(raw, url_col)
-            excel_urls = parsed.urls
+            if len(raw) > ETL_VIDEO_METRICS_MAX_UPLOAD_BYTES:
+                max_mb = round(ETL_VIDEO_METRICS_MAX_UPLOAD_BYTES / 1024 / 1024, 1)
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Excel 文件过大，请控制在 {max_mb}MB 以内或拆分后上传',
+                }), 413
 
-        urls = []
-        seen_urls = set()
-        for raw_url in [*excel_urls, *manual_urls]:
-            key = video_metrics_etl.normalize_url(raw_url)
-            if key and key not in seen_urls:
-                seen_urls.add(key)
-                urls.append(raw_url)
-
-        if not urls:
+        if raw is None and not manual_urls:
             return jsonify({'status': 'error', 'message': '未解析到有效 http(s) 链接'}), 400
 
         selected_raw = (request.form.get('selected_fields') or '').strip()
@@ -8392,22 +8389,13 @@ def etl_video_metrics_start():
         if not input_file_id:
             return jsonify({'status': 'error', 'message': '保存输入文件失败'}), 500
 
-    excel_keys = {video_metrics_etl.normalize_url(u) for u in excel_urls}
-    extra_manual_urls = [
-        u for u in manual_urls
-        if video_metrics_etl.normalize_url(u) not in excel_keys
-    ]
-
     params = {
         'input_file_id': input_file_id,
         'url_column': url_col,
-        'resolved_url_column': parsed.url_column if parsed else None,
-        'sheet_name': parsed.sheet_name if parsed else None,
-        'header_row': parsed.header_row if parsed else None,
-        'urls': urls,
-        'excel_urls': excel_urls,
+        'urls': [] if raw is not None else manual_urls,
+        'excel_urls': [],
         'manual_urls': manual_urls,
-        'extra_manual_urls': extra_manual_urls,
+        'extra_manual_urls': None if raw is not None else [],
         'selected_fields': selected_fields,
         'user_id': user_id,
         'session_id': session_id,
@@ -8417,7 +8405,12 @@ def etl_video_metrics_start():
     try:
         set_task_params(queue_task_id, {'source': 'etl_video_metrics', **params})
     except Exception as e:
-        logger.error(f"❌ 写入 task_params 失败: {e}")
+        logger.exception(f"❌ 写入 task_params 失败: {e}")
+        try:
+            update_task(queue_task_id, status='failed', error=str(e)[:500], progress='任务参数写入失败')
+        except Exception:
+            pass
+        return jsonify({'status': 'error', 'message': '任务参数写入失败，请稍后重试'}), 500
     if USE_DB_WORKER:
         pass
     else:
@@ -8427,7 +8420,12 @@ def etl_video_metrics_start():
 
         threading.Thread(target=_run, daemon=True).start()
 
-    return jsonify({'status': 'queued', 'task_id': queue_task_id, 'url_count': len(urls)})
+    return jsonify({
+        'status': 'queued',
+        'task_id': queue_task_id,
+        'url_count': len(manual_urls) if raw is None else None,
+        'message': '任务已排队，后台将解析 Excel 链接' if raw is not None else '任务已排队',
+    })
 
 
 @app.route('/api/etl/profile_video_export_start', methods=['POST'])

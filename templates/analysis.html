@@ -473,6 +473,8 @@ const POLL_INTERVAL = 5000;
 let profileVideoModalInstance = null;
 let precheckTimer = null;
 let currentVideoDataMode = 'video';
+const VIDEO_METRICS_MAX_UPLOAD_BYTES = Number('{{ video_metrics_max_upload_bytes|int }}') || 20971520;
+const VIDEO_METRICS_MAX_UPLOAD_MB = '{{ video_metrics_max_upload_mb }}';
 
 function switchSentimentTool(kind) {
     const isVideo = kind === 'videoMetrics';
@@ -516,7 +518,12 @@ async function fetchJsonOrThrow(url, options) {
     if (!requestOptions.headers.has('X-Requested-With')) {
         requestOptions.headers.set('X-Requested-With', 'XMLHttpRequest');
     }
-    const res = await fetch(url, requestOptions);
+    let res;
+    try {
+        res = await fetch(url, requestOptions);
+    } catch (e) {
+        throw new Error('网络请求被中断，任务尚未确认提交。请稍后刷新任务中心；如果没有新任务，请拆分 Excel 或重试。');
+    }
     const text = await res.text();
     let data = null;
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
@@ -950,6 +957,11 @@ async function startVideoMetrics() {
         statusEl.className = 'status-line err';
         return;
     }
+    if (file && file.size > VIDEO_METRICS_MAX_UPLOAD_BYTES) {
+        statusEl.textContent = 'Excel 文件过大，请控制在 ' + VIDEO_METRICS_MAX_UPLOAD_MB + 'MB 以内或拆分后上传';
+        statusEl.className = 'status-line err';
+        return;
+    }
     const selected = Array.from(document.querySelectorAll('input[name="video-metric"]:checked')).map(el => el.value);
     if (!selected.length) {
         statusEl.textContent = '请至少勾选一个写回字段';
@@ -974,7 +986,10 @@ async function startVideoMetrics() {
             btn.disabled = false;
             return;
         }
-        statusEl.textContent = '已排队 ' + data.url_count + ' 条链接，任务 ID: ' + data.task_id;
+        const countText = data.url_count != null
+            ? ('已排队 ' + data.url_count + ' 条链接')
+            : (data.message || '已排队，后台将解析 Excel 链接');
+        statusEl.textContent = countText + '，任务 ID: ' + data.task_id;
         loadVideoMetricsTasks();
         loadUnifiedTasks();
         pollVideoMetricsTask(data.task_id, 0);
@@ -982,6 +997,8 @@ async function startVideoMetrics() {
         statusEl.textContent = String(e);
         statusEl.className = 'status-line err';
         btn.disabled = false;
+        loadVideoMetricsTasks();
+        loadUnifiedTasks();
     }
 }
 

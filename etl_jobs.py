@@ -198,7 +198,7 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
     urls = params.get("urls") or []
     excel_urls = params.get("excel_urls") or []
     manual_urls = params.get("manual_urls") or []
-    extra_manual_urls = params.get("extra_manual_urls") or []
+    extra_manual_urls = params.get("extra_manual_urls")
     file_bytes = None
 
     if input_file_id:
@@ -221,9 +221,18 @@ def run_etl_video_metrics_task(task_id: str, params: dict, update_task_fn) -> No
             resolved_url_column = parsed.url_column
             sheet_name = parsed.sheet_name
             header_row = parsed.header_row
+            if extra_manual_urls is None and manual_urls:
+                excel_keys = {video_metrics_etl.normalize_url(u) for u in excel_urls}
+                extra_manual_urls = [
+                    u for u in manual_urls
+                    if video_metrics_etl.normalize_url(u) not in excel_keys
+                ]
     except Exception as e:
         update_task_fn(task_id, status="failed", error=f"解析链接失败: {e}")
         return
+
+    if extra_manual_urls is None:
+        extra_manual_urls = []
 
     if not urls:
         deduped_urls = []
