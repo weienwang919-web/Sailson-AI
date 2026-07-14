@@ -8969,7 +8969,12 @@ def api_tiktok_official_invite():
     """管理员生成一次性签名授权邀请链接，发给代运营人员用于授权某个账号别名。"""
     data = request.get_json(silent=True) or {}
     account_alias = (data.get('account_alias') or '').strip()
-    ttl_seconds = data.get('ttl_seconds') or 3600
+    if data.get('never_expire'):
+        ttl_seconds = None
+    elif data.get('ttl_seconds') is not None:
+        ttl_seconds = int(data.get('ttl_seconds'))
+    else:
+        ttl_seconds = 24 * 3600
     if not account_alias:
         return jsonify({'status': 'error', 'message': 'account_alias 不能为空'}), 400
     try:

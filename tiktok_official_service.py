@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import unquote
 
 import requests
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
 
@@ -235,11 +235,12 @@ def ensure_schema() -> None:
             account_alias VARCHAR(255) NOT NULL,
             authorized_by VARCHAR(255),
             created_at TIMESTAMP DEFAULT NOW(),
-            expires_at TIMESTAMP NOT NULL,
+            expires_at TIMESTAMP,
             used_at TIMESTAMP
         )
         """
     )
+    db.execute("ALTER TABLE tiktok_official_invites ALTER COLUMN expires_at DROP NOT NULL")
 
 
 def configured_accounts() -> list[dict[str, Any]]:
@@ -485,15 +486,19 @@ def _invite_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(_invite_signing_key(), salt=INVITE_SALT)
 
 
-def create_invite(account_alias: str, authorized_by: str | None = None, ttl_seconds: int = 3600) -> dict[str, Any]:
-    """生成一条一次性授权邀请：写入 tiktok_official_invites，返回签名后的 state token。"""
+def create_invite(account_alias: str, authorized_by: str | None = None, ttl_seconds: int | None = 24 * 3600) -> dict[str, Any]:
+    """生成一条一次性授权邀请：写入 tiktok_official_invites，返回签名后的 state token。
+
+    ttl_seconds 为 None 表示永不过期（仍然是一次性的，被使用后立即核销失效）。
+    """
     account_alias = (account_alias or "").strip()
     if not account_alias:
         raise ValueError("account_alias 不能为空")
-    ttl_seconds = max(300, min(int(ttl_seconds or 3600), 24 * 3600))
+    expires_at = None
+    if ttl_seconds is not None:
+        ttl_seconds = max(300, min(int(ttl_seconds), 365 * 24 * 3600))
+        expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
     nonce = pysecrets.token_hex(16)
-    now = datetime.utcnow()
-    expires_at = now + timedelta(seconds=ttl_seconds)
     db.execute(
         """
         INSERT INTO tiktok_official_invites (nonce, account_alias, authorized_by, created_at, expires_at)
@@ -505,15 +510,14 @@ def create_invite(account_alias: str, authorized_by: str | None = None, ttl_seco
     return {"state": state, "nonce": nonce, "account_alias": account_alias, "expires_at": expires_at}
 
 
-def verify_and_consume_invite(state: str, ttl_seconds: int = 24 * 3600) -> dict[str, Any]:
-    """校验授权回调带回的 state：签名有效、未过期、对应 invite 存在且未被使用过，成功后立即标记为已使用。
+def verify_and_consume_invite(state: str) -> dict[str, Any]:
+    """校验授权回调带回的 state：签名有效、（若设置了有效期则）未过期、对应 invite 存在且未被使用过，成功后立即标记为已使用。
 
+    过期时间完全由 tiktok_official_invites.expires_at 决定（NULL 代表永不过期），签名本身不做时间校验。
     失败时抛出 ValueError，message 可直接展示给用户。
     """
     try:
-        payload = _invite_serializer().loads(state, max_age=ttl_seconds)
-    except SignatureExpired as exc:
-        raise ValueError("授权链接已过期，请联系管理员重新生成") from exc
+        payload = _invite_serializer().loads(state)
     except BadSignature as exc:
         raise ValueError("授权链接无效，请联系管理员重新生成") from exc
 
@@ -537,7 +541,7 @@ def verify_and_consume_invite(state: str, ttl_seconds: int = 24 * 3600) -> dict[
     return {"account_alias": row.get("account_alias") or payload.get("account_alias"), "authorized_by": row.get("authorized_by") or payload.get("authorized_by")}
 
 
-def build_invite_link(account_alias: str, public_base: str, authorized_by: str | None = None, ttl_seconds: int = 3600) -> dict[str, Any]:
+def build_invite_link(account_alias: str, public_base: str, authorized_by: str | None = None, ttl_seconds: int | None = 24 * 3600) -> dict[str, Any]:
     invite = create_invite(account_alias, authorized_by=authorized_by, ttl_seconds=ttl_seconds)
     invite["url"] = build_account_auth_url(public_base, state=invite["state"])
     return invite
