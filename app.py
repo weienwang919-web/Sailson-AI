@@ -243,6 +243,43 @@ def run_scheduled_tiktok_official_daily_sync():
         logger.error(f"❌ 创建 TikTok 官号矩阵每日同步任务失败: {e}")
 
 
+def run_scheduled_topic_monitor_daily():
+    """APScheduler 可序列化入口：全平台话题监控每日发现+抓取，按话题逐条入队。"""
+    try:
+        topics = db.query_all("SELECT id, name FROM topic_monitors WHERE is_active = TRUE")
+        if not topics:
+            return
+        session_id = f"topic_monitor_daily_{datetime.date.today().isoformat()}"
+        created = []
+        for topic in topics:
+            topic_id = topic['id']
+            task_id = db.execute_and_fetch_id(
+                "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+                ('topic_monitor_run', 'pending')
+            )
+            params = {
+                'source': 'topic_monitor_daily',
+                'topic_id': topic_id,
+                'scrape_task_id': task_id,
+            }
+            if USE_DB_WORKER:
+                task_id_str = str(uuid.uuid4())
+                create_task(task_id_str, None, session_id, function_type='topic_monitor_run')
+                set_task_params(task_id_str, params)
+            else:
+                def _run(_topic_id=topic_id, _task_id=task_id):
+                    try:
+                        tasks.run_topic_monitor_job(topic_id=_topic_id, scrape_task_id=_task_id, re_raise=False)
+                    except Exception as e:
+                        logger.error(f"❌ 话题监控每日任务执行失败 (topic_id={_topic_id}): {e}")
+                threading.Thread(target=_run, daemon=True).start()
+            created.append(topic_id)
+        if created:
+            logger.info(f"✅ 已创建话题监控每日任务: topic_ids={created}")
+    except Exception as e:
+        logger.error(f"❌ 创建话题监控每日任务失败: {e}")
+
+
 if not _IS_WORKER:
     jobstores = {
         'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
@@ -289,6 +326,16 @@ if not _IS_WORKER:
         hour=3,
         minute=30,
         id='tiktok_official_daily_sync_job',
+        replace_existing=True
+    )
+
+    # 全平台话题监控每日发现+抓取：每天凌晨 4:00 执行，按话题逐条入队
+    scheduler.add_job(
+        func=run_scheduled_topic_monitor_daily,
+        trigger='cron',
+        hour=4,
+        minute=0,
+        id='topic_monitor_daily_job',
         replace_existing=True
     )
 
@@ -6336,6 +6383,207 @@ def fb_task_status(task_id):
         return jsonify({'error': str(e)}), 500
 
 
+TOPIC_ALLOWED_PLATFORMS = ('facebook', 'instagram', 'tiktok')
+
+
+def _normalize_topic_platforms(raw_platforms):
+    """把前端传来的平台列表标准化为 'facebook,instagram,tiktok' 这种存储格式，过滤非法值。"""
+    if isinstance(raw_platforms, str):
+        raw_platforms = [p.strip() for p in raw_platforms.split(',')]
+    cleaned = []
+    for p in (raw_platforms or []):
+        p = str(p).strip().lower()
+        if p in TOPIC_ALLOWED_PLATFORMS and p not in cleaned:
+            cleaned.append(p)
+    return cleaned
+
+
+@app.route('/api/topics', methods=['GET'])
+@login_required
+def list_topics():
+    """列出全部话题监控配置，附带已发现帖子数"""
+    try:
+        rows = db.query_all("""
+            SELECT t.*,
+                   (SELECT COUNT(*) FROM topic_monitor_posts p WHERE p.topic_id = t.id) AS discovered_posts_count
+            FROM topic_monitors t
+            ORDER BY t.created_at DESC
+        """)
+        topics = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d['seed_tags'] = json.loads(d.get('seed_tags') or '[]')
+            except (TypeError, ValueError):
+                d['seed_tags'] = [s.strip() for s in (d.get('seed_tags') or '').split(',') if s.strip()]
+            d['platforms'] = [p.strip() for p in (d.get('platforms') or '').split(',') if p.strip()]
+            d['created_at'] = d['created_at'].isoformat() if d.get('created_at') else None
+            d['last_run_at'] = d['last_run_at'].isoformat() if d.get('last_run_at') else None
+            topics.append(d)
+        return jsonify({'status': 'success', 'topics': topics})
+    except Exception as e:
+        logger.error(f"❌ 获取话题列表失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/topics', methods=['POST'])
+@login_required
+def create_topic():
+    """创建话题监控（关键词/hashtag + 平台）"""
+    try:
+        data = request.json or {}
+        name = (data.get('name') or '').strip()
+        seed_tags = data.get('seed_tags') or []
+        if isinstance(seed_tags, str):
+            seed_tags = [s.strip() for s in re.split(r"[,，、\s]+", seed_tags) if s.strip()]
+        seed_tags = [str(s).strip() for s in seed_tags if str(s).strip()]
+        platforms = _normalize_topic_platforms(data.get('platforms'))
+        boolean_rule = (data.get('boolean_rule') or '').strip() or None
+        days_back = int(data.get('days_back') or 7)
+        max_posts = int(data.get('max_posts') or 200)
+
+        if not name:
+            return jsonify({'status': 'error', 'message': '话题名称不能为空'}), 400
+        if not seed_tags:
+            return jsonify({'status': 'error', 'message': '至少填写一个关键词/hashtag'}), 400
+        if not platforms:
+            return jsonify({'status': 'error', 'message': '至少选择一个平台（FB/IG/TikTok）'}), 400
+
+        topic_id = db.execute_and_fetch_id(
+            """
+            INSERT INTO topic_monitors (name, platforms, seed_tags, boolean_rule, days_back, max_posts, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+            """,
+            (name, ','.join(platforms), json.dumps(seed_tags, ensure_ascii=False), boolean_rule,
+             days_back, max_posts, session.get('user_id'))
+        )
+        logger.info(f"✅ 创建话题监控: id={topic_id}, name={name}, platforms={platforms}")
+        return jsonify({'status': 'success', 'topic_id': topic_id})
+    except Exception as e:
+        logger.error(f"❌ 创建话题失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/topics/<int:topic_id>/toggle', methods=['POST'])
+@login_required
+def toggle_topic(topic_id):
+    """启用/停用话题监控"""
+    try:
+        topic = db.query_one("SELECT id, is_active FROM topic_monitors WHERE id = %s", (topic_id,))
+        if not topic:
+            return jsonify({'status': 'error', 'message': '话题不存在'}), 404
+        new_state = not topic['is_active']
+        db.execute("UPDATE topic_monitors SET is_active = %s WHERE id = %s", (new_state, topic_id))
+        return jsonify({'status': 'success', 'is_active': new_state})
+    except Exception as e:
+        logger.error(f"❌ 切换话题状态失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/topics/<int:topic_id>', methods=['DELETE'])
+@login_required
+def delete_topic(topic_id):
+    """删除话题监控（级联删除 topic_monitor_posts 关联，不删除 fb_comments/fb_post_metrics 本体）"""
+    try:
+        topic = db.query_one("SELECT id FROM topic_monitors WHERE id = %s", (topic_id,))
+        if not topic:
+            return jsonify({'status': 'error', 'message': '话题不存在'}), 404
+        db.execute("DELETE FROM topic_monitors WHERE id = %s", (topic_id,))
+        logger.info(f"✅ 删除话题监控: id={topic_id}")
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"❌ 删除话题失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/topics/<int:topic_id>/run', methods=['POST'])
+@login_required
+def run_topic_now(topic_id):
+    """立即触发一次话题发现 + 抓取（异步执行，复用 /fb_task_status 轮询）"""
+    try:
+        topic = db.query_one("SELECT id, name FROM topic_monitors WHERE id = %s", (topic_id,))
+        if not topic:
+            return jsonify({'status': 'error', 'message': '话题不存在'}), 404
+
+        if not USE_DB_WORKER:
+            task_id = db.execute_and_fetch_id(
+                "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+                ('topic_monitor_run', 'pending')
+            )
+
+            def run_topic_job():
+                try:
+                    result = tasks.run_topic_monitor_job(topic_id=topic_id, scrape_task_id=task_id, re_raise=False)
+                    logger.info(f"✅ 话题监控后台执行完成 (topic_id={topic_id}, task_id={task_id}): {result}")
+                except Exception as e:
+                    logger.error(f"❌ 话题监控后台执行失败 (topic_id={topic_id}, task_id={task_id}): {e}")
+
+            thread = threading.Thread(target=run_topic_job, daemon=True)
+            thread.start()
+        else:
+            task_id_str = str(uuid.uuid4())
+            user_id = session.get('user_id')
+            session_id = session.get('session_id', 'default')
+            create_task(task_id_str, user_id, session_id, function_type='topic_monitor_run')
+
+            task_id = db.execute_and_fetch_id(
+                "INSERT INTO scrape_tasks (task_type, status) VALUES (%s, %s) RETURNING id",
+                ('topic_monitor_run', 'pending')
+            )
+            try:
+                task_params = {
+                    'source': 'topic_run',
+                    'topic_id': topic_id,
+                    'scrape_task_id': task_id,
+                    'user_id': user_id,
+                }
+                db.execute(
+                    "UPDATE task_queue SET task_params = %s WHERE task_id = %s",
+                    (json.dumps(task_params, ensure_ascii=False), task_id_str)
+                )
+            except Exception as e:
+                logger.error(f"❌ 更新 task_params 失败: {e}")
+
+            logger.info(f"✅ 话题监控任务已创建 (task_queue={task_id_str}, scrape_tasks={task_id}, topic_id={topic_id})")
+
+        return jsonify({
+            'status': 'success',
+            'message': f'话题「{topic["name"]}」抓取任务已启动',
+            'task_id': task_id
+        })
+    except Exception as e:
+        logger.error(f"❌ 触发话题抓取失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/topics/<int:topic_id>/posts', methods=['GET'])
+@login_required
+def get_topic_posts(topic_id):
+    """获取话题下已发现的帖子列表（关联 fb_post_metrics 展示互动数据）"""
+    try:
+        limit = min(max(int(request.args.get('limit', 200)), 1), 1000)
+        rows = db.query_all("""
+            SELECT p.post_url, p.platform, p.discovered_at,
+                   m.author, m.post_content AS caption, m.likes, m.comments_count, m.shares, m.views,
+                   m.post_date, m.thumbnail_url
+            FROM topic_monitor_posts p
+            LEFT JOIN fb_post_metrics m ON m.post_url = p.post_url
+            WHERE p.topic_id = %s
+            ORDER BY p.discovered_at DESC
+            LIMIT %s
+        """, (topic_id, limit))
+        posts = []
+        for r in rows:
+            d = dict(r)
+            d['discovered_at'] = d['discovered_at'].isoformat() if d.get('discovered_at') else None
+            d['post_date'] = d['post_date'].isoformat() if d.get('post_date') else None
+            posts.append(d)
+        return jsonify({'status': 'success', 'posts': posts})
+    except Exception as e:
+        logger.error(f"❌ 获取话题帖子失败: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 FB_QUERY_SEPARATOR_PATTERN = re.compile(r"[\s,，、/|]+")
 FB_CHINESE_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}")
 FB_LATIN_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_+-]{1,}")
@@ -6513,7 +6761,7 @@ def _expand_query_terms(query):
     return all_terms[: (FB_QUERY_MAX_TERMS * 3)]
 
 
-def _build_fb_search_filters(start_date, end_date, sentiment, post_urls, expanded_terms=None):
+def _build_fb_search_filters(start_date, end_date, sentiment, post_urls, expanded_terms=None, topic_id=None):
     where_clauses = []
     params = []
 
@@ -6545,6 +6793,10 @@ def _build_fb_search_filters(start_date, end_date, sentiment, post_urls, expande
         placeholders = ','.join(['%s'] * len(post_urls))
         where_clauses.append(f"post_url IN ({placeholders})")
         params.extend(post_urls)
+
+    if topic_id:
+        where_clauses.append("post_url IN (SELECT post_url FROM topic_monitor_posts WHERE topic_id = %s)")
+        params.append(topic_id)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
     return where_sql, params
@@ -6705,6 +6957,7 @@ def fb_search():
         sentiment = request.args.get('sentiment', '').strip()
         post_urls = request.args.getlist('post_url')  # 支持多选
         post_urls = [url.strip() for url in post_urls if url.strip()]
+        topic_id = request.args.get('topic_id', type=int)
         limit = int(request.args.get('limit', 200))
         limit = min(max(limit, 1), 500)
 
@@ -6714,13 +6967,14 @@ def fb_search():
             end_date=end_date,
             sentiment=sentiment,
             post_urls=post_urls,
-            expanded_terms=expanded_terms
+            expanded_terms=expanded_terms,
+            topic_id=topic_id
         )
 
         # 查询评论
         sql = f"""
             SELECT id, post_url, comment_id, author, created_at, content,
-                   sentiment_score, category, language, post_link, embedding, brief_analysis
+                   sentiment_score, category, language, post_link, embedding, brief_analysis, platform
             FROM fb_comments
             WHERE {where_sql}
             ORDER BY created_at DESC
@@ -6785,6 +7039,7 @@ def fb_wordcloud():
         post_urls = [url.strip() for url in post_urls if url.strip()]
         limit = int(request.args.get('limit', FB_WORDCLOUD_MAX_ROWS))
         limit = min(max(limit, 100), FB_WORDCLOUD_MAX_ROWS)
+        topic_id = request.args.get('topic_id', type=int)
         effective_sentiment = _resolve_sentiment_filter(sentiment, tone, default='negative')
 
         expanded_terms = _expand_query_terms(query)
@@ -6793,7 +7048,8 @@ def fb_wordcloud():
             end_date=end_date,
             sentiment=effective_sentiment,
             post_urls=post_urls,
-            expanded_terms=expanded_terms
+            expanded_terms=expanded_terms,
+            topic_id=topic_id
         )
 
         sql = f"""
@@ -6898,6 +7154,7 @@ def fb_topic_top10():
         tone = request.args.get('tone', '').strip()
         post_urls = request.args.getlist('post_url')
         post_urls = [url.strip() for url in post_urls if url.strip()]
+        topic_id = request.args.get('topic_id', type=int)
         effective_sentiment = _resolve_sentiment_filter(sentiment, tone, default='negative')
 
         expanded_terms = _expand_query_terms(query)
@@ -6906,7 +7163,8 @@ def fb_topic_top10():
             end_date=end_date,
             sentiment=effective_sentiment,
             post_urls=post_urls,
-            expanded_terms=expanded_terms
+            expanded_terms=expanded_terms,
+            topic_id=topic_id
         )
 
         sql = f"""
@@ -7059,25 +7317,32 @@ def fb_export():
 @app.route('/fb_stats', methods=['GET'])
 @login_required
 def fb_stats():
-    """获取 FB 评论统计数据（用于看板图表）"""
+    """获取 FB 评论统计数据（用于看板图表），支持按 topic_id 过滤"""
     try:
+        topic_id = request.args.get('topic_id', type=int)
+        topic_filter_sql = ""
+        topic_params = ()
+        if topic_id:
+            topic_filter_sql = " AND post_url IN (SELECT post_url FROM topic_monitor_posts WHERE topic_id = %s)"
+            topic_params = (topic_id,)
+
         # 今日新增
-        today_count = db.query_one("""
+        today_count = db.query_one(f"""
             SELECT COUNT(*) as count FROM fb_comments
-            WHERE DATE(scraped_at) = CURRENT_DATE
-        """)
+            WHERE DATE(scraped_at) = CURRENT_DATE{topic_filter_sql}
+        """, topic_params)
 
         # 近 7 天趋势
-        trend_data = db.query_all("""
+        trend_data = db.query_all(f"""
             SELECT DATE(scraped_at) as date, COUNT(*) as count
             FROM fb_comments
-            WHERE scraped_at >= CURRENT_DATE - INTERVAL '7 days'
+            WHERE scraped_at >= CURRENT_DATE - INTERVAL '7 days'{topic_filter_sql}
             GROUP BY DATE(scraped_at)
             ORDER BY date
-        """)
+        """, topic_params)
 
         # 情感分布
-        sentiment_dist = db.query_all("""
+        sentiment_dist = db.query_all(f"""
             SELECT
                 CASE
                     WHEN sentiment_score > 0.3 THEN 'positive'
@@ -7086,25 +7351,36 @@ def fb_stats():
                 END as sentiment,
                 COUNT(*) as count
             FROM fb_comments
+            WHERE 1=1{topic_filter_sql}
             GROUP BY sentiment
-        """)
+        """, topic_params)
 
         # 高频关键词（简化版，从分类统计）
-        category_dist = db.query_all("""
+        category_dist = db.query_all(f"""
             SELECT category, COUNT(*) as count
             FROM fb_comments
-            WHERE category IS NOT NULL AND category != 'unknown'
+            WHERE category IS NOT NULL AND category != 'unknown'{topic_filter_sql}
             GROUP BY category
             ORDER BY count DESC
             LIMIT 10
-        """)
+        """, topic_params)
+
+        # 平台分布（全平台话题监控看板需要区分 FB/IG/TikTok）
+        platform_dist = db.query_all(f"""
+            SELECT COALESCE(NULLIF(platform, ''), 'FB') as platform, COUNT(*) as count
+            FROM fb_comments
+            WHERE 1=1{topic_filter_sql}
+            GROUP BY platform
+            ORDER BY count DESC
+        """, topic_params)
 
         return jsonify({
             'status': 'success',
             'today_count': today_count['count'] if today_count else 0,
             'trend': [{'date': str(r['date']), 'count': r['count']} for r in trend_data],
             'sentiment': [{'sentiment': r['sentiment'], 'count': r['count']} for r in sentiment_dist],
-            'categories': [{'category': r['category'], 'count': r['count']} for r in category_dist]
+            'categories': [{'category': r['category'], 'count': r['count']} for r in category_dist],
+            'platforms': [{'platform': r['platform'], 'count': r['count']} for r in platform_dist]
         })
 
     except Exception as e:

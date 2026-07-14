@@ -6,6 +6,7 @@
   - competitor  : 竞品监控（调用 process_competitor_task）
   - fb_scrape   : FB/SPD 舆情看板抓取（调用 tasks.scrape_fb_comments）
   - thai_scrape : 泰国专题抓取（调用 tasks.run_thai_scrape_job）
+  - topic_monitor_run: 全平台（FB/IG/TikTok）话题监控发现+抓取（调用 tasks.run_topic_monitor_job）
   - etl_hashtag : Excel 工具 Hashtag 发现导出（etl_jobs.run_etl_hashtag_task）
   - etl_comments: Excel 工具链接批量抓评论导出（etl_jobs.run_etl_comments_task）
   - etl_video_metrics: Excel 工具视频链接批量拉指标写回（etl_jobs.run_etl_video_metrics_task）
@@ -84,6 +85,7 @@ COSTLY_APIFY_TASK_TYPES = {
     'etl_comments',
     'fb_scrape',
     'thai_scrape',
+    'topic_monitor_run',
     'competitor',
     'sentiment',
 }
@@ -179,6 +181,8 @@ def dispatch_task(task_row):
             _handle_fb_scrape(task_id, params)
         elif func_type == 'thai_scrape':
             _handle_thai_scrape(task_id, params)
+        elif func_type == 'topic_monitor_run':
+            _handle_topic_monitor_run(task_id, params)
         elif func_type == 'etl_hashtag':
             _handle_etl_hashtag(task_id, params)
         elif func_type == 'etl_comments':
@@ -459,6 +463,43 @@ def _handle_thai_scrape(task_id, params):
         update_task(task_id, status='completed', progress='泰国抓取完成')
     except Exception as e:
         logger.error(f"❌ 泰国专题 Worker 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
+def _handle_topic_monitor_run(task_id, params):
+    """全平台话题监控：按话题配置发现帖子（FB/IG/TikTok）+ 抓评论 + AI 分析。"""
+    topic_id = params.get('topic_id')
+    scrape_task_id = params.get('scrape_task_id')
+    if not topic_id or not scrape_task_id:
+        logger.error("❌ topic_monitor_run 缺少 topic_id/scrape_task_id")
+        update_task(task_id, status='failed', error='缺少 topic_id/scrape_task_id')
+        return
+    try:
+        update_task(task_id, progress='话题监控：Worker 执行中...')
+        result = tasks.run_topic_monitor_job(
+            topic_id=int(topic_id),
+            scrape_task_id=scrape_task_id,
+            re_raise=True,
+        ) or {}
+        comments_result = result.get('comments') or {}
+        usage_service.record_usage_event(
+            module='topic_monitor_run',
+            user_id=params.get('user_id'),
+            task_id=task_id,
+            item_count=int(comments_result.get('new_comments') or 0) + int(comments_result.get('existing_comments') or 0),
+            crawler_items=int(comments_result.get('new_comments') or 0),
+            source='actual',
+            detail={
+                'topic_id': topic_id,
+                'scrape_task_id': scrape_task_id,
+                'ai_processed_total': comments_result.get('ai_processed_total', 0),
+            },
+        )
+        update_task(task_id, status='completed', progress='话题监控抓取完成')
+    except Exception as e:
+        logger.error(f"❌ 话题监控 Worker 失败: {e}")
         import traceback
         traceback.print_exc()
         update_task(task_id, status='failed', error=str(e)[:500])

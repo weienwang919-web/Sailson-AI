@@ -48,10 +48,13 @@ qwen_client = OpenAI(api_key=DASHSCOPE_API_KEY, base_url=QWEN_BASE_URL) if DASHS
 
 DEFAULT_FB_HASHTAG_ACTOR = "apify/facebook-hashtag-scraper"
 DEFAULT_IG_HASHTAG_ACTOR = "apify/instagram-hashtag-scraper"
+DEFAULT_TT_HASHTAG_ACTOR = "clockworks/tiktok-hashtag-scraper"
 DEFAULT_FB_COMMENTS_ACTOR = "apify/facebook-comments-scraper"
 DEFAULT_IG_COMMENTS_ACTOR = "apify/instagram-comment-scraper"
+DEFAULT_TT_COMMENTS_ACTOR = "clockworks/tiktok-comments-scraper"
 FB_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("FB_COMMENTS_ACTOR_TIMEOUT_SECS", "420"))
 IG_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("IG_COMMENTS_ACTOR_TIMEOUT_SECS", "180"))
+TT_COMMENTS_ACTOR_TIMEOUT_SECS = int(os.environ.get("TT_COMMENTS_ACTOR_TIMEOUT_SECS", "300"))
 
 
 def _is_thai_content(text):
@@ -281,11 +284,30 @@ def _is_instagram_url(url):
         return False
 
 
+def _is_tiktok_url(url):
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return False
+        if hostname == "tiktok.com":
+            return True
+        return hostname.endswith(".tiktok.com")
+    except Exception:
+        return False
+
+
 def _detect_social_platform(url):
     if _is_facebook_url(url):
         return "facebook"
     if _is_instagram_url(url):
         return "instagram"
+    if _is_tiktok_url(url):
+        return "tiktok"
     return "unknown"
 
 
@@ -294,7 +316,7 @@ def _extract_post_url(item):
         return None
     candidate_keys = [
         "postUrl", "postURL", "post_url", "url", "link", "permalink",
-        "canonicalUrl", "postLink"
+        "canonicalUrl", "postLink", "webVideoUrl", "videoWebUrl"
     ]
     for key in candidate_keys:
         value = item.get(key)
@@ -329,9 +351,9 @@ def _extract_post_metrics(item, platform, fallback_url=None):
         return None
 
     author = ""
-    raw_author = item.get("author")
+    raw_author = item.get("author") or item.get("authorMeta")
     if isinstance(raw_author, dict):
-        author = raw_author.get("name") or raw_author.get("username") or ""
+        author = raw_author.get("name") or raw_author.get("username") or raw_author.get("nickName") or ""
     elif isinstance(raw_author, str):
         author = raw_author.strip()
     if not author:
@@ -349,20 +371,20 @@ def _extract_post_metrics(item, platform, fallback_url=None):
 
     created_raw = (
         item.get("createdTime") or item.get("created_at") or item.get("createdAt")
-        or item.get("timestamp") or item.get("time") or item.get("postDate")
+        or item.get("timestamp") or item.get("time") or item.get("postDate") or item.get("createTimeISO")
     )
     post_date = _parse_created_at(created_raw).strftime("%Y-%m-%d")
 
     likes = _safe_int(
         item.get("likes") or item.get("likeCount") or item.get("likesCount")
-        or item.get("reactionCount") or item.get("edge_liked_by", {}).get("count")
+        or item.get("reactionCount") or item.get("diggCount") or item.get("edge_liked_by", {}).get("count")
     )
     comments_count = _safe_int(
         item.get("commentsCount") or item.get("commentCount") or item.get("comments")
         or item.get("edge_media_to_comment", {}).get("count")
     )
     shares = _safe_int(item.get("shares") or item.get("shareCount") or item.get("sharesCount"))
-    views = _safe_int(item.get("views") or item.get("viewCount") or item.get("videoViewCount"))
+    views = _safe_int(item.get("views") or item.get("viewCount") or item.get("videoViewCount") or item.get("playCount"))
     engagement = likes + comments_count + shares
 
     thumbnail_url = ""
@@ -438,7 +460,10 @@ def _extract_discover_text(item):
             parts.append(value.strip())
     hashtags = item.get("hashtags")
     if isinstance(hashtags, list):
-        parts.extend([str(x).strip() for x in hashtags if str(x).strip()])
+        for h in hashtags:
+            name = h.get("name") if isinstance(h, dict) else h
+            if name and str(name).strip():
+                parts.append(str(name).strip())
     return " ".join(parts).lower().strip()
 
 
@@ -457,7 +482,10 @@ def _extract_discover_text_for_lang(item):
             parts.append(value.strip())
     hashtags = item.get("hashtags")
     if isinstance(hashtags, list):
-        parts.extend([str(x).strip() for x in hashtags if str(x).strip()])
+        for h in hashtags:
+            name = h.get("name") if isinstance(h, dict) else h
+            if name and str(name).strip():
+                parts.append(str(name).strip())
     return " ".join(parts).strip()
 
 
@@ -487,14 +515,14 @@ def _extract_comment_fields(item, platform, default_post_url):
         return None
 
     raw_comment_id = (
-        item.get('id') or item.get('commentId') or item.get('comment_id') or item.get('pk')
+        item.get('id') or item.get('commentId') or item.get('comment_id') or item.get('pk') or item.get('cid')
     )
     content = (
         item.get('text') or item.get('content') or item.get('comment') or item.get('message') or ""
     )
     created_at_raw = (
         item.get('createdTime') or item.get('created_at') or item.get('createdAt')
-        or item.get('timestamp') or item.get('time')
+        or item.get('timestamp') or item.get('time') or item.get('createTimeISO')
     )
 
     author = "Unknown"
@@ -505,7 +533,8 @@ def _extract_comment_fields(item, platform, default_post_url):
         author = raw_author.strip()
     else:
         author = (
-            item.get('ownerUsername') or item.get('username') or item.get('userName') or author
+            item.get('ownerUsername') or item.get('username') or item.get('userName')
+            or item.get('uniqueId') or author
         )
 
     post_url = _extract_post_url(item) or default_post_url
@@ -514,9 +543,11 @@ def _extract_comment_fields(item, platform, default_post_url):
         return None
 
     comment_id = str(raw_comment_id).strip()
-    # 为避免不同平台 comment_id 冲突，IG 加前缀
+    # 为避免不同平台 comment_id 冲突，IG/TikTok 加前缀
     if platform == "instagram" and not comment_id.startswith("ig:"):
         comment_id = f"ig:{comment_id}"
+    elif platform == "tiktok" and not comment_id.startswith("tt:"):
+        comment_id = f"tt:{comment_id}"
 
     return {
         "comment_id": comment_id,
@@ -596,6 +627,7 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
     actor_map = {
         "facebook": os.environ.get("APIFY_FB_HASHTAG_ACTOR_ID", DEFAULT_FB_HASHTAG_ACTOR).strip(),
         "instagram": os.environ.get("APIFY_IG_HASHTAG_ACTOR_ID", DEFAULT_IG_HASHTAG_ACTOR).strip(),
+        "tiktok": os.environ.get("APIFY_TT_HASHTAG_ACTOR_ID", DEFAULT_TT_HASHTAG_ACTOR).strip(),
     }
 
     end_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -676,7 +708,21 @@ def discover_posts_by_tags(seed_tags, platforms=None, days_back=7, max_posts=200
                     "endDate": end_dt.date().isoformat()
                 }
             ]
-        else:
+        elif platform == "tiktok":
+            # clockworks/tiktok-hashtag-scraper：未在本项目内直连验证过实际返回字段，
+            # 候选 input 基于公开文档，若两种都失败会走下方 except 分支记录错误，
+            # 不影响 FB/IG 已验证的发现流程继续执行。
+            candidate_inputs = [
+                {
+                    "hashtags": ig_hashtags,
+                    "resultsPerPage": per_platform_limit
+                },
+                {
+                    "hashtags": ig_hashtags,
+                    "maxItems": per_platform_limit
+                }
+            ]
+        elif platform == "instagram":
             candidate_inputs = [
                 {
                     "hashtags": ig_hashtags,
@@ -835,6 +881,7 @@ def scrape_fb_comments(
     ai_processed_total = 0
     fb_posts_count = 0
     ins_posts_count = 0
+    tt_posts_count = 0
     cutoff_date = datetime.datetime.now(BEIJING_TZ) - datetime.timedelta(days=days_back)
 
     export_rows = []
@@ -896,7 +943,7 @@ def scrape_fb_comments(
 
         try:
             platform = _detect_social_platform(post_url)
-            if platform not in ("facebook", "instagram"):
+            if platform not in ("facebook", "instagram", "tiktok"):
                 total_skipped_unsupported += 1
                 logger.info(f"⏭️ Skip unsupported URL in social scraper: {post_url}")
                 continue
@@ -919,13 +966,23 @@ def scrape_fb_comments(
                 "startUrls": [{"url": post_url}],
                 "viewOption": "RANKED_UNFILTERED"
                 }]
-            else:
+            elif platform == "instagram":
                 actor_id = os.environ.get("APIFY_IG_COMMENTS_ACTOR_ID", DEFAULT_IG_COMMENTS_ACTOR).strip()
                 actor_timeout_secs = IG_COMMENTS_ACTOR_TIMEOUT_SECS
                 candidate_inputs = [
                     {"directUrls": [post_url], "resultsLimit": int(results_limit)},
                     {"postUrls": [post_url], "resultsLimit": int(results_limit)},
                     {"startUrls": [{"url": post_url}], "resultsLimit": int(results_limit)}
+                ]
+            else:
+                # tiktok：clockworks/tiktok-comments-scraper，与 sentiment_insight.py 的
+                # _scrape_tiktok 用同一套候选 input（该 actor 在本项目其他功能中已验证可用）
+                actor_id = os.environ.get("APIFY_TT_COMMENTS_ACTOR_ID", DEFAULT_TT_COMMENTS_ACTOR).strip()
+                actor_timeout_secs = TT_COMMENTS_ACTOR_TIMEOUT_SECS
+                candidate_inputs = [
+                    {"postURLs": [post_url], "commentsPerPost": int(results_limit), "maxRepliesPerComment": 0},
+                    {"postUrls": [post_url], "commentsPerPost": int(results_limit)},
+                    {"startUrls": [{"url": post_url}], "maxItems": int(results_limit)}
                 ]
 
             if not actor_id:
@@ -963,8 +1020,10 @@ def scrape_fb_comments(
             # 平台统计
             if platform == "facebook":
                 fb_posts_count += 1
-            else:
+            elif platform == "instagram":
                 ins_posts_count += 1
+            else:
+                tt_posts_count += 1
 
             # Process each comment
             for row in normalized_rows:
@@ -1010,11 +1069,11 @@ def scrape_fb_comments(
                     """
                     INSERT INTO fb_comments
                     (post_url, comment_id, author, created_at, content, sentiment_score,
-                     category, language, post_link, embedding, brief_analysis)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     category, language, post_link, embedding, brief_analysis, platform)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (row_post_url, comment_id, author, created_at, content, sentiment_score,
-                     category, language, row_post_url, embedding_json, brief_analysis)
+                     category, language, row_post_url, embedding_json, brief_analysis, platform.upper()[:16])
                 )
                 total_new += 1
 
@@ -1104,7 +1163,7 @@ def scrape_fb_comments(
 
     logger.info(f"✅ Social scraping complete: {total_new} new, {total_updated} existing")
 
-    total_posts_scraped = fb_posts_count + ins_posts_count
+    total_posts_scraped = fb_posts_count + ins_posts_count + tt_posts_count
     result = {
         "status": "success",
         "new_comments": total_new,
@@ -1120,6 +1179,7 @@ def scrape_fb_comments(
         "max_ai_comments": max_ai_comments,
         "fb_posts": fb_posts_count,
         "ins_posts": ins_posts_count,
+        "tt_posts": tt_posts_count,
     }
     if not persist_to_db:
         result["export_rows"] = export_rows
@@ -1129,7 +1189,7 @@ def scrape_fb_comments(
         try:
             summary = (
                 f"共抓取 {total_posts_scraped} 条帖子"
-                f"（FB: {fb_posts_count}，INS: {ins_posts_count}），"
+                f"（FB: {fb_posts_count}，INS: {ins_posts_count}，TT: {tt_posts_count}），"
                 f"入库评论 {total_new} 条，共分析 {ai_processed_total} 条评论"
             )
             if total_skipped_language:
@@ -1266,6 +1326,105 @@ def run_thai_scrape_job(
             )
         except Exception:
             pass
+        if re_raise:
+            raise
+
+
+def run_topic_monitor_job(topic_id, scrape_task_id=None, re_raise=True):
+    """话题监控：按话题配置发现帖子（FB/IG/TikTok）+ 抓评论 + AI 分析，更新 topic_monitors 状态。
+
+    TikTok 发现/评论抓取 actor 未在生产环境验证过实际字段格式，若失败会体现在
+    discover_result 的 actor_runs/errors 里，不会阻断 FB/IG 部分继续跑（per-platform 容错见 discover_posts_by_tags）。
+    """
+    try:
+        topic = db.query_one("SELECT * FROM topic_monitors WHERE id = %s", (topic_id,))
+        if not topic:
+            raise RuntimeError(f"话题不存在: id={topic_id}")
+
+        try:
+            seed_tags = json.loads(topic.get('seed_tags') or '[]')
+        except (TypeError, ValueError):
+            seed_tags = []
+        if not seed_tags:
+            seed_tags = [s.strip() for s in (topic.get('seed_tags') or '').split(',') if s.strip()]
+        platforms = [p.strip() for p in (topic.get('platforms') or '').split(',') if p.strip()]
+        days_back = topic.get('days_back') or 7
+        max_posts = topic.get('max_posts') or 200
+        boolean_rule = topic.get('boolean_rule')
+
+        if scrape_task_id:
+            db.execute(
+                "UPDATE scrape_tasks SET status='running', result_summary=%s WHERE id=%s",
+                (f"正在发现话题「{topic.get('name')}」相关帖子...", scrape_task_id),
+            )
+
+        discover_result = discover_posts_by_tags(
+            seed_tags=seed_tags,
+            platforms=platforms,
+            days_back=days_back,
+            max_posts=max_posts,
+            boolean_rule=boolean_rule,
+        )
+        if discover_result.get('status') != 'success':
+            raise RuntimeError(f"话题发现失败: {discover_result.get('message')}")
+
+        post_urls = discover_result.get('post_urls') or []
+        discovered_posts = discover_result.get('posts') or []
+
+        for p in discovered_posts:
+            try:
+                db.execute(
+                    """
+                    INSERT INTO topic_monitor_posts (topic_id, post_url, platform)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (topic_id, post_url) DO NOTHING
+                    """,
+                    (topic_id, p.get('post_url'), (p.get('platform') or '').upper()[:16])
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ 写入 topic_monitor_posts 失败: {e}")
+
+        if scrape_task_id:
+            db.execute(
+                "UPDATE scrape_tasks SET result_summary=%s WHERE id=%s",
+                (f"发现完成，共 {len(post_urls)} 条帖子，开始抓取评论...", scrape_task_id),
+            )
+
+        comments_result = scrape_fb_comments(
+            post_urls=post_urls,
+            discovered_posts=discovered_posts,
+            days_back=days_back,
+            task_id=scrape_task_id,
+            allow_fallback_to_config=False,
+        )
+
+        succeeded_platforms = {r.get('platform') for r in (discover_result.get('actor_runs') or [])}
+        failed_platforms = [p for p in platforms if p not in succeeded_platforms]
+        summary = f"发现 {len(post_urls)} 条帖子，入库评论 {comments_result.get('new_comments', 0)} 条"
+        if failed_platforms:
+            summary += f"；发现失败平台: {', '.join(failed_platforms)}"
+        db.execute(
+            "UPDATE topic_monitors SET last_run_at = NOW(), last_run_summary = %s WHERE id = %s",
+            (summary[:2000], topic_id)
+        )
+        return {"status": "success", "summary": summary, "discover": discover_result, "comments": comments_result}
+    except Exception as e:
+        logger.error(f"❌ 话题监控任务失败(topic_id={topic_id}, task_id={scrape_task_id}): {e}")
+        try:
+            db.execute(
+                "UPDATE topic_monitors SET last_run_at = NOW(), last_run_summary = %s WHERE id = %s",
+                (f"失败: {str(e)[:400]}", topic_id)
+            )
+        except Exception:
+            pass
+        if scrape_task_id:
+            try:
+                db.execute(
+                    "UPDATE scrape_tasks SET status='failed', completed_at=NOW(), error_message=%s WHERE id=%s",
+                    (str(e)[:500], scrape_task_id),
+                )
+            except Exception:
+                pass
         if re_raise:
             raise
 

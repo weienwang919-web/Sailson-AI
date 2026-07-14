@@ -114,6 +114,32 @@ def ensure_tables():
             error_message TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS topic_monitors (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(256) NOT NULL,
+            platforms VARCHAR(64) NOT NULL DEFAULT 'facebook,instagram',
+            seed_tags TEXT NOT NULL,
+            boolean_rule TEXT,
+            days_back INTEGER NOT NULL DEFAULT 7,
+            max_posts INTEGER NOT NULL DEFAULT 200,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_by INTEGER,
+            created_at TIMESTAMP DEFAULT NOW(),
+            last_run_at TIMESTAMP,
+            last_run_summary TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS topic_monitor_posts (
+            id SERIAL PRIMARY KEY,
+            topic_id INTEGER NOT NULL REFERENCES topic_monitors(id) ON DELETE CASCADE,
+            post_url VARCHAR(1024) NOT NULL,
+            platform VARCHAR(16),
+            discovered_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(topic_id, post_url)
+        )
+        """,
     ]
     try:
         for sql in sqls:
@@ -123,6 +149,12 @@ def ensure_tables():
         db.execute("""
             ALTER TABLE fb_comments
             ADD COLUMN IF NOT EXISTS brief_analysis TEXT
+        """)
+
+        # 话题监控：评论需要区分平台（FB/IG/TikTok）才能按话题+平台维度统计
+        db.execute("""
+            ALTER TABLE fb_comments
+            ADD COLUMN IF NOT EXISTS platform VARCHAR(16)
         """)
 
         logger.info("✅ RAG 相关表已就绪")
