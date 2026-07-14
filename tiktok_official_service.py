@@ -547,9 +547,11 @@ def build_invite_link(account_alias: str, public_base: str, authorized_by: str |
     return invite
 
 
-def list_invites(limit: int = 20) -> list[dict[str, Any]]:
-    """返回最近的授权邀请记录（含已使用/未使用/已过期），供管理端展示。"""
-    return db.query_all(
+def list_invites(limit: int = 20, public_base: str | None = None) -> list[dict[str, Any]]:
+    """返回最近的授权邀请记录。若传入 public_base，会为尚未使用且未过期的邀请重新签名出可用链接
+    （签名只依赖 nonce，不校验签发时间，因此重新生成的 state 和当初发出的链接效果一致）。
+    """
+    rows = db.query_all(
         """
         SELECT nonce, account_alias, authorized_by, created_at, expires_at, used_at
         FROM tiktok_official_invites
@@ -558,6 +560,19 @@ def list_invites(limit: int = 20) -> list[dict[str, Any]]:
         """,
         (limit,),
     ) or []
+    if public_base:
+        now = datetime.utcnow()
+        for row in rows:
+            expired = bool(row.get("expires_at") and row["expires_at"] < now)
+            if row.get("used_at") or expired:
+                continue
+            state = _invite_serializer().dumps({
+                "nonce": row["nonce"],
+                "account_alias": row.get("account_alias"),
+                "authorized_by": row.get("authorized_by"),
+            })
+            row["url"] = build_account_auth_url(public_base, state=state)
+    return rows
 
 
 def exchange_account_code(code: str, redirect_uri: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:

@@ -9290,7 +9290,8 @@ def api_tiktok_official_invite():
 def api_tiktok_official_invites():
     """返回最近的授权邀请记录，供管理端查看哪些链接还待使用/已过期。"""
     try:
-        invites = tiktok_official_service.list_invites()
+        public_base = _tiktok_public_base_url()
+        invites = tiktok_official_service.list_invites(public_base=public_base)
         return jsonify({'status': 'success', 'invites': _json_safe_rows(invites)})
     except Exception as e:
         logger.error(f"tiktok_official invites list failed: {e}")

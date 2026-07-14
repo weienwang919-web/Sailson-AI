@@ -31,6 +31,10 @@
     .account-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
     .metric-line { color: #555; font-size: 12px; line-height: 1.8; }
     .pill { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; background: #e5e7eb; color: #374151; }
+    .pill-ok { background: #dcfce7; color: #166534; }
+    .pill-pending { background: #fef3c7; color: #92400e; }
+    .copy-btn { border: none; background: #eef2ff; color: #3730a3; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+    .copy-btn:hover { background: #e0e7ff; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td { border-bottom: 1px solid #eee; padding: 8px 6px; text-align: left; vertical-align: top; }
     th { background: #f8fafc; color: #374151; font-weight: 700; position: sticky; top: 0; z-index: 1; }
@@ -50,10 +54,6 @@
 <div class="container">
   <div class="card">
     <h2>刷新与导出</h2>
-    <div class="hint">
-      需要先在 Render 环境变量配置 <code>TIKTOK_BUSINESS_ACCESS_TOKEN</code> 和 <code>TIKTOK_OFFICIAL_ACCOUNTS_JSON</code>。
-      账号 JSON 示例：<code>[{"name":"Brand TH","business_id":"OAuth 返回的 open_id"}]</code>。
-    </div>
     <div class="toolbar">
       <div>
         <label>账号</label>
@@ -77,10 +77,6 @@
 
   <div class="card">
     <h2>账号矩阵授权</h2>
-    <div class="hint">
-      账号归属权是公司自己的，代运营人员无需登录本系统。管理员填账号别名生成一次性授权链接（可选择有效期，只能使用一次），
-      发给对应的代运营人员，对方打开链接登录自己在操作的 TikTok 账号完成授权即可自动入库、纳入每日批量拉取。
-    </div>
     <div class="toolbar">
       <div>
         <label>账号别名</label>
@@ -105,7 +101,7 @@
       <div class="table-wrap" style="max-height:220px;">
         <table>
           <thead>
-            <tr><th>别名</th><th>状态</th><th>创建时间</th><th>过期时间</th><th>授权人</th></tr>
+            <tr><th>别名</th><th>状态</th><th>创建时间</th><th>过期时间</th><th>授权人</th><th>链接</th></tr>
           </thead>
           <tbody id="invites-body"></tbody>
         </table>
@@ -249,28 +245,52 @@ async function loadAccounts() {
   document.getElementById('accounts-count').textContent = `（共 ${accounts.length} 个账号）`;
 }
 
-function inviteStatusLabel(inv) {
-  if (inv.used_at) return '已使用';
-  if (inv.expires_at && new Date(inv.expires_at).getTime() < Date.now()) return '已过期';
-  return '待使用';
+function inviteStatusInfo(inv) {
+  return inv.used_at
+    ? { label: '已授权', cls: 'pill-ok' }
+    : { label: '未授权', cls: 'pill-pending' };
 }
+
+async function copyInviteLink(url, btn) {
+  try {
+    await navigator.clipboard.writeText(url);
+    const original = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (e) {
+    alert('复制失败，请手动复制：' + url);
+  }
+}
+
+window.copyInviteLink = copyInviteLink;
+window._inviteUrls = {};
 
 async function loadInvites() {
   const body = document.getElementById('invites-body');
   try {
     const data = await fetchJson('/api/tiktok-official/invites');
     const rows = data.invites || [];
-    body.innerHTML = rows.map(inv => `
+    window._inviteUrls = {};
+    body.innerHTML = rows.map((inv, idx) => {
+      const status = inviteStatusInfo(inv);
+      let linkCell = '<span class="muted">-</span>';
+      if (inv.url) {
+        window._inviteUrls[idx] = inv.url;
+        linkCell = `<button class="copy-btn" onclick="copyInviteLink(window._inviteUrls[${idx}], this)">📋 复制链接</button>`;
+      }
+      return `
       <tr>
         <td>${fmt(inv.account_alias)}</td>
-        <td><span class="pill">${inviteStatusLabel(inv)}</span></td>
+        <td><span class="pill ${status.cls}">${status.label}</span></td>
         <td>${fmt(inv.created_at)}</td>
         <td>${inv.expires_at ? fmt(inv.expires_at) : '永不过期'}</td>
         <td>${fmt(inv.authorized_by)}</td>
+        <td>${linkCell}</td>
       </tr>
-    `).join('') || '<tr><td colspan="5" class="muted">暂无邀请记录</td></tr>';
+    `;
+    }).join('') || '<tr><td colspan="6" class="muted">暂无邀请记录</td></tr>';
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="5" class="muted">加载失败：${String(e.message || e)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="muted">加载失败：${String(e.message || e)}</td></tr>`;
   }
 }
 
