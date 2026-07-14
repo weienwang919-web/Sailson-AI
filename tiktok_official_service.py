@@ -1,20 +1,28 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import secrets as pysecrets
+import time
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
 from urllib.parse import unquote
 
 import requests
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
 
+import crypto_util
 import database as db
 import usage_service
 
+logger = logging.getLogger(__name__)
+
 API_BASE = "https://business-api.tiktok.com/open_api/v1.3"
+INVITE_SALT = "tiktok-official-invite"
 
 VIDEO_FIELDS = [
     "item_id",
@@ -212,6 +220,27 @@ def ensure_schema() -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_tt_official_videos_create_time ON tiktok_official_video_snapshots (create_time DESC)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_tt_official_profile_business_date ON tiktok_official_profile_daily_metrics (business_id, metric_date)")
 
+    # 矩阵号自助授权：账号别名/授权人/启停状态
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS account_alias VARCHAR(255)")
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS authorized_by VARCHAR(255)")
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'")
+    db.execute("ALTER TABLE tiktok_official_tokens ADD COLUMN IF NOT EXISTS account_alias VARCHAR(255)")
+    db.execute("ALTER TABLE tiktok_official_tokens ADD COLUMN IF NOT EXISTS authorized_by VARCHAR(255)")
+    db.execute("ALTER TABLE tiktok_official_tokens ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'")
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_official_invites (
+            nonce VARCHAR(64) PRIMARY KEY,
+            account_alias VARCHAR(255) NOT NULL,
+            authorized_by VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL,
+            used_at TIMESTAMP
+        )
+        """
+    )
+
 
 def configured_accounts() -> list[dict[str, Any]]:
     raw = os.environ.get("TIKTOK_OFFICIAL_ACCOUNTS_JSON", "").strip()
@@ -273,7 +302,14 @@ def list_accounts() -> list[dict[str, Any]]:
                     account.get("notes") or "",
                 ),
             )
-    return db.query_all("SELECT * FROM tiktok_official_accounts ORDER BY enabled DESC, account_name, id") or []
+    return db.query_all(
+        """
+        SELECT a.*, t.expires_at AS token_expires_at, t.status AS token_status
+        FROM tiktok_official_accounts a
+        LEFT JOIN tiktok_official_tokens t ON t.open_id = a.business_id
+        ORDER BY a.enabled DESC, a.account_name, a.id
+        """
+    ) or []
 
 
 def refresh_official_accounts(
@@ -314,6 +350,53 @@ def refresh_official_accounts(
             (bid,),
         )
     return {"accounts": len(accounts), "videos": total_videos}
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def enqueue_daily_sync(
+    create_task_fn,
+    *,
+    update_task_params_fn,
+    after_enqueue_fn=None,
+    batch_size: int = 5,
+    profile_days: int = 30,
+    max_pages: int = 5,
+) -> list[str]:
+    """每日矩阵账号批量拉取：把 status='active' 的账号按 batch_size 分批，创建 task_queue 记录复用现有刷新链路。
+
+    不在调度线程里同步跑完，交给 worker 的线程池/DB worker 消费，账号一多也不会拖垮主调度线程。
+    """
+    accounts = [
+        a for a in list_accounts()
+        if a.get("enabled", True) and (a.get("status") or "active") == "active"
+    ]
+    if not accounts:
+        logger.info("TikTok 官号矩阵每日同步：无启用中的账号，跳过")
+        return []
+
+    session_id = f"tiktok_official_daily_sync_{date.today().isoformat()}"
+    task_ids = []
+    for batch in _chunks(accounts, max(1, batch_size)):
+        task_id = pysecrets.token_hex(16)
+        business_ids = [a["business_id"] for a in batch]
+        create_task_fn(task_id, None, session_id, function_type="tiktok_official_refresh")
+        params = {
+            "source": "tiktok_official_daily_sync",
+            "trigger_type": "scheduled",
+            "session_id": session_id,
+            "business_ids": business_ids,
+            "profile_days": profile_days,
+            "max_pages": max_pages,
+        }
+        update_task_params_fn(task_id, params)
+        if after_enqueue_fn:
+            after_enqueue_fn(task_id, params)
+        task_ids.append(task_id)
+    return task_ids
 
 
 def fetch_videos(token: str, business_id: str, max_pages: int = 5) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -383,7 +466,84 @@ def build_account_auth_url(public_base: str, state: str | None = None) -> str:
     return "https://www.tiktok.com/v2/auth/authorize?" + urlencode(params)
 
 
-def exchange_account_code(code: str, redirect_uri: str) -> dict[str, Any]:
+_dev_secret_key_cache: str | None = None
+
+
+def _invite_signing_key() -> str:
+    """签名密钥：优先复用 Flask 的 SECRET_KEY；未配置时退化为进程内随机密钥（仅供本地开发，重启后旧邀请链接失效）。"""
+    global _dev_secret_key_cache
+    key = os.environ.get("SECRET_KEY", "").strip()
+    if key:
+        return key
+    if _dev_secret_key_cache is None:
+        logger.warning("⚠️ SECRET_KEY 未配置，邀请链接签名将使用临时开发密钥，进程重启后已生成的邀请链接会失效")
+        _dev_secret_key_cache = "dev-" + pysecrets.token_hex(32)
+    return _dev_secret_key_cache
+
+
+def _invite_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(_invite_signing_key(), salt=INVITE_SALT)
+
+
+def create_invite(account_alias: str, authorized_by: str | None = None, ttl_seconds: int = 3600) -> dict[str, Any]:
+    """生成一条一次性授权邀请：写入 tiktok_official_invites，返回签名后的 state token。"""
+    account_alias = (account_alias or "").strip()
+    if not account_alias:
+        raise ValueError("account_alias 不能为空")
+    ttl_seconds = max(300, min(int(ttl_seconds or 3600), 24 * 3600))
+    nonce = pysecrets.token_hex(16)
+    now = datetime.utcnow()
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    db.execute(
+        """
+        INSERT INTO tiktok_official_invites (nonce, account_alias, authorized_by, created_at, expires_at)
+        VALUES (%s, %s, %s, NOW(), %s)
+        """,
+        (nonce, account_alias, authorized_by, expires_at),
+    )
+    state = _invite_serializer().dumps({"nonce": nonce, "account_alias": account_alias, "authorized_by": authorized_by})
+    return {"state": state, "nonce": nonce, "account_alias": account_alias, "expires_at": expires_at}
+
+
+def verify_and_consume_invite(state: str, ttl_seconds: int = 24 * 3600) -> dict[str, Any]:
+    """校验授权回调带回的 state：签名有效、未过期、对应 invite 存在且未被使用过，成功后立即标记为已使用。
+
+    失败时抛出 ValueError，message 可直接展示给用户。
+    """
+    try:
+        payload = _invite_serializer().loads(state, max_age=ttl_seconds)
+    except SignatureExpired as exc:
+        raise ValueError("授权链接已过期，请联系管理员重新生成") from exc
+    except BadSignature as exc:
+        raise ValueError("授权链接无效，请联系管理员重新生成") from exc
+
+    nonce = payload.get("nonce")
+    row = db.query_one("SELECT * FROM tiktok_official_invites WHERE nonce = %s", (nonce,))
+    if not row:
+        raise ValueError("授权链接无效，请联系管理员重新生成")
+    if row.get("used_at"):
+        raise ValueError("该授权链接已被使用过，请联系管理员重新生成一条新链接")
+    if row.get("expires_at") and row["expires_at"] < datetime.utcnow():
+        raise ValueError("授权链接已过期，请联系管理员重新生成")
+
+    updated = db.execute(
+        "UPDATE tiktok_official_invites SET used_at = NOW() WHERE nonce = %s AND used_at IS NULL",
+        (nonce,),
+    )
+    if not updated:
+        # 并发场景下两次回调几乎同时到达，只有第一次能抢到这行 UPDATE
+        raise ValueError("该授权链接已被使用过，请联系管理员重新生成一条新链接")
+
+    return {"account_alias": row.get("account_alias") or payload.get("account_alias"), "authorized_by": row.get("authorized_by") or payload.get("authorized_by")}
+
+
+def build_invite_link(account_alias: str, public_base: str, authorized_by: str | None = None, ttl_seconds: int = 3600) -> dict[str, Any]:
+    invite = create_invite(account_alias, authorized_by=authorized_by, ttl_seconds=ttl_seconds)
+    invite["url"] = build_account_auth_url(public_base, state=invite["state"])
+    return invite
+
+
+def exchange_account_code(code: str, redirect_uri: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:
     """用 TikTok 账号授权 code 换 access_token，并保存 open_id 作为官号 business_id。"""
     app_id = (os.environ.get("TIKTOK_APP_ID") or os.environ.get("TIKTOK_CLIENT_KEY") or "").strip()
     app_secret = (os.environ.get("TIKTOK_APP_SECRET") or os.environ.get("TIKTOK_CLIENT_SECRET") or "").strip()
@@ -417,11 +577,11 @@ def exchange_account_code(code: str, redirect_uri: str) -> dict[str, Any]:
     if not data.get("access_token") or not data.get("open_id"):
         raise RuntimeError(f"TikTok token 返回缺少 access_token/open_id: {json.dumps(data, ensure_ascii=False)[:500]}")
 
-    save_account_token(data)
+    save_account_token(data, account_alias=account_alias, authorized_by=authorized_by)
     return data
 
 
-def save_account_token(token_data: dict[str, Any]) -> None:
+def save_account_token(token_data: dict[str, Any], account_alias: str | None = None, authorized_by: str | None = None) -> None:
     open_id = str(token_data.get("open_id") or "").strip()
     access_token = str(token_data.get("access_token") or "").strip()
     if not open_id or not access_token:
@@ -436,8 +596,8 @@ def save_account_token(token_data: dict[str, Any]) -> None:
         """
         INSERT INTO tiktok_official_tokens (
             token_type, open_id, access_token, refresh_token, scope,
-            expires_at, refresh_expires_at, raw_json, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            expires_at, refresh_expires_at, raw_json, account_alias, authorized_by, status, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', NOW())
         ON CONFLICT (open_id) DO UPDATE SET
             access_token = EXCLUDED.access_token,
             refresh_token = EXCLUDED.refresh_token,
@@ -445,39 +605,95 @@ def save_account_token(token_data: dict[str, Any]) -> None:
             expires_at = EXCLUDED.expires_at,
             refresh_expires_at = EXCLUDED.refresh_expires_at,
             raw_json = EXCLUDED.raw_json,
+            account_alias = COALESCE(EXCLUDED.account_alias, tiktok_official_tokens.account_alias),
+            authorized_by = COALESCE(EXCLUDED.authorized_by, tiktok_official_tokens.authorized_by),
+            status = 'active',
             updated_at = NOW()
         """,
         (
             "account",
             open_id,
-            access_token,
-            token_data.get("refresh_token"),
+            crypto_util.encrypt(access_token),
+            crypto_util.encrypt(token_data.get("refresh_token")),
             scope,
             expires_at,
             refresh_expires_at,
             json.dumps(token_data, ensure_ascii=False),
+            account_alias,
+            authorized_by,
         ),
     )
     db.execute(
         """
-        INSERT INTO tiktok_official_accounts (business_id, account_name, enabled, notes, updated_at)
-        VALUES (%s, %s, TRUE, %s, NOW())
+        INSERT INTO tiktok_official_accounts (business_id, account_name, enabled, notes, account_alias, authorized_by, status, updated_at)
+        VALUES (%s, %s, TRUE, %s, %s, %s, 'active', NOW())
         ON CONFLICT (business_id) DO UPDATE SET
             enabled = TRUE,
+            account_alias = COALESCE(EXCLUDED.account_alias, tiktok_official_accounts.account_alias),
+            authorized_by = COALESCE(EXCLUDED.authorized_by, tiktok_official_accounts.authorized_by),
+            status = 'active',
             updated_at = NOW()
         """,
-        (open_id, token_data.get("display_name") or f"TikTok {open_id[-6:]}", "OAuth authorized account"),
+        (
+            open_id,
+            account_alias or token_data.get("display_name") or f"TikTok {open_id[-6:]}",
+            "OAuth authorized account",
+            account_alias,
+            authorized_by,
+        ),
     )
 
 
-def get_access_token(business_id: str | None = None) -> str:
+def refresh_account_token(open_id: str) -> str:
+    """用存量 refresh_token 换新的 access_token，成功后重新加密落库，返回新的明文 access_token。"""
+    row = db.query_one(
+        "SELECT refresh_token, account_alias, authorized_by FROM tiktok_official_tokens WHERE open_id = %s",
+        (open_id,),
+    )
+    refresh_token = crypto_util.decrypt((row or {}).get("refresh_token"))
+    if not refresh_token:
+        raise RuntimeError(f"open_id={open_id} 没有可用的 refresh_token，需要重新走一遍 OAuth 授权")
+
+    app_id = (os.environ.get("TIKTOK_APP_ID") or os.environ.get("TIKTOK_CLIENT_KEY") or "").strip()
+    app_secret = (os.environ.get("TIKTOK_APP_SECRET") or os.environ.get("TIKTOK_CLIENT_SECRET") or "").strip()
+    if not app_id or not app_secret:
+        raise RuntimeError("TIKTOK_APP_ID / TIKTOK_APP_SECRET 未配置")
+
+    resp = requests.post(
+        "https://open.tiktokapis.com/v2/oauth/token/",
+        data={
+            "client_key": app_id,
+            "client_secret": app_secret,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cache-Control": "no-cache",
+        },
+        timeout=60,
+    )
+    data = _parse_token_response(resp)
+    if not data.get("access_token"):
+        wrapped = data.get("data") if isinstance(data.get("data"), dict) else {}
+        data = {**data, **wrapped}
+    if not data.get("access_token"):
+        raise RuntimeError(f"TikTok refresh_token 返回缺少 access_token: {json.dumps(data, ensure_ascii=False)[:500]}")
+
+    data.setdefault("open_id", open_id)
+    save_account_token(data, account_alias=(row or {}).get("account_alias"), authorized_by=(row or {}).get("authorized_by"))
+    logger.info(f"TikTok token 已刷新: open_id={open_id}")
+    return data["access_token"]
+
+
+def get_access_token(business_id: str | None = None, auto_refresh: bool = True) -> str:
     env_token = os.environ.get("TIKTOK_BUSINESS_ACCESS_TOKEN", "").strip()
     if env_token:
         return env_token
     if business_id:
         row = db.query_one(
             """
-            SELECT access_token FROM tiktok_official_tokens
+            SELECT open_id, access_token, refresh_token, expires_at FROM tiktok_official_tokens
             WHERE open_id = %s
             ORDER BY updated_at DESC
             LIMIT 1
@@ -487,12 +703,21 @@ def get_access_token(business_id: str | None = None) -> str:
     else:
         row = db.query_one(
             """
-            SELECT access_token FROM tiktok_official_tokens
+            SELECT open_id, access_token, refresh_token, expires_at FROM tiktok_official_tokens
             ORDER BY updated_at DESC
             LIMIT 1
             """
         )
-    return (row or {}).get("access_token") or ""
+    if not row:
+        return ""
+
+    expires_at = row.get("expires_at")
+    if auto_refresh and expires_at and expires_at < datetime.utcnow() + timedelta(hours=1) and row.get("refresh_token"):
+        try:
+            return refresh_account_token(row["open_id"])
+        except Exception as exc:
+            logger.warning(f"TikTok token 自动刷新失败，回退用旧 token: open_id={row.get('open_id')} err={exc}")
+    return crypto_util.decrypt(row.get("access_token")) or ""
 
 
 def _parse_token_response(resp: requests.Response) -> dict[str, Any]:
@@ -515,21 +740,32 @@ def _seconds_from_now(now: datetime, seconds) -> datetime | None:
         return None
 
 
-def _request(token: str, path: str, params: dict[str, Any]) -> tuple[dict[str, Any], requests.structures.CaseInsensitiveDict]:
-    resp = requests.get(
-        f"{API_BASE}{path}",
-        params=params,
-        headers={"Access-Token": token},
-        timeout=60,
-    )
-    try:
-        payload = resp.json()
-    except Exception as exc:
-        raise RuntimeError(f"TikTok API 返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from exc
-    if resp.status_code >= 400 or payload.get("code") not in (0, "0", None):
-        request_id = payload.get("request_id") or resp.headers.get("X-Tt-Logid") or ""
-        raise RuntimeError(f"TikTok API 错误: {payload.get('message') or resp.text[:200]} request_id={request_id}")
-    return payload, resp.headers
+def _request(token: str, path: str, params: dict[str, Any], max_retries: int = 3) -> tuple[dict[str, Any], requests.structures.CaseInsensitiveDict]:
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        resp = requests.get(
+            f"{API_BASE}{path}",
+            params=params,
+            headers={"Access-Token": token},
+            timeout=60,
+        )
+        if resp.status_code == 429 or resp.status_code >= 500:
+            last_exc = RuntimeError(f"TikTok API 限流/服务端错误: HTTP {resp.status_code} {resp.text[:200]}")
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                logger.warning(f"TikTok API {path} 返回 {resp.status_code}，{wait}s 后重试（第 {attempt + 1}/{max_retries} 次）")
+                time.sleep(wait)
+                continue
+            raise last_exc
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise RuntimeError(f"TikTok API 返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from exc
+        if resp.status_code >= 400 or payload.get("code") not in (0, "0", None):
+            request_id = payload.get("request_id") or resp.headers.get("X-Tt-Logid") or ""
+            raise RuntimeError(f"TikTok API 错误: {payload.get('message') or resp.text[:200]} request_id={request_id}")
+        return payload, resp.headers
+    raise last_exc or RuntimeError("TikTok API 请求失败")
 
 
 def upsert_profile(business_id: str, data: dict[str, Any], meta: dict[str, str]) -> None:

@@ -24,3 +24,5 @@ sqlalchemy
 matplotlib
 wordcloud
 langdetect
+cryptography
+itsdangerous

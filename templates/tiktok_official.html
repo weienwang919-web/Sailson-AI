@@ -68,12 +68,28 @@
         <input id="max-pages" type="number" min="1" max="50" value="5">
       </div>
       <button class="btn btn-primary" id="refresh-btn" onclick="refreshOfficial()">刷新官方数据</button>
-      <button class="btn btn-secondary" onclick="openAccountAuth()">TikTok 账号授权</button>
       <button class="btn btn-secondary" onclick="openBusinessAuth()">广告主授权</button>
       <button class="btn btn-secondary" onclick="exportOfficial()">导出所选视频</button>
       <button class="btn btn-secondary" onclick="loadAll()">重新加载</button>
     </div>
     <div class="status" id="refresh-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>账号矩阵授权</h2>
+    <div class="hint">
+      账号归属权是公司自己的，代运营人员无需登录本系统。管理员填账号别名生成一次性授权链接（1 小时内有效，只能使用一次），
+      发给对应的代运营人员，对方打开链接登录自己在操作的 TikTok 账号完成授权即可自动入库、纳入每日批量拉取。
+    </div>
+    <div class="toolbar">
+      <div>
+        <label>账号别名</label>
+        <input id="invite-alias" type="text" placeholder="例如 TH-Brand-01" style="min-width:220px;">
+      </div>
+      <button class="btn btn-primary" onclick="generateInviteLink()">生成授权邀请链接</button>
+    </div>
+    <div class="status" id="invite-status"></div>
+    <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
   </div>
 
   <div class="card">
@@ -200,6 +216,8 @@ async function loadAccounts() {
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
         <span class="pill">${a.enabled ? '启用' : '停用'}</span>
       </div>
+      <div class="metric-line">别名：${fmt(a.account_alias)} ｜ 代运营：${fmt(a.authorized_by)}</div>
+      <div class="metric-line">状态：<span class="pill">${accountHealth(a)}</span></div>
       <div class="metric-line">用户名：${fmt(a.username)}</div>
       <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总赞：${fmt(a.total_likes)} ｜ 视频：${fmt(a.videos_count)}</div>
       <div class="metric-line">企业号：${a.is_business_account === true ? '是' : a.is_business_account === false ? '否' : '-' } ｜ 认证：${a.is_verified === true ? '是' : a.is_verified === false ? '否' : '-'}</div>
@@ -207,6 +225,17 @@ async function loadAccounts() {
       ${a.profile_deep_link ? `<a class="link" href="${a.profile_deep_link}" target="_blank">打开主页</a>` : ''}
     </div>
   `).join('');
+}
+
+function accountHealth(a) {
+  if (!a.token_expires_at) return '需要授权';
+  if (a.status && a.status !== 'active') return '已停用';
+  const expiresAt = new Date(a.token_expires_at).getTime();
+  if (Number.isNaN(expiresAt)) return '正常';
+  const hoursLeft = (expiresAt - Date.now()) / 3600000;
+  if (hoursLeft <= 0) return '已过期，需要重新授权';
+  if (hoursLeft <= 24) return 'token 即将过期';
+  return '正常';
 }
 
 async function loadAuthUrls() {
@@ -220,10 +249,32 @@ async function loadAuthUrls() {
   }
 }
 
-async function openAccountAuth() {
-  if (!authUrls) await loadAuthUrls();
-  if (authUrls && authUrls.account_url) {
-    window.open(authUrls.account_url, '_blank', 'noopener,noreferrer');
+async function generateInviteLink() {
+  const alias = document.getElementById('invite-alias').value.trim();
+  const st = document.getElementById('invite-status');
+  const linkBox = document.getElementById('invite-link');
+  if (!alias) {
+    st.textContent = '请先填写账号别名';
+    st.className = 'status err';
+    return;
+  }
+  st.textContent = '生成中...';
+  st.className = 'status';
+  linkBox.style.display = 'none';
+  try {
+    const data = await fetchJson('/api/tiktok-official/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account_alias: alias }),
+    });
+    linkBox.value = data.url;
+    linkBox.style.display = 'block';
+    linkBox.select();
+    st.textContent = '已生成，1 小时内有效、仅可使用一次。复制下面的链接发给代运营人员：';
+    st.className = 'status ok';
+  } catch (e) {
+    st.textContent = '生成失败：' + String(e.message || e);
+    st.className = 'status err';
   }
 }
 

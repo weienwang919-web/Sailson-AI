@@ -220,6 +220,29 @@ def run_scheduled_feishu_profile_video_sync():
     enqueue_due_feishu_profile_video_sync()
 
 
+def run_scheduled_tiktok_official_daily_sync():
+    """APScheduler 可序列化入口：TikTok 官号矩阵每日批量拉取，按账号分批入队。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                tiktok_official_service.run_refresh_task(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = tiktok_official_service.enqueue_daily_sync(
+            create_task,
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建 TikTok 官号矩阵每日同步任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建 TikTok 官号矩阵每日同步任务失败: {e}")
+
+
 if not _IS_WORKER:
     jobstores = {
         'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
@@ -256,6 +279,16 @@ if not _IS_WORKER:
         hour=2,
         minute=0,
         id='tiktok_hotspot_job',
+        replace_existing=True
+    )
+
+    # TikTok 官号矩阵每日批量拉取：每天凌晨 3:30 执行，按账号分批入队
+    scheduler.add_job(
+        func=run_scheduled_tiktok_official_daily_sync,
+        trigger='cron',
+        hour=3,
+        minute=30,
+        id='tiktok_official_daily_sync_job',
         replace_existing=True
     )
 
@@ -1637,16 +1670,28 @@ def _render_tiktok_oauth_callback(callback_type: str):
     elif code:
         if callback_type == 'account':
             try:
+                invite = tiktok_official_service.verify_and_consume_invite(state or '')
                 public_base = _tiktok_public_base_url()
                 redirect_uri = f'{public_base}/tiktok/account/callback'
-                token_data = tiktok_official_service.exchange_account_code(code, redirect_uri)
+                token_data = tiktok_official_service.exchange_account_code(
+                    code,
+                    redirect_uri,
+                    account_alias=invite.get('account_alias'),
+                    authorized_by=invite.get('authorized_by'),
+                )
                 open_id = token_data.get('open_id') or ''
                 scope = token_data.get('scope') or ''
                 body = f"""
                 <p style="color:#166534;">授权成功，access token 已自动保存。</p>
+                <p><strong>账号别名：</strong><code>{html.escape(invite.get('account_alias') or '')}</code></p>
                 <p><strong>open_id / business_id:</strong> <code>{html.escape(open_id)}</code></p>
                 <p><strong>scope:</strong> <code>{html.escape(str(scope))}</code></p>
-                <p><a href="/tiktok-official" style="color:#1a7fd4;">返回 TikTok 官号监控</a></p>
+                <p>可以关闭这个页面了。</p>
+                """
+            except ValueError as e:
+                logger.warning(f"TikTok account invite validation failed: {e}")
+                body = f"""
+                <p style="color:#b91c1c;">{html.escape(str(e))}</p>
                 """
             except Exception as e:
                 logger.error(f"TikTok account token exchange failed: {e}")
@@ -8892,6 +8937,11 @@ def api_tiktok_official_accounts():
 @app.route('/api/tiktok-official/auth-urls')
 @login_required
 def api_tiktok_official_auth_urls():
+    """业务号主授权入口（Business Portal，跟账号矩阵的一次性邀请链接是两套不同的授权体系，保留不变）。
+
+    账号持有人（代运营）授权已改为一次性签名邀请链接，见 POST /api/tiktok-official/invite，
+    不再从这里下发裸 state 的 account_url。
+    """
     app_id = (
         os.environ.get('TIKTOK_APP_ID')
         or os.environ.get('TIKTOK_CLIENT_KEY')
@@ -8900,25 +8950,7 @@ def api_tiktok_official_auth_urls():
     if not app_id:
         return jsonify({'status': 'error', 'message': 'TIKTOK_APP_ID 未配置'}), 400
     public_base = _tiktok_public_base_url()
-    account_redirect = f'{public_base}/tiktok/account/callback'
     business_redirect = f'{public_base}/tiktok/business/callback'
-    scopes = [
-        'user.info.basic',
-        'user.info.username',
-        'user.info.stats',
-        'user.info.profile',
-        'user.account.type',
-        'user.insights',
-        'video.list',
-        'video.insights',
-    ]
-    account_params = {
-        'client_key': app_id,
-        'scope': ','.join(scopes),
-        'response_type': 'code',
-        'redirect_uri': account_redirect,
-        'state': f'tiktok_account_{uuid.uuid4().hex[:12]}',
-    }
     business_params = {
         'app_id': app_id,
         'state': f'tiktok_business_{uuid.uuid4().hex[:12]}',
@@ -8926,11 +8958,37 @@ def api_tiktok_official_auth_urls():
     }
     return jsonify({
         'status': 'success',
-        'account_url': 'https://www.tiktok.com/v2/auth/authorize?' + urlencode(account_params),
         'business_url': 'https://business-api.tiktok.com/portal/auth?' + urlencode(business_params),
-        'account_redirect_uri': account_redirect,
         'business_redirect_uri': business_redirect,
     })
+
+
+@app.route('/api/tiktok-official/invite', methods=['POST'])
+@login_required
+def api_tiktok_official_invite():
+    """管理员生成一次性签名授权邀请链接，发给代运营人员用于授权某个账号别名。"""
+    data = request.get_json(silent=True) or {}
+    account_alias = (data.get('account_alias') or '').strip()
+    ttl_seconds = data.get('ttl_seconds') or 3600
+    if not account_alias:
+        return jsonify({'status': 'error', 'message': 'account_alias 不能为空'}), 400
+    try:
+        public_base = _tiktok_public_base_url()
+        invite = tiktok_official_service.build_invite_link(
+            account_alias,
+            public_base,
+            authorized_by=session.get('username') or session.get('user_id'),
+            ttl_seconds=ttl_seconds,
+        )
+        return jsonify({
+            'status': 'success',
+            'url': invite['url'],
+            'account_alias': invite['account_alias'],
+            'expires_at': invite['expires_at'].isoformat() if invite.get('expires_at') else None,
+        })
+    except Exception as e:
+        logger.error(f"tiktok_official invite generation failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 @app.route('/api/tiktok-official/refresh', methods=['POST'])
