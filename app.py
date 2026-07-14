@@ -1728,9 +1728,22 @@ def _render_tiktok_oauth_callback(callback_type: str):
                 )
                 open_id = token_data.get('open_id') or ''
                 scope = token_data.get('scope') or ''
+                invite_alias = invite.get('account_alias') or ''
+                account_status = token_data.get('_account_status') or {}
+                previous_alias = account_status.get('previous_alias')
+                if account_status.get('is_new'):
+                    status_line = f'<p style="color:#166534;font-weight:700;">🎉 新账号已加入矩阵：{html.escape(invite_alias)}</p>'
+                elif previous_alias == invite_alias:
+                    status_line = '<p style="color:#166534;">✅ Token 已刷新（该账号此前已经授权过，未新增账号）。</p>'
+                else:
+                    status_line = (
+                        f'<p style="color:#b45309;">⚠️ 这个 TikTok 账号之前已经以「{html.escape(previous_alias or "")}」授权过，'
+                        f'本次操作只是把别名更新为「{html.escape(invite_alias)}」，并没有新增账号。'
+                        f'如果想授权另一个账号，请确认代运营登录的是不同的 TikTok 账号。</p>'
+                    )
                 body = f"""
-                <p style="color:#166534;">授权成功，access token 已自动保存。</p>
-                <p><strong>账号别名：</strong><code>{html.escape(invite.get('account_alias') or '')}</code></p>
+                {status_line}
+                <p><strong>账号别名：</strong><code>{html.escape(invite_alias)}</code></p>
                 <p><strong>open_id / business_id:</strong> <code>{html.escape(open_id)}</code></p>
                 <p><strong>scope:</strong> <code>{html.escape(str(scope))}</code></p>
                 <p>可以关闭这个页面了。</p>
@@ -9269,6 +9282,18 @@ def api_tiktok_official_invite():
         })
     except Exception as e:
         logger.error(f"tiktok_official invite generation failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/invites')
+@login_required
+def api_tiktok_official_invites():
+    """返回最近的授权邀请记录，供管理端查看哪些链接还待使用/已过期。"""
+    try:
+        invites = tiktok_official_service.list_invites()
+        return jsonify({'status': 'success', 'invites': _json_safe_rows(invites)})
+    except Exception as e:
+        logger.error(f"tiktok_official invites list failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

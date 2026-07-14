@@ -547,6 +547,19 @@ def build_invite_link(account_alias: str, public_base: str, authorized_by: str |
     return invite
 
 
+def list_invites(limit: int = 20) -> list[dict[str, Any]]:
+    """返回最近的授权邀请记录（含已使用/未使用/已过期），供管理端展示。"""
+    return db.query_all(
+        """
+        SELECT nonce, account_alias, authorized_by, created_at, expires_at, used_at
+        FROM tiktok_official_invites
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    ) or []
+
+
 def exchange_account_code(code: str, redirect_uri: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:
     """用 TikTok 账号授权 code 换 access_token，并保存 open_id 作为官号 business_id。"""
     app_id = (os.environ.get("TIKTOK_APP_ID") or os.environ.get("TIKTOK_CLIENT_KEY") or "").strip()
@@ -581,15 +594,19 @@ def exchange_account_code(code: str, redirect_uri: str, account_alias: str | Non
     if not data.get("access_token") or not data.get("open_id"):
         raise RuntimeError(f"TikTok token 返回缺少 access_token/open_id: {json.dumps(data, ensure_ascii=False)[:500]}")
 
-    save_account_token(data, account_alias=account_alias, authorized_by=authorized_by)
+    account_status = save_account_token(data, account_alias=account_alias, authorized_by=authorized_by)
+    data["_account_status"] = account_status
     return data
 
 
-def save_account_token(token_data: dict[str, Any], account_alias: str | None = None, authorized_by: str | None = None) -> None:
+def save_account_token(token_data: dict[str, Any], account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:
     open_id = str(token_data.get("open_id") or "").strip()
     access_token = str(token_data.get("access_token") or "").strip()
     if not open_id or not access_token:
         raise ValueError("token_data 缺少 open_id/access_token")
+    previous_row = db.query_one(
+        "SELECT account_alias FROM tiktok_official_accounts WHERE business_id = %s", (open_id,)
+    )
     now = datetime.utcnow()
     expires_at = _seconds_from_now(now, token_data.get("expires_in"))
     refresh_expires_at = _seconds_from_now(now, token_data.get("refresh_expires_in"))
@@ -646,6 +663,10 @@ def save_account_token(token_data: dict[str, Any], account_alias: str | None = N
             authorized_by,
         ),
     )
+    return {
+        "is_new": previous_row is None,
+        "previous_alias": previous_row["account_alias"] if previous_row else None,
+    }
 
 
 def refresh_account_token(open_id: str) -> str:

@@ -100,10 +100,21 @@
     </div>
     <div class="status" id="invite-status"></div>
     <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
+    <div style="margin-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">邀请记录</div>
+      <div class="table-wrap" style="max-height:220px;">
+        <table>
+          <thead>
+            <tr><th>别名</th><th>状态</th><th>创建时间</th><th>过期时间</th><th>授权人</th></tr>
+          </thead>
+          <tbody id="invites-body"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <div class="card">
-    <h2>官号总览</h2>
+    <h2>官号总览<span id="accounts-count" style="font-weight:400;font-size:12px;color:#666;"></span></h2>
     <div class="grid" id="accounts"></div>
   </div>
 
@@ -235,6 +246,32 @@ async function loadAccounts() {
       ${a.profile_deep_link ? `<a class="link" href="${a.profile_deep_link}" target="_blank">打开主页</a>` : ''}
     </div>
   `).join('');
+  document.getElementById('accounts-count').textContent = `（共 ${accounts.length} 个账号）`;
+}
+
+function inviteStatusLabel(inv) {
+  if (inv.used_at) return '已使用';
+  if (inv.expires_at && new Date(inv.expires_at).getTime() < Date.now()) return '已过期';
+  return '待使用';
+}
+
+async function loadInvites() {
+  const body = document.getElementById('invites-body');
+  try {
+    const data = await fetchJson('/api/tiktok-official/invites');
+    const rows = data.invites || [];
+    body.innerHTML = rows.map(inv => `
+      <tr>
+        <td>${fmt(inv.account_alias)}</td>
+        <td><span class="pill">${inviteStatusLabel(inv)}</span></td>
+        <td>${fmt(inv.created_at)}</td>
+        <td>${inv.expires_at ? fmt(inv.expires_at) : '永不过期'}</td>
+        <td>${fmt(inv.authorized_by)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" class="muted">暂无邀请记录</td></tr>';
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">加载失败：${String(e.message || e)}</td></tr>`;
+  }
 }
 
 function accountHealth(a) {
@@ -290,6 +327,7 @@ async function generateInviteLink() {
     const expiryText = data.expires_at ? ('有效期至 ' + new Date(data.expires_at).toLocaleString()) : '永不过期';
     st.textContent = '已生成（' + expiryText + '，仅可使用一次）。复制下面的链接发给代运营人员：';
     st.className = 'status ok';
+    await loadInvites();
   } catch (e) {
     st.textContent = '生成失败：' + String(e.message || e);
     st.className = 'status err';
@@ -354,6 +392,7 @@ async function loadAll() {
   try {
     await loadAuthUrls();
     await loadAccounts();
+    await loadInvites();
     await loadMetrics();
     await loadVideos();
     st.textContent = '已加载';
