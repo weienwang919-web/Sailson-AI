@@ -4,50 +4,99 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>矩阵号视频监控看板</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
-    .page-header { background: linear-gradient(135deg, #111827, #0f172a); color: #fff; padding: 22px 28px; }
-    .page-header h1 { font-size: 20px; font-weight: 700; }
-    .page-header .subtitle { font-size: 12px; color: rgba(255,255,255,0.68); margin-top: 6px; line-height: 1.6; }
-    .page-header a { color: #8ec5ff; font-size: 13px; }
-    .container { max-width: 1400px; margin: 0 auto; padding: 20px 18px 48px; }
-    .card { background: #fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
-    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 12px; border-left: 4px solid #111827; padding-left: 10px; }
-    label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
-    input, select { padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 13px; }
-    .btn { padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-    .btn-primary { background: #111827; color: #fff; }
-    .btn-secondary { background: #e5e7eb; color: #111827; }
-    .btn:disabled { background: #aaa; cursor: not-allowed; }
-    .btn-sm { padding: 4px 10px; font-size: 11px; border-radius: 6px; }
-    .status { margin-top: 10px; font-size: 12px; color: #666; min-height: 18px; word-break: break-all; }
-    .status.err { color: #c0392b; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
 
-    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-    .pill-btn { padding: 6px 14px; border-radius: 999px; border: 1px solid #e0e0e0; background: #fff; font-size: 12px; cursor: pointer; color: #374151; }
+    .page-header { background: linear-gradient(135deg, #111827, #0f172a); color: #fff; padding: 24px 30px; }
+    .page-header h1 { font-size: 21px; font-weight: 700; letter-spacing: .2px; }
+    .page-header .subtitle { font-size: 12.5px; color: rgba(255,255,255,0.65); margin-top: 6px; line-height: 1.6; }
+    .page-header a { color: #8ec5ff; font-size: 13px; text-decoration: none; }
+    .page-header a:hover { text-decoration: underline; }
+
+    .container { max-width: 1440px; margin: 0 auto; padding: 22px 20px 52px; }
+    .card { background: #fff; border-radius: 14px; padding: 20px 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 6px 16px rgba(15,23,42,.04); }
+    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; color: #111827; display: flex; align-items: center; gap: 8px; }
+    .card h2::before { content: ''; width: 4px; height: 15px; background: #2962FF; border-radius: 3px; display: inline-block; }
+
+    label { font-size: 12px; color: #6b7280; display: block; margin-bottom: 5px; font-weight: 500; }
+    input, select { padding: 9px 11px; border: 1px solid #e2e5eb; border-radius: 8px; font-size: 13px; font-family: inherit; background: #fff; transition: border-color .15s; }
+    input:focus, select:focus { outline: none; border-color: #2962FF; box-shadow: 0 0 0 3px rgba(41,98,255,.1); }
+
+    .btn { padding: 9px 18px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .12s, transform .05s; font-family: inherit; }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary { background: #2962FF; color: #fff; }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-secondary { background: #eef0f4; color: #374151; }
+    .btn-secondary:hover { filter: brightness(0.97); }
+    .btn:disabled { background: #cbd5e1; color: #fff; cursor: not-allowed; }
+    .btn-sm { padding: 5px 12px; font-size: 11.5px; border-radius: 7px; }
+    .btn-ghost { background: transparent; border: 1px solid #d7dbe3; color: #374151; }
+    .btn-ghost:hover { background: #f8fafc; }
+
+    .status { margin-top: 12px; font-size: 12.5px; color: #6b7280; min-height: 18px; word-break: break-all; }
+    .status.err { color: #dc2626; font-weight: 500; }
+
+    /* ---- 筛选面板 ---- */
+    .filter-section { display: flex; align-items: center; gap: 16px; padding: 11px 0; border-bottom: 1px solid #f1f2f5; flex-wrap: wrap; }
+    .filter-section:last-of-type { border-bottom: none; }
+    .filter-section-label { font-size: 12.5px; font-weight: 600; color: #374151; min-width: 52px; flex-shrink: 0; }
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill-btn { padding: 6px 15px; border-radius: 999px; border: 1px solid #e2e5eb; background: #fff; font-size: 12.5px; cursor: pointer; color: #4b5563; font-weight: 500; transition: all .12s; font-family: inherit; }
+    .pill-btn:hover { border-color: #2962FF; color: #2962FF; }
     .pill-btn.active { background: #111827; color: #fff; border-color: #111827; }
+    .empty-hint { font-size: 12px; color: #9ca3af; align-self: center; }
 
-    .filter-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 8px; }
-    .filter-row .field { min-width: 150px; }
-    .filter-row input { width: 100%; }
+    .search-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; padding-top: 16px; }
+    .form-group { flex: 1; min-width: 160px; }
+    .form-group input { width: 100%; }
+    .form-group.quick-range { flex: 0 0 auto; display: flex; gap: 8px; }
+    .form-group.actions { flex: 0 0 auto; display: flex; gap: 10px; }
 
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
-    .kpi-card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
-    .kpi-card .kpi-label { font-size: 12px; color: #666; margin-bottom: 6px; }
-    .kpi-card .kpi-value { font-size: 22px; font-weight: 700; color: #111827; }
+    /* ---- KPI 卡片 ---- */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
+    .kpi-card { background: #fff; border-radius: 14px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 6px 16px rgba(15,23,42,.04); display: flex; align-items: center; gap: 16px; }
+    .kpi-icon { width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 21px; flex-shrink: 0; }
+    .kpi-label { font-size: 12.5px; color: #6b7280; margin-bottom: 6px; font-weight: 500; }
+    .kpi-value { font-size: 24px; font-weight: 700; color: #111827; line-height: 1.1; }
+    .kpi-blue .kpi-icon { background: #EAF1FF; } .kpi-blue .kpi-value { color: #2962FF; }
+    .kpi-green .kpi-icon { background: #ECFDF5; } .kpi-green .kpi-value { color: #059669; }
+    .kpi-purple .kpi-icon { background: #F5F3FF; } .kpi-purple .kpi-value { color: #7C3AED; }
+    .kpi-orange .kpi-icon { background: #FFFBEB; } .kpi-orange .kpi-value { color: #D97706; }
+    .kpi-pink .kpi-icon { background: #FDF2F8; } .kpi-pink .kpi-value { color: #DB2777; }
 
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { border-bottom: 1px solid #eee; padding: 8px 6px; text-align: left; vertical-align: top; white-space: nowrap; }
-    th { background: #f8fafc; color: #374151; font-weight: 700; position: sticky; top: 0; z-index: 1; }
-    .table-wrap { overflow: auto; max-height: 600px; border: 1px solid #eee; border-radius: 10px; }
-    .muted { color: #777; }
-    .link { color: #1a7fd4; text-decoration: none; }
-    .tag-input { border: 1px solid transparent; background: transparent; padding: 3px 4px; font-size: 12px; width: 120px; }
-    .tag-input:hover, .tag-input:focus { border-color: #e0e0e0; background: #fff; outline: none; }
-    .pagination { display: flex; gap: 10px; align-items: center; margin-top: 12px; font-size: 12px; }
-    .caption-cell { max-width: 220px; white-space: normal; word-break: break-word; }
-    .spark-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: #374151; }
+    /* ---- 表格 ---- */
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    th, td { border-bottom: 1px solid #f1f2f5; padding: 11px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
+    th { background: #f8fafc; color: #4b5563; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .3px; position: sticky; top: 0; z-index: 1; }
+    tbody tr:hover { background: #f8fafc; }
+    .table-wrap { overflow: auto; max-height: 640px; border: 1px solid #eef0f3; border-radius: 12px; }
+    .muted { color: #9ca3af; }
+    .link { color: #2962FF; text-decoration: none; font-weight: 500; }
+    .link:hover { text-decoration: underline; }
+
+    .tag-input { border: 1px solid transparent; background: transparent; padding: 5px 7px; font-size: 12.5px; width: 120px; border-radius: 6px; font-family: inherit; }
+    .tag-input:hover { border-color: #e2e5eb; background: #fff; }
+    .tag-input:focus { border-color: #2962FF; background: #fff; outline: none; box-shadow: 0 0 0 3px rgba(41,98,255,.1); }
+
+    .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge-region { background: #eef0f4; color: #374151; }
+    .badge-kol { background: #F5F3FF; color: #7C3AED; }
+    .badge-campaign { background: #FFFBEB; color: #B45309; }
+
+    .hashtags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 200px; white-space: normal; }
+    .hashtag-chip { background: #EAF1FF; color: #2962FF; font-size: 11px; padding: 2px 7px; border-radius: 999px; font-weight: 500; }
+
+    .caption-cell { max-width: 240px; white-space: normal; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; cursor: default; }
+
+    .spark-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #374151; background: #f1f2f5; padding: 2px 6px; border-radius: 5px; }
+
+    .pagination { display: flex; gap: 12px; align-items: center; margin-top: 16px; font-size: 12.5px; color: #6b7280; }
+
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-thumb { background: #d7dbe3; border-radius: 5px; }
   </style>
 </head>
 <body>
@@ -60,46 +109,54 @@
 <div class="container">
   <div class="card">
     <h2>筛选</h2>
-    <div class="pill-row" id="region-pills"></div>
-    <div class="pill-row" id="type-pills">
-      <button class="pill-btn active" data-type="" onclick="setTypeFilter('', this)">总览</button>
-      <button class="pill-btn" data-type="KOL" onclick="setTypeFilter('KOL', this)">KOL</button>
-      <button class="pill-btn" data-type="Campaign" onclick="setTypeFilter('Campaign', this)">Campaign</button>
+    <div class="filter-section">
+      <span class="filter-section-label">国家</span>
+      <div class="pill-row" id="region-pills"></div>
     </div>
-    <div class="filter-row">
-      <div class="field">
+    <div class="filter-section">
+      <span class="filter-section-label">账号类型</span>
+      <div class="pill-row" id="type-pills">
+        <button class="pill-btn active" data-type="" onclick="setTypeFilter('', this)">全部</button>
+        <button class="pill-btn" data-type="KOL" onclick="setTypeFilter('KOL', this)">KOL</button>
+        <button class="pill-btn" data-type="Campaign" onclick="setTypeFilter('Campaign', this)">Campaign</button>
+      </div>
+    </div>
+    <div class="search-controls">
+      <div class="form-group">
         <label>开始日期</label>
         <input type="date" id="date-from" onchange="applyFilters()">
       </div>
-      <div class="field">
+      <div class="form-group">
         <label>结束日期</label>
         <input type="date" id="date-to" onchange="applyFilters()">
       </div>
-      <div>
-        <button class="btn btn-secondary" onclick="setQuickRange(7)">最近7天</button>
-        <button class="btn btn-secondary" onclick="setQuickRange(30)">最近30天</button>
-        <button class="btn btn-secondary" onclick="clearRange()">清除日期</button>
+      <div class="form-group quick-range">
+        <button class="btn btn-ghost btn-sm" onclick="setQuickRange(7)">最近7天</button>
+        <button class="btn btn-ghost btn-sm" onclick="setQuickRange(30)">最近30天</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearRange()">清除</button>
       </div>
-      <div class="field">
+      <div class="form-group">
         <label>创作者/账号</label>
         <input type="text" id="creator-input" placeholder="别名或账号ID" oninput="debouncedApply()">
       </div>
-      <div class="field">
+      <div class="form-group">
         <label>关键词/Tag</label>
         <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
       </div>
-      <button class="btn btn-primary" onclick="applyFilters()">查询</button>
-      <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
+      <div class="form-group actions">
+        <button class="btn btn-primary" onclick="applyFilters()">查询</button>
+        <button class="btn btn-secondary" onclick="downloadExport()">📥 下载报表（前一日）</button>
+      </div>
     </div>
     <div class="status" id="filter-status"></div>
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi-card"><div class="kpi-label">全周期总播放</div><div class="kpi-value" id="kpi-views">-</div></div>
-    <div class="kpi-card"><div class="kpi-label">全周期总互动量</div><div class="kpi-value" id="kpi-engagement">-</div></div>
-    <div class="kpi-card"><div class="kpi-label">整体互动率</div><div class="kpi-value" id="kpi-rate">-</div></div>
-    <div class="kpi-card"><div class="kpi-label">监控账号数</div><div class="kpi-value" id="kpi-accounts">-</div></div>
-    <div class="kpi-card"><div class="kpi-label">总视频数</div><div class="kpi-value" id="kpi-videos">-</div></div>
+    <div class="kpi-card kpi-blue"><div class="kpi-icon">📺</div><div><div class="kpi-label">全周期总播放</div><div class="kpi-value" id="kpi-views">-</div></div></div>
+    <div class="kpi-card kpi-green"><div class="kpi-icon">💬</div><div><div class="kpi-label">全周期总互动量</div><div class="kpi-value" id="kpi-engagement">-</div></div></div>
+    <div class="kpi-card kpi-purple"><div class="kpi-icon">📈</div><div><div class="kpi-label">整体互动率</div><div class="kpi-value" id="kpi-rate">-</div></div></div>
+    <div class="kpi-card kpi-orange"><div class="kpi-icon">👥</div><div><div class="kpi-label">监控账号数</div><div class="kpi-value" id="kpi-accounts">-</div></div></div>
+    <div class="kpi-card kpi-pink"><div class="kpi-icon">🎬</div><div><div class="kpi-label">总视频数</div><div class="kpi-value" id="kpi-videos">-</div></div></div>
   </div>
 
   <div class="card">
@@ -130,9 +187,9 @@
       </table>
     </div>
     <div class="pagination">
-      <button class="btn btn-secondary btn-sm" onclick="prevPage()">上一页</button>
+      <button class="btn btn-ghost btn-sm" onclick="prevPage()">← 上一页</button>
       <span id="page-info">-</span>
-      <button class="btn btn-secondary btn-sm" onclick="nextPage()">下一页</button>
+      <button class="btn btn-ghost btn-sm" onclick="nextPage()">下一页 →</button>
     </div>
   </div>
 </div>
@@ -150,6 +207,10 @@ function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
   if (typeof v === 'number') return v.toLocaleString();
   return String(v);
+}
+
+function esc(v) {
+  return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function pct(v) {
@@ -206,8 +267,11 @@ async function loadAccountsForRegions() {
     accounts = data.accounts || [];
     const regions = Array.from(new Set(accounts.map(a => a.region).filter(Boolean))).sort();
     const wrap = document.getElementById('region-pills');
-    wrap.innerHTML = '<button class="pill-btn active" data-region="" onclick="setRegionFilter(\'\', this)">总览</button>'
-      + regions.map(r => `<button class="pill-btn" data-region="${r}" onclick="setRegionFilter('${r}', this)">${r}</button>`).join('');
+    wrap.innerHTML = '<button class="pill-btn active" data-region="" onclick="setRegionFilter(\'\', this)">全部</button>'
+      + regions.map(r => `<button class="pill-btn" data-region="${esc(r)}" onclick="setRegionFilter('${esc(r)}', this)">${esc(r)}</button>`).join('');
+    if (!regions.length) {
+      wrap.innerHTML += '<span class="empty-hint">尚未给账号设置国家，去 <a class="link" href="/tiktok-official" target="_blank">账号管理页</a> 设置</span>';
+    }
   } catch (e) {
     // 账号列表加载失败不阻塞视频看板
   }
@@ -265,6 +329,12 @@ function renderSummary(summary) {
     : '无数据';
 }
 
+function accountTypeBadge(type) {
+  if (!type) return '<span class="muted">-</span>';
+  const cls = type === 'KOL' ? 'badge-kol' : 'badge-campaign';
+  return `<span class="badge ${cls}">${esc(type)}</span>`;
+}
+
 function renderVideos() {
   const body = document.getElementById('videos-body');
   if (!videos.length) {
@@ -272,26 +342,26 @@ function renderVideos() {
     return;
   }
   body.innerHTML = videos.map((v, idx) => {
-    const rowKey = v.business_id + '::' + v.item_id;
-    const hashtags = (v.hashtags || []).map(h => '#' + h).join(' ');
+    const hashtags = (v.hashtags || []).map(h => `<span class="hashtag-chip">#${esc(h)}</span>`).join('');
     const sparkCell = v.spark_code
-      ? `<span class="spark-code" title="${fmt(v.spark_code)}">${fmt(v.spark_code).slice(0, 14)}...</span><div class="muted" style="font-size:10px;">至 ${fmt(v.spark_code_end_time)}</div>`
-      : `<button class="btn btn-secondary btn-sm" onclick="generateSparkCode('${v.business_id}', '${v.item_id}', this)">生成</button>`;
+      ? `<span class="spark-code" title="${esc(v.spark_code)}">${esc(v.spark_code).slice(0, 12)}...</span><div class="muted" style="font-size:10.5px;margin-top:3px;">至 ${esc(fmt(v.spark_code_end_time))}</div>`
+      : `<button class="btn btn-ghost btn-sm" onclick="generateSparkCode('${esc(v.business_id)}', '${esc(v.item_id)}', this)">⚡ 生成</button>`;
+    const caption = fmt(v.caption);
     return `
       <tr>
         <td>${offset + idx + 1}</td>
-        <td><input class="tag-input" value="${fmt(v.task_no) === '-' ? '' : fmt(v.task_no)}" placeholder="-" onchange="saveTags('${v.business_id}', '${v.item_id}', this, null)"></td>
-        <td>${v.share_url ? `<a class="link" href="${v.share_url}" target="_blank">链接</a>` : '-'}</td>
-        <td>${fmt(v.account_alias || v.account_name || v.display_name)}</td>
-        <td>${fmt(v.region)}</td>
-        <td>${fmt(v.account_type)}</td>
-        <td><input class="tag-input" value="${fmt(v.kol_campaign) === '-' ? '' : fmt(v.kol_campaign)}" placeholder="-" onchange="saveTags('${v.business_id}', '${v.item_id}', null, this)"></td>
-        <td>${fmt(v.create_time)}</td>
-        <td class="caption-cell">${fmt(v.caption)}</td>
-        <td>${hashtags || '-'}</td>
+        <td><input class="tag-input" value="${fmt(v.task_no) === '-' ? '' : esc(v.task_no)}" placeholder="-" onchange="saveTags('${esc(v.business_id)}', '${esc(v.item_id)}', this, null)"></td>
+        <td>${v.share_url ? `<a class="link" href="${esc(v.share_url)}" target="_blank">链接 ↗</a>` : '<span class="muted">-</span>'}</td>
+        <td>${esc(fmt(v.account_alias || v.account_name || v.display_name))}</td>
+        <td>${v.region ? `<span class="badge badge-region">${esc(v.region)}</span>` : '<span class="muted">-</span>'}</td>
+        <td>${accountTypeBadge(v.account_type)}</td>
+        <td><input class="tag-input" value="${fmt(v.kol_campaign) === '-' ? '' : esc(v.kol_campaign)}" placeholder="-" onchange="saveTags('${esc(v.business_id)}', '${esc(v.item_id)}', null, this)"></td>
+        <td>${esc(fmt(v.create_time))}</td>
+        <td class="caption-cell" title="${esc(caption)}">${esc(caption)}</td>
+        <td><div class="hashtags">${hashtags || '<span class="muted">-</span>'}</div></td>
         <td>${sparkCell}</td>
-        <td>${fmt(v.business_id)}</td>
-        <td>${fmt(v.item_id)}</td>
+        <td>${esc(fmt(v.business_id))}</td>
+        <td>${esc(fmt(v.item_id))}</td>
         <td>${fmt(v.video_views)}</td>
         <td>${fmt(v.next_day_views)}</td>
         <td>${pct(v.engagement_rate)}</td>
