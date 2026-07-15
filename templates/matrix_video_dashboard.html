@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>矩阵号视频监控看板</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
+    .page-header { background: linear-gradient(135deg, #111827, #0f172a); color: #fff; padding: 22px 28px; }
+    .page-header h1 { font-size: 20px; font-weight: 700; }
+    .page-header .subtitle { font-size: 12px; color: rgba(255,255,255,0.68); margin-top: 6px; line-height: 1.6; }
+    .page-header a { color: #8ec5ff; font-size: 13px; }
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px 18px 48px; }
+    .card { background: #fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 12px; border-left: 4px solid #111827; padding-left: 10px; }
+    label { font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+    input, select { padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 13px; }
+    .btn { padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn-primary { background: #111827; color: #fff; }
+    .btn-secondary { background: #e5e7eb; color: #111827; }
+    .btn:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-sm { padding: 4px 10px; font-size: 11px; border-radius: 6px; }
+    .status { margin-top: 10px; font-size: 12px; color: #666; min-height: 18px; word-break: break-all; }
+    .status.err { color: #c0392b; }
+
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .pill-btn { padding: 6px 14px; border-radius: 999px; border: 1px solid #e0e0e0; background: #fff; font-size: 12px; cursor: pointer; color: #374151; }
+    .pill-btn.active { background: #111827; color: #fff; border-color: #111827; }
+
+    .filter-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 8px; }
+    .filter-row .field { min-width: 150px; }
+    .filter-row input { width: 100%; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .kpi-card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .kpi-card .kpi-label { font-size: 12px; color: #666; margin-bottom: 6px; }
+    .kpi-card .kpi-value { font-size: 22px; font-weight: 700; color: #111827; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px 6px; text-align: left; vertical-align: top; white-space: nowrap; }
+    th { background: #f8fafc; color: #374151; font-weight: 700; position: sticky; top: 0; z-index: 1; }
+    .table-wrap { overflow: auto; max-height: 600px; border: 1px solid #eee; border-radius: 10px; }
+    .muted { color: #777; }
+    .link { color: #1a7fd4; text-decoration: none; }
+    .tag-input { border: 1px solid transparent; background: transparent; padding: 3px 4px; font-size: 12px; width: 120px; }
+    .tag-input:hover, .tag-input:focus { border-color: #e0e0e0; background: #fff; outline: none; }
+    .pagination { display: flex; gap: 10px; align-items: center; margin-top: 12px; font-size: 12px; }
+    .caption-cell { max-width: 220px; white-space: normal; word-break: break-word; }
+    .spark-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: #374151; }
+  </style>
+</head>
+<body>
+<div class="page-header">
+  <h1>矩阵号视频监控看板</h1>
+  <div class="subtitle">PUBG Mobile 矩阵号切片视频数据汇总，用于客户回报及优秀视频复刻激励。</div>
+  <div style="margin-top:10px;"><a href="/">← 返回首页</a></div>
+</div>
+
+<div class="container">
+  <div class="card">
+    <h2>筛选</h2>
+    <div class="pill-row" id="region-pills"></div>
+    <div class="pill-row" id="type-pills">
+      <button class="pill-btn active" data-type="" onclick="setTypeFilter('', this)">总览</button>
+      <button class="pill-btn" data-type="KOL" onclick="setTypeFilter('KOL', this)">KOL</button>
+      <button class="pill-btn" data-type="Campaign" onclick="setTypeFilter('Campaign', this)">Campaign</button>
+    </div>
+    <div class="filter-row">
+      <div class="field">
+        <label>开始日期</label>
+        <input type="date" id="date-from" onchange="applyFilters()">
+      </div>
+      <div class="field">
+        <label>结束日期</label>
+        <input type="date" id="date-to" onchange="applyFilters()">
+      </div>
+      <div>
+        <button class="btn btn-secondary" onclick="setQuickRange(7)">最近7天</button>
+        <button class="btn btn-secondary" onclick="setQuickRange(30)">最近30天</button>
+        <button class="btn btn-secondary" onclick="clearRange()">清除日期</button>
+      </div>
+      <div class="field">
+        <label>创作者/账号</label>
+        <input type="text" id="creator-input" placeholder="别名或账号ID" oninput="debouncedApply()">
+      </div>
+      <div class="field">
+        <label>关键词/Tag</label>
+        <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
+      </div>
+      <button class="btn btn-primary" onclick="applyFilters()">查询</button>
+      <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
+    </div>
+    <div class="status" id="filter-status"></div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">全周期总播放</div><div class="kpi-value" id="kpi-views">-</div></div>
+    <div class="kpi-card"><div class="kpi-label">全周期总互动量</div><div class="kpi-value" id="kpi-engagement">-</div></div>
+    <div class="kpi-card"><div class="kpi-label">整体互动率</div><div class="kpi-value" id="kpi-rate">-</div></div>
+    <div class="kpi-card"><div class="kpi-label">监控账号数</div><div class="kpi-value" id="kpi-accounts">-</div></div>
+    <div class="kpi-card"><div class="kpi-label">总视频数</div><div class="kpi-value" id="kpi-videos">-</div></div>
+  </div>
+
+  <div class="card">
+    <h2>视频明细</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>No.</th>
+            <th>关联任务编号</th>
+            <th>作品发布链接</th>
+            <th>所属矩阵账号</th>
+            <th>国家</th>
+            <th>账号类型</th>
+            <th>对应KOL/Campaign</th>
+            <th>作品发布时间</th>
+            <th>作品标题/文案</th>
+            <th>话题标签</th>
+            <th>Spark code</th>
+            <th>账号ID</th>
+            <th>视频ID</th>
+            <th>播放量（最新）</th>
+            <th>次日播放量</th>
+            <th>互动率（最新）</th>
+          </tr>
+        </thead>
+        <tbody id="videos-body"></tbody>
+      </table>
+    </div>
+    <div class="pagination">
+      <button class="btn btn-secondary btn-sm" onclick="prevPage()">上一页</button>
+      <span id="page-info">-</span>
+      <button class="btn btn-secondary btn-sm" onclick="nextPage()">下一页</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let accounts = [];
+let videos = [];
+let filters = { region: '', account_type: '', date_from: '', date_to: '', creator: '', keyword: '' };
+let limit = 50;
+let offset = 0;
+let total = 0;
+let debounceTimer = null;
+
+function fmt(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  if (typeof v === 'number') return v.toLocaleString();
+  return String(v);
+}
+
+function pct(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  const n = Number(v);
+  if (Number.isNaN(n)) return '-';
+  return (n * 100).toFixed(2) + '%';
+}
+
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status === 'error') throw new Error(data.message || ('HTTP ' + res.status));
+  return data;
+}
+
+function debouncedApply() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => applyFilters(), 400);
+}
+
+function setTypeFilter(type, btn) {
+  filters.account_type = type;
+  document.querySelectorAll('#type-pills .pill-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function setRegionFilter(region, btn) {
+  filters.region = region;
+  document.querySelectorAll('#region-pills .pill-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function setQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  document.getElementById('date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('date-to').value = to.toISOString().slice(0, 10);
+  applyFilters();
+}
+
+function clearRange() {
+  document.getElementById('date-from').value = '';
+  document.getElementById('date-to').value = '';
+  applyFilters();
+}
+
+async function loadAccountsForRegions() {
+  try {
+    const data = await fetchJson('/api/tiktok-official/accounts');
+    accounts = data.accounts || [];
+    const regions = Array.from(new Set(accounts.map(a => a.region).filter(Boolean))).sort();
+    const wrap = document.getElementById('region-pills');
+    wrap.innerHTML = '<button class="pill-btn active" data-region="" onclick="setRegionFilter(\'\', this)">总览</button>'
+      + regions.map(r => `<button class="pill-btn" data-region="${r}" onclick="setRegionFilter('${r}', this)">${r}</button>`).join('');
+  } catch (e) {
+    // 账号列表加载失败不阻塞视频看板
+  }
+}
+
+function applyFilters() {
+  filters.date_from = document.getElementById('date-from').value || '';
+  filters.date_to = document.getElementById('date-to').value || '';
+  filters.creator = document.getElementById('creator-input').value.trim();
+  filters.keyword = document.getElementById('keyword-input').value.trim();
+  offset = 0;
+  loadVideos();
+}
+
+function prevPage() {
+  offset = Math.max(0, offset - limit);
+  loadVideos();
+}
+
+function nextPage() {
+  if (offset + limit >= total) return;
+  offset += limit;
+  loadVideos();
+}
+
+async function loadVideos() {
+  const statusEl = document.getElementById('filter-status');
+  statusEl.classList.remove('err');
+  statusEl.textContent = '加载中...';
+  try {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    params.set('limit', limit);
+    params.set('offset', offset);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos?' + params.toString());
+    videos = data.videos || [];
+    total = data.total || 0;
+    renderVideos();
+    renderSummary(data.summary || {});
+    statusEl.textContent = `共 ${fmt(total)} 条视频`;
+  } catch (e) {
+    statusEl.classList.add('err');
+    statusEl.textContent = '加载失败：' + String(e.message || e);
+  }
+}
+
+function renderSummary(summary) {
+  document.getElementById('kpi-views').textContent = fmt(summary.total_views || 0);
+  document.getElementById('kpi-engagement').textContent = fmt(summary.total_engagement || 0);
+  document.getElementById('kpi-rate').textContent = pct(summary.overall_engagement_rate || 0);
+  document.getElementById('kpi-accounts').textContent = fmt(summary.account_count || 0);
+  document.getElementById('kpi-videos').textContent = fmt(summary.video_count || 0);
+  document.getElementById('page-info').textContent = total
+    ? `第 ${Math.floor(offset / limit) + 1} 页，共 ${Math.ceil(total / limit)} 页`
+    : '无数据';
+}
+
+function renderVideos() {
+  const body = document.getElementById('videos-body');
+  if (!videos.length) {
+    body.innerHTML = '<tr><td colspan="16" class="muted">暂无数据</td></tr>';
+    return;
+  }
+  body.innerHTML = videos.map((v, idx) => {
+    const rowKey = v.business_id + '::' + v.item_id;
+    const hashtags = (v.hashtags || []).map(h => '#' + h).join(' ');
+    const sparkCell = v.spark_code
+      ? `<span class="spark-code" title="${fmt(v.spark_code)}">${fmt(v.spark_code).slice(0, 14)}...</span><div class="muted" style="font-size:10px;">至 ${fmt(v.spark_code_end_time)}</div>`
+      : `<button class="btn btn-secondary btn-sm" onclick="generateSparkCode('${v.business_id}', '${v.item_id}', this)">生成</button>`;
+    return `
+      <tr>
+        <td>${offset + idx + 1}</td>
+        <td><input class="tag-input" value="${fmt(v.task_no) === '-' ? '' : fmt(v.task_no)}" placeholder="-" onchange="saveTags('${v.business_id}', '${v.item_id}', this, null)"></td>
+        <td>${v.share_url ? `<a class="link" href="${v.share_url}" target="_blank">链接</a>` : '-'}</td>
+        <td>${fmt(v.account_alias || v.account_name || v.display_name)}</td>
+        <td>${fmt(v.region)}</td>
+        <td>${fmt(v.account_type)}</td>
+        <td><input class="tag-input" value="${fmt(v.kol_campaign) === '-' ? '' : fmt(v.kol_campaign)}" placeholder="-" onchange="saveTags('${v.business_id}', '${v.item_id}', null, this)"></td>
+        <td>${fmt(v.create_time)}</td>
+        <td class="caption-cell">${fmt(v.caption)}</td>
+        <td>${hashtags || '-'}</td>
+        <td>${sparkCell}</td>
+        <td>${fmt(v.business_id)}</td>
+        <td>${fmt(v.item_id)}</td>
+        <td>${fmt(v.video_views)}</td>
+        <td>${fmt(v.next_day_views)}</td>
+        <td>${pct(v.engagement_rate)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function saveTags(businessId, itemId, taskInput, kolInput) {
+  const video = videos.find(v => v.business_id === businessId && v.item_id === itemId);
+  const taskNo = taskInput ? taskInput.value.trim() : (video ? video.task_no : '');
+  const kolCampaign = kolInput ? kolInput.value.trim() : (video ? video.kol_campaign : '');
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/tags`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_no: taskNo, kol_campaign: kolCampaign }),
+    });
+    if (video) {
+      video.task_no = taskNo;
+      video.kol_campaign = kolCampaign;
+    }
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+  }
+}
+window.saveTags = saveTags;
+
+async function generateSparkCode(businessId, itemId, btn) {
+  if (!confirm('生成 Spark 授权码会真实修改该视频在 TikTok 上的广告授权状态，确认继续？')) return;
+  const original = btn.textContent;
+  btn.textContent = '生成中...';
+  btn.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/spark-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authorization_days: 30 }),
+    });
+    await loadVideos();
+  } catch (e) {
+    alert('生成失败：' + String(e.message || e));
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+window.generateSparkCode = generateSparkCode;
+
+function downloadExport() {
+  window.open('/api/tiktok-official/matrix-export', '_blank');
+}
+
+(async function init() {
+  await loadAccountsForRegions();
+  await loadVideos();
+})();
+</script>
+</body>
+</html>

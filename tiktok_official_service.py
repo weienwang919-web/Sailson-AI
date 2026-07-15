@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets as pysecrets
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +15,7 @@ import requests
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
+from openpyxl.styles import Font, PatternFill
 
 import crypto_util
 import database as db
@@ -242,6 +244,48 @@ def ensure_schema() -> None:
     )
     db.execute("ALTER TABLE tiktok_official_invites ALTER COLUMN expires_at DROP NOT NULL")
 
+    # 矩阵号视频监控看板：账号级国家/账号类型 + 视频级人工标签/Spark授权码
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS region VARCHAR(16)")
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS account_type VARCHAR(16)")
+
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS task_no VARCHAR(128)")
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS kol_campaign VARCHAR(255)")
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS spark_code TEXT")
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS spark_code_start_time TIMESTAMP")
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS spark_code_end_time TIMESTAMP")
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_official_video_daily_snapshots (
+            id SERIAL PRIMARY KEY,
+            business_id VARCHAR(128) NOT NULL,
+            item_id VARCHAR(128) NOT NULL,
+            snapshot_date DATE NOT NULL,
+            video_views BIGINT,
+            likes BIGINT,
+            comments BIGINT,
+            shares BIGINT,
+            favorites BIGINT,
+            fetched_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE (business_id, item_id, snapshot_date)
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tt_official_video_daily_snapshots_lookup "
+        "ON tiktok_official_video_daily_snapshots (business_id, item_id, snapshot_date)"
+    )
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_matrix_video_exports (
+            export_date DATE PRIMARY KEY,
+            file_bytes BYTEA NOT NULL,
+            generated_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
+
 
 def configured_accounts() -> list[dict[str, Any]]:
     raw = os.environ.get("TIKTOK_OFFICIAL_ACCOUNTS_JSON", "").strip()
@@ -311,6 +355,19 @@ def list_accounts() -> list[dict[str, Any]]:
         ORDER BY a.enabled DESC, a.account_name, a.id
         """
     ) or []
+
+
+def set_account_meta(business_id: str, region: str | None = None, account_type: str | None = None) -> None:
+    db.execute(
+        """
+        UPDATE tiktok_official_accounts SET
+            region = %s,
+            account_type = %s,
+            updated_at = NOW()
+        WHERE business_id = %s
+        """,
+        (region or None, account_type or None, business_id),
+    )
 
 
 def refresh_official_accounts(
@@ -995,6 +1052,301 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
             json.dumps(video, ensure_ascii=False),
         ),
     )
+    db.execute(
+        """
+        INSERT INTO tiktok_official_video_daily_snapshots (
+            business_id, item_id, snapshot_date, video_views, likes, comments, shares, favorites, fetched_at
+        ) VALUES (%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (business_id, item_id, snapshot_date) DO UPDATE SET
+            video_views = EXCLUDED.video_views,
+            likes = EXCLUDED.likes,
+            comments = EXCLUDED.comments,
+            shares = EXCLUDED.shares,
+            favorites = EXCLUDED.favorites,
+            fetched_at = NOW()
+        """,
+        (
+            business_id,
+            item_id,
+            _to_int(video.get("video_views")),
+            _to_int(video.get("likes")),
+            _to_int(video.get("comments")),
+            _to_int(video.get("shares")),
+            _to_int(video.get("favorites")),
+        ),
+    )
+
+
+def update_video_tags(
+    business_id: str,
+    item_id: str,
+    task_no: str | None = None,
+    kol_campaign: str | None = None,
+) -> None:
+    db.execute(
+        """
+        UPDATE tiktok_official_video_snapshots SET
+            task_no = %s,
+            kol_campaign = %s,
+            updated_at = NOW()
+        WHERE business_id = %s AND item_id = %s
+        """,
+        (task_no or None, kol_campaign or None, business_id, item_id),
+    )
+
+
+def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: int = 30) -> dict[str, Any]:
+    token = get_access_token(business_id)
+    if not token:
+        raise RuntimeError(f"business_id={business_id} 缺少 access_token，请先完成 TikTok 账号授权")
+
+    resp = requests.post(
+        f"{API_BASE}/tt_video/authorize/",
+        headers={"Access-Token": token, "Content-Type": "application/json"},
+        json={
+            "business_id": business_id,
+            "item_id": item_id,
+            "is_ad_promotable": True,
+            "authorization_days": authorization_days,
+        },
+        timeout=60,
+    )
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"TikTok Spark 授权接口返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from exc
+    if resp.status_code >= 400 or payload.get("code") not in (0, "0", None):
+        raise RuntimeError(f"TikTok Spark 授权失败: {payload.get('message') or resp.text[:200]}")
+
+    data = payload.get("data") or {}
+    auth_code = data.get("auth_code")
+    start_time = _parse_spark_time(data.get("auth_code_start_time"))
+    end_time = _parse_spark_time(data.get("auth_code_end_time"))
+    if not auth_code:
+        raise RuntimeError(f"TikTok Spark 授权接口未返回 auth_code: {json.dumps(payload, ensure_ascii=False)[:300]}")
+
+    db.execute(
+        """
+        UPDATE tiktok_official_video_snapshots SET
+            spark_code = %s,
+            spark_code_start_time = %s,
+            spark_code_end_time = %s,
+            updated_at = NOW()
+        WHERE business_id = %s AND item_id = %s
+        """,
+        (auth_code, start_time, end_time, business_id, item_id),
+    )
+    return {
+        "spark_code": auth_code,
+        "spark_code_start_time": start_time,
+        "spark_code_end_time": end_time,
+    }
+
+
+def _parse_spark_time(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+_HASHTAG_RE = re.compile(r"#([^\s#]+)")
+
+
+def _extract_hashtags(caption: str | None) -> list[str]:
+    if not caption:
+        return []
+    return _HASHTAG_RE.findall(caption)
+
+
+def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    filters = filters or {}
+    where = ["1=1"]
+    params: list[Any] = []
+
+    region = (filters.get("region") or "").strip()
+    if region:
+        where.append("a.region = %s")
+        params.append(region)
+
+    account_type = (filters.get("account_type") or "").strip()
+    if account_type:
+        where.append("a.account_type = %s")
+        params.append(account_type)
+
+    date_from = (filters.get("date_from") or "").strip()
+    if date_from:
+        where.append("v.create_time >= %s")
+        params.append(date_from)
+
+    date_to = (filters.get("date_to") or "").strip()
+    if date_to:
+        where.append("v.create_time < (%s::date + INTERVAL '1 day')")
+        params.append(date_to)
+
+    creator = (filters.get("creator") or "").strip()
+    if creator:
+        where.append("(a.account_alias ILIKE %s OR a.account_name ILIKE %s OR v.business_id ILIKE %s)")
+        like = f"%{creator}%"
+        params.extend([like, like, like])
+
+    keyword = (filters.get("keyword") or "").strip()
+    if keyword:
+        where.append("v.caption ILIKE %s")
+        params.append(f"%{keyword}%")
+
+    where_sql = " AND ".join(where)
+
+    base_sql = f"""
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        LEFT JOIN tiktok_official_video_daily_snapshots d
+            ON d.business_id = v.business_id
+            AND d.item_id = v.item_id
+            AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
+        WHERE {where_sql}
+    """
+
+    total_row = db.query_one(f"SELECT COUNT(*) AS count {base_sql}", tuple(params))
+    total = int((total_row or {}).get("count") or 0)
+
+    summary_row = db.query_one(
+        f"""
+        SELECT
+            COALESCE(SUM(v.video_views), 0) AS total_views,
+            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS total_engagement,
+            COUNT(DISTINCT v.business_id) AS account_count,
+            COUNT(*) AS video_count
+        {base_sql}
+        """,
+        tuple(params),
+    ) or {}
+    total_views = int(summary_row.get("total_views") or 0)
+    total_engagement = int(summary_row.get("total_engagement") or 0)
+    overall_engagement_rate = (total_engagement / total_views) if total_views else 0.0
+
+    rows = db.query_all(
+        f"""
+        SELECT
+            v.*,
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
+            d.video_views AS next_day_views
+        {base_sql}
+        ORDER BY v.create_time DESC NULLS LAST, v.updated_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        tuple(params + [limit, offset]),
+    ) or []
+
+    videos = []
+    for row in rows:
+        views = int(row.get("video_views") or 0)
+        engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
+        row["engagement_rate"] = (engagement / views) if views else 0.0
+        row["hashtags"] = _extract_hashtags(row.get("caption"))
+        videos.append(row)
+
+    return {
+        "videos": videos,
+        "total": total,
+        "summary": {
+            "total_views": total_views,
+            "total_engagement": total_engagement,
+            "overall_engagement_rate": overall_engagement_rate,
+            "account_count": int(summary_row.get("account_count") or 0),
+            "video_count": int(summary_row.get("video_count") or 0),
+        },
+    }
+
+
+def build_matrix_export(export_date) -> bytes:
+    rows = db.query_all(
+        """
+        SELECT
+            v.*,
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
+            d.video_views AS snapshot_views, d.snapshot_date
+        FROM tiktok_official_video_daily_snapshots d
+        JOIN tiktok_official_video_snapshots v ON v.business_id = d.business_id AND v.item_id = d.item_id
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE d.snapshot_date = %s
+        ORDER BY a.region NULLS LAST, v.create_time DESC NULLS LAST
+        """,
+        (export_date,),
+    ) or []
+
+    next_day_map: dict[tuple, int | None] = {}
+    if rows:
+        pairs = [(r["business_id"], r["item_id"]) for r in rows]
+        next_day_rows = db.query_all(
+            """
+            SELECT v.business_id, v.item_id, d.video_views AS next_day_views
+            FROM tiktok_official_video_snapshots v
+            LEFT JOIN tiktok_official_video_daily_snapshots d
+                ON d.business_id = v.business_id
+                AND d.item_id = v.item_id
+                AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
+            WHERE (v.business_id, v.item_id) IN %s
+            """,
+            (tuple(pairs),),
+        ) or []
+        for r in next_day_rows:
+            next_day_map[(r["business_id"], r["item_id"])] = r.get("next_day_views")
+
+    headers = [
+        "序号", "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
+        "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
+        "账号ID", "视频ID", "播放量（最新）", "次日播放量", "互动率（最新）",
+    ]
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        region = row.get("region") or "未分类"
+        groups.setdefault(region, []).append(row)
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+
+    for region, group_rows in groups.items():
+        ws = wb.create_sheet(title=str(region)[:31] or "未分类")
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        for idx, row in enumerate(group_rows, start=1):
+            views = int(row.get("video_views") or 0)
+            engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
+            engagement_rate = (engagement / views) if views else 0.0
+            ws.append(
+                [
+                    idx,
+                    row.get("task_no") or "",
+                    row.get("share_url") or "",
+                    row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id"),
+                    row.get("region") or "",
+                    row.get("account_type") or "",
+                    row.get("kol_campaign") or "",
+                    row.get("create_time"),
+                    row.get("caption") or "",
+                    " ".join(_extract_hashtags(row.get("caption"))),
+                    row.get("spark_code") or "",
+                    row.get("business_id"),
+                    row.get("item_id"),
+                    views,
+                    next_day_map.get((row.get("business_id"), row.get("item_id"))),
+                    round(engagement_rate, 4),
+                ]
+            )
+        ws.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
 
 
 def list_videos(business_id: str | None = None, page: int = 1, page_size: int = 50) -> dict[str, Any]:

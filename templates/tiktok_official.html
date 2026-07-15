@@ -227,7 +227,19 @@ async function loadAccounts() {
     wrap.innerHTML = '<div class="hint">暂无账号配置。请配置 TIKTOK_OFFICIAL_ACCOUNTS_JSON。</div>';
     return;
   }
-  wrap.innerHTML = accounts.map(a => `
+  const regionOptions = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
+  const typeOptions = ['KOL', 'Campaign'];
+  wrap.innerHTML = accounts.map(a => {
+    const safeId = a.business_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const regionValue = a.region || '';
+    const regionSelectOptions = ['<option value="">未设置</option>']
+      .concat(regionOptions.map(r => `<option value="${r}" ${r === regionValue ? 'selected' : ''}>${r}</option>`));
+    if (regionValue && !regionOptions.includes(regionValue)) {
+      regionSelectOptions.push(`<option value="${fmt(regionValue)}" selected>${fmt(regionValue)}（自定义）</option>`);
+    }
+    const typeSelectOptions = ['<option value="">未设置</option>']
+      .concat(typeOptions.map(t => `<option value="${t}" ${t === a.account_type ? 'selected' : ''}>${t}</option>`));
+    return `
     <div class="account">
       <div class="account-title">
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
@@ -240,10 +252,43 @@ async function loadAccounts() {
       <div class="metric-line">企业号：${a.is_business_account === true ? '是' : a.is_business_account === false ? '否' : '-' } ｜ 认证：${a.is_verified === true ? '是' : a.is_verified === false ? '否' : '-'}</div>
       <div class="metric-line">最近刷新：${fmt(a.last_refreshed_at)}</div>
       ${a.profile_deep_link ? `<a class="link" href="${a.profile_deep_link}" target="_blank">打开主页</a>` : ''}
+      <div class="metric-line" style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <label>国家：<select id="region-${safeId}">${regionSelectOptions.join('')}</select></label>
+        <label>类型：<select id="type-${safeId}">${typeSelectOptions.join('')}</select></label>
+        <button class="copy-btn" onclick="saveAccountMeta('${a.business_id}', 'region-${safeId}', 'type-${safeId}', this)">保存</button>
+      </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
   document.getElementById('accounts-count').textContent = `（共 ${accounts.length} 个账号）`;
 }
+
+async function saveAccountMeta(businessId, regionSelId, typeSelId, btn) {
+  const regionSel = document.getElementById(regionSelId);
+  const typeSel = document.getElementById(typeSelId);
+  let region = regionSel.value;
+  if (region === '其他') {
+    region = (window.prompt('请输入国家/地区代码', '') || '').trim();
+    if (!region) return;
+  }
+  const accountType = typeSel.value;
+  const original = btn.textContent;
+  btn.textContent = '保存中...';
+  btn.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/meta`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ region, account_type: accountType }),
+    });
+    await loadAccounts();
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+window.saveAccountMeta = saveAccountMeta;
 
 function inviteStatusInfo(inv) {
   return inv.used_at
@@ -301,7 +346,7 @@ function accountHealth(a) {
   if (Number.isNaN(expiresAt)) return '正常';
   const hoursLeft = (expiresAt - Date.now()) / 3600000;
   if (hoursLeft <= 0) return '已过期，需要重新授权';
-  if (hoursLeft <= 24) return 'token 即将过期';
+  if (hoursLeft <= 2) return 'token 即将过期';
   return '正常';
 }
 

@@ -280,6 +280,26 @@ def run_scheduled_topic_monitor_daily():
         logger.error(f"❌ 创建话题监控每日任务失败: {e}")
 
 
+def run_scheduled_matrix_video_export():
+    """APScheduler 可序列化入口：每天生成前一日矩阵号视频监控看板的可下载报表并缓存。"""
+    try:
+        export_date = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+        file_bytes = tiktok_official_service.build_matrix_export(export_date)
+        db.execute(
+            """
+            INSERT INTO tiktok_matrix_video_exports (export_date, file_bytes, generated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (export_date) DO UPDATE SET
+                file_bytes = EXCLUDED.file_bytes,
+                generated_at = NOW()
+            """,
+            (export_date, file_bytes),
+        )
+        logger.info(f"✅ 矩阵号视频监控每日报表已生成: export_date={export_date}")
+    except Exception as e:
+        logger.error(f"❌ 矩阵号视频监控每日报表生成失败: {e}")
+
+
 if not _IS_WORKER:
     jobstores = {
         'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
@@ -336,6 +356,16 @@ if not _IS_WORKER:
         hour=4,
         minute=0,
         id='topic_monitor_daily_job',
+        replace_existing=True
+    )
+
+    # PUBGM 矩阵号视频监控看板每日报表：每天 11:00 生成前一日各国视频数据并缓存
+    scheduler.add_job(
+        func=run_scheduled_matrix_video_export,
+        trigger='cron',
+        hour=11,
+        minute=0,
+        id='matrix_video_export_job',
         replace_existing=True
     )
 
@@ -9408,6 +9438,123 @@ def api_tiktok_official_export():
         )
     except Exception as e:
         logger.error(f"tiktok_official export failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/accounts/<business_id>/meta', methods=['PATCH'])
+@login_required
+def api_tiktok_official_account_meta(business_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        region = (data.get('region') or '').strip()
+        account_type = (data.get('account_type') or '').strip()
+        tiktok_official_service.set_account_meta(business_id, region=region, account_type=account_type)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"tiktok_official account meta update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/matrix-video-dashboard')
+@login_required
+def matrix_video_dashboard_page():
+    return render_template('matrix_video_dashboard.html')
+
+
+@app.route('/api/tiktok-official/matrix-videos')
+@login_required
+def api_tiktok_official_matrix_videos():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+            'date_from': request.args.get('date_from') or '',
+            'date_to': request.args.get('date_to') or '',
+            'creator': request.args.get('creator') or '',
+            'keyword': request.args.get('keyword') or '',
+        }
+        limit = int(request.args.get('limit') or 50)
+        offset = int(request.args.get('offset') or 0)
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
+        result = tiktok_official_service.list_matrix_videos(filters=filters, limit=limit, offset=offset)
+        return jsonify({
+            'status': 'success',
+            'videos': _json_safe_rows(result['videos']),
+            'total': result['total'],
+            'summary': _json_safe(result['summary']),
+        })
+    except Exception as e:
+        logger.error(f"tiktok_official matrix videos failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/tags', methods=['PATCH'])
+@login_required
+def api_tiktok_official_matrix_video_tags(business_id, item_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        task_no = (data.get('task_no') or '').strip()
+        kol_campaign = (data.get('kol_campaign') or '').strip()
+        tiktok_official_service.update_video_tags(business_id, item_id, task_no=task_no, kol_campaign=kol_campaign)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix video tags update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/spark-code', methods=['POST'])
+@login_required
+def api_tiktok_official_matrix_video_spark_code(business_id, item_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        authorization_days = int(data.get('authorization_days') or 30)
+        result = tiktok_official_service.authorize_video_for_ads(business_id, item_id, authorization_days=authorization_days)
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix video spark-code failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-export')
+@login_required
+def api_tiktok_official_matrix_export():
+    try:
+        export_date_str = (request.args.get('date') or '').strip()
+        if export_date_str:
+            export_date = datetime.datetime.strptime(export_date_str, '%Y-%m-%d').date()
+        else:
+            export_date = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+
+        cached = db.query_one(
+            "SELECT file_bytes FROM tiktok_matrix_video_exports WHERE export_date = %s",
+            (export_date,),
+        )
+        if cached and cached.get('file_bytes'):
+            file_bytes = bytes(cached['file_bytes'])
+        else:
+            file_bytes = tiktok_official_service.build_matrix_export(export_date)
+            db.execute(
+                """
+                INSERT INTO tiktok_matrix_video_exports (export_date, file_bytes, generated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (export_date) DO UPDATE SET
+                    file_bytes = EXCLUDED.file_bytes,
+                    generated_at = NOW()
+                """,
+                (export_date, file_bytes),
+            )
+
+        buf = BytesIO(file_bytes)
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name=f'matrix_videos_{export_date.isoformat()}.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        logger.error(f"tiktok_official matrix export failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
