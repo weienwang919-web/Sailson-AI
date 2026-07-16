@@ -96,6 +96,17 @@
     </div>
     <div class="status" id="invite-status"></div>
     <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
+
+    <div style="margin-top:16px;border-top:1px solid #eee;padding-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">批量生成（每行一个账号别名）</div>
+      <textarea id="batch-invite-aliases" placeholder="TH-Brand-01&#10;TH-Brand-02&#10;..." style="width:100%;height:80px;font-size:12px;"></textarea>
+      <div class="toolbar" style="margin-top:8px;">
+        <button class="btn btn-primary" onclick="generateInviteLinksBatch()">批量生成邀请链接</button>
+      </div>
+      <div class="status" id="batch-invite-status"></div>
+      <textarea id="batch-invite-links" readonly style="display:none;width:100%;margin-top:8px;height:160px;font-size:12px;"></textarea>
+    </div>
+
     <div style="margin-top:14px;">
       <div style="font-size:13px;font-weight:700;margin-bottom:8px;">邀请记录</div>
       <div class="table-wrap" style="max-height:220px;">
@@ -403,6 +414,47 @@ async function generateInviteLink() {
     await loadInvites();
   } catch (e) {
     st.textContent = '生成失败：' + String(e.message || e);
+    st.className = 'status err';
+  }
+}
+
+async function generateInviteLinksBatch() {
+  const raw = document.getElementById('batch-invite-aliases').value;
+  const ttlChoice = document.getElementById('invite-ttl').value;
+  const st = document.getElementById('batch-invite-status');
+  const linkBox = document.getElementById('batch-invite-links');
+  const aliases = raw.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!aliases.length) {
+    st.textContent = '请先每行填写一个账号别名';
+    st.className = 'status err';
+    return;
+  }
+  st.textContent = `生成中...（共 ${aliases.length} 个）`;
+  st.className = 'status';
+  linkBox.style.display = 'none';
+  try {
+    const payload = { account_aliases: aliases };
+    if (ttlChoice === 'never') {
+      payload.never_expire = true;
+    } else {
+      payload.ttl_seconds = Number(ttlChoice);
+    }
+    const data = await fetchJson('/api/tiktok-official/invites/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const results = data.results || [];
+    linkBox.value = results.map(r => r.error ? `${r.account_alias}: 生成失败 - ${r.error}` : `${r.account_alias}: ${r.url}`).join('\n');
+    linkBox.style.display = 'block';
+    const failCount = results.filter(r => r.error).length;
+    st.textContent = failCount
+      ? `完成，${results.length - failCount} 个成功，${failCount} 个失败（详见下方）`
+      : `已生成 ${results.length} 条链接，每条仅可使用一次，请分别发给对应代运营人员`;
+    st.className = failCount ? 'status err' : 'status ok';
+    await loadInvites();
+  } catch (e) {
+    st.textContent = '批量生成失败：' + String(e.message || e);
     st.className = 'status err';
   }
 }

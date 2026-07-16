@@ -9324,6 +9324,43 @@ def api_tiktok_official_invite():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/invites/batch', methods=['POST'])
+@login_required
+def api_tiktok_official_invite_batch():
+    """批量生成一次性签名授权邀请链接，用于一次性给多个账号别名补发链接（例如之前链接被烧掉但从未真正授权成功的账号）。"""
+    data = request.get_json(silent=True) or {}
+    raw_aliases = data.get('account_aliases') or []
+    aliases = [str(a).strip() for a in raw_aliases if str(a).strip()]
+    if not aliases:
+        return jsonify({'status': 'error', 'message': 'account_aliases 不能为空'}), 400
+    if data.get('never_expire'):
+        ttl_seconds = None
+    elif data.get('ttl_seconds') is not None:
+        ttl_seconds = int(data.get('ttl_seconds'))
+    else:
+        ttl_seconds = 24 * 3600
+
+    public_base = _tiktok_public_base_url()
+    results = []
+    for alias in aliases:
+        try:
+            invite = tiktok_official_service.build_invite_link(
+                alias,
+                public_base,
+                authorized_by=session.get('username') or session.get('user_id'),
+                ttl_seconds=ttl_seconds,
+            )
+            results.append({
+                'account_alias': invite['account_alias'],
+                'url': invite['url'],
+                'expires_at': invite['expires_at'].isoformat() if invite.get('expires_at') else None,
+            })
+        except Exception as e:
+            logger.error(f"tiktok_official batch invite generation failed for alias={alias}: {e}")
+            results.append({'account_alias': alias, 'error': str(e)})
+    return jsonify({'status': 'success', 'results': results})
+
+
 @app.route('/api/tiktok-official/invites')
 @login_required
 def api_tiktok_official_invites():
