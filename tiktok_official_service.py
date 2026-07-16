@@ -1270,6 +1270,116 @@ def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, o
     }
 
 
+def _matrix_account_filters_sql(filters: dict[str, Any]) -> tuple[list[str], list[Any]]:
+    where = ["1=1"]
+    params: list[Any] = []
+
+    region = (filters.get("region") or "").strip()
+    if region:
+        where.append("a.region = %s")
+        params.append(region)
+
+    account_type = (filters.get("account_type") or "").strip()
+    if account_type:
+        where.append("a.account_type = %s")
+        params.append(account_type)
+
+    return where, params
+
+
+def matrix_daily_trend(filters: dict[str, Any] | None = None, days: int = 30) -> list[dict[str, Any]]:
+    filters = filters or {}
+    where, params = _matrix_account_filters_sql(filters)
+    where.append("d.snapshot_date >= CURRENT_DATE - %s::int * INTERVAL '1 day'")
+    params.append(days)
+    where_sql = " AND ".join(where)
+
+    rows = db.query_all(
+        f"""
+        SELECT
+            d.snapshot_date AS date,
+            COALESCE(SUM(d.video_views), 0) AS views,
+            COALESCE(SUM(d.likes + d.comments + d.shares + d.favorites), 0) AS engagement
+        FROM tiktok_official_video_daily_snapshots d
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+        WHERE {where_sql}
+        GROUP BY d.snapshot_date
+        ORDER BY d.snapshot_date
+        """,
+        tuple(params),
+    ) or []
+
+    return [
+        {
+            "date": row["date"].isoformat() if hasattr(row["date"], "isoformat") else row["date"],
+            "views": int(row.get("views") or 0),
+            "engagement": int(row.get("engagement") or 0),
+        }
+        for row in rows
+    ]
+
+
+def matrix_top_today(filters: dict[str, Any] | None = None, metric: str = "views", limit: int = 6) -> dict[str, Any]:
+    filters = filters or {}
+    where, params = _matrix_account_filters_sql(filters)
+    where_sql = " AND ".join(where)
+
+    latest_row = db.query_one(
+        f"""
+        SELECT MAX(d.snapshot_date) AS latest_date
+        FROM tiktok_official_video_daily_snapshots d
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+        WHERE {where_sql}
+        """,
+        tuple(params),
+    ) or {}
+    latest_date = latest_row.get("latest_date")
+    if not latest_date:
+        return {"date": None, "videos": []}
+
+    order_col = "engagement" if metric == "engagement" else "views"
+    rows = db.query_all(
+        f"""
+        SELECT
+            d.business_id, d.item_id, d.snapshot_date,
+            d.video_views AS views,
+            (d.likes + d.comments + d.shares + d.favorites) AS engagement,
+            v.caption, v.thumbnail_url, v.share_url,
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
+        FROM tiktok_official_video_daily_snapshots d
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+        LEFT JOIN tiktok_official_video_snapshots v
+            ON v.business_id = d.business_id AND v.item_id = d.item_id
+        WHERE {where_sql} AND d.snapshot_date = %s
+        ORDER BY {order_col} DESC NULLS LAST
+        LIMIT %s
+        """,
+        tuple(params + [latest_date, limit]),
+    ) or []
+
+    videos = []
+    for row in rows:
+        views = int(row.get("views") or 0)
+        engagement = int(row.get("engagement") or 0)
+        videos.append({
+            "business_id": row.get("business_id"),
+            "item_id": row.get("item_id"),
+            "views": views,
+            "engagement": engagement,
+            "caption": row.get("caption"),
+            "thumbnail_url": row.get("thumbnail_url"),
+            "share_url": row.get("share_url"),
+            "account_alias": row.get("account_alias"),
+            "account_name": row.get("account_name"),
+            "display_name": row.get("display_name"),
+        })
+
+    return {
+        "date": latest_date.isoformat() if hasattr(latest_date, "isoformat") else latest_date,
+        "videos": videos,
+    }
+
+
 def build_matrix_export(export_date) -> bytes:
     rows = db.query_all(
         """

@@ -711,12 +711,22 @@ USD_TO_CNY = 7.2
 # 任务恢复机制（定义，稍后调用）
 # ============================================
 
+def ensure_users_permissions_schema():
+    """确保 users 表有 permissions 列（按功能开关的逗号分隔字符串），老部署自动补齐。"""
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT ''")
+        logger.info("✅ 已确认 users.permissions 列存在")
+    except Exception as e:
+        logger.warning(f"⚠️ 无法为 users 表添加 permissions 列: {e}")
+
+
 # 启动时尽早检查相关表结构
 ensure_task_queue_schema()
 ensure_analysis_results_schema()
 ensure_etl_file_outputs_schema()
 ensure_agent_actions_schema()
 ensure_fb_post_metrics_schema()
+ensure_users_permissions_schema()
 profile_video_scheduler.ensure_schema()
 tiktok_official_service.ensure_schema()
 usage_service.ensure_schema()
@@ -810,6 +820,42 @@ def admin_required(f):
             return jsonify({'error': '需要管理员权限'}), 403
         return f(*args, **kwargs)
     return decorated_function
+
+
+# 按功能开关的权限位（逗号分隔存在 users.permissions 里），管理员始终视为全部拥有
+FEATURE_KEYS = {
+    'tiktok_official': 'TikTok 官号监控',
+    'matrix_video_dashboard': '矩阵号视频监控看板',
+}
+
+
+def user_has_feature(key):
+    if session.get('role') == 'admin':
+        return True
+    granted = (session.get('permissions') or '').split(',')
+    return key in granted
+
+
+def feature_required(*keys):
+    """需要拥有 keys 中至少一个功能权限才能访问（管理员不受限）"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not session.get('logged_in'):
+                if _wants_json_response():
+                    return jsonify({
+                        'status': 'error',
+                        'message': '登录状态已失效，请重新登录后再操作',
+                        'error': '登录状态已失效，请重新登录后再操作'
+                    }), 401
+                return redirect(url_for('login'))
+            if not any(user_has_feature(key) for key in keys):
+                if _wants_json_response():
+                    return jsonify({'status': 'error', 'message': '没有访问此功能的权限，请联系管理员开通', 'error': '没有访问此功能的权限，请联系管理员开通'}), 403
+                return redirect(url_for('home'))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 
 @app.errorhandler(Exception)
@@ -1668,6 +1714,7 @@ def login():
                 session['real_name'] = user['real_name']
                 session['department'] = user['department']
                 session['role'] = user['role']
+                session['permissions'] = user.get('permissions') or ''
                 session['session_id'] = f"{username}_{int(time.time())}"
                 logger.info(f"✅ 用户登录成功: {username} ({user['real_name']})")
                 return redirect(url_for('home'))
@@ -6057,6 +6104,7 @@ def admin_panel():
                          dept_stats=dept_stats,
                          user_stats=user_stats,
                          all_users=all_users,
+                         feature_keys=FEATURE_KEYS,
                          user=session)
 
 
@@ -6071,6 +6119,10 @@ def add_user():
         real_name = data.get('real_name')
         department = data.get('department')
         role = data.get('role', 'user')
+        permissions = data.get('permissions') or []
+        if not isinstance(permissions, list):
+            permissions = []
+        permissions_str = ','.join(p for p in permissions if p in FEATURE_KEYS)
 
         # 检查用户名是否已存在
         existing = db.query_one("SELECT id FROM users WHERE username = %s", (username,))
@@ -6082,9 +6134,9 @@ def add_user():
 
         # 插入用户
         db.execute("""
-            INSERT INTO users (username, password_hash, real_name, department, role)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (username, password_hash, real_name, department, role))
+            INSERT INTO users (username, password_hash, real_name, department, role, permissions)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (username, password_hash, real_name, department, role, permissions_str))
 
         logger.info(f"✅ 管理员添加新用户: {username} ({real_name})")
 
@@ -6114,6 +6166,24 @@ def delete_user(user_id):
 
     except Exception as e:
         logger.error(f"❌ 删除用户失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/admin/update_permissions/<int:user_id>', methods=['POST'])
+@admin_required
+def update_permissions(user_id):
+    """更新用户的功能权限（逗号分隔存储）"""
+    try:
+        data = request.get_json(silent=True) or {}
+        permissions = data.get('permissions') or []
+        if not isinstance(permissions, list):
+            return jsonify({'error': 'permissions 必须是数组'}), 400
+        permissions_str = ','.join(p for p in permissions if p in FEATURE_KEYS)
+        db.execute("UPDATE users SET permissions = %s WHERE id = %s", (permissions_str, user_id))
+        logger.info(f"✅ 管理员更新用户权限: ID={user_id}, permissions={permissions_str}")
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"❌ 更新用户权限失败: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -9246,13 +9316,13 @@ def etl_download(output_id):
 # ============================================
 
 @app.route('/tiktok-official')
-@login_required
+@feature_required('tiktok_official')
 def tiktok_official_page():
     return render_template('tiktok_official.html')
 
 
 @app.route('/api/tiktok-official/accounts')
-@login_required
+@feature_required('tiktok_official', 'matrix_video_dashboard')
 def api_tiktok_official_accounts():
     try:
         accounts = tiktok_official_service.sync_configured_accounts()
@@ -9263,7 +9333,7 @@ def api_tiktok_official_accounts():
 
 
 @app.route('/api/tiktok-official/auth-urls')
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_auth_urls():
     """业务号主授权入口（Business Portal，跟账号矩阵的一次性邀请链接是两套不同的授权体系，保留不变）。
 
@@ -9292,7 +9362,7 @@ def api_tiktok_official_auth_urls():
 
 
 @app.route('/api/tiktok-official/invite', methods=['POST'])
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_invite():
     """管理员生成一次性签名授权邀请链接，发给代运营人员用于授权某个账号别名。"""
     data = request.get_json(silent=True) or {}
@@ -9325,7 +9395,7 @@ def api_tiktok_official_invite():
 
 
 @app.route('/api/tiktok-official/invites/batch', methods=['POST'])
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_invite_batch():
     """批量生成一次性签名授权邀请链接，用于一次性给多个账号别名补发链接（例如之前链接被烧掉但从未真正授权成功的账号）。"""
     data = request.get_json(silent=True) or {}
@@ -9362,7 +9432,7 @@ def api_tiktok_official_invite_batch():
 
 
 @app.route('/api/tiktok-official/invites')
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_invites():
     """返回最近的授权邀请记录，供管理端查看哪些链接还待使用/已过期。"""
     try:
@@ -9375,7 +9445,7 @@ def api_tiktok_official_invites():
 
 
 @app.route('/api/tiktok-official/refresh', methods=['POST'])
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_refresh():
     try:
         data = request.get_json(silent=True) or {}
@@ -9417,13 +9487,13 @@ def api_tiktok_official_refresh():
 
 
 @app.route('/api/tiktok-official/refresh-status/<task_id>')
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_refresh_status(task_id):
     return api_etl_task_status(task_id)
 
 
 @app.route('/api/tiktok-official/videos')
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_videos():
     try:
         business_id = (request.args.get('business_id') or '').strip() or None
@@ -9439,7 +9509,7 @@ def api_tiktok_official_videos():
 
 
 @app.route('/api/tiktok-official/videos/<item_id>')
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_video_detail(item_id):
     try:
         business_id = (request.args.get('business_id') or '').strip() or None
@@ -9453,7 +9523,7 @@ def api_tiktok_official_video_detail(item_id):
 
 
 @app.route('/api/tiktok-official/profile-metrics')
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_profile_metrics():
     try:
         business_id = (request.args.get('business_id') or '').strip() or None
@@ -9466,7 +9536,7 @@ def api_tiktok_official_profile_metrics():
 
 
 @app.route('/api/tiktok-official/export', methods=['POST'])
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_export():
     try:
         data = request.get_json(silent=True) or {}
@@ -9488,7 +9558,7 @@ def api_tiktok_official_export():
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/meta', methods=['PATCH'])
-@login_required
+@feature_required('tiktok_official')
 def api_tiktok_official_account_meta(business_id):
     try:
         data = request.get_json(silent=True) or {}
@@ -9502,13 +9572,13 @@ def api_tiktok_official_account_meta(business_id):
 
 
 @app.route('/matrix-video-dashboard')
-@login_required
+@feature_required('matrix_video_dashboard')
 def matrix_video_dashboard_page():
     return render_template('matrix_video_dashboard.html')
 
 
 @app.route('/api/tiktok-official/matrix-videos')
-@login_required
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_videos():
     try:
         filters = {
@@ -9535,8 +9605,49 @@ def api_tiktok_official_matrix_videos():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/matrix-videos/daily-trend')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_daily_trend():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+        }
+        days = int(request.args.get('days') or 30)
+        days = max(1, min(days, 90))
+        trend = tiktok_official_service.matrix_daily_trend(filters=filters, days=days)
+        return jsonify({'status': 'success', 'trend': _json_safe_rows(trend)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix daily trend failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/top-today')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_top_today():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+        }
+        metric = request.args.get('metric') or 'views'
+        if metric not in ('views', 'engagement'):
+            metric = 'views'
+        limit = int(request.args.get('limit') or 6)
+        limit = max(1, min(limit, 50))
+        result = tiktok_official_service.matrix_top_today(filters=filters, metric=metric, limit=limit)
+        return jsonify({
+            'status': 'success',
+            'date': result['date'],
+            'videos': _json_safe_rows(result['videos']),
+        })
+    except Exception as e:
+        logger.error(f"tiktok_official matrix top-today failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/tags', methods=['PATCH'])
-@login_required
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_video_tags(business_id, item_id):
     try:
         data = request.get_json(silent=True) or {}
@@ -9550,7 +9661,7 @@ def api_tiktok_official_matrix_video_tags(business_id, item_id):
 
 
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/spark-code', methods=['POST'])
-@login_required
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_video_spark_code(business_id, item_id):
     try:
         data = request.get_json(silent=True) or {}
@@ -9563,7 +9674,7 @@ def api_tiktok_official_matrix_video_spark_code(business_id, item_id):
 
 
 @app.route('/api/tiktok-official/matrix-export')
-@login_required
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_export():
     try:
         export_date_str = (request.args.get('date') or '').strip()

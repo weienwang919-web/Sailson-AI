@@ -6,6 +6,7 @@
   <title>矩阵号视频监控看板</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
@@ -17,9 +18,11 @@
     .page-header a:hover { text-decoration: underline; }
 
     .container { max-width: 1440px; margin: 0 auto; padding: 22px 20px 52px; }
-    .card { background: #fff; border-radius: 14px; padding: 20px 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 6px 16px rgba(15,23,42,.04); }
+    .card { background: #fff; border-radius: 18px; padding: 20px 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.05); }
     .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; color: #111827; display: flex; align-items: center; gap: 8px; }
     .card h2::before { content: ''; width: 4px; height: 15px; background: #2962FF; border-radius: 3px; display: inline-block; }
+    .card-head-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .card-head-row h2 { margin-bottom: 0; }
 
     label { font-size: 12px; color: #6b7280; display: block; margin-bottom: 5px; font-weight: 500; }
     input, select { padding: 9px 11px; border: 1px solid #e2e5eb; border-radius: 8px; font-size: 13px; font-family: inherit; background: #fff; transition: border-color .15s; }
@@ -57,7 +60,7 @@
 
     /* ---- KPI 卡片 ---- */
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
-    .kpi-card { background: #fff; border-radius: 14px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(15,23,42,.06), 0 6px 16px rgba(15,23,42,.04); display: flex; align-items: center; gap: 16px; }
+    .kpi-card { background: #fff; border-radius: 18px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.05); display: flex; align-items: center; gap: 16px; }
     .kpi-icon { width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 21px; flex-shrink: 0; }
     .kpi-label { font-size: 12.5px; color: #6b7280; margin-bottom: 6px; font-weight: 500; }
     .kpi-value { font-size: 24px; font-weight: 700; color: #111827; line-height: 1.1; }
@@ -66,6 +69,26 @@
     .kpi-purple .kpi-icon { background: #F5F3FF; } .kpi-purple .kpi-value { color: #7C3AED; }
     .kpi-orange .kpi-icon { background: #FFFBEB; } .kpi-orange .kpi-value { color: #D97706; }
     .kpi-pink .kpi-icon { background: #FDF2F8; } .kpi-pink .kpi-value { color: #DB2777; }
+
+    /* ---- 趋势图 + 今日热门 ---- */
+    .insights-grid { display: grid; grid-template-columns: 1.85fr 1fr; gap: 20px; margin-bottom: 20px; align-items: stretch; }
+    @media (max-width: 980px) { .insights-grid { grid-template-columns: 1fr; } }
+    .trend-chart-wrap { position: relative; height: 280px; }
+    .trend-annotation { position: absolute; top: 0; right: 0; background: #f8fafc; border: 1px solid #eef0f5; border-radius: 12px; padding: 10px 14px; text-align: right; }
+    .anno-label { font-size: 11px; color: #9ca3af; margin-bottom: 4px; }
+    .anno-value { font-size: 12.5px; font-weight: 600; color: #374151; line-height: 1.5; }
+    .top-today-date { font-size: 11.5px; color: #9ca3af; margin: -8px 0 12px; }
+    .top-today-row { display: flex; align-items: center; gap: 12px; padding: 10px 6px; border-radius: 10px; text-decoration: none; color: inherit; transition: background .12s; }
+    .top-today-row:hover { background: #f8fafc; }
+    .rank-badge { width: 26px; height: 26px; border-radius: 8px; background: #eef0f4; color: #6b7280; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .rank-badge.rank-1 { background: #FEF3C7; color: #B45309; }
+    .rank-badge.rank-2 { background: #E5E7EB; color: #374151; }
+    .rank-badge.rank-3 { background: #FDE7D4; color: #9A5B22; }
+    .top-today-info { flex: 1; min-width: 0; }
+    .top-today-title { font-size: 12.5px; font-weight: 600; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .top-today-meta { font-size: 11px; color: #9ca3af; margin: 3px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .progress-track { height: 5px; background: #f1f2f5; border-radius: 999px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #2962FF, #7C3AED); border-radius: 999px; }
 
     /* ---- 表格 ---- */
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -157,6 +180,34 @@
     <div class="kpi-card kpi-purple"><div class="kpi-icon">📈</div><div><div class="kpi-label">整体互动率</div><div class="kpi-value" id="kpi-rate">-</div></div></div>
     <div class="kpi-card kpi-orange"><div class="kpi-icon">👥</div><div><div class="kpi-label">监控账号数</div><div class="kpi-value" id="kpi-accounts">-</div></div></div>
     <div class="kpi-card kpi-pink"><div class="kpi-icon">🎬</div><div><div class="kpi-label">总视频数</div><div class="kpi-value" id="kpi-videos">-</div></div></div>
+  </div>
+
+  <div class="insights-grid">
+    <div class="card trend-card">
+      <div class="card-head-row">
+        <h2>播放 / 互动趋势</h2>
+        <div class="pill-row" id="trend-range-pills">
+          <button class="pill-btn" data-days="7" onclick="setTrendRange(7, this)">7D</button>
+          <button class="pill-btn active" data-days="30" onclick="setTrendRange(30, this)">30D</button>
+          <button class="pill-btn" data-days="90" onclick="setTrendRange(90, this)">90D</button>
+        </div>
+      </div>
+      <div class="trend-chart-wrap">
+        <canvas id="trendChart"></canvas>
+        <div class="trend-annotation" id="trend-annotation" style="display:none;"></div>
+      </div>
+    </div>
+    <div class="card top-today-card">
+      <div class="card-head-row">
+        <h2>今日热门贴文</h2>
+        <div class="pill-row" id="top-metric-pills">
+          <button class="pill-btn active" data-metric="views" onclick="setTopMetric('views', this)">播放量</button>
+          <button class="pill-btn" data-metric="engagement" onclick="setTopMetric('engagement', this)">互动量</button>
+        </div>
+      </div>
+      <div class="top-today-date muted" id="top-today-date"></div>
+      <div id="top-today-list"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -284,6 +335,8 @@ function applyFilters() {
   filters.keyword = document.getElementById('keyword-input').value.trim();
   offset = 0;
   loadVideos();
+  loadTrend();
+  loadTopToday();
 }
 
 function prevPage() {
@@ -414,9 +467,143 @@ function downloadExport() {
   window.open('/api/tiktok-official/matrix-export', '_blank');
 }
 
+let trendChartInstance = null;
+let trendDays = 30;
+let topMetric = 'views';
+
+function setTrendRange(days, btn) {
+  trendDays = days;
+  document.querySelectorAll('#trend-range-pills .pill-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadTrend();
+}
+
+function setTopMetric(metric, btn) {
+  topMetric = metric;
+  document.querySelectorAll('#top-metric-pills .pill-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadTopToday();
+}
+
+async function loadTrend() {
+  try {
+    const params = new URLSearchParams();
+    if (filters.region) params.set('region', filters.region);
+    if (filters.account_type) params.set('account_type', filters.account_type);
+    params.set('days', trendDays);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/daily-trend?' + params.toString());
+    renderTrend(data.trend || []);
+  } catch (e) {
+    renderTrend([]);
+  }
+}
+
+function renderTrend(trend) {
+  const ctx = document.getElementById('trendChart').getContext('2d');
+  if (trendChartInstance) trendChartInstance.destroy();
+  const labels = trend.map(t => t.date);
+  const views = trend.map(t => t.views);
+  const engagement = trend.map(t => t.engagement);
+  trendChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '播放量',
+          data: views,
+          borderColor: '#2962FF',
+          backgroundColor: 'rgba(41, 98, 255, 0.12)',
+          tension: 0.4,
+          fill: true,
+          pointRadius: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: '互动量',
+          data: engagement,
+          borderColor: '#7C3AED',
+          backgroundColor: 'rgba(124, 58, 237, 0.10)',
+          tension: 0.4,
+          fill: true,
+          pointRadius: 2,
+          yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
+      scales: {
+        y: { position: 'left', ticks: { callback: v => fmt(v) }, grid: { color: '#f1f2f5' } },
+        y1: { position: 'right', ticks: { callback: v => fmt(v) }, grid: { display: false } },
+      },
+    },
+  });
+
+  const annoEl = document.getElementById('trend-annotation');
+  if (!trend.length) {
+    annoEl.style.display = 'none';
+    return;
+  }
+  const totalViews = views.reduce((a, b) => a + (b || 0), 0);
+  const totalEngagement = engagement.reduce((a, b) => a + (b || 0), 0);
+  annoEl.style.display = 'block';
+  annoEl.innerHTML = `<div class="anno-label">近${trendDays}天累计</div><div class="anno-value">📺 ${fmt(totalViews)}</div><div class="anno-value">💬 ${fmt(totalEngagement)}</div>`;
+}
+
+async function loadTopToday() {
+  const listEl = document.getElementById('top-today-list');
+  const dateEl = document.getElementById('top-today-date');
+  listEl.innerHTML = '<div class="muted" style="padding:20px 0;">加载中...</div>';
+  try {
+    const params = new URLSearchParams();
+    if (filters.region) params.set('region', filters.region);
+    if (filters.account_type) params.set('account_type', filters.account_type);
+    params.set('metric', topMetric);
+    params.set('limit', 6);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/top-today?' + params.toString());
+    dateEl.textContent = data.date ? `数据日期：${data.date}` : '';
+    renderTopToday(data.videos || []);
+  } catch (e) {
+    listEl.innerHTML = '<div class="muted" style="padding:20px 0;">加载失败</div>';
+  }
+}
+
+function renderTopToday(items) {
+  const listEl = document.getElementById('top-today-list');
+  if (!items.length) {
+    listEl.innerHTML = '<div class="muted" style="padding:20px 0;">暂无当日数据</div>';
+    return;
+  }
+  const top = Math.max(...items.map(v => topMetric === 'engagement' ? (v.engagement || 0) : (v.views || 0)), 1);
+  listEl.innerHTML = items.map((v, idx) => {
+    const value = topMetric === 'engagement' ? (v.engagement || 0) : (v.views || 0);
+    const barPct = Math.max(4, Math.round((value / top) * 100));
+    const captionStr = fmt(v.caption);
+    const title = captionStr === '-' ? '（无文案）' : captionStr.slice(0, 40) + (captionStr.length > 40 ? '…' : '');
+    const account = fmt(v.account_alias || v.account_name || v.display_name);
+    const rankCls = idx < 3 ? String(idx + 1) : 'n';
+    return `
+      <a class="top-today-row" href="${v.share_url ? esc(v.share_url) : '#'}" target="_blank" rel="noopener">
+        <div class="rank-badge rank-${rankCls}">${idx + 1}</div>
+        <div class="top-today-info">
+          <div class="top-today-title" title="${esc(captionStr)}">${esc(title)}</div>
+          <div class="top-today-meta">${esc(account)} · 📺 ${fmt(v.views)} · 💬 ${fmt(v.engagement)}</div>
+          <div class="progress-track"><div class="progress-fill" style="width:${barPct}%;"></div></div>
+        </div>
+      </a>
+    `;
+  }).join('');
+}
+
 (async function init() {
   await loadAccountsForRegions();
   await loadVideos();
+  loadTrend();
+  loadTopToday();
 })();
 </script>
 </body>

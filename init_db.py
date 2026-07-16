@@ -46,9 +46,11 @@ try:
             real_name VARCHAR(100) NOT NULL,
             department VARCHAR(50) NOT NULL,
             role VARCHAR(20) NOT NULL DEFAULT 'user',
+            permissions TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT ''")
     print("✅ 用户表创建成功")
 
     # 创建使用记录表

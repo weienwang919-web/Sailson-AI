@@ -124,6 +124,7 @@
                         <th>姓名</th>
                         <th>部门</th>
                         <th>角色</th>
+                        <th>功能权限</th>
                         <th>创建时间</th>
                         <th>操作</th>
                     </tr>
@@ -141,6 +142,17 @@
                             <span class="badge bg-primary">用户</span>
                             {% endif %}
                         </td>
+                        <td>
+                            {% if user.role == 'admin' %}
+                            <span class="badge bg-secondary">全部（管理员）</span>
+                            {% else %}
+                            {% set granted = (user.permissions or '').split(',') %}
+                            {% for key, label in feature_keys.items() %}
+                                {% if key in granted %}<span class="badge bg-info text-dark me-1">{{ label }}</span>{% endif %}
+                            {% endfor %}
+                            <button class="btn btn-sm btn-outline-secondary btn-edit-permissions" data-user-id="{{ user.id }}" data-username="{{ user.username|e }}" data-permissions="{{ (user.permissions or '')|e }}">编辑</button>
+                            {% endif %}
+                        </td>
                         <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
                         <td>
                             {% if user.username != 'admin' %}
@@ -151,6 +163,31 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- 编辑权限模态框 -->
+    <div class="modal fade" id="editPermissionsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">编辑功能权限 <span id="editPermissionsUsername" class="text-muted"></span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editPermissionsUserId">
+                    {% for key, label in feature_keys.items() %}
+                    <div class="form-check">
+                        <input class="form-check-input edit-permission-checkbox" type="checkbox" value="{{ key }}" id="edit-perm-{{ key }}">
+                        <label class="form-check-label" for="edit-perm-{{ key }}">{{ label }}</label>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="submitEditPermissions()">保存</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -191,6 +228,15 @@
                                 <option value="admin">管理员</option>
                             </select>
                         </div>
+                        <div class="mb-3">
+                            <label class="form-label">可见功能（管理员默认全部可见）</label>
+                            {% for key, label in feature_keys.items() %}
+                            <div class="form-check">
+                                <input class="form-check-input add-permission-checkbox" type="checkbox" value="{{ key }}" id="add-perm-{{ key }}">
+                                <label class="form-check-label" for="add-perm-{{ key }}">{{ label }}</label>
+                            </div>
+                            {% endfor %}
+                        </div>
                     </form>
                 </div>
                 <div class="modal-footer">
@@ -204,12 +250,19 @@
 {% block scripts %}
 <script>
         let addUserModal;
+        let editPermissionsModal;
 
         window.onload = function() {
             addUserModal = new bootstrap.Modal(document.getElementById('addUserModal'));
+            editPermissionsModal = new bootstrap.Modal(document.getElementById('editPermissionsModal'));
             document.querySelectorAll('.btn-delete-user').forEach(btn => {
                 btn.addEventListener('click', function() {
                     deleteUser(parseInt(this.dataset.userId), this.dataset.username || '');
+                });
+            });
+            document.querySelectorAll('.btn-edit-permissions').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    showEditPermissionsModal(parseInt(this.dataset.userId), this.dataset.username || '', this.dataset.permissions || '');
                 });
             });
         };
@@ -218,10 +271,45 @@
             addUserModal.show();
         }
 
+        function showEditPermissionsModal(userId, username, permissionsStr) {
+            document.getElementById('editPermissionsUserId').value = userId;
+            document.getElementById('editPermissionsUsername').textContent = '- ' + username;
+            const granted = permissionsStr.split(',');
+            document.querySelectorAll('.edit-permission-checkbox').forEach(cb => {
+                cb.checked = granted.includes(cb.value);
+            });
+            editPermissionsModal.show();
+        }
+
+        async function submitEditPermissions() {
+            const userId = document.getElementById('editPermissionsUserId').value;
+            const permissions = Array.from(document.querySelectorAll('.edit-permission-checkbox:checked')).map(cb => cb.value);
+
+            try {
+                const resp = await fetch(`/admin/update_permissions/${userId}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({permissions})
+                });
+
+                const result = await resp.json();
+
+                if (resp.ok) {
+                    alert('✅ 权限已更新');
+                    location.reload();
+                } else {
+                    alert('❌ ' + (result.error || '更新失败'));
+                }
+            } catch(e) {
+                alert('❌ 请求失败：' + e.message);
+            }
+        }
+
         async function submitAddUser() {
             const form = document.getElementById('addUserForm');
             const formData = new FormData(form);
             const data = Object.fromEntries(formData);
+            data.permissions = Array.from(document.querySelectorAll('.add-permission-checkbox:checked')).map(cb => cb.value);
 
             try {
                 const resp = await fetch('/admin/add_user', {
