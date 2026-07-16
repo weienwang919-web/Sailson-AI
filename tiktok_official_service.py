@@ -576,16 +576,16 @@ def verify_and_consume_invite(state: str) -> dict[str, Any]:
     try:
         payload = _invite_serializer().loads(state)
     except BadSignature as exc:
-        raise ValueError("授权链接无效，请联系管理员重新生成") from exc
+        raise ValueError("授权链接无效，请联系管理员重新生成 / Invalid link, please contact admin for a new one") from exc
 
     nonce = payload.get("nonce")
     row = db.query_one("SELECT * FROM tiktok_official_invites WHERE nonce = %s", (nonce,))
     if not row:
-        raise ValueError("授权链接无效，请联系管理员重新生成")
+        raise ValueError("授权链接无效，请联系管理员重新生成 / Invalid link, please contact admin for a new one")
     if row.get("used_at"):
-        raise ValueError("该授权链接已被使用过，请联系管理员重新生成一条新链接")
+        raise ValueError("该授权链接已被使用过，请联系管理员重新生成一条新链接 / This link has already been used. Please contact admin for a new link.")
     if row.get("expires_at") and row["expires_at"] < datetime.utcnow():
-        raise ValueError("授权链接已过期，请联系管理员重新生成")
+        raise ValueError("授权链接已过期，请联系管理员重新生成 / This link has expired. Please contact admin for a new link.")
 
     updated = db.execute(
         "UPDATE tiktok_official_invites SET used_at = NOW() WHERE nonce = %s AND used_at IS NULL",
@@ -593,9 +593,18 @@ def verify_and_consume_invite(state: str) -> dict[str, Any]:
     )
     if not updated:
         # 并发场景下两次回调几乎同时到达，只有第一次能抢到这行 UPDATE
-        raise ValueError("该授权链接已被使用过，请联系管理员重新生成一条新链接")
+        raise ValueError("该授权链接已被使用过，请联系管理员重新生成一条新链接 / This link has already been used. Please contact admin for a new link.")
 
-    return {"account_alias": row.get("account_alias") or payload.get("account_alias"), "authorized_by": row.get("authorized_by") or payload.get("authorized_by")}
+    return {
+        "nonce": nonce,
+        "account_alias": row.get("account_alias") or payload.get("account_alias"),
+        "authorized_by": row.get("authorized_by") or payload.get("authorized_by"),
+    }
+
+
+def release_invite(nonce: str) -> None:
+    """把已核销的邀请重新置为未使用，供 code 换 token 失败后重试同一条链接（避免因换 token 的瞬时失败而永久烧掉这条邀请）。"""
+    db.execute("UPDATE tiktok_official_invites SET used_at = NULL WHERE nonce = %s", (nonce,))
 
 
 def build_invite_link(account_alias: str, public_base: str, authorized_by: str | None = None, ttl_seconds: int | None = 24 * 3600) -> dict[str, Any]:
