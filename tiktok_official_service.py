@@ -349,7 +349,8 @@ def list_accounts() -> list[dict[str, Any]]:
             )
     return db.query_all(
         """
-        SELECT a.*, t.expires_at AS token_expires_at, t.status AS token_status
+        SELECT a.*, t.expires_at AS token_expires_at, t.status AS token_status,
+               t.refresh_expires_at AS token_refresh_expires_at
         FROM tiktok_official_accounts a
         LEFT JOIN tiktok_official_tokens t ON t.open_id = a.business_id
         ORDER BY a.enabled DESC, a.account_name, a.id

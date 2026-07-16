@@ -33,6 +33,7 @@
     .pill { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; background: #e5e7eb; color: #374151; }
     .pill-ok { background: #dcfce7; color: #166534; }
     .pill-pending { background: #fef3c7; color: #92400e; }
+    .pill-err { background: #fee2e2; color: #991b1b; }
     .copy-btn { border: none; background: #eef2ff; color: #3730a3; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
     .copy-btn:hover { background: #e0e7ff; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -257,7 +258,7 @@ async function loadAccounts() {
         <span class="pill">${a.enabled ? '启用' : '停用'}</span>
       </div>
       <div class="metric-line">别名：${fmt(a.account_alias)} ｜ 代运营：${fmt(a.authorized_by)}</div>
-      <div class="metric-line">状态：<span class="pill">${accountHealth(a)}</span></div>
+      <div class="metric-line">状态：<span class="pill ${accountHealth(a).cls}">${accountHealth(a).label}</span></div>
       <div class="metric-line">用户名：${fmt(a.username)}</div>
       <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总赞：${fmt(a.total_likes)} ｜ 视频：${fmt(a.videos_count)}</div>
       <div class="metric-line">企业号：${a.is_business_account === true ? '是' : a.is_business_account === false ? '否' : '-' } ｜ 认证：${a.is_verified === true ? '是' : a.is_verified === false ? '否' : '-'}</div>
@@ -359,14 +360,20 @@ function parseUtcTimestamp(s) {
 }
 
 function accountHealth(a) {
-  if (!a.token_expires_at) return '需要授权';
-  if (a.status && a.status !== 'active') return '已停用';
+  if (!a.token_expires_at) return { label: '需要授权', cls: 'pill-pending' };
+  if (a.status && a.status !== 'active') return { label: '已停用', cls: '' };
   const expiresAt = parseUtcTimestamp(a.token_expires_at);
-  if (Number.isNaN(expiresAt)) return '正常';
+  if (Number.isNaN(expiresAt)) return { label: '正常', cls: 'pill-ok' };
   const hoursLeft = (expiresAt - Date.now()) / 3600000;
-  if (hoursLeft <= 0) return '已过期，需要重新授权';
-  if (hoursLeft <= 2) return 'token 即将过期';
-  return '正常';
+  if (hoursLeft <= 0) {
+    const refreshExpiresAt = parseUtcTimestamp(a.token_refresh_expires_at);
+    if (!Number.isNaN(refreshExpiresAt) && refreshExpiresAt > Date.now()) {
+      return { label: 'access token 已到期，下次同步自动刷新', cls: 'pill-pending' };
+    }
+    return { label: '已过期，需要重新授权', cls: 'pill-err' };
+  }
+  if (hoursLeft <= 2) return { label: 'token 即将过期', cls: 'pill-pending' };
+  return { label: '正常', cls: 'pill-ok' };
 }
 
 async function loadAuthUrls() {
@@ -641,6 +648,5 @@ document.getElementById('account-select').addEventListener('change', () => {
 
 loadAll();
 </script>
-{% include '_lang_switch.html' %}
 </body>
 </html>
