@@ -571,9 +571,12 @@ function renderAnnotation() {
     annoEl.style.display = 'none';
     return;
   }
-  const totalViews = lastTrend.reduce((a, b) => a + (b.views || 0), 0);
-  const totalEngagement = lastTrend.reduce((a, b) => a + (b.engagement || 0), 0);
-  let html = `<div class="anno-group"><div class="anno-label">近${trendDays}天累计</div><div class="anno-value">📺 ${fmt(totalViews)}</div><div class="anno-value">💬 ${fmt(totalEngagement)}</div></div>`;
+  // video_views 在每日快照里本身就是"截至当天"的累计值，不能跨天相加（会重复计算），
+  // 直接取最新一天的总量即可 —— 单日内已按 (business_id, item_id) 唯一约束去重
+  const latest = lastTrend[lastTrend.length - 1];
+  const totalViews = latest.views || 0;
+  const totalEngagement = latest.engagement || 0;
+  let html = `<div class="anno-group"><div class="anno-label">当前总量</div><div class="anno-value">📺 ${fmt(totalViews)}</div><div class="anno-value">💬 ${fmt(totalEngagement)}</div></div>`;
 
   if (lastDelta && lastDelta.views_delta !== null && lastDelta.views_delta !== undefined) {
     const vd = lastDelta.views_delta;
