@@ -1196,18 +1196,7 @@ def _extract_hashtags(caption: str | None) -> list[str]:
 
 def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     filters = filters or {}
-    where = ["1=1"]
-    params: list[Any] = []
-
-    region = (filters.get("region") or "").strip()
-    if region:
-        where.append("a.region = %s")
-        params.append(region)
-
-    account_type = (filters.get("account_type") or "").strip()
-    if account_type:
-        where.append("a.account_type = %s")
-        params.append(account_type)
+    where, params = _matrix_account_filters_sql(filters)
 
     date_from = (filters.get("date_from") or "").strip()
     if date_from:
@@ -1308,65 +1297,169 @@ def _matrix_account_filters_sql(filters: dict[str, Any]) -> tuple[list[str], lis
         where.append("a.account_type = %s")
         params.append(account_type)
 
+    account_ids = [str(v).strip() for v in (filters.get("account_ids") or []) if str(v).strip()]
+    if account_ids:
+        where.append("a.business_id = ANY(%s)")
+        params.append(account_ids)
+
     return where, params
 
 
-def matrix_daily_trend(filters: dict[str, Any] | None = None, days: int = 30) -> list[dict[str, Any]]:
+def _matrix_date_range(date_from: str | None, date_to: str | None, days: int = 7) -> tuple[date, date]:
+    """解析看板二/三的日期范围输入，缺省时回退到最近 N 天（含首尾两天）。"""
+    today = datetime.now().date()
+
+    def _parse(value):
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    parsed_from = _parse(date_from)
+    parsed_to = _parse(date_to)
+    if parsed_from and parsed_to:
+        return parsed_from, parsed_to
+    if parsed_from:
+        return parsed_from, today
+    if parsed_to:
+        return parsed_to - timedelta(days=days - 1), parsed_to
+    return today - timedelta(days=days - 1), today
+
+
+def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, Any]:
     filters = filters or {}
     where, params = _matrix_account_filters_sql(filters)
-    where.append("d.snapshot_date >= CURRENT_DATE - %s::int * INTERVAL '1 day'")
-    params.append(days)
+    where.append("a.enabled = TRUE")
     where_sql = " AND ".join(where)
 
-    rows = db.query_all(
+    row = db.query_one(
         f"""
         SELECT
-            d.snapshot_date AS date,
-            COALESCE(SUM(d.video_views), 0) AS views,
-            COALESCE(SUM(d.likes + d.comments + d.shares + d.favorites), 0) AS engagement
-        FROM tiktok_official_video_daily_snapshots d
-        LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+            COUNT(DISTINCT a.business_id) AS account_count,
+            COUNT(v.item_id) AS video_count,
+            COALESCE(SUM(v.video_views), 0) AS total_views,
+            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS total_engagement
+        FROM tiktok_official_accounts a
+        LEFT JOIN tiktok_official_video_snapshots v ON v.business_id = a.business_id
         WHERE {where_sql}
-        GROUP BY d.snapshot_date
-        ORDER BY d.snapshot_date
+        """,
+        tuple(params),
+    ) or {}
+
+    total_views = int(row.get("total_views") or 0)
+    total_engagement = int(row.get("total_engagement") or 0)
+    return {
+        "account_count": int(row.get("account_count") or 0),
+        "video_count": int(row.get("video_count") or 0),
+        "total_views": total_views,
+        "total_engagement": total_engagement,
+        "engagement_rate": (total_engagement / total_views) if total_views else 0.0,
+    }
+
+
+def matrix_publish_range_summary(
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
+    filters = filters or {}
+    range_from, range_to = _matrix_date_range(date_from, date_to, days=7)
+    where, params = _matrix_account_filters_sql(filters)
+    where.append("v.create_time >= %s")
+    where.append("v.create_time < (%s::date + INTERVAL '1 day')")
+    params.extend([range_from.isoformat(), range_to.isoformat()])
+    where_sql = " AND ".join(where)
+
+    summary_row = db.query_one(
+        f"""
+        SELECT
+            COUNT(*) AS video_count,
+            COALESCE(SUM(v.video_views), 0) AS total_views,
+            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS total_engagement
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql}
+        """,
+        tuple(params),
+    ) or {}
+    total_views = int(summary_row.get("total_views") or 0)
+    total_engagement = int(summary_row.get("total_engagement") or 0)
+
+    daily_rows = db.query_all(
+        f"""
+        SELECT
+            v.create_time::date AS date,
+            COUNT(*) AS video_count,
+            COALESCE(SUM(v.video_views), 0) AS views,
+            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS engagement
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql}
+        GROUP BY v.create_time::date
+        ORDER BY v.create_time::date
         """,
         tuple(params),
     ) or []
 
-    return [
-        {
-            "date": row["date"].isoformat() if hasattr(row["date"], "isoformat") else row["date"],
-            "views": int(row.get("views") or 0),
-            "engagement": int(row.get("engagement") or 0),
-        }
-        for row in rows
-    ]
+    daily = []
+    for drow in daily_rows:
+        d_views = int(drow.get("views") or 0)
+        d_engagement = int(drow.get("engagement") or 0)
+        d_date = drow.get("date")
+        daily.append({
+            "date": d_date.isoformat() if hasattr(d_date, "isoformat") else d_date,
+            "video_count": int(drow.get("video_count") or 0),
+            "views": d_views,
+            "engagement": d_engagement,
+            "engagement_rate": (d_engagement / d_views) if d_views else 0.0,
+        })
+
+    return {
+        "date_from": range_from.isoformat(),
+        "date_to": range_to.isoformat(),
+        "summary": {
+            "video_count": int(summary_row.get("video_count") or 0),
+            "total_views": total_views,
+            "total_engagement": total_engagement,
+            "engagement_rate": (total_engagement / total_views) if total_views else 0.0,
+        },
+        "daily": daily,
+    }
 
 
-def matrix_daily_delta(filters: dict[str, Any] | None = None) -> dict[str, Any]:
+def matrix_snapshot_delta_range(
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
     filters = filters or {}
+    range_from, range_to = _matrix_date_range(date_from, date_to, days=7)
     where, params = _matrix_account_filters_sql(filters)
     where_sql = " AND ".join(where)
 
-    dates = db.query_all(
+    available_rows = db.query_all(
         f"""
         SELECT DISTINCT d.snapshot_date
         FROM tiktok_official_video_daily_snapshots d
         LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
-        WHERE {where_sql}
-        ORDER BY d.snapshot_date DESC
-        LIMIT 2
+        WHERE {where_sql} AND d.snapshot_date <= %s
+        ORDER BY d.snapshot_date
         """,
-        tuple(params),
+        tuple(params + [range_to.isoformat()]),
     ) or []
+    available_dates = [r["snapshot_date"] for r in available_rows]
 
     empty = {
-        "today": None, "yesterday": None,
-        "views_today": None, "engagement_today": None,
-        "views_delta": None, "engagement_delta": None,
+        "date_from": range_from.isoformat(), "date_to": range_to.isoformat(),
+        "date_from_actual": None, "date_to_actual": None,
+        "new_video_count": 0, "views_delta": 0, "engagement_delta": 0,
+        "engagement_rate_start": 0.0, "engagement_rate_end": 0.0, "engagement_rate_change_pct": None,
+        "daily": [],
     }
-    if not dates:
+    if not available_dates:
         return empty
+
+    date_to_actual = max(available_dates)
+    candidates_before_from = [d for d in available_dates if d <= range_from]
+    date_from_actual = max(candidates_before_from) if candidates_before_from else min(available_dates)
 
     def _totals(snapshot_date):
         row = db.query_one(
@@ -1382,72 +1475,56 @@ def matrix_daily_delta(filters: dict[str, Any] | None = None) -> dict[str, Any]:
         ) or {}
         return int(row.get("views") or 0), int(row.get("engagement") or 0)
 
-    today_date = dates[0]["snapshot_date"]
-    views_today, engagement_today = _totals(today_date)
-    result = {
-        "today": today_date.isoformat() if hasattr(today_date, "isoformat") else today_date,
-        "yesterday": None,
-        "views_today": views_today,
-        "engagement_today": engagement_today,
-        "views_delta": None,
-        "engagement_delta": None,
-    }
-    if len(dates) < 2:
-        return result
+    def _video_keys(snapshot_date):
+        rows = db.query_all(
+            f"""
+            SELECT DISTINCT d.business_id, d.item_id
+            FROM tiktok_official_video_daily_snapshots d
+            LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+            WHERE {where_sql} AND d.snapshot_date = %s
+            """,
+            tuple(params + [snapshot_date]),
+        ) or []
+        return {(r["business_id"], r["item_id"]) for r in rows}
 
-    yesterday_date = dates[1]["snapshot_date"]
-    views_yesterday, engagement_yesterday = _totals(yesterday_date)
-    result["yesterday"] = yesterday_date.isoformat() if hasattr(yesterday_date, "isoformat") else yesterday_date
-    result["views_delta"] = views_today - views_yesterday
-    result["engagement_delta"] = engagement_today - engagement_yesterday
-    return result
+    views_start, engagement_start = _totals(date_from_actual)
+    views_end, engagement_end = _totals(date_to_actual)
+    new_video_count = 0
+    if date_from_actual != date_to_actual:
+        new_video_count = len(_video_keys(date_to_actual) - _video_keys(date_from_actual))
 
+    rate_start = (engagement_start / views_start) if views_start else 0.0
+    rate_end = (engagement_end / views_end) if views_end else 0.0
+    rate_change_pct = ((rate_end - rate_start) / rate_start * 100) if rate_start else None
 
-def matrix_top_recent(filters: dict[str, Any] | None = None, metric: str = "views", limit: int = 6, days: int = 3) -> dict[str, Any]:
-    filters = filters or {}
-    where, params = _matrix_account_filters_sql(filters)
-    where.append("v.create_time >= NOW() - (%s || ' days')::interval")
-    params.append(days)
-    where_sql = " AND ".join(where)
-
-    order_col = "engagement" if metric == "engagement" else "views"
-    rows = db.query_all(
-        f"""
-        SELECT
-            v.business_id, v.item_id, v.create_time,
-            v.video_views AS views,
-            (v.likes + v.comments + v.shares + v.favorites) AS engagement,
-            v.caption, v.thumbnail_url, v.share_url,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
-        FROM tiktok_official_video_snapshots v
-        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
-        WHERE {where_sql}
-        ORDER BY {order_col} DESC NULLS LAST
-        LIMIT %s
-        """,
-        tuple(params + [limit]),
-    ) or []
-
-    videos = []
-    for row in rows:
-        views = int(row.get("views") or 0)
-        engagement = int(row.get("engagement") or 0)
-        create_time = row.get("create_time")
-        videos.append({
-            "business_id": row.get("business_id"),
-            "item_id": row.get("item_id"),
-            "create_time": create_time.isoformat() if hasattr(create_time, "isoformat") else create_time,
-            "views": views,
-            "engagement": engagement,
-            "caption": row.get("caption"),
-            "thumbnail_url": row.get("thumbnail_url"),
-            "share_url": row.get("share_url"),
-            "account_alias": row.get("account_alias"),
-            "account_name": row.get("account_name"),
-            "display_name": row.get("display_name"),
+    range_dates = [d for d in available_dates if date_from_actual <= d <= date_to_actual]
+    daily = []
+    for i in range(1, len(range_dates)):
+        prev_date, cur_date = range_dates[i - 1], range_dates[i]
+        prev_views, prev_engagement = _totals(prev_date)
+        cur_views, cur_engagement = _totals(cur_date)
+        new_count = len(_video_keys(cur_date) - _video_keys(prev_date))
+        daily.append({
+            "date": cur_date.isoformat() if hasattr(cur_date, "isoformat") else cur_date,
+            "new_video_count": new_count,
+            "views_delta": cur_views - prev_views,
+            "engagement_delta": cur_engagement - prev_engagement,
+            "engagement_rate": (cur_engagement / cur_views) if cur_views else 0.0,
         })
 
-    return {"days": days, "videos": videos}
+    return {
+        "date_from": range_from.isoformat(),
+        "date_to": range_to.isoformat(),
+        "date_from_actual": date_from_actual.isoformat() if hasattr(date_from_actual, "isoformat") else date_from_actual,
+        "date_to_actual": date_to_actual.isoformat() if hasattr(date_to_actual, "isoformat") else date_to_actual,
+        "new_video_count": new_video_count,
+        "views_delta": views_end - views_start,
+        "engagement_delta": engagement_end - engagement_start,
+        "engagement_rate_start": rate_start,
+        "engagement_rate_end": rate_end,
+        "engagement_rate_change_pct": rate_change_pct,
+        "daily": daily,
+    }
 
 
 def build_matrix_export(export_date) -> bytes:

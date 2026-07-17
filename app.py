@@ -9562,6 +9562,11 @@ def matrix_video_dashboard_page():
     return render_template('matrix_video_dashboard.html')
 
 
+def _matrix_account_ids_arg():
+    raw = request.args.get('account_ids') or ''
+    return [v.strip() for v in raw.split(',') if v.strip()]
+
+
 @app.route('/api/tiktok-official/matrix-videos')
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_videos():
@@ -9569,6 +9574,7 @@ def api_tiktok_official_matrix_videos():
         filters = {
             'region': request.args.get('region') or '',
             'account_type': request.args.get('account_type') or '',
+            'account_ids': _matrix_account_ids_arg(),
             'date_from': request.args.get('date_from') or '',
             'date_to': request.args.get('date_to') or '',
             'creator': request.args.get('creator') or '',
@@ -9590,61 +9596,59 @@ def api_tiktok_official_matrix_videos():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/tiktok-official/matrix-videos/daily-trend')
+@app.route('/api/tiktok-official/matrix-videos/overview')
 @feature_required('matrix_video_dashboard')
-def api_tiktok_official_matrix_daily_trend():
+def api_tiktok_official_matrix_overview():
     try:
         filters = {
             'region': request.args.get('region') or '',
             'account_type': request.args.get('account_type') or '',
+            'account_ids': _matrix_account_ids_arg(),
         }
-        days = int(request.args.get('days') or 30)
-        days = max(1, min(days, 90))
-        trend = tiktok_official_service.matrix_daily_trend(filters=filters, days=days)
-        return jsonify({'status': 'success', 'trend': _json_safe_rows(trend)})
-    except Exception as e:
-        logger.error(f"tiktok_official matrix daily trend failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-@app.route('/api/tiktok-official/matrix-videos/daily-delta')
-@feature_required('matrix_video_dashboard')
-def api_tiktok_official_matrix_daily_delta():
-    try:
-        filters = {
-            'region': request.args.get('region') or '',
-            'account_type': request.args.get('account_type') or '',
-        }
-        result = tiktok_official_service.matrix_daily_delta(filters=filters)
+        result = tiktok_official_service.matrix_overview_summary(filters=filters)
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix daily delta failed: {e}")
+        logger.error(f"tiktok_official matrix overview failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/tiktok-official/matrix-videos/top-recent')
+@app.route('/api/tiktok-official/matrix-videos/publish-range')
 @feature_required('matrix_video_dashboard')
-def api_tiktok_official_matrix_top_recent():
+def api_tiktok_official_matrix_publish_range():
     try:
         filters = {
             'region': request.args.get('region') or '',
             'account_type': request.args.get('account_type') or '',
+            'account_ids': _matrix_account_ids_arg(),
         }
-        metric = request.args.get('metric') or 'views'
-        if metric not in ('views', 'engagement'):
-            metric = 'views'
-        limit = int(request.args.get('limit') or 6)
-        limit = max(1, min(limit, 50))
-        days = int(request.args.get('days') or 3)
-        days = max(1, min(days, 14))
-        result = tiktok_official_service.matrix_top_recent(filters=filters, metric=metric, limit=limit, days=days)
-        return jsonify({
-            'status': 'success',
-            'days': result['days'],
-            'videos': _json_safe_rows(result['videos']),
-        })
+        result = tiktok_official_service.matrix_publish_range_summary(
+            filters=filters,
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix top-recent failed: {e}")
+        logger.error(f"tiktok_official matrix publish-range failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/snapshot-delta-range')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_snapshot_delta_range():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+            'account_ids': _matrix_account_ids_arg(),
+        }
+        result = tiktok_official_service.matrix_snapshot_delta_range(
+            filters=filters,
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix snapshot-delta-range failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

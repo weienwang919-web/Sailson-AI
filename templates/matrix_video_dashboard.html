@@ -5,156 +5,234 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>矩阵号视频监控看板</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
+    :root {
+      --bg: #0a0b0f;
+      --board-bg: #14161d;
+      --card-bg: #1c1f28;
+      --border-soft: rgba(255,255,255,0.07);
+      --text-primary: #f2f3f5;
+      --text-secondary: #9aa1ae;
+      --text-tertiary: #5b6270;
+      --accent: #4c8dff;
+      --accent-soft: rgba(76,141,255,.16);
+      --up: #34d399;
+      --down: #f87171;
+      --radius-lg: 28px;
+      --radius-md: 18px;
+      --radius-sm: 12px;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6fa; color: #1a1a2e; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
 
-    .page-header { background: linear-gradient(135deg, #111827, #0f172a); color: #fff; padding: 24px 30px; }
-    .page-header h1 { font-size: 21px; font-weight: 700; letter-spacing: .2px; }
-    .page-header .subtitle { font-size: 12.5px; color: rgba(255,255,255,0.65); margin-top: 6px; line-height: 1.6; }
-    .page-header a { color: #8ec5ff; font-size: 13px; text-decoration: none; }
-    .page-header a:hover { text-decoration: underline; }
+    .page-header { padding: 40px 32px 8px; max-width: 1240px; margin: 0 auto; }
+    .page-header h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
+    .page-header .subtitle { font-size: 13px; color: var(--text-secondary); margin-top: 8px; line-height: 1.6; max-width: 640px; }
+    .page-header a { color: var(--text-tertiary); font-size: 12.5px; text-decoration: none; }
+    .page-header a:hover { color: var(--accent); }
+    .page-header .back-link { display: inline-block; margin-top: 14px; }
 
-    .container { max-width: 1440px; margin: 0 auto; padding: 22px 20px 52px; }
-    .card { background: #fff; border-radius: 18px; padding: 20px 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.05); }
-    .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; color: #111827; display: flex; align-items: center; gap: 8px; }
-    .card h2::before { content: ''; width: 4px; height: 15px; background: #2962FF; border-radius: 3px; display: inline-block; }
-    .card-head-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-    .card-head-row h2 { margin-bottom: 0; }
+    .container { max-width: 1240px; margin: 0 auto; padding: 20px 32px 60px; }
 
-    label { font-size: 12px; color: #6b7280; display: block; margin-bottom: 5px; font-weight: 500; }
-    input, select { padding: 9px 11px; border: 1px solid #e2e5eb; border-radius: 8px; font-size: 13px; font-family: inherit; background: #fff; transition: border-color .15s; }
-    input:focus, select:focus { outline: none; border-color: #2962FF; box-shadow: 0 0 0 3px rgba(41,98,255,.1); }
+    .board { background: var(--board-bg); border-radius: var(--radius-lg); padding: 26px 28px; margin-bottom: 22px; border: 1px solid var(--border-soft); }
+    .board-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }
+    .board-head h2 { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+    .board-note { font-size: 11.5px; color: var(--text-tertiary); margin-top: -12px; margin-bottom: 16px; display: none; }
 
-    .btn { padding: 9px 18px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .12s, transform .05s; font-family: inherit; }
-    .btn:active { transform: translateY(1px); }
-    .btn-primary { background: #2962FF; color: #fff; }
-    .btn-primary:hover { filter: brightness(1.08); }
-    .btn-secondary { background: #eef0f4; color: #374151; }
-    .btn-secondary:hover { filter: brightness(0.97); }
-    .btn:disabled { background: #cbd5e1; color: #fff; cursor: not-allowed; }
-    .btn-sm { padding: 5px 12px; font-size: 11.5px; border-radius: 7px; }
-    .btn-ghost { background: transparent; border: 1px solid #d7dbe3; color: #374151; }
-    .btn-ghost:hover { background: #f8fafc; }
-
-    .status { margin-top: 12px; font-size: 12.5px; color: #6b7280; min-height: 18px; word-break: break-all; }
-    .status.err { color: #dc2626; font-weight: 500; }
-
-    /* ---- 筛选面板 ---- */
-    .filter-section { display: flex; align-items: center; gap: 16px; padding: 11px 0; border-bottom: 1px solid #f1f2f5; flex-wrap: wrap; }
-    .filter-section:last-of-type { border-bottom: none; }
-    .filter-section-label { font-size: 12.5px; font-weight: 600; color: #374151; min-width: 52px; flex-shrink: 0; }
+    /* ---- 达人筛选栏 ---- */
+    .filter-bar-header { display: flex; align-items: center; gap: 14px; cursor: pointer; user-select: none; }
+    .filter-bar-title { font-size: 16px; font-weight: 700; }
+    .filter-bar-summary { font-size: 12.5px; color: var(--text-secondary); background: var(--card-bg); padding: 6px 14px; border-radius: 999px; }
+    .filter-bar-chevron { margin-left: auto; color: var(--text-tertiary); font-size: 13px; transition: transform .18s; }
+    .filter-bar-chevron.open { transform: rotate(180deg); }
+    .filter-bar-body { margin-top: 22px; }
+    .account-search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+    .account-search-row input[type="text"] { flex: 1; min-width: 220px; }
     .pill-row { display: flex; gap: 8px; flex-wrap: wrap; }
-    .pill-btn { padding: 6px 15px; border-radius: 999px; border: 1px solid #e2e5eb; background: #fff; font-size: 12.5px; cursor: pointer; color: #4b5563; font-weight: 500; transition: all .12s; font-family: inherit; }
-    .pill-btn:hover { border-color: #2962FF; color: #2962FF; }
-    .pill-btn.active { background: #111827; color: #fff; border-color: #111827; }
-    .empty-hint { font-size: 12px; color: #9ca3af; align-self: center; }
+    .pill-btn { padding: 7px 16px; border-radius: 999px; border: 1px solid var(--border-soft); background: var(--card-bg); font-size: 12.5px; cursor: pointer; color: var(--text-secondary); font-weight: 500; transition: all .12s; font-family: inherit; }
+    .pill-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .pill-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
-    .search-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; padding-top: 16px; }
+    .account-groups { max-height: 360px; overflow: auto; margin-top: 18px; padding-right: 4px; }
+    .account-group { margin-bottom: 18px; }
+    .account-group-title { font-size: 12px; font-weight: 700; color: var(--text-tertiary); margin-bottom: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 8px; transition: color .12s, background .12s; }
+    .account-group-title:hover { background: rgba(255,255,255,.04); }
+    .account-group-title.active { color: var(--accent); }
+    .account-group-count { font-size: 10.5px; color: var(--text-tertiary); font-weight: 500; }
+    .account-group-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .account-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 999px; background: var(--card-bg); border: 1px solid transparent; cursor: pointer; transition: all .15s; font-family: inherit; }
+    .account-chip:hover { border-color: var(--border-soft); }
+    .account-chip-avatar { width: 24px; height: 24px; border-radius: 50%; background: #2a2f3b; color: var(--text-secondary); font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .account-chip-label { font-size: 12.5px; color: #c3c8d1; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .account-chip.selected { background: var(--accent-soft); border-color: var(--accent); }
+    .account-chip.selected .account-chip-avatar { background: var(--accent); color: #fff; }
+    .account-chip.selected .account-chip-label { color: #dbe6ff; }
+
+    label { font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 6px; font-weight: 500; }
+    input, select { padding: 9px 12px; border: 1px solid var(--border-soft); border-radius: 10px; font-size: 13px; font-family: inherit; background: var(--card-bg); color: var(--text-primary); transition: border-color .15s; }
+    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    input::placeholder { color: var(--text-tertiary); }
+
+    .btn { padding: 9px 18px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .12s, transform .05s; font-family: inherit; }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { filter: brightness(1.1); }
+    .btn-secondary { background: var(--card-bg); color: var(--text-primary); border: 1px solid var(--border-soft); }
+    .btn-secondary:hover { filter: brightness(1.1); }
+    .btn:disabled { background: #2a2f3b; color: var(--text-tertiary); cursor: not-allowed; }
+    .btn-sm { padding: 6px 13px; font-size: 11.5px; border-radius: 8px; }
+    .btn-ghost { background: transparent; border: 1px solid var(--border-soft); color: var(--text-secondary); }
+    .btn-ghost:hover { background: rgba(255,255,255,.04); color: var(--text-primary); }
+    .btn-chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border-soft); background: var(--card-bg); color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all .12s; }
+    .btn-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+    .status { margin-top: 14px; font-size: 12.5px; color: var(--text-secondary); min-height: 18px; word-break: break-all; }
+    .status.err { color: var(--down); font-weight: 500; }
+
+    /* ---- 总览 / KPI 数字卡 ---- */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+    .stat-card { background: var(--card-bg); border-radius: var(--radius-md); padding: 22px 24px; }
+    .stat-label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; font-weight: 500; }
+    .stat-value { font-size: 32px; font-weight: 800; color: var(--text-primary); line-height: 1.1; letter-spacing: -.02em; }
+    .stat-up { color: var(--up); }
+    .stat-down { color: var(--down); }
+
+    /* ---- 日期区间控件 ---- */
+    .date-range-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .date-sep { color: var(--text-tertiary); font-size: 12px; }
+    .delta-range-hint { font-size: 11.5px; color: var(--text-tertiary); margin: -8px 0 16px; }
+
+    /* ---- 折线图 ---- */
+    .chart-wrap { position: relative; height: 260px; margin-top: 22px; }
+
+    /* ---- 视频明细表 ---- */
+    .search-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; }
     .form-group { flex: 1; min-width: 160px; }
     .form-group input { width: 100%; }
     .form-group.quick-range { flex: 0 0 auto; display: flex; gap: 8px; }
     .form-group.actions { flex: 0 0 auto; display: flex; gap: 10px; }
 
-    /* ---- KPI 卡片 ---- */
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
-    .kpi-card { background: #fff; border-radius: 18px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.05); display: flex; align-items: center; gap: 16px; }
-    .kpi-icon { width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 21px; flex-shrink: 0; }
-    .kpi-label { font-size: 12.5px; color: #6b7280; margin-bottom: 6px; font-weight: 500; }
-    .kpi-value { font-size: 24px; font-weight: 700; color: #111827; line-height: 1.1; }
-    .kpi-blue .kpi-icon { background: #EAF1FF; } .kpi-blue .kpi-value { color: #2962FF; }
-    .kpi-green .kpi-icon { background: #ECFDF5; } .kpi-green .kpi-value { color: #059669; }
-    .kpi-purple .kpi-icon { background: #F5F3FF; } .kpi-purple .kpi-value { color: #7C3AED; }
-    .kpi-orange .kpi-icon { background: #FFFBEB; } .kpi-orange .kpi-value { color: #D97706; }
-    .kpi-pink .kpi-icon { background: #FDF2F8; } .kpi-pink .kpi-value { color: #DB2777; }
-
-    /* ---- 趋势图 + 今日热门 ---- */
-    .insights-grid { display: grid; grid-template-columns: 1.85fr 1fr; gap: 20px; margin-bottom: 20px; align-items: stretch; }
-    @media (max-width: 980px) { .insights-grid { grid-template-columns: 1fr; } }
-    .trend-chart-wrap { position: relative; height: 280px; }
-    .trend-annotation { display: flex; gap: 18px; flex-wrap: wrap; background: #f8fafc; border: 1px solid #eef0f5; border-radius: 12px; padding: 8px 14px; margin: 8px 0 10px; }
-    .anno-group { display: flex; flex-direction: column; gap: 2px; }
-    .anno-label { font-size: 11px; color: #9ca3af; margin-bottom: 2px; }
-    .anno-value { font-size: 12.5px; font-weight: 600; color: #374151; line-height: 1.5; }
-    .anno-value.delta-up { color: #059669; }
-    .anno-value.delta-down { color: #dc2626; }
-    .top-today-date { font-size: 11.5px; color: #9ca3af; margin: -8px 0 12px; }
-    .top-today-row { display: flex; align-items: center; gap: 12px; padding: 10px 6px; border-radius: 10px; text-decoration: none; color: inherit; transition: background .12s; }
-    .top-today-row:hover { background: #f8fafc; }
-    .rank-badge { width: 26px; height: 26px; border-radius: 8px; background: #eef0f4; color: #6b7280; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .rank-badge.rank-1 { background: #FEF3C7; color: #B45309; }
-    .rank-badge.rank-2 { background: #E5E7EB; color: #374151; }
-    .rank-badge.rank-3 { background: #FDE7D4; color: #9A5B22; }
-    .top-today-info { flex: 1; min-width: 0; }
-    .top-today-title { font-size: 12.5px; font-weight: 600; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .top-today-meta { font-size: 11px; color: #9ca3af; margin: 3px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .progress-track { height: 5px; background: #f1f2f5; border-radius: 999px; overflow: hidden; }
-    .progress-fill { height: 100%; background: linear-gradient(90deg, #2962FF, #7C3AED); border-radius: 999px; }
-
-    /* ---- 表格 ---- */
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-    th, td { border-bottom: 1px solid #f1f2f5; padding: 11px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
-    th { background: #f8fafc; color: #4b5563; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .3px; position: sticky; top: 0; z-index: 1; }
-    tbody tr:hover { background: #f8fafc; }
-    .table-wrap { overflow: auto; max-height: 640px; border: 1px solid #eef0f3; border-radius: 12px; }
-    .muted { color: #9ca3af; }
-    .link { color: #2962FF; text-decoration: none; font-weight: 500; }
+    th, td { border-bottom: 1px solid var(--border-soft); padding: 12px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
+    th { background: var(--card-bg); color: var(--text-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; position: sticky; top: 0; z-index: 1; }
+    tbody tr:hover { background: rgba(255,255,255,.03); }
+    .table-wrap { overflow: auto; max-height: 640px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); margin-top: 18px; }
+    .muted { color: var(--text-tertiary); }
+    .link { color: var(--accent); text-decoration: none; font-weight: 500; }
     .link:hover { text-decoration: underline; }
 
-    .tag-input { border: 1px solid transparent; background: transparent; padding: 5px 7px; font-size: 12.5px; width: 120px; border-radius: 6px; font-family: inherit; }
-    .tag-input:hover { border-color: #e2e5eb; background: #fff; }
-    .tag-input:focus { border-color: #2962FF; background: #fff; outline: none; box-shadow: 0 0 0 3px rgba(41,98,255,.1); }
+    .tag-input { border: 1px solid transparent; background: transparent; padding: 5px 7px; font-size: 12.5px; width: 120px; border-radius: 6px; font-family: inherit; color: var(--text-primary); }
+    .tag-input:hover { border-color: var(--border-soft); background: var(--card-bg); }
+    .tag-input:focus { border-color: var(--accent); background: var(--card-bg); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
 
-    .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-    .badge-region { background: #eef0f4; color: #374151; }
-    .badge-kol { background: #F5F3FF; color: #7C3AED; }
-    .badge-campaign { background: #FFFBEB; color: #B45309; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge-region { background: var(--card-bg); color: var(--text-secondary); }
+    .badge-kol { background: rgba(124,58,237,.18); color: #b794f6; }
+    .badge-campaign { background: rgba(217,119,6,.18); color: #f6ad55; }
 
     .hashtags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 200px; white-space: normal; }
-    .hashtag-chip { background: #EAF1FF; color: #2962FF; font-size: 11px; padding: 2px 7px; border-radius: 999px; font-weight: 500; }
+    .hashtag-chip { background: var(--accent-soft); color: #8fb8ff; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
 
-    .caption-cell { max-width: 240px; white-space: normal; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; cursor: default; }
+    .caption-cell { max-width: 240px; white-space: normal; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; cursor: default; color: var(--text-secondary); }
 
-    .spark-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #374151; background: #f1f2f5; padding: 2px 6px; border-radius: 5px; }
+    .spark-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: var(--text-secondary); background: var(--card-bg); padding: 2px 7px; border-radius: 5px; }
 
-    .pagination { display: flex; gap: 12px; align-items: center; margin-top: 16px; font-size: 12.5px; color: #6b7280; }
+    .pagination { display: flex; gap: 12px; align-items: center; margin-top: 18px; font-size: 12.5px; color: var(--text-secondary); }
 
     ::-webkit-scrollbar { width: 9px; height: 9px; }
-    ::-webkit-scrollbar-thumb { background: #d7dbe3; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb { background: #2a2f3b; border-radius: 5px; }
   </style>
 </head>
 <body>
 <div class="page-header">
   <h1>矩阵号视频监控看板</h1>
   <div class="subtitle">PUBG Mobile 矩阵号切片视频数据汇总，用于客户回报及优秀视频复刻激励。</div>
-  <div style="margin-top:10px;"><a href="/">← 返回首页</a></div>
+  <a class="back-link" href="/">← 返回首页</a>
 </div>
 
 <div class="container">
-  <div class="card">
-    <h2>筛选</h2>
-    <div class="filter-section">
-      <span class="filter-section-label">国家</span>
-      <div class="pill-row" id="region-pills"></div>
+
+  <div class="board" id="filter-bar">
+    <div class="filter-bar-header" onclick="toggleFilterBar()">
+      <div class="filter-bar-title">达人筛选</div>
+      <div class="filter-bar-summary" id="filter-bar-summary">全部达人</div>
+      <div class="filter-bar-chevron" id="filter-bar-chevron">▾</div>
     </div>
-    <div class="filter-section">
-      <span class="filter-section-label">账号类型</span>
-      <div class="pill-row" id="type-pills">
-        <button class="pill-btn active" data-type="" onclick="setTypeFilter('', this)">全部</button>
-        <button class="pill-btn" data-type="KOL" onclick="setTypeFilter('KOL', this)">KOL</button>
-        <button class="pill-btn" data-type="Campaign" onclick="setTypeFilter('Campaign', this)">Campaign</button>
+    <div class="filter-bar-body" id="filter-bar-body" style="display:none;">
+      <div class="account-search-row">
+        <input type="text" id="account-search" placeholder="搜索达人别名 / 账号ID" oninput="renderAccountPicker()">
+        <div class="pill-row" id="type-quick-pills"></div>
+      </div>
+      <div class="account-groups" id="account-groups"></div>
+    </div>
+  </div>
+
+  <div class="board" id="board-overview">
+    <div class="board-head"><h2>总览</h2></div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">总账号数</div><div class="stat-value" id="ov-accounts">-</div></div>
+      <div class="stat-card"><div class="stat-label">总视频条数</div><div class="stat-value" id="ov-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="ov-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">总互动数</div><div class="stat-value" id="ov-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="ov-rate">-</div></div>
+    </div>
+  </div>
+
+  <div class="board" id="board-publish">
+    <div class="board-head">
+      <h2>按发布时间筛选</h2>
+      <div class="date-range-controls">
+        <input type="date" id="pub-date-from" onchange="loadPublishRange()">
+        <span class="date-sep">→</span>
+        <input type="date" id="pub-date-to" onchange="loadPublishRange()">
+        <button class="btn-chip" onclick="setPublishQuickRange(7)">最近7天</button>
+        <button class="btn-chip" onclick="setPublishQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="clearPublishRange()">清除</button>
       </div>
     </div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">视频条数</div><div class="stat-value" id="pub-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="pub-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">总互动量</div><div class="stat-value" id="pub-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="pub-rate">-</div></div>
+    </div>
+    <div class="chart-wrap" id="pub-chart-wrap" style="display:none;"><canvas id="pubChart"></canvas></div>
+  </div>
+
+  <div class="board" id="board-delta">
+    <div class="board-head">
+      <h2>每日快照增量</h2>
+      <div class="date-range-controls">
+        <input type="date" id="delta-date-from" onchange="loadSnapshotDelta()">
+        <span class="date-sep">→</span>
+        <input type="date" id="delta-date-to" onchange="loadSnapshotDelta()">
+        <button class="btn-chip" onclick="setDeltaQuickRange(7)">最近7天</button>
+        <button class="btn-chip" onclick="setDeltaQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="clearDeltaRange()">清除</button>
+      </div>
+    </div>
+    <div class="delta-range-hint muted" id="delta-range-hint" style="display:none;"></div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">新增视频数</div><div class="stat-value" id="delta-new-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">新增播放量</div><div class="stat-value" id="delta-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">新增互动量</div><div class="stat-value" id="delta-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率环比</div><div class="stat-value" id="delta-rate-change">-</div></div>
+    </div>
+    <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
+  </div>
+
+  <div class="board" id="board-videos">
+    <div class="board-head"><h2>视频明细</h2></div>
     <div class="search-controls">
       <div class="form-group">
         <label>开始日期</label>
-        <input type="date" id="date-from" onchange="applyFilters()">
+        <input type="date" id="date-from" onchange="applyVideoFilters()">
       </div>
       <div class="form-group">
         <label>结束日期</label>
-        <input type="date" id="date-to" onchange="applyFilters()">
+        <input type="date" id="date-to" onchange="applyVideoFilters()">
       </div>
       <div class="form-group quick-range">
         <button class="btn btn-ghost btn-sm" onclick="setQuickRange(7)">最近7天</button>
@@ -170,51 +248,12 @@
         <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
       </div>
       <div class="form-group actions">
-        <button class="btn btn-primary" onclick="applyFilters()">查询</button>
-        <button class="btn btn-secondary" onclick="downloadExport()">📥 下载报表（前一日）</button>
+        <button class="btn btn-primary" onclick="applyVideoFilters()">查询</button>
+        <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
       </div>
     </div>
     <div class="status" id="filter-status"></div>
-  </div>
 
-  <div class="kpi-grid">
-    <div class="kpi-card kpi-blue"><div class="kpi-icon">📺</div><div><div class="kpi-label">全周期总播放</div><div class="kpi-value" id="kpi-views">-</div></div></div>
-    <div class="kpi-card kpi-green"><div class="kpi-icon">💬</div><div><div class="kpi-label">全周期总互动量</div><div class="kpi-value" id="kpi-engagement">-</div></div></div>
-    <div class="kpi-card kpi-purple"><div class="kpi-icon">📈</div><div><div class="kpi-label">整体互动率</div><div class="kpi-value" id="kpi-rate">-</div></div></div>
-    <div class="kpi-card kpi-orange"><div class="kpi-icon">👥</div><div><div class="kpi-label">监控账号数</div><div class="kpi-value" id="kpi-accounts">-</div></div></div>
-    <div class="kpi-card kpi-pink"><div class="kpi-icon">🎬</div><div><div class="kpi-label">总视频数</div><div class="kpi-value" id="kpi-videos">-</div></div></div>
-  </div>
-
-  <div class="insights-grid">
-    <div class="card trend-card">
-      <div class="card-head-row">
-        <h2>播放 / 互动趋势</h2>
-        <div class="pill-row" id="trend-range-pills">
-          <button class="pill-btn" data-days="7" onclick="setTrendRange(7, this)">7D</button>
-          <button class="pill-btn active" data-days="30" onclick="setTrendRange(30, this)">30D</button>
-          <button class="pill-btn" data-days="90" onclick="setTrendRange(90, this)">90D</button>
-        </div>
-      </div>
-      <div class="trend-annotation" id="trend-annotation" style="display:none;"></div>
-      <div class="trend-chart-wrap">
-        <canvas id="trendChart"></canvas>
-      </div>
-    </div>
-    <div class="card top-today-card">
-      <div class="card-head-row">
-        <h2>近三日热门贴文</h2>
-        <div class="pill-row" id="top-metric-pills">
-          <button class="pill-btn active" data-metric="views" onclick="setTopMetric('views', this)">播放量</button>
-          <button class="pill-btn" data-metric="engagement" onclick="setTopMetric('engagement', this)">互动量</button>
-        </div>
-      </div>
-      <div class="top-today-date muted" id="top-today-date">发布时间在最近 3 天内</div>
-      <div id="top-today-list"></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>视频明细</h2>
     <div class="table-wrap">
       <table>
         <thead>
@@ -246,16 +285,26 @@
       <button class="btn btn-ghost btn-sm" onclick="nextPage()">下一页 →</button>
     </div>
   </div>
+
 </div>
 
 <script>
-let accounts = [];
+let accountsList = [];
+let selectedAccountIds = new Set();
+let filterBarOpen = false;
+
 let videos = [];
-let filters = { region: '', account_type: '', date_from: '', date_to: '', creator: '', keyword: '' };
+let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '' };
 let limit = 50;
 let offset = 0;
 let total = 0;
 let debounceTimer = null;
+
+let pubChartInstance = null;
+let deltaChartInstance = null;
+
+const CHART_TEXT_COLOR = '#9aa1ae';
+const CHART_GRID_COLOR = 'rgba(255,255,255,0.06)';
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
@@ -274,6 +323,20 @@ function pct(v) {
   return (n * 100).toFixed(2) + '%';
 }
 
+function fmtDelta(v) {
+  if (v === null || v === undefined) return '-';
+  const cls = v > 0 ? 'stat-up' : (v < 0 ? 'stat-down' : '');
+  const sign = v > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${fmt(v)}</span>`;
+}
+
+function fmtRateChangePct(v) {
+  if (v === null || v === undefined) return '-';
+  const arrow = v > 0 ? '▲' : (v < 0 ? '▼' : '');
+  const cls = v > 0 ? 'stat-up' : (v < 0 ? 'stat-down' : '');
+  return `<span class="${cls}">${arrow} ${Math.abs(v).toFixed(1)}%</span>`;
+}
+
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
@@ -283,22 +346,335 @@ async function fetchJson(url, opts) {
 
 function debouncedApply() {
   clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => applyFilters(), 400);
+  debounceTimer = setTimeout(() => applyVideoFilters(), 400);
 }
 
-function setTypeFilter(type, btn) {
-  filters.account_type = type;
-  document.querySelectorAll('#type-pills .pill-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  applyFilters();
+/* ---------------- 达人筛选栏 ---------------- */
+
+function toggleFilterBar() {
+  filterBarOpen = !filterBarOpen;
+  document.getElementById('filter-bar-body').style.display = filterBarOpen ? 'block' : 'none';
+  document.getElementById('filter-bar-chevron').classList.toggle('open', filterBarOpen);
 }
 
-function setRegionFilter(region, btn) {
-  filters.region = region;
-  document.querySelectorAll('#region-pills .pill-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  applyFilters();
+function accountIdsParam() {
+  return Array.from(selectedAccountIds).join(',');
 }
+
+function withAccountIds(params) {
+  const ids = accountIdsParam();
+  if (ids) params.set('account_ids', ids);
+  return params;
+}
+
+async function loadAccountsForPicker() {
+  try {
+    const data = await fetchJson('/api/tiktok-official/accounts');
+    accountsList = data.accounts || [];
+  } catch (e) {
+    accountsList = [];
+  }
+  renderAccountPicker();
+  renderTypePills();
+  updateFilterBarSummary();
+}
+
+function onAccountSelectionChanged() {
+  renderAccountPicker();
+  renderTypePills();
+  updateFilterBarSummary();
+  offset = 0;
+  refreshAll();
+}
+
+function updateFilterBarSummary() {
+  const el = document.getElementById('filter-bar-summary');
+  el.textContent = selectedAccountIds.size === 0
+    ? `全部达人 (${accountsList.length})`
+    : `已选择 ${selectedAccountIds.size} 位达人`;
+}
+
+function toggleAccount(bid) {
+  if (selectedAccountIds.has(bid)) selectedAccountIds.delete(bid);
+  else selectedAccountIds.add(bid);
+  onAccountSelectionChanged();
+}
+window.toggleAccount = toggleAccount;
+
+function toggleAccountType(type) {
+  const ids = accountsList.filter(a => (a.account_type || '') === type).map(a => a.business_id);
+  const allSelected = ids.length > 0 && ids.every(id => selectedAccountIds.has(id));
+  ids.forEach(id => allSelected ? selectedAccountIds.delete(id) : selectedAccountIds.add(id));
+  onAccountSelectionChanged();
+}
+window.toggleAccountType = toggleAccountType;
+
+function clearAccountSelection() {
+  selectedAccountIds.clear();
+  onAccountSelectionChanged();
+}
+window.clearAccountSelection = clearAccountSelection;
+
+function toggleRegionGroup(region) {
+  const ids = accountsList.filter(a => (a.region || '未分组') === region).map(a => a.business_id);
+  const allSelected = ids.length > 0 && ids.every(id => selectedAccountIds.has(id));
+  ids.forEach(id => allSelected ? selectedAccountIds.delete(id) : selectedAccountIds.add(id));
+  onAccountSelectionChanged();
+}
+window.toggleRegionGroup = toggleRegionGroup;
+
+function renderTypePills() {
+  const wrap = document.getElementById('type-quick-pills');
+  const types = [{ key: '', label: '全部' }, { key: 'KOL', label: 'KOL' }, { key: 'Campaign', label: 'Campaign' }];
+  wrap.innerHTML = types.map(t => {
+    let active;
+    if (t.key === '') {
+      active = selectedAccountIds.size === 0;
+    } else {
+      const ids = accountsList.filter(a => (a.account_type || '') === t.key).map(a => a.business_id);
+      active = ids.length > 0 && ids.every(id => selectedAccountIds.has(id));
+    }
+    const handler = t.key === '' ? 'clearAccountSelection()' : `toggleAccountType('${esc(t.key)}')`;
+    return `<button class="pill-btn ${active ? 'active' : ''}" onclick="${handler}">${esc(t.label)}</button>`;
+  }).join('');
+}
+
+function renderAccountPicker() {
+  const query = (document.getElementById('account-search').value || '').trim().toLowerCase();
+  const grouped = {};
+  accountsList.forEach(a => {
+    const region = a.region || '未分组';
+    (grouped[region] = grouped[region] || []).push(a);
+  });
+  const regions = Object.keys(grouped).sort((a, b) => {
+    if (a === '未分组') return 1;
+    if (b === '未分组') return -1;
+    return a.localeCompare(b);
+  });
+
+  const wrap = document.getElementById('account-groups');
+  const html = regions.map(region => {
+    const all = grouped[region];
+    const list = all.filter(a => {
+      if (!query) return true;
+      const hay = `${a.account_alias || ''} ${a.account_name || ''} ${a.display_name || ''} ${a.business_id || ''}`.toLowerCase();
+      return hay.includes(query);
+    });
+    if (!list.length) return '';
+    const idsOfRegion = all.map(a => a.business_id);
+    const allSelected = idsOfRegion.length > 0 && idsOfRegion.every(id => selectedAccountIds.has(id));
+    const chips = list.map(a => {
+      const selected = selectedAccountIds.has(a.business_id);
+      const label = a.account_alias || a.account_name || a.display_name || a.business_id;
+      const initial = esc(label).slice(0, 1).toUpperCase();
+      return `<button class="account-chip ${selected ? 'selected' : ''}" title="${esc(label)}" onclick="toggleAccount('${esc(a.business_id)}')">
+        <span class="account-chip-avatar">${initial}</span>
+        <span class="account-chip-label">${esc(label)}</span>
+      </button>`;
+    }).join('');
+    return `
+      <div class="account-group">
+        <div class="account-group-title ${allSelected ? 'active' : ''}" onclick="toggleRegionGroup('${esc(region)}')">${esc(region)} <span class="account-group-count">${list.length}</span></div>
+        <div class="account-group-chips">${chips}</div>
+      </div>
+    `;
+  }).join('');
+  wrap.innerHTML = html || '<div class="muted" style="padding:20px 0;">暂无账号，或搜索无匹配结果</div>';
+}
+
+function refreshAll() {
+  loadOverview();
+  loadPublishRange();
+  loadSnapshotDelta();
+  loadVideos();
+}
+
+/* ---------------- 看板一：总览 ---------------- */
+
+async function loadOverview() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/overview?' + params.toString());
+    renderOverview(data);
+  } catch (e) {
+    renderOverview({});
+  }
+}
+
+function renderOverview(d) {
+  document.getElementById('ov-accounts').textContent = fmt(d.account_count || 0);
+  document.getElementById('ov-videos').textContent = fmt(d.video_count || 0);
+  document.getElementById('ov-views').textContent = fmt(d.total_views || 0);
+  document.getElementById('ov-engagement').textContent = fmt(d.total_engagement || 0);
+  document.getElementById('ov-rate').textContent = pct(d.engagement_rate || 0);
+}
+
+/* ---------------- 看板二：按发布时间筛选 ---------------- */
+
+function setPublishQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('pub-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('pub-date-to').value = to.toISOString().slice(0, 10);
+  loadPublishRange();
+}
+
+function clearPublishRange() {
+  document.getElementById('pub-date-from').value = '';
+  document.getElementById('pub-date-to').value = '';
+  loadPublishRange();
+}
+
+async function loadPublishRange() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const df = document.getElementById('pub-date-from').value;
+    const dt = document.getElementById('pub-date-to').value;
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/publish-range?' + params.toString());
+    document.getElementById('pub-date-from').value = data.date_from || '';
+    document.getElementById('pub-date-to').value = data.date_to || '';
+    renderPublishRange(data);
+  } catch (e) {
+    renderPublishRange({ summary: {}, daily: [] });
+  }
+}
+
+function renderPublishRange(data) {
+  const s = data.summary || {};
+  document.getElementById('pub-videos').textContent = fmt(s.video_count || 0);
+  document.getElementById('pub-views').textContent = fmt(s.total_views || 0);
+  document.getElementById('pub-engagement').textContent = fmt(s.total_engagement || 0);
+  document.getElementById('pub-rate').textContent = pct(s.engagement_rate || 0);
+
+  const daily = data.daily || [];
+  const wrap = document.getElementById('pub-chart-wrap');
+  if (data.date_from === data.date_to || daily.length < 2) {
+    wrap.style.display = 'none';
+    if (pubChartInstance) { pubChartInstance.destroy(); pubChartInstance = null; }
+    return;
+  }
+  wrap.style.display = 'block';
+  const ctx = document.getElementById('pubChart').getContext('2d');
+  if (pubChartInstance) pubChartInstance.destroy();
+  pubChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => d.date),
+      datasets: [
+        { label: '播放量', data: daily.map(d => d.views), borderColor: '#4c8dff', backgroundColor: 'rgba(76,141,255,.14)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+        { label: '互动量', data: daily.map(d => d.engagement), borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,.12)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
+        { label: '视频条数', data: daily.map(d => d.video_count), borderColor: '#b794f6', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y2', hidden: true },
+        { label: '互动率', data: daily.map(d => d.engagement_rate), borderColor: '#f6ad55', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y3', hidden: true },
+      ],
+    },
+    options: chartOptions({ y3IsPercent: true }),
+  });
+}
+
+/* ---------------- 看板三：每日快照增量 ---------------- */
+
+function setDeltaQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('delta-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('delta-date-to').value = to.toISOString().slice(0, 10);
+  loadSnapshotDelta();
+}
+
+function clearDeltaRange() {
+  document.getElementById('delta-date-from').value = '';
+  document.getElementById('delta-date-to').value = '';
+  loadSnapshotDelta();
+}
+
+async function loadSnapshotDelta() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const df = document.getElementById('delta-date-from').value;
+    const dt = document.getElementById('delta-date-to').value;
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/snapshot-delta-range?' + params.toString());
+    document.getElementById('delta-date-from').value = data.date_from || '';
+    document.getElementById('delta-date-to').value = data.date_to || '';
+    renderSnapshotDelta(data);
+  } catch (e) {
+    renderSnapshotDelta({});
+  }
+}
+
+function renderSnapshotDelta(d) {
+  document.getElementById('delta-new-videos').textContent = fmt(d.new_video_count || 0);
+  document.getElementById('delta-views').innerHTML = fmtDelta(d.views_delta);
+  document.getElementById('delta-engagement').innerHTML = fmtDelta(d.engagement_delta);
+  document.getElementById('delta-rate-change').innerHTML = fmtRateChangePct(d.engagement_rate_change_pct);
+
+  const hintEl = document.getElementById('delta-range-hint');
+  if (d.date_from_actual && (d.date_from_actual !== d.date_from || d.date_to_actual !== d.date_to)) {
+    hintEl.textContent = `暂无该日精确快照，实际对比：${d.date_from_actual} → ${d.date_to_actual}`;
+    hintEl.style.display = 'block';
+  } else {
+    hintEl.style.display = 'none';
+  }
+
+  const daily = d.daily || [];
+  const wrap = document.getElementById('delta-chart-wrap');
+  if (daily.length < 2) {
+    wrap.style.display = 'none';
+    if (deltaChartInstance) { deltaChartInstance.destroy(); deltaChartInstance = null; }
+    return;
+  }
+  wrap.style.display = 'block';
+  const ctx = document.getElementById('deltaChart').getContext('2d');
+  if (deltaChartInstance) deltaChartInstance.destroy();
+  deltaChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(x => x.date),
+      datasets: [
+        { label: '新增播放量', data: daily.map(x => x.views_delta), borderColor: '#4c8dff', backgroundColor: 'rgba(76,141,255,.14)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+        { label: '新增互动量', data: daily.map(x => x.engagement_delta), borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,.12)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
+        { label: '新增视频数', data: daily.map(x => x.new_video_count), borderColor: '#b794f6', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y2', hidden: true },
+        { label: '互动率', data: daily.map(x => x.engagement_rate), borderColor: '#f6ad55', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y3', hidden: true },
+      ],
+    },
+    options: chartOptions({ y3IsPercent: true }),
+  });
+}
+
+function chartOptions({ y3IsPercent } = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 11 }, color: CHART_TEXT_COLOR } },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const label = ctx.dataset.label || '';
+            const raw = ctx.parsed.y;
+            if (y3IsPercent && ctx.dataset.yAxisID === 'y3') return `${label}: ${(raw * 100).toFixed(2)}%`;
+            return `${label}: ${fmt(raw)}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: { ticks: { color: CHART_TEXT_COLOR, font: { size: 11 } }, grid: { color: CHART_GRID_COLOR } },
+      y: { position: 'left', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { color: CHART_GRID_COLOR } },
+      y1: { position: 'right', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { display: false } },
+      y2: { display: false },
+      y3: { display: false },
+    },
+  };
+}
+
+/* ---------------- 视频明细 ---------------- */
 
 function setQuickRange(days) {
   const to = new Date();
@@ -306,41 +682,22 @@ function setQuickRange(days) {
   from.setDate(from.getDate() - days);
   document.getElementById('date-from').value = from.toISOString().slice(0, 10);
   document.getElementById('date-to').value = to.toISOString().slice(0, 10);
-  applyFilters();
+  applyVideoFilters();
 }
 
 function clearRange() {
   document.getElementById('date-from').value = '';
   document.getElementById('date-to').value = '';
-  applyFilters();
+  applyVideoFilters();
 }
 
-async function loadAccountsForRegions() {
-  try {
-    const data = await fetchJson('/api/tiktok-official/accounts');
-    accounts = data.accounts || [];
-    const regions = Array.from(new Set(accounts.map(a => a.region).filter(Boolean))).sort();
-    const wrap = document.getElementById('region-pills');
-    wrap.innerHTML = '<button class="pill-btn active" data-region="" onclick="setRegionFilter(\'\', this)">全部</button>'
-      + regions.map(r => `<button class="pill-btn" data-region="${esc(r)}" onclick="setRegionFilter('${esc(r)}', this)">${esc(r)}</button>`).join('');
-    if (!regions.length) {
-      wrap.innerHTML += '<span class="empty-hint">尚未给账号设置国家，去 <a class="link" href="/tiktok-official" target="_blank">账号管理页</a> 设置</span>';
-    }
-  } catch (e) {
-    // 账号列表加载失败不阻塞视频看板
-  }
-}
-
-function applyFilters() {
-  filters.date_from = document.getElementById('date-from').value || '';
-  filters.date_to = document.getElementById('date-to').value || '';
-  filters.creator = document.getElementById('creator-input').value.trim();
-  filters.keyword = document.getElementById('keyword-input').value.trim();
+function applyVideoFilters() {
+  videoFilters.date_from = document.getElementById('date-from').value || '';
+  videoFilters.date_to = document.getElementById('date-to').value || '';
+  videoFilters.creator = document.getElementById('creator-input').value.trim();
+  videoFilters.keyword = document.getElementById('keyword-input').value.trim();
   offset = 0;
   loadVideos();
-  loadTrend();
-  loadDelta();
-  loadTopToday();
 }
 
 function prevPage() {
@@ -359,31 +716,22 @@ async function loadVideos() {
   statusEl.classList.remove('err');
   statusEl.textContent = '加载中...';
   try {
-    const params = new URLSearchParams();
-    Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    const params = withAccountIds(new URLSearchParams());
+    Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
     params.set('limit', limit);
     params.set('offset', offset);
     const data = await fetchJson('/api/tiktok-official/matrix-videos?' + params.toString());
     videos = data.videos || [];
     total = data.total || 0;
     renderVideos();
-    renderSummary(data.summary || {});
+    document.getElementById('page-info').textContent = total
+      ? `第 ${Math.floor(offset / limit) + 1} 页，共 ${Math.ceil(total / limit)} 页`
+      : '无数据';
     statusEl.textContent = `共 ${fmt(total)} 条视频`;
   } catch (e) {
     statusEl.classList.add('err');
     statusEl.textContent = '加载失败：' + String(e.message || e);
   }
-}
-
-function renderSummary(summary) {
-  document.getElementById('kpi-views').textContent = fmt(summary.total_views || 0);
-  document.getElementById('kpi-engagement').textContent = fmt(summary.total_engagement || 0);
-  document.getElementById('kpi-rate').textContent = pct(summary.overall_engagement_rate || 0);
-  document.getElementById('kpi-accounts').textContent = fmt(summary.account_count || 0);
-  document.getElementById('kpi-videos').textContent = fmt(summary.video_count || 0);
-  document.getElementById('page-info').textContent = total
-    ? `第 ${Math.floor(offset / limit) + 1} 页，共 ${Math.ceil(total / limit)} 页`
-    : '无数据';
 }
 
 function accountTypeBadge(type) {
@@ -402,7 +750,7 @@ function renderVideos() {
     const hashtags = (v.hashtags || []).map(h => `<span class="hashtag-chip">#${esc(h)}</span>`).join('');
     const sparkCell = v.spark_code
       ? `<span class="spark-code" title="${esc(v.spark_code)}">${esc(v.spark_code).slice(0, 12)}...</span><div class="muted" style="font-size:10.5px;margin-top:3px;">至 ${esc(fmt(v.spark_code_end_time))}</div>`
-      : `<button class="btn btn-ghost btn-sm" onclick="generateSparkCode('${esc(v.business_id)}', '${esc(v.item_id)}', this)">⚡ 生成</button>`;
+      : `<button class="btn btn-ghost btn-sm" onclick="generateSparkCode('${esc(v.business_id)}', '${esc(v.item_id)}', this)">生成</button>`;
     const caption = fmt(v.caption);
     return `
       <tr>
@@ -471,176 +819,9 @@ function downloadExport() {
   window.open('/api/tiktok-official/matrix-export', '_blank');
 }
 
-let trendChartInstance = null;
-let trendDays = 30;
-let topMetric = 'views';
-let lastTrend = [];
-let lastDelta = null;
-
-function setTrendRange(days, btn) {
-  trendDays = days;
-  document.querySelectorAll('#trend-range-pills .pill-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  loadTrend();
-}
-
-function setTopMetric(metric, btn) {
-  topMetric = metric;
-  document.querySelectorAll('#top-metric-pills .pill-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  loadTopToday();
-}
-
-async function loadTrend() {
-  try {
-    const params = new URLSearchParams();
-    if (filters.region) params.set('region', filters.region);
-    if (filters.account_type) params.set('account_type', filters.account_type);
-    params.set('days', trendDays);
-    const data = await fetchJson('/api/tiktok-official/matrix-videos/daily-trend?' + params.toString());
-    lastTrend = data.trend || [];
-    renderTrend(lastTrend);
-  } catch (e) {
-    lastTrend = [];
-    renderTrend([]);
-  }
-  renderAnnotation();
-}
-
-async function loadDelta() {
-  try {
-    const params = new URLSearchParams();
-    if (filters.region) params.set('region', filters.region);
-    if (filters.account_type) params.set('account_type', filters.account_type);
-    lastDelta = await fetchJson('/api/tiktok-official/matrix-videos/daily-delta?' + params.toString());
-  } catch (e) {
-    lastDelta = null;
-  }
-  renderAnnotation();
-}
-
-function renderTrend(trend) {
-  const ctx = document.getElementById('trendChart').getContext('2d');
-  if (trendChartInstance) trendChartInstance.destroy();
-  const labels = trend.map(t => t.date);
-  const views = trend.map(t => t.views);
-  const engagement = trend.map(t => t.engagement);
-  trendChartInstance = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: '播放量',
-          data: views,
-          borderColor: '#2962FF',
-          backgroundColor: 'rgba(41, 98, 255, 0.12)',
-          tension: 0.4,
-          fill: true,
-          pointRadius: 2,
-          yAxisID: 'y',
-        },
-        {
-          label: '互动量',
-          data: engagement,
-          borderColor: '#7C3AED',
-          backgroundColor: 'rgba(124, 58, 237, 0.10)',
-          tension: 0.4,
-          fill: true,
-          pointRadius: 2,
-          yAxisID: 'y1',
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
-      scales: {
-        y: { position: 'left', ticks: { callback: v => fmt(v) }, grid: { color: '#f1f2f5' } },
-        y1: { position: 'right', ticks: { callback: v => fmt(v) }, grid: { display: false } },
-      },
-    },
-  });
-}
-
-function renderAnnotation() {
-  const annoEl = document.getElementById('trend-annotation');
-  if (!lastTrend.length) {
-    annoEl.style.display = 'none';
-    return;
-  }
-  // video_views 在每日快照里本身就是"截至当天"的累计值，不能跨天相加（会重复计算），
-  // 直接取最新一天的总量即可 —— 单日内已按 (business_id, item_id) 唯一约束去重
-  const latest = lastTrend[lastTrend.length - 1];
-  const totalViews = latest.views || 0;
-  const totalEngagement = latest.engagement || 0;
-  let html = `<div class="anno-group"><div class="anno-label">当前总量</div><div class="anno-value">📺 ${fmt(totalViews)}</div><div class="anno-value">💬 ${fmt(totalEngagement)}</div></div>`;
-
-  if (lastDelta && lastDelta.views_delta !== null && lastDelta.views_delta !== undefined) {
-    const vd = lastDelta.views_delta;
-    const ed = lastDelta.engagement_delta;
-    const vCls = vd > 0 ? 'delta-up' : (vd < 0 ? 'delta-down' : '');
-    const eCls = ed > 0 ? 'delta-up' : (ed < 0 ? 'delta-down' : '');
-    const vArrow = vd > 0 ? '▲' : (vd < 0 ? '▼' : '');
-    const eArrow = ed > 0 ? '▲' : (ed < 0 ? '▼' : '');
-    html += `<div class="anno-group"><div class="anno-label">较昨日</div><div class="anno-value ${vCls}">📺 ${vArrow}${fmt(Math.abs(vd))}</div><div class="anno-value ${eCls}">💬 ${eArrow}${fmt(Math.abs(ed))}</div></div>`;
-  }
-
-  annoEl.style.display = 'flex';
-  annoEl.innerHTML = html;
-}
-
-async function loadTopToday() {
-  const listEl = document.getElementById('top-today-list');
-  listEl.innerHTML = '<div class="muted" style="padding:20px 0;">加载中...</div>';
-  try {
-    const params = new URLSearchParams();
-    if (filters.region) params.set('region', filters.region);
-    if (filters.account_type) params.set('account_type', filters.account_type);
-    params.set('metric', topMetric);
-    params.set('limit', 6);
-    const data = await fetchJson('/api/tiktok-official/matrix-videos/top-recent?' + params.toString());
-    renderTopToday(data.videos || []);
-  } catch (e) {
-    listEl.innerHTML = '<div class="muted" style="padding:20px 0;">加载失败</div>';
-  }
-}
-
-function renderTopToday(items) {
-  const listEl = document.getElementById('top-today-list');
-  if (!items.length) {
-    listEl.innerHTML = '<div class="muted" style="padding:20px 0;">暂无近三日发布数据</div>';
-    return;
-  }
-  const top = Math.max(...items.map(v => topMetric === 'engagement' ? (v.engagement || 0) : (v.views || 0)), 1);
-  listEl.innerHTML = items.map((v, idx) => {
-    const value = topMetric === 'engagement' ? (v.engagement || 0) : (v.views || 0);
-    const barPct = Math.max(4, Math.round((value / top) * 100));
-    const captionStr = fmt(v.caption);
-    const title = captionStr === '-' ? '（无文案）' : captionStr.slice(0, 40) + (captionStr.length > 40 ? '…' : '');
-    const account = fmt(v.account_alias || v.account_name || v.display_name);
-    const rankCls = idx < 3 ? String(idx + 1) : 'n';
-    return `
-      <a class="top-today-row" href="${v.share_url ? esc(v.share_url) : '#'}" target="_blank" rel="noopener">
-        <div class="rank-badge rank-${rankCls}">${idx + 1}</div>
-        <div class="top-today-info">
-          <div class="top-today-title" title="${esc(captionStr)}">${esc(title)}</div>
-          <div class="top-today-meta">${esc(account)} · 📺 ${fmt(v.views)} · 💬 ${fmt(v.engagement)}</div>
-          <div class="progress-track"><div class="progress-fill" style="width:${barPct}%;"></div></div>
-        </div>
-      </a>
-    `;
-  }).join('');
-}
-
 (async function init() {
-  await loadAccountsForRegions();
-  await loadVideos();
-  loadTrend();
-  loadDelta();
-  loadTopToday();
+  await loadAccountsForPicker();
+  refreshAll();
 })();
 </script>
 </body>
