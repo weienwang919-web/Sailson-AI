@@ -97,7 +97,7 @@
     .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
     .stat-card { background: var(--card-bg); border-radius: var(--radius-md); padding: 22px 24px; overflow: hidden; }
     .stat-label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .stat-value { font-size: clamp(20px, 2.4vw, 32px); font-weight: 800; color: var(--text-primary); line-height: 1.15; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-value { font-size: 32px; font-weight: 800; color: var(--text-primary); line-height: 1.15; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .stat-up { color: var(--up); }
     .stat-down { color: var(--down); }
 
@@ -314,6 +314,27 @@ function fmt(v) {
   return String(v);
 }
 
+function fitStatValue(el) {
+  if (!el) return;
+  el.style.fontSize = '';
+  const min = 15;
+  let size = parseFloat(getComputedStyle(el).fontSize);
+  while (el.scrollWidth > el.clientWidth + 1 && size > min) {
+    size -= 1;
+    el.style.fontSize = size + 'px';
+  }
+}
+
+function fitAllStatValues() {
+  document.querySelectorAll('.stat-value').forEach(fitStatValue);
+}
+
+let statFitResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(statFitResizeTimer);
+  statFitResizeTimer = setTimeout(fitAllStatValues, 150);
+});
+
 function esc(v) {
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -509,6 +530,7 @@ function renderOverview(d) {
   document.getElementById('ov-views').textContent = fmt(d.total_views || 0);
   document.getElementById('ov-engagement').textContent = fmt(d.total_engagement || 0);
   document.getElementById('ov-rate').textContent = pct(d.engagement_rate || 0);
+  fitAllStatValues();
 }
 
 /* ---------------- 看板二：按发布时间筛选 ---------------- */
@@ -550,6 +572,7 @@ function renderPublishRange(data) {
   document.getElementById('pub-views').textContent = fmt(s.total_views || 0);
   document.getElementById('pub-engagement').textContent = fmt(s.total_engagement || 0);
   document.getElementById('pub-rate').textContent = pct(s.engagement_rate || 0);
+  fitAllStatValues();
 
   const daily = data.daily || [];
   const wrap = document.getElementById('pub-chart-wrap');
@@ -612,6 +635,7 @@ function renderSnapshotDelta(d) {
   document.getElementById('delta-views').innerHTML = fmtDelta(d.views_delta);
   document.getElementById('delta-engagement').innerHTML = fmtDelta(d.engagement_delta);
   document.getElementById('delta-rate-change').innerHTML = fmtRateChangePct(d.engagement_rate_change_pct);
+  fitAllStatValues();
 
   const hintEl = document.getElementById('delta-range-hint');
   if (d.date_from_actual && (d.date_from_actual !== d.date_from || d.date_to_actual !== d.date_to)) {
