@@ -390,10 +390,13 @@ function withAccountIds(params) {
   return params;
 }
 
+// PUBG MOBILE 官方品牌主账号，误加进了官号授权体系，不是矩阵切片账号，矩阵看板不展示该账号
+const MATRIX_EXCLUDED_BUSINESS_IDS = new Set(['-000UA9EpttJ5qzoWWRbZ7pT7qyGfmhW62C2']);
+
 async function loadAccountsForPicker() {
   try {
     const data = await fetchJson('/api/tiktok-official/accounts');
-    accountsList = data.accounts || [];
+    accountsList = (data.accounts || []).filter(a => !MATRIX_EXCLUDED_BUSINESS_IDS.has(a.business_id));
   } catch (e) {
     accountsList = [];
   }

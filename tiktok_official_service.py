@@ -1283,9 +1283,16 @@ def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, o
     }
 
 
+# PUBG MOBILE 官方品牌主账号，误加进了官号授权体系，不是矩阵切片账号，矩阵看板全系列查询需排除
+_MATRIX_EXCLUDED_BUSINESS_IDS = ["-000UA9EpttJ5qzoWWRbZ7pT7qyGfmhW62C2"]
+
+
 def _matrix_account_filters_sql(filters: dict[str, Any]) -> tuple[list[str], list[Any]]:
     where = ["1=1"]
     params: list[Any] = []
+
+    where.append("a.business_id != ALL(%s)")
+    params.append(_MATRIX_EXCLUDED_BUSINESS_IDS)
 
     region = (filters.get("region") or "").strip()
     if region:
