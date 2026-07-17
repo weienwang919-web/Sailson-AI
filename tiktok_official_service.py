@@ -387,28 +387,42 @@ def refresh_official_accounts(
         raise RuntimeError("未配置可用官号，请设置 TIKTOK_OFFICIAL_ACCOUNTS_JSON")
 
     total_videos = 0
+    ok_count = 0
+    failed: list[dict[str, Any]] = []
     for idx, account in enumerate(accounts, start=1):
         bid = account["business_id"]
         name = account.get("account_name") or bid
-        token = get_access_token(bid)
-        if not token:
-            raise RuntimeError(f"{name} 缺少 access_token，请先点击 TikTok 账号授权")
-        if progress_hook:
-            progress_hook(f"正在刷新主页数据：{name} ({idx}/{len(accounts)})")
-        profile_data, profile_meta = fetch_profile(token, bid, profile_days)
-        upsert_profile(bid, profile_data, profile_meta)
+        try:
+            token = get_access_token(bid)
+            if not token:
+                raise RuntimeError(f"{name} 缺少 access_token，请先点击 TikTok 账号授权")
+            if progress_hook:
+                progress_hook(f"正在刷新主页数据：{name} ({idx}/{len(accounts)})")
+            profile_data, profile_meta = fetch_profile(token, bid, profile_days)
+            upsert_profile(bid, profile_data, profile_meta)
 
-        if progress_hook:
-            progress_hook(f"正在刷新视频列表：{name}")
-        videos, video_meta = fetch_videos(token, bid, max_pages=max_pages)
-        for video in videos:
-            upsert_video(bid, video, video_meta)
-        total_videos += len(videos)
-        db.execute(
-            "UPDATE tiktok_official_accounts SET last_refreshed_at = NOW(), updated_at = NOW() WHERE business_id = %s",
-            (bid,),
-        )
-    return {"accounts": len(accounts), "videos": total_videos}
+            if progress_hook:
+                progress_hook(f"正在刷新视频列表：{name}")
+            videos, video_meta = fetch_videos(token, bid, max_pages=max_pages)
+            for video in videos:
+                upsert_video(bid, video, video_meta)
+            total_videos += len(videos)
+            db.execute(
+                "UPDATE tiktok_official_accounts SET last_refreshed_at = NOW(), updated_at = NOW() WHERE business_id = %s",
+                (bid,),
+            )
+            ok_count += 1
+        except Exception as exc:
+            # 单个账号失败（token 失效/接口报错等）不应连累同批次其它账号，记录下来继续处理下一个
+            logger.warning("⚠️ TikTok 官号刷新失败，跳过该账号继续：%s (%s) - %s", name, bid, exc)
+            failed.append({"business_id": bid, "account_name": name, "error": str(exc)[:300]})
+            if progress_hook:
+                progress_hook(f"跳过失败账号：{name}（{str(exc)[:60]}）")
+
+    if ok_count == 0 and failed:
+        raise RuntimeError(failed[0]["error"] if len(failed) == 1 else f"全部 {len(failed)} 个账号刷新失败，例如：{failed[0]['error']}")
+
+    return {"accounts": ok_count, "videos": total_videos, "failed": failed, "failed_count": len(failed)}
 
 
 def _chunks(items: list, size: int):
@@ -819,11 +833,20 @@ def get_access_token(business_id: str | None = None, auto_refresh: bool = True) 
         return ""
 
     expires_at = row.get("expires_at")
-    if auto_refresh and expires_at and expires_at < datetime.utcnow() + timedelta(hours=1) and row.get("refresh_token"):
-        try:
-            return refresh_account_token(row["open_id"])
-        except Exception as exc:
-            logger.warning(f"TikTok token 自动刷新失败，回退用旧 token: open_id={row.get('open_id')} err={exc}")
+    now = datetime.utcnow()
+    if auto_refresh and expires_at and expires_at < now + timedelta(hours=1) and row.get("refresh_token"):
+        last_exc = None
+        for attempt in range(2):  # 刷新接口偶发抖动，重试一次再判定
+            try:
+                return refresh_account_token(row["open_id"])
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"TikTok token 刷新失败(第{attempt + 1}次): open_id={row.get('open_id')} err={exc}")
+        if expires_at < now:
+            # 旧 token 已经确定过期，回退等于必然在后续接口调用报「access token 已吊销/不正确」，
+            # 不如直接抛出，让调用方（如批量刷新）感知到并跳过，而不是掩盖成一个更难排查的下游错误
+            raise RuntimeError(f"token 刷新失败且旧 token 已过期，需重新授权或稍后重试: {last_exc}")
+        logger.warning(f"TikTok token 刷新失败，旧 token 尚未过期，暂用旧 token 兜底: open_id={row.get('open_id')}")
     return crypto_util.decrypt(row.get("access_token")) or ""
 
 
@@ -1806,10 +1829,12 @@ def run_refresh_task(task_id: str, params: dict[str, Any], update_task_fn) -> No
             source="actual",
             detail={"business_ids": params.get("business_ids") or [], "profile_days": params.get("profile_days"), "result": result},
         )
+        failed_count = int(result.get("failed_count") or 0)
+        progress = f"完成（{failed_count} 个账号刷新失败，已跳过）" if failed_count else "完成"
         update_task_fn(
             task_id,
             status="completed",
-            progress="完成",
+            progress=progress,
             result=json.dumps(result, ensure_ascii=False),
         )
     except Exception as exc:
