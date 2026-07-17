@@ -9,22 +9,23 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     :root {
-      --bg: #0a0b0f;
-      --board-bg: #14161d;
-      --card-bg: #1c1f28;
-      --border-soft: rgba(255,255,255,0.07);
-      --text-primary: #f2f3f5;
-      --text-secondary: #9aa1ae;
-      --text-tertiary: #5b6270;
-      --accent: #4c8dff;
-      --accent-soft: rgba(76,141,255,.16);
-      --up: #34d399;
-      --down: #f87171;
+      --bg: #f2f3f7;
+      --board-bg: #ffffff;
+      --card-bg: #f5f6fa;
+      --border-soft: rgba(15,23,42,0.08);
+      --text-primary: #1d1d1f;
+      --text-secondary: #6b7280;
+      --text-tertiary: #96999f;
+      --accent: #2563eb;
+      --accent-soft: rgba(37,99,235,.10);
+      --up: #16a34a;
+      --down: #e11d48;
       --radius-lg: 28px;
       --radius-md: 18px;
       --radius-sm: 12px;
+      --shadow-card: 0 1px 2px rgba(15,23,42,.04), 0 10px 28px rgba(15,23,42,.06);
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; min-width: 0; }
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
 
     .page-header { padding: 40px 32px 8px; max-width: 1240px; margin: 0 auto; }
@@ -36,16 +37,16 @@
 
     .container { max-width: 1240px; margin: 0 auto; padding: 20px 32px 60px; }
 
-    .board { background: var(--board-bg); border-radius: var(--radius-lg); padding: 26px 28px; margin-bottom: 22px; border: 1px solid var(--border-soft); }
+    .board { background: var(--board-bg); border-radius: var(--radius-lg); padding: 26px 28px; margin-bottom: 22px; border: 1px solid var(--border-soft); box-shadow: var(--shadow-card); }
     .board-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }
     .board-head h2 { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
     .board-note { font-size: 11.5px; color: var(--text-tertiary); margin-top: -12px; margin-bottom: 16px; display: none; }
 
     /* ---- 达人筛选栏 ---- */
     .filter-bar-header { display: flex; align-items: center; gap: 14px; cursor: pointer; user-select: none; }
-    .filter-bar-title { font-size: 16px; font-weight: 700; }
-    .filter-bar-summary { font-size: 12.5px; color: var(--text-secondary); background: var(--card-bg); padding: 6px 14px; border-radius: 999px; }
-    .filter-bar-chevron { margin-left: auto; color: var(--text-tertiary); font-size: 13px; transition: transform .18s; }
+    .filter-bar-title { font-size: 16px; font-weight: 700; flex-shrink: 0; }
+    .filter-bar-summary { font-size: 12.5px; color: var(--text-secondary); background: var(--card-bg); padding: 6px 14px; border-radius: 999px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .filter-bar-chevron { margin-left: auto; color: var(--text-tertiary); font-size: 13px; transition: transform .18s; flex-shrink: 0; }
     .filter-bar-chevron.open { transform: rotate(180deg); }
     .filter-bar-body { margin-top: 22px; }
     .account-search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
@@ -57,35 +58,36 @@
 
     .account-groups { max-height: 360px; overflow: auto; margin-top: 18px; padding-right: 4px; }
     .account-group { margin-bottom: 18px; }
-    .account-group-title { font-size: 12px; font-weight: 700; color: var(--text-tertiary); margin-bottom: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 8px; transition: color .12s, background .12s; }
-    .account-group-title:hover { background: rgba(255,255,255,.04); }
+    .account-group-title { font-size: 12px; font-weight: 700; color: var(--text-tertiary); margin-bottom: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 8px; transition: color .12s, background .12s; max-width: 100%; }
+    .account-group-title span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+    .account-group-title:hover { background: rgba(15,23,42,.04); }
     .account-group-title.active { color: var(--accent); }
-    .account-group-count { font-size: 10.5px; color: var(--text-tertiary); font-weight: 500; }
+    .account-group-count { font-size: 10.5px; color: var(--text-tertiary); font-weight: 500; flex-shrink: 0; }
     .account-group-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-    .account-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 999px; background: var(--card-bg); border: 1px solid transparent; cursor: pointer; transition: all .15s; font-family: inherit; }
+    .account-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 999px; background: var(--card-bg); border: 1px solid transparent; cursor: pointer; transition: all .15s; font-family: inherit; max-width: 100%; }
     .account-chip:hover { border-color: var(--border-soft); }
-    .account-chip-avatar { width: 24px; height: 24px; border-radius: 50%; background: #2a2f3b; color: var(--text-secondary); font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .account-chip-label { font-size: 12.5px; color: #c3c8d1; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .account-chip-avatar { width: 24px; height: 24px; border-radius: 50%; background: #e5e7ee; color: var(--text-secondary); font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .account-chip-label { font-size: 12.5px; color: var(--text-primary); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .account-chip.selected { background: var(--accent-soft); border-color: var(--accent); }
     .account-chip.selected .account-chip-avatar { background: var(--accent); color: #fff; }
-    .account-chip.selected .account-chip-label { color: #dbe6ff; }
+    .account-chip.selected .account-chip-label { color: var(--accent); font-weight: 600; }
 
     label { font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 6px; font-weight: 500; }
     input, select { padding: 9px 12px; border: 1px solid var(--border-soft); border-radius: 10px; font-size: 13px; font-family: inherit; background: var(--card-bg); color: var(--text-primary); transition: border-color .15s; }
     input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
     input::placeholder { color: var(--text-tertiary); }
 
-    .btn { padding: 9px 18px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .12s, transform .05s; font-family: inherit; }
+    .btn { padding: 9px 18px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .12s, transform .05s; font-family: inherit; white-space: nowrap; }
     .btn:active { transform: translateY(1px); }
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:hover { filter: brightness(1.1); }
     .btn-secondary { background: var(--card-bg); color: var(--text-primary); border: 1px solid var(--border-soft); }
-    .btn-secondary:hover { filter: brightness(1.1); }
-    .btn:disabled { background: #2a2f3b; color: var(--text-tertiary); cursor: not-allowed; }
+    .btn-secondary:hover { filter: brightness(1.05); }
+    .btn:disabled { background: #e5e7ee; color: var(--text-tertiary); cursor: not-allowed; }
     .btn-sm { padding: 6px 13px; font-size: 11.5px; border-radius: 8px; }
     .btn-ghost { background: transparent; border: 1px solid var(--border-soft); color: var(--text-secondary); }
-    .btn-ghost:hover { background: rgba(255,255,255,.04); color: var(--text-primary); }
-    .btn-chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border-soft); background: var(--card-bg); color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all .12s; }
+    .btn-ghost:hover { background: rgba(15,23,42,.04); color: var(--text-primary); }
+    .btn-chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border-soft); background: var(--card-bg); color: var(--text-secondary); font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit; transition: all .12s; white-space: nowrap; }
     .btn-chip:hover { border-color: var(--accent); color: var(--accent); }
 
     .status { margin-top: 14px; font-size: 12.5px; color: var(--text-secondary); min-height: 18px; word-break: break-all; }
@@ -93,9 +95,9 @@
 
     /* ---- 总览 / KPI 数字卡 ---- */
     .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
-    .stat-card { background: var(--card-bg); border-radius: var(--radius-md); padding: 22px 24px; }
-    .stat-label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; font-weight: 500; }
-    .stat-value { font-size: 32px; font-weight: 800; color: var(--text-primary); line-height: 1.1; letter-spacing: -.02em; }
+    .stat-card { background: var(--card-bg); border-radius: var(--radius-md); padding: 22px 24px; overflow: hidden; }
+    .stat-label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-value { font-size: clamp(20px, 2.4vw, 32px); font-weight: 800; color: var(--text-primary); line-height: 1.15; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .stat-up { color: var(--up); }
     .stat-down { color: var(--down); }
 
@@ -117,23 +119,23 @@
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { border-bottom: 1px solid var(--border-soft); padding: 12px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
     th { background: var(--card-bg); color: var(--text-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; position: sticky; top: 0; z-index: 1; }
-    tbody tr:hover { background: rgba(255,255,255,.03); }
+    tbody tr:hover { background: rgba(15,23,42,.025); }
     .table-wrap { overflow: auto; max-height: 640px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); margin-top: 18px; }
     .muted { color: var(--text-tertiary); }
     .link { color: var(--accent); text-decoration: none; font-weight: 500; }
     .link:hover { text-decoration: underline; }
 
-    .tag-input { border: 1px solid transparent; background: transparent; padding: 5px 7px; font-size: 12.5px; width: 120px; border-radius: 6px; font-family: inherit; color: var(--text-primary); }
+    .tag-input { border: 1px solid transparent; background: transparent; padding: 5px 7px; font-size: 12.5px; width: 120px; border-radius: 6px; font-family: inherit; color: var(--text-primary); text-overflow: ellipsis; }
     .tag-input:hover { border-color: var(--border-soft); background: var(--card-bg); }
     .tag-input:focus { border-color: var(--accent); background: var(--card-bg); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
 
-    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
     .badge-region { background: var(--card-bg); color: var(--text-secondary); }
-    .badge-kol { background: rgba(124,58,237,.18); color: #b794f6; }
-    .badge-campaign { background: rgba(217,119,6,.18); color: #f6ad55; }
+    .badge-kol { background: rgba(124,58,237,.12); color: #7c3aed; }
+    .badge-campaign { background: rgba(217,119,6,.12); color: #b45309; }
 
     .hashtags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 200px; white-space: normal; }
-    .hashtag-chip { background: var(--accent-soft); color: #8fb8ff; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+    .hashtag-chip { background: var(--accent-soft); color: #1d4ed8; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; overflow-wrap: anywhere; }
 
     .caption-cell { max-width: 240px; white-space: normal; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; cursor: default; color: var(--text-secondary); }
 
@@ -142,7 +144,7 @@
     .pagination { display: flex; gap: 12px; align-items: center; margin-top: 18px; font-size: 12.5px; color: var(--text-secondary); }
 
     ::-webkit-scrollbar { width: 9px; height: 9px; }
-    ::-webkit-scrollbar-thumb { background: #2a2f3b; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 5px; }
   </style>
 </head>
 <body>
@@ -303,8 +305,8 @@ let debounceTimer = null;
 let pubChartInstance = null;
 let deltaChartInstance = null;
 
-const CHART_TEXT_COLOR = '#9aa1ae';
-const CHART_GRID_COLOR = 'rgba(255,255,255,0.06)';
+const CHART_TEXT_COLOR = '#6b7280';
+const CHART_GRID_COLOR = 'rgba(15,23,42,0.06)';
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
@@ -474,7 +476,7 @@ function renderAccountPicker() {
     }).join('');
     return `
       <div class="account-group">
-        <div class="account-group-title ${allSelected ? 'active' : ''}" onclick="toggleRegionGroup('${esc(region)}')">${esc(region)} <span class="account-group-count">${list.length}</span></div>
+        <div class="account-group-title ${allSelected ? 'active' : ''}" onclick="toggleRegionGroup('${esc(region)}')"><span>${esc(region)}</span><span class="account-group-count">${list.length}</span></div>
         <div class="account-group-chips">${chips}</div>
       </div>
     `;
@@ -564,13 +566,11 @@ function renderPublishRange(data) {
     data: {
       labels: daily.map(d => d.date),
       datasets: [
-        { label: '播放量', data: daily.map(d => d.views), borderColor: '#4c8dff', backgroundColor: 'rgba(76,141,255,.14)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
-        { label: '互动量', data: daily.map(d => d.engagement), borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,.12)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
-        { label: '视频条数', data: daily.map(d => d.video_count), borderColor: '#b794f6', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y2', hidden: true },
-        { label: '互动率', data: daily.map(d => d.engagement_rate), borderColor: '#f6ad55', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y3', hidden: true },
+        { label: '播放量', data: daily.map(d => d.views), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+        { label: '互动量', data: daily.map(d => d.engagement), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
       ],
     },
-    options: chartOptions({ y3IsPercent: true }),
+    options: chartOptions(),
   });
 }
 
@@ -636,17 +636,15 @@ function renderSnapshotDelta(d) {
     data: {
       labels: daily.map(x => x.date),
       datasets: [
-        { label: '新增播放量', data: daily.map(x => x.views_delta), borderColor: '#4c8dff', backgroundColor: 'rgba(76,141,255,.14)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
-        { label: '新增互动量', data: daily.map(x => x.engagement_delta), borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,.12)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
-        { label: '新增视频数', data: daily.map(x => x.new_video_count), borderColor: '#b794f6', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y2', hidden: true },
-        { label: '互动率', data: daily.map(x => x.engagement_rate), borderColor: '#f6ad55', backgroundColor: 'transparent', tension: .4, fill: false, pointRadius: 2, yAxisID: 'y3', hidden: true },
+        { label: '新增播放量', data: daily.map(x => x.views_delta), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+        { label: '新增互动量', data: daily.map(x => x.engagement_delta), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
       ],
     },
-    options: chartOptions({ y3IsPercent: true }),
+    options: chartOptions(),
   });
 }
 
-function chartOptions({ y3IsPercent } = {}) {
+function chartOptions() {
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -655,12 +653,7 @@ function chartOptions({ y3IsPercent } = {}) {
       legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 11 }, color: CHART_TEXT_COLOR } },
       tooltip: {
         callbacks: {
-          label: (ctx) => {
-            const label = ctx.dataset.label || '';
-            const raw = ctx.parsed.y;
-            if (y3IsPercent && ctx.dataset.yAxisID === 'y3') return `${label}: ${(raw * 100).toFixed(2)}%`;
-            return `${label}: ${fmt(raw)}`;
-          },
+          label: (ctx) => `${ctx.dataset.label || ''}: ${fmt(ctx.parsed.y)}`,
         },
       },
     },
@@ -668,8 +661,6 @@ function chartOptions({ y3IsPercent } = {}) {
       x: { ticks: { color: CHART_TEXT_COLOR, font: { size: 11 } }, grid: { color: CHART_GRID_COLOR } },
       y: { position: 'left', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { color: CHART_GRID_COLOR } },
       y1: { position: 'right', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { display: false } },
-      y2: { display: false },
-      y3: { display: false },
     },
   };
 }
