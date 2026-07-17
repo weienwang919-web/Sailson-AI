@@ -9622,9 +9622,24 @@ def api_tiktok_official_matrix_daily_trend():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/tiktok-official/matrix-videos/top-today')
+@app.route('/api/tiktok-official/matrix-videos/daily-delta')
 @feature_required('matrix_video_dashboard')
-def api_tiktok_official_matrix_top_today():
+def api_tiktok_official_matrix_daily_delta():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+        }
+        result = tiktok_official_service.matrix_daily_delta(filters=filters)
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix daily delta failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/top-recent')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_top_recent():
     try:
         filters = {
             'region': request.args.get('region') or '',
@@ -9635,14 +9650,16 @@ def api_tiktok_official_matrix_top_today():
             metric = 'views'
         limit = int(request.args.get('limit') or 6)
         limit = max(1, min(limit, 50))
-        result = tiktok_official_service.matrix_top_today(filters=filters, metric=metric, limit=limit)
+        days = int(request.args.get('days') or 3)
+        days = max(1, min(days, 14))
+        result = tiktok_official_service.matrix_top_recent(filters=filters, metric=metric, limit=limit, days=days)
         return jsonify({
             'status': 'success',
-            'date': result['date'],
+            'days': result['days'],
             'videos': _json_safe_rows(result['videos']),
         })
     except Exception as e:
-        logger.error(f"tiktok_official matrix top-today failed: {e}")
+        logger.error(f"tiktok_official matrix top-recent failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

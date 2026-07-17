@@ -1320,51 +1320,100 @@ def matrix_daily_trend(filters: dict[str, Any] | None = None, days: int = 30) ->
     ]
 
 
-def matrix_top_today(filters: dict[str, Any] | None = None, metric: str = "views", limit: int = 6) -> dict[str, Any]:
+def matrix_daily_delta(filters: dict[str, Any] | None = None) -> dict[str, Any]:
     filters = filters or {}
     where, params = _matrix_account_filters_sql(filters)
     where_sql = " AND ".join(where)
 
-    latest_row = db.query_one(
+    dates = db.query_all(
         f"""
-        SELECT MAX(d.snapshot_date) AS latest_date
+        SELECT DISTINCT d.snapshot_date
         FROM tiktok_official_video_daily_snapshots d
         LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
         WHERE {where_sql}
+        ORDER BY d.snapshot_date DESC
+        LIMIT 2
         """,
         tuple(params),
-    ) or {}
-    latest_date = latest_row.get("latest_date")
-    if not latest_date:
-        return {"date": None, "videos": []}
+    ) or []
+
+    empty = {
+        "today": None, "yesterday": None,
+        "views_today": None, "engagement_today": None,
+        "views_delta": None, "engagement_delta": None,
+    }
+    if not dates:
+        return empty
+
+    def _totals(snapshot_date):
+        row = db.query_one(
+            f"""
+            SELECT
+                COALESCE(SUM(d.video_views), 0) AS views,
+                COALESCE(SUM(d.likes + d.comments + d.shares + d.favorites), 0) AS engagement
+            FROM tiktok_official_video_daily_snapshots d
+            LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+            WHERE {where_sql} AND d.snapshot_date = %s
+            """,
+            tuple(params + [snapshot_date]),
+        ) or {}
+        return int(row.get("views") or 0), int(row.get("engagement") or 0)
+
+    today_date = dates[0]["snapshot_date"]
+    views_today, engagement_today = _totals(today_date)
+    result = {
+        "today": today_date.isoformat() if hasattr(today_date, "isoformat") else today_date,
+        "yesterday": None,
+        "views_today": views_today,
+        "engagement_today": engagement_today,
+        "views_delta": None,
+        "engagement_delta": None,
+    }
+    if len(dates) < 2:
+        return result
+
+    yesterday_date = dates[1]["snapshot_date"]
+    views_yesterday, engagement_yesterday = _totals(yesterday_date)
+    result["yesterday"] = yesterday_date.isoformat() if hasattr(yesterday_date, "isoformat") else yesterday_date
+    result["views_delta"] = views_today - views_yesterday
+    result["engagement_delta"] = engagement_today - engagement_yesterday
+    return result
+
+
+def matrix_top_recent(filters: dict[str, Any] | None = None, metric: str = "views", limit: int = 6, days: int = 3) -> dict[str, Any]:
+    filters = filters or {}
+    where, params = _matrix_account_filters_sql(filters)
+    where.append("v.create_time >= NOW() - (%s || ' days')::interval")
+    params.append(days)
+    where_sql = " AND ".join(where)
 
     order_col = "engagement" if metric == "engagement" else "views"
     rows = db.query_all(
         f"""
         SELECT
-            d.business_id, d.item_id, d.snapshot_date,
-            d.video_views AS views,
-            (d.likes + d.comments + d.shares + d.favorites) AS engagement,
+            v.business_id, v.item_id, v.create_time,
+            v.video_views AS views,
+            (v.likes + v.comments + v.shares + v.favorites) AS engagement,
             v.caption, v.thumbnail_url, v.share_url,
             a.account_alias, a.account_name, a.display_name, a.region, a.account_type
-        FROM tiktok_official_video_daily_snapshots d
-        LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
-        LEFT JOIN tiktok_official_video_snapshots v
-            ON v.business_id = d.business_id AND v.item_id = d.item_id
-        WHERE {where_sql} AND d.snapshot_date = %s
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql}
         ORDER BY {order_col} DESC NULLS LAST
         LIMIT %s
         """,
-        tuple(params + [latest_date, limit]),
+        tuple(params + [limit]),
     ) or []
 
     videos = []
     for row in rows:
         views = int(row.get("views") or 0)
         engagement = int(row.get("engagement") or 0)
+        create_time = row.get("create_time")
         videos.append({
             "business_id": row.get("business_id"),
             "item_id": row.get("item_id"),
+            "create_time": create_time.isoformat() if hasattr(create_time, "isoformat") else create_time,
             "views": views,
             "engagement": engagement,
             "caption": row.get("caption"),
@@ -1375,10 +1424,7 @@ def matrix_top_today(filters: dict[str, Any] | None = None, metric: str = "views
             "display_name": row.get("display_name"),
         })
 
-    return {
-        "date": latest_date.isoformat() if hasattr(latest_date, "isoformat") else latest_date,
-        "videos": videos,
-    }
+    return {"days": days, "videos": videos}
 
 
 def build_matrix_export(export_date) -> bytes:
