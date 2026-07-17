@@ -105,6 +105,11 @@ services:
         value: "crawlerbros/facebook-comments-scraper,premiumscraper/facebook-comments-scraper,memo23/facebook-comments-scraper,thedoor/facebook-comment-scraper"
       - key: APIFY_FB_COOKIE_FALLBACK_ACTORS
         value: "dz_omar/facebook-comment-scraper"
+      # TikTok Business API（官号监控）——实际执行刷新/同步的是本 worker 服务，必须和 web 服务配成同一份值
+      - key: TIKTOK_APP_ID
+        sync: false
+      - key: TIKTOK_APP_SECRET
+        sync: false
       - key: TIKTOK_BUSINESS_ACCESS_TOKEN
         sync: false
       - key: TIKTOK_OFFICIAL_ACCOUNTS_JSON
