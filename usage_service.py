@@ -15,7 +15,7 @@ import database as db
 logger = logging.getLogger(__name__)
 
 USD_TO_CNY = Decimal(str(os.environ.get("USD_TO_CNY", "7.2")))
-CRAWLER_USD_PER_1000 = Decimal(str(os.environ.get("CRAWLER_USD_PER_1000", "3")))
+CRAWLER_USD_PER_1000 = Decimal(str(os.environ.get("CRAWLER_USD_PER_1000", "4.5")))
 AI_CNY_PER_1000 = Decimal(str(os.environ.get("AI_CNY_PER_1000", "0.008")))
 
 

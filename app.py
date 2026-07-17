@@ -319,25 +319,10 @@ if not _IS_WORKER:
     )
 
     # 注册定时任务
-    # FB 评论抓取：每 6 小时执行一次（0, 6, 12, 18 点）
-    scheduler.add_job(
-        func=tasks.scrape_fb_comments,
-        trigger='cron',
-        hour='0,6,12,18',
-        minute=0,
-        id='fb_scrape_job',
-        replace_existing=True
-    )
-
-    # TikTok 热点刷新：每天凌晨 2 点执行
-    scheduler.add_job(
-        func=tasks.refresh_tiktok_hotspots,
-        trigger='cron',
-        hour=2,
-        minute=0,
-        id='tiktok_hotspot_job',
-        replace_existing=True
-    )
+    # FB 评论抓取 / TikTok 热点刷新 / 全平台话题监控每日任务：应用户要求停用
+    # （未接入 usage_events 计费统计，且跟 Apify 账单对不上账），不再注册。
+    # 底下 scheduler.start()/resume() 之后会额外清理 jobstore 里可能残留的旧任务，
+    # 防止持久化的 jobs.sqlite 里存量条目继续按原计划触发。
 
     # TikTok 官号矩阵每日批量拉取：每天凌晨 3:30 执行，按账号分批入队
     scheduler.add_job(
@@ -346,16 +331,6 @@ if not _IS_WORKER:
         hour=3,
         minute=30,
         id='tiktok_official_daily_sync_job',
-        replace_existing=True
-    )
-
-    # 全平台话题监控每日发现+抓取：每天凌晨 4:00 执行，按话题逐条入队
-    scheduler.add_job(
-        func=run_scheduled_topic_monitor_daily,
-        trigger='cron',
-        hour=4,
-        minute=0,
-        id='topic_monitor_daily_job',
         replace_existing=True
     )
 
@@ -399,6 +374,15 @@ if not _IS_WORKER:
 
         scheduler.start()
         logger.info("✅ APScheduler 已启动，定时任务已注册")
+
+    # 清理曾经注册过、现已停用的定时任务，避免持久化 jobstore（jobs.sqlite）里
+    # 残留的旧条目继续按原计划触发（应用户要求停用：跟 Apify 账单对不上账）
+    for disabled_job_id in ('fb_scrape_job', 'tiktok_hotspot_job', 'topic_monitor_daily_job'):
+        try:
+            scheduler.remove_job(disabled_job_id)
+        except Exception:
+            pass
+    logger.warning("⛔ fb_scrape_job / tiktok_hotspot_job / topic_monitor_daily_job 定时任务已停用（应用户要求）")
 else:
     scheduler = None
     logger.info("⏭️ Worker 模式，跳过 APScheduler 初始化")
@@ -1240,11 +1224,12 @@ def call_veo_api(prompt):
 def log_usage(user_id, username, department, function_type, comments_count, ai_tokens, task_id=None, record_id=None):
     """记录使用情况和成本。
 
-    兼容旧 usage_logs，同时写入 usage_events。爬虫费用统一按每 1000 条 3 美金计算。
+    兼容旧 usage_logs，同时写入 usage_events。爬虫费用按 usage_service.CRAWLER_USD_PER_1000 统一计算
+    （在按行数计价的基础上乘了 1.5 倍保守系数，因为 Apify 实际计费单位不一定等于返回行数）。
     """
     try:
         ai_cost = ai_tokens * 0.008 / 1000  # 通义千问估算价：人民币/千 token
-        apify_cost_usd = comments_count * 3.00 / 1000
+        apify_cost_usd = comments_count * float(usage_service.CRAWLER_USD_PER_1000) / 1000
         apify_cost = apify_cost_usd * USD_TO_CNY
         total_cost = ai_cost + apify_cost
 
@@ -1267,7 +1252,7 @@ def log_usage(user_id, username, department, function_type, comments_count, ai_t
             crawler_items=comments_count,
             ai_tokens=ai_tokens,
             source='actual',
-            detail={'legacy_usage_logs': True, 'pricing_note': 'crawler USD 3 / 1000 rows'},
+            detail={'legacy_usage_logs': True, 'pricing_note': f'crawler USD {usage_service.CRAWLER_USD_PER_1000} / 1000 rows'},
         )
 
         logger.info(f"💰 成本记录: AI={ai_cost:.4f}元 + 爬虫=${apify_cost_usd:.4f}/{apify_cost:.4f}元 = 总计{total_cost:.4f}元")
