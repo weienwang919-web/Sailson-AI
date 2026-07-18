@@ -335,6 +335,10 @@ window.addEventListener('resize', () => {
   statFitResizeTimer = setTimeout(fitAllStatValues, 150);
 });
 
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(fitAllStatValues);
+}
+
 function esc(v) {
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
