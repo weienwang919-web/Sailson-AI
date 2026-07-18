@@ -1534,20 +1534,35 @@ def matrix_snapshot_delta_range(
     }
 
 
+_INVALID_SHEET_TITLE_CHARS = re.compile(r'[\[\]\\/*?:]')
+
+
+def _safe_sheet_title(base: str, used_titles: set[str]) -> str:
+    """Excel sheet 名不能含 []\\/*?: 、不能超31字符、不能重复，这里统一清洗+去重。"""
+    title = _INVALID_SHEET_TITLE_CHARS.sub('', str(base or '未命名')).strip()[:31] or '未命名'
+    original = title
+    n = 2
+    while title in used_titles:
+        suffix = f'({n})'
+        title = original[: 31 - len(suffix)] + suffix
+        n += 1
+    used_titles.add(title)
+    return title
+
+
 def build_matrix_export(export_date) -> bytes:
     rows = db.query_all(
         """
         SELECT
             v.*,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
-            d.video_views AS snapshot_views, d.snapshot_date
-        FROM tiktok_official_video_daily_snapshots d
-        JOIN tiktok_official_video_snapshots v ON v.business_id = d.business_id AND v.item_id = d.item_id
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
+        FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
-        WHERE d.snapshot_date = %s
-        ORDER BY a.region NULLS LAST, v.create_time DESC NULLS LAST
+        WHERE v.create_time::date = %s
+          AND v.business_id != ALL(%s)
+        ORDER BY COALESCE(a.account_alias, a.account_name, a.display_name, v.business_id), v.create_time DESC NULLS LAST
         """,
-        (export_date,),
+        (export_date, _MATRIX_EXCLUDED_BUSINESS_IDS),
     ) or []
 
     next_day_map: dict[tuple, int | None] = {}
@@ -1576,16 +1591,17 @@ def build_matrix_export(export_date) -> bytes:
 
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        region = row.get("region") or "未分类"
-        groups.setdefault(region, []).append(row)
+        account_name = row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id") or "未分类"
+        groups.setdefault(account_name, []).append(row)
 
     wb = Workbook()
     wb.remove(wb.active)
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True)
 
-    for region, group_rows in groups.items():
-        ws = wb.create_sheet(title=str(region)[:31] or "未分类")
+    used_titles: set[str] = set()
+    for account_name, group_rows in groups.items():
+        ws = wb.create_sheet(title=_safe_sheet_title(account_name, used_titles))
         ws.append(headers)
         for cell in ws[1]:
             cell.fill = header_fill
