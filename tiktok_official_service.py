@@ -15,7 +15,7 @@ import requests
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from openpyxl import Workbook
 from openpyxl.chart import LineChart, Reference
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 
 import crypto_util
 import database as db
@@ -1534,22 +1534,6 @@ def matrix_snapshot_delta_range(
     }
 
 
-_INVALID_SHEET_TITLE_CHARS = re.compile(r'[\[\]\\/*?:]')
-
-
-def _safe_sheet_title(base: str, used_titles: set[str]) -> str:
-    """Excel sheet 名不能含 []\\/*?: 、不能超31字符、不能重复，这里统一清洗+去重。"""
-    title = _INVALID_SHEET_TITLE_CHARS.sub('', str(base or '未命名')).strip()[:31] or '未命名'
-    original = title
-    n = 2
-    while title in used_titles:
-        suffix = f'({n})'
-        title = original[: 31 - len(suffix)] + suffix
-        n += 1
-    used_titles.add(title)
-    return title
-
-
 def build_matrix_export(export_date) -> bytes:
     rows = db.query_all(
         """
@@ -1588,49 +1572,60 @@ def build_matrix_export(export_date) -> bytes:
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
         "账号ID", "视频ID", "播放量（最新）", "次日播放量", "互动率（最新）",
     ]
-
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        account_name = row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id") or "未分类"
-        groups.setdefault(account_name, []).append(row)
+    ACCOUNT_COL = 4  # "所属矩阵账号"
 
     wb = Workbook()
-    wb.remove(wb.active)
+    ws = wb.active
+    ws.title = "矩阵号视频"
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True)
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
 
-    used_titles: set[str] = set()
-    for account_name, group_rows in groups.items():
-        ws = wb.create_sheet(title=_safe_sheet_title(account_name, used_titles))
-        ws.append(headers)
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-        for idx, row in enumerate(group_rows, start=1):
-            views = int(row.get("video_views") or 0)
-            engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
-            engagement_rate = (engagement / views) if views else 0.0
-            ws.append(
-                [
-                    idx,
-                    row.get("task_no") or "",
-                    row.get("share_url") or "",
-                    row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id"),
-                    row.get("region") or "",
-                    row.get("account_type") or "",
-                    row.get("kol_campaign") or "",
-                    row.get("create_time"),
-                    row.get("caption") or "",
-                    " ".join(_extract_hashtags(row.get("caption"))),
-                    row.get("spark_code") or "",
-                    row.get("business_id"),
-                    row.get("item_id"),
-                    views,
-                    next_day_map.get((row.get("business_id"), row.get("item_id"))),
-                    round(engagement_rate, 4),
-                ]
-            )
-        ws.freeze_panes = "A2"
+    merge_start_row = None
+    prev_account = object()
+    for idx, row in enumerate(rows, start=1):
+        account_name = row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id")
+        views = int(row.get("video_views") or 0)
+        engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
+        engagement_rate = (engagement / views) if views else 0.0
+        ws.append(
+            [
+                idx,
+                row.get("task_no") or "",
+                row.get("share_url") or "",
+                account_name,
+                row.get("region") or "",
+                row.get("account_type") or "",
+                row.get("kol_campaign") or "",
+                row.get("create_time"),
+                row.get("caption") or "",
+                " ".join(_extract_hashtags(row.get("caption"))),
+                row.get("spark_code") or "",
+                row.get("business_id"),
+                row.get("item_id"),
+                views,
+                next_day_map.get((row.get("business_id"), row.get("item_id"))),
+                round(engagement_rate, 4),
+            ]
+        )
+        excel_row = idx + 1  # 第1行是表头
+
+        if account_name != prev_account:
+            if merge_start_row is not None and excel_row - 1 > merge_start_row:
+                ws.merge_cells(start_row=merge_start_row, end_row=excel_row - 1, start_column=ACCOUNT_COL, end_column=ACCOUNT_COL)
+                ws.cell(row=merge_start_row, column=ACCOUNT_COL).alignment = Alignment(vertical="center")
+            merge_start_row = excel_row
+            prev_account = account_name
+
+    last_row = len(rows) + 1
+    if merge_start_row is not None and last_row > merge_start_row:
+        ws.merge_cells(start_row=merge_start_row, end_row=last_row, start_column=ACCOUNT_COL, end_column=ACCOUNT_COL)
+        ws.cell(row=merge_start_row, column=ACCOUNT_COL).alignment = Alignment(vertical="center")
+
+    ws.freeze_panes = "A2"
 
     buf = BytesIO()
     wb.save(buf)
