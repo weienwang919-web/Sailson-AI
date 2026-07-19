@@ -27,6 +27,7 @@ import json
 import base64
 import logging
 import signal
+from datetime import date, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from dotenv import load_dotenv
@@ -67,8 +68,51 @@ from app import (
     process_analysis_task,
     process_competitor_task,
     update_task,
+    run_scheduled_tiktok_official_daily_sync,
 )
 logger.info("✅ app 模块加载完成")
+
+# ============================================
+# TikTok 官号矩阵每日同步：自检触发
+# 原来挂在 web 服务的 APScheduler cron（3:30am）上，但 web 服务是 Render
+# 免费套餐，空闲 15 分钟会休眠，经常错过这个时间点且没有任何报错日志。
+# worker 进程是常驻的 starter 套餐，改为在主循环里自检：北京时间进入
+# 3:30 之后，查一下今天（UTC 日期，跟 enqueue_daily_sync 的 session_id
+# 用同一个日期基准）是否已经有过批次，没有就补跑一次。即使这次检查被
+# 跳过或 worker 短暂重启，下一次轮询几秒后还会再检查，不会像 cron 那样
+# 错过窗口就要等到第二天。
+# ============================================
+_last_daily_sync_check_key = None
+
+
+def _maybe_trigger_tiktok_daily_sync():
+    global _last_daily_sync_check_key
+    now_bj = datetime.utcnow() + timedelta(hours=8)
+    if now_bj.hour != 3 or now_bj.minute < 30:
+        _last_daily_sync_check_key = None
+        return
+    # 3:30-3:59 这个窗口内每分钟最多查一次库，避免每 3 秒轮询都打一次 DB
+    check_key = now_bj.strftime('%Y-%m-%d %H:%M')
+    if check_key == _last_daily_sync_check_key:
+        return
+    _last_daily_sync_check_key = check_key
+    session_id = f"tiktok_official_daily_sync_{date.today().isoformat()}"
+    try:
+        row = db.query_one(
+            "SELECT 1 FROM task_queue WHERE function_type = 'tiktok_official_refresh' "
+            "AND task_params::json->>'session_id' = %s LIMIT 1",
+            (session_id,),
+        )
+        if row:
+            return
+    except Exception as e:
+        logger.warning(f"⚠️ 检查 TikTok 官号每日同步是否已触发失败: {e}")
+        return
+    logger.info(f"⏰ Worker 触发 TikTok 官号矩阵每日同步: session_id={session_id}")
+    try:
+        run_scheduled_tiktok_official_daily_sync()
+    except Exception as e:
+        logger.error(f"❌ Worker 触发 TikTok 官号矩阵每日同步失败: {e}")
 
 # ============================================
 # 优雅退出
@@ -617,6 +661,11 @@ def main():
                     future.result()
                 except Exception as exc:
                     logger.error(f"❌ 并发任务 Future 异常: {exc}")
+
+            try:
+                _maybe_trigger_tiktok_daily_sync()
+            except Exception as exc:
+                logger.error(f"❌ TikTok 官号每日同步自检异常: {exc}")
 
             claimed_any = False
             while len(futures) < WORKER_CONCURRENCY:

@@ -324,15 +324,9 @@ if not _IS_WORKER:
     # 底下 scheduler.start()/resume() 之后会额外清理 jobstore 里可能残留的旧任务，
     # 防止持久化的 jobs.sqlite 里存量条目继续按原计划触发。
 
-    # TikTok 官号矩阵每日批量拉取：每天凌晨 3:30 执行，按账号分批入队
-    scheduler.add_job(
-        func=run_scheduled_tiktok_official_daily_sync,
-        trigger='cron',
-        hour=3,
-        minute=30,
-        id='tiktok_official_daily_sync_job',
-        replace_existing=True
-    )
+    # TikTok 官号矩阵每日批量拉取：不在这里注册。web 服务是 Render 免费套餐，
+    # 空闲 15 分钟会休眠，导致凌晨 3:30 这个时间点经常错过（且没有任何报错日志）。
+    # 已改为在常驻的 worker 进程（plan: starter，不休眠）里自检触发，见 worker.py。
 
     # PUBGM 矩阵号视频监控看板每日报表：每天 11:00 生成前一日各国视频数据并缓存
     scheduler.add_job(
@@ -377,12 +371,13 @@ if not _IS_WORKER:
 
     # 清理曾经注册过、现已停用的定时任务，避免持久化 jobstore（jobs.sqlite）里
     # 残留的旧条目继续按原计划触发（应用户要求停用：跟 Apify 账单对不上账）
-    for disabled_job_id in ('fb_scrape_job', 'tiktok_hotspot_job', 'topic_monitor_daily_job'):
+    for disabled_job_id in ('fb_scrape_job', 'tiktok_hotspot_job', 'topic_monitor_daily_job', 'tiktok_official_daily_sync_job'):
         try:
             scheduler.remove_job(disabled_job_id)
         except Exception:
             pass
     logger.warning("⛔ fb_scrape_job / tiktok_hotspot_job / topic_monitor_daily_job 定时任务已停用（应用户要求）")
+    logger.info("ℹ️ tiktok_official_daily_sync_job 已从 web 调度器移除，改由 worker 进程自检触发")
 else:
     scheduler = None
     logger.info("⏭️ Worker 模式，跳过 APScheduler 初始化")
