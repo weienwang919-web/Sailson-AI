@@ -286,6 +286,39 @@ def ensure_schema() -> None:
         """
     )
 
+    # 发布后3/24/48/72小时时间点快照：每条新视频入库时生成4行占位，worker 到期后回填
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_official_video_publish_window_snapshots (
+            id SERIAL PRIMARY KEY,
+            business_id VARCHAR(128) NOT NULL,
+            item_id VARCHAR(128) NOT NULL,
+            window_hours SMALLINT NOT NULL,
+            due_at TIMESTAMP NOT NULL,
+            captured_at TIMESTAMP,
+            video_views BIGINT,
+            likes BIGINT,
+            comments BIGINT,
+            shares BIGINT,
+            favorites BIGINT,
+            reach BIGINT,
+            total_time_watched DOUBLE PRECISION,
+            average_time_watched DOUBLE PRECISION,
+            full_video_watched_rate DOUBLE PRECISION,
+            impression_sources TEXT,
+            engagement_rate DOUBLE PRECISION,
+            followers_count_snapshot BIGINT,
+            distribution_rate DOUBLE PRECISION,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE (business_id, item_id, window_hours)
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tt_official_publish_window_due "
+        "ON tiktok_official_video_publish_window_snapshots (due_at) WHERE captured_at IS NULL"
+    )
+
 
 def configured_accounts() -> list[dict[str, Any]]:
     raw = os.environ.get("TIKTOK_OFFICIAL_ACCOUNTS_JSON", "").strip()
@@ -464,6 +497,52 @@ def enqueue_daily_sync(
             "business_ids": business_ids,
             "profile_days": profile_days,
             "max_pages": max_pages,
+        }
+        update_task_params_fn(task_id, params)
+        if after_enqueue_fn:
+            after_enqueue_fn(task_id, params)
+        task_ids.append(task_id)
+    return task_ids
+
+
+def enqueue_publish_window_capture(
+    create_task_fn,
+    *,
+    update_task_params_fn,
+    after_enqueue_fn=None,
+    max_items: int = 200,
+) -> list[str]:
+    """扫描发布后3/24/48/72小时到期未采集的占位行，按账号分组建 task_queue 任务交给 worker 消费。"""
+    due_rows = db.query_all(
+        """
+        SELECT business_id, item_id, window_hours
+        FROM tiktok_official_video_publish_window_snapshots
+        WHERE due_at <= NOW() AND captured_at IS NULL
+        ORDER BY due_at
+        LIMIT %s
+        """,
+        (max_items,),
+    ) or []
+    if not due_rows:
+        return []
+
+    by_account: dict[str, list[dict[str, Any]]] = {}
+    for row in due_rows:
+        by_account.setdefault(row["business_id"], []).append(
+            {"item_id": row["item_id"], "window_hours": row["window_hours"]}
+        )
+
+    task_ids = []
+    for business_id, targets in by_account.items():
+        task_id = pysecrets.token_hex(16)
+        session_id = f"tiktok_official_publish_window_capture_{business_id}_{task_id[:8]}"
+        create_task_fn(task_id, None, session_id, function_type="tiktok_official_publish_window_capture")
+        params = {
+            "source": "tiktok_official_publish_window_capture",
+            "trigger_type": "scheduled",
+            "session_id": session_id,
+            "business_id": business_id,
+            "targets": targets,
         }
         update_task_params_fn(task_id, params)
         if after_enqueue_fn:
@@ -986,10 +1065,17 @@ def upsert_profile(business_id: str, data: dict[str, Any], meta: dict[str, str])
         )
 
 
+_PUBLISH_WINDOW_HOURS = (3, 24, 48, 72)
+
+
 def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) -> None:
     item_id = str(video.get("item_id") or "").strip()
     if not item_id:
         return
+    is_new_video = not db.query_one(
+        "SELECT 1 FROM tiktok_official_video_snapshots WHERE business_id = %s AND item_id = %s",
+        (business_id, item_id),
+    )
     db.execute(
         """
         INSERT INTO tiktok_official_video_snapshots (
@@ -1108,6 +1194,19 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
             _to_int(video.get("favorites")),
         ),
     )
+
+    create_time = _epoch_to_dt(video.get("create_time"))
+    if is_new_video and create_time:
+        for window_hours in _PUBLISH_WINDOW_HOURS:
+            db.execute(
+                """
+                INSERT INTO tiktok_official_video_publish_window_snapshots (
+                    business_id, item_id, window_hours, due_at
+                ) VALUES (%s, %s, %s, %s + (%s || ' hours')::interval)
+                ON CONFLICT (business_id, item_id, window_hours) DO NOTHING
+                """,
+                (business_id, item_id, window_hours, create_time, window_hours),
+            )
 
 
 def update_video_tags(
@@ -1633,6 +1732,159 @@ def build_matrix_export(export_date) -> bytes:
     return buf.read()
 
 
+_MATRIX_QUERY_EXPORT_MAX_ROWS = 5000
+
+
+def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
+    """按当前视频明细表筛选条件导出查询结果（不缓存，现算现出），跟固定的"下载报表（前一日）"是两个平行入口。"""
+    filters = filters or {}
+    where, params = _matrix_account_filters_sql(filters)
+
+    date_from = (filters.get("date_from") or "").strip()
+    if date_from:
+        where.append("v.create_time >= %s")
+        params.append(date_from)
+
+    date_to = (filters.get("date_to") or "").strip()
+    if date_to:
+        where.append("v.create_time < (%s::date + INTERVAL '1 day')")
+        params.append(date_to)
+
+    creator = (filters.get("creator") or "").strip()
+    if creator:
+        where.append("(a.account_alias ILIKE %s OR a.account_name ILIKE %s OR v.business_id ILIKE %s)")
+        like = f"%{creator}%"
+        params.extend([like, like, like])
+
+    keyword = (filters.get("keyword") or "").strip()
+    if keyword:
+        where.append("v.caption ILIKE %s")
+        params.append(f"%{keyword}%")
+
+    where_sql = " AND ".join(where)
+
+    rows = db.query_all(
+        f"""
+        SELECT
+            v.*,
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
+            d.video_views AS next_day_views
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        LEFT JOIN tiktok_official_video_daily_snapshots d
+            ON d.business_id = v.business_id
+            AND d.item_id = v.item_id
+            AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
+        WHERE {where_sql}
+        ORDER BY v.create_time DESC NULLS LAST, v.updated_at DESC
+        LIMIT %s
+        """,
+        tuple(params + [_MATRIX_QUERY_EXPORT_MAX_ROWS]),
+    ) or []
+
+    headers = [
+        "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
+        "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
+        "账号ID", "视频ID", "播放量（最新）", "次日播放量", "互动率（最新）",
+    ]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "查询结果"
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    for row in rows:
+        account_name = row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id")
+        views = int(row.get("video_views") or 0)
+        engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
+        engagement_rate = (engagement / views) if views else 0.0
+        ws.append(
+            [
+                row.get("task_no") or "",
+                row.get("share_url") or "",
+                account_name,
+                row.get("region") or "",
+                row.get("account_type") or "",
+                row.get("kol_campaign") or "",
+                row.get("create_time"),
+                row.get("caption") or "",
+                " ".join(_extract_hashtags(row.get("caption"))),
+                row.get("spark_code") or "",
+                row.get("business_id"),
+                row.get("item_id"),
+                views,
+                row.get("next_day_views"),
+                round(engagement_rate, 4),
+            ]
+        )
+    ws.freeze_panes = "A2"
+
+    window_headers = [
+        "所属矩阵账号", "账号ID", "视频ID", "发布后小时数", "采集时间",
+        "播放量", "点赞", "评论", "分享", "收藏", "reach",
+        "总观看时长", "平均观看时长", "完播率", "互动率",
+        "粉丝数（采集时）", "Distribution Rate (views/followers)",
+    ]
+    ws2 = wb.create_sheet(title="发布后时间点数据")
+    ws2.append(window_headers)
+    for cell in ws2[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    if rows:
+        pairs = [(r["business_id"], r["item_id"]) for r in rows]
+        account_label_map = {
+            (r["business_id"], r["item_id"]): (r.get("account_alias") or r.get("account_name") or r.get("display_name") or r.get("business_id"))
+            for r in rows
+        }
+        window_rows = db.query_all(
+            """
+            SELECT business_id, item_id, window_hours, captured_at, video_views, likes, comments,
+                   shares, favorites, reach, total_time_watched, average_time_watched,
+                   full_video_watched_rate, engagement_rate, followers_count_snapshot, distribution_rate
+            FROM tiktok_official_video_publish_window_snapshots
+            WHERE (business_id, item_id) IN %s
+            ORDER BY business_id, item_id, window_hours
+            """,
+            (tuple(pairs),),
+        ) or []
+        for w in window_rows:
+            key = (w["business_id"], w["item_id"])
+            captured = w.get("captured_at") is not None
+            ws2.append(
+                [
+                    account_label_map.get(key, w["business_id"]),
+                    w["business_id"],
+                    w["item_id"],
+                    w["window_hours"],
+                    w.get("captured_at") if captured else "未到期/未采集",
+                    w.get("video_views") if captured else None,
+                    w.get("likes") if captured else None,
+                    w.get("comments") if captured else None,
+                    w.get("shares") if captured else None,
+                    w.get("favorites") if captured else None,
+                    w.get("reach") if captured else None,
+                    w.get("total_time_watched") if captured else None,
+                    w.get("average_time_watched") if captured else None,
+                    w.get("full_video_watched_rate") if captured else None,
+                    w.get("engagement_rate") if captured else None,
+                    w.get("followers_count_snapshot") if captured else None,
+                    w.get("distribution_rate") if captured else None,
+                ]
+            )
+    ws2.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def list_videos(business_id: str | None = None, page: int = 1, page_size: int = 50) -> dict[str, Any]:
     where = ""
     params: list[Any] = []
@@ -1933,6 +2185,82 @@ def run_refresh_task(task_id: str, params: dict[str, Any], update_task_fn) -> No
             result=json.dumps(result, ensure_ascii=False),
         )
     except Exception as exc:
+        update_task_fn(task_id, status="failed", error=str(exc)[:500], progress="失败")
+
+
+def run_publish_window_capture(task_id: str, params: dict[str, Any], update_task_fn) -> None:
+    """采集某账号下到期的发布后3/24/48/72小时时间点数据。
+
+    TikTok `/business/video/list/` 不支持按 item_id 过滤，只能拉该账号视频列表全量再本地匹配。
+    """
+    business_id = params.get("business_id")
+    targets = params.get("targets") or []
+    try:
+        update_task_fn(task_id, status="processing", progress="正在采集发布后时间点数据...")
+        if not business_id or not targets:
+            update_task_fn(task_id, status="completed", progress="无待采集目标")
+            return
+
+        token = get_access_token(business_id, auto_refresh=True)
+        if not token:
+            raise RuntimeError(f"{business_id} 缺少 access_token，请先完成 TikTok 账号授权")
+
+        videos, _meta = fetch_videos(token, business_id, max_pages=5)
+        video_by_id = {str(v.get("item_id") or ""): v for v in videos}
+
+        account = db.query_one(
+            "SELECT followers_count FROM tiktok_official_accounts WHERE business_id = %s",
+            (business_id,),
+        ) or {}
+        followers_count = _to_int(account.get("followers_count"))
+
+        captured = 0
+        missing = 0
+        for target in targets:
+            item_id = str(target.get("item_id") or "")
+            window_hours = target.get("window_hours")
+            video = video_by_id.get(item_id)
+            if not video:
+                missing += 1
+                continue
+
+            views = _to_int(video.get("video_views"))
+            likes = _to_int(video.get("likes"))
+            comments = _to_int(video.get("comments"))
+            shares = _to_int(video.get("shares"))
+            favorites = _to_int(video.get("favorites"))
+            engagement = sum(v or 0 for v in (likes, comments, shares, favorites))
+            engagement_rate = (engagement / views) if views else None
+            distribution_rate = (views / followers_count) if (views is not None and followers_count) else None
+
+            db.execute(
+                """
+                UPDATE tiktok_official_video_publish_window_snapshots
+                SET captured_at = NOW(), video_views = %s, likes = %s, comments = %s, shares = %s,
+                    favorites = %s, reach = %s, total_time_watched = %s, average_time_watched = %s,
+                    full_video_watched_rate = %s, impression_sources = %s, engagement_rate = %s,
+                    followers_count_snapshot = %s, distribution_rate = %s
+                WHERE business_id = %s AND item_id = %s AND window_hours = %s AND captured_at IS NULL
+                """,
+                (
+                    views, likes, comments, shares, favorites,
+                    _to_int(video.get("reach")),
+                    _to_float(video.get("total_time_watched")),
+                    _to_float(video.get("average_time_watched")),
+                    _to_float(video.get("full_video_watched_rate")),
+                    _json(video.get("impression_sources")),
+                    engagement_rate,
+                    followers_count,
+                    distribution_rate,
+                    business_id, item_id, window_hours,
+                ),
+            )
+            captured += 1
+
+        progress = f"完成（采集 {captured} 条，{missing} 条视频未匹配到已跳过）" if missing else f"完成（采集 {captured} 条）"
+        update_task_fn(task_id, status="completed", progress=progress)
+    except Exception as exc:
+        logger.warning("⚠️ TikTok 发布后时间点数据采集失败：%s - %s", business_id, exc)
         update_task_fn(task_id, status="failed", error=str(exc)[:500], progress="失败")
 
 

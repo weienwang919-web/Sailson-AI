@@ -69,6 +69,7 @@ from app import (
     process_competitor_task,
     update_task,
     run_scheduled_tiktok_official_daily_sync,
+    run_scheduled_tiktok_official_publish_window_capture,
 )
 logger.info("✅ app 模块加载完成")
 
@@ -113,6 +114,45 @@ def _maybe_trigger_tiktok_daily_sync():
         run_scheduled_tiktok_official_daily_sync()
     except Exception as e:
         logger.error(f"❌ Worker 触发 TikTok 官号矩阵每日同步失败: {e}")
+
+# ============================================
+# TikTok 发布后3/24/48/72小时时间点快照：自检触发
+# 跟每日同步不同，这个不是"一天一个固定窗口"，而是每隔几分钟查一次
+# 有没有到期未采集的占位行（tiktok_official_video_publish_window_snapshots
+# 的 due_at <= NOW() AND captured_at IS NULL），幂等：某一行只要还没
+# captured_at 就会一直在下次检查里出现，不怕漏检或 worker 重启。
+# ============================================
+_last_publish_window_check_key = None
+_PUBLISH_WINDOW_CHECK_INTERVAL_MINUTES = 5
+
+
+def _maybe_trigger_publish_window_capture():
+    global _last_publish_window_check_key
+    now = datetime.utcnow()
+    bucket = now.replace(
+        minute=(now.minute // _PUBLISH_WINDOW_CHECK_INTERVAL_MINUTES) * _PUBLISH_WINDOW_CHECK_INTERVAL_MINUTES,
+        second=0,
+        microsecond=0,
+    )
+    check_key = bucket.strftime('%Y-%m-%d %H:%M')
+    if check_key == _last_publish_window_check_key:
+        return
+    _last_publish_window_check_key = check_key
+    try:
+        row = db.query_one(
+            "SELECT 1 FROM tiktok_official_video_publish_window_snapshots "
+            "WHERE due_at <= NOW() AND captured_at IS NULL LIMIT 1"
+        )
+        if not row:
+            return
+    except Exception as e:
+        logger.warning(f"⚠️ 检查 TikTok 发布后时间点数据是否有待采集失败: {e}")
+        return
+    logger.info("⏰ Worker 触发 TikTok 发布后时间点数据采集")
+    try:
+        run_scheduled_tiktok_official_publish_window_capture()
+    except Exception as e:
+        logger.error(f"❌ Worker 触发 TikTok 发布后时间点数据采集失败: {e}")
 
 # ============================================
 # 优雅退出
@@ -239,6 +279,8 @@ def dispatch_task(task_row):
             _handle_feishu_profile_video_sync(task_id, params)
         elif func_type == 'tiktok_official_refresh':
             _handle_tiktok_official_refresh(task_id, params)
+        elif func_type == 'tiktok_official_publish_window_capture':
+            _handle_tiktok_official_publish_window_capture(task_id, params)
         else:
             logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
             update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
@@ -621,6 +663,18 @@ def _handle_tiktok_official_refresh(task_id, params):
         update_task(task_id, status='failed', error=str(e)[:500])
 
 
+def _handle_tiktok_official_publish_window_capture(task_id, params):
+    """TikTok 官号矩阵：发布后3/24/48/72小时时间点数据采集。"""
+    import tiktok_official_service
+    try:
+        tiktok_official_service.run_publish_window_capture(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ tiktok_official_publish_window_capture 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
 # ============================================
 # 主循环
 # ============================================
@@ -666,6 +720,11 @@ def main():
                 _maybe_trigger_tiktok_daily_sync()
             except Exception as exc:
                 logger.error(f"❌ TikTok 官号每日同步自检异常: {exc}")
+
+            try:
+                _maybe_trigger_publish_window_capture()
+            except Exception as exc:
+                logger.error(f"❌ TikTok 发布后时间点数据采集自检异常: {exc}")
 
             claimed_any = False
             while len(futures) < WORKER_CONCURRENCY:

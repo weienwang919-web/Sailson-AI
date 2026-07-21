@@ -243,6 +243,29 @@ def run_scheduled_tiktok_official_daily_sync():
         logger.error(f"❌ 创建 TikTok 官号矩阵每日同步任务失败: {e}")
 
 
+def run_scheduled_tiktok_official_publish_window_capture():
+    """由 worker 自检触发：采集发布后3/24/48/72小时到期未采集的视频时间点数据，按账号分批入队。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                tiktok_official_service.run_publish_window_capture(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = tiktok_official_service.enqueue_publish_window_capture(
+            create_task,
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建 TikTok 发布后时间点数据采集任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建 TikTok 发布后时间点数据采集任务失败: {e}")
+
+
 def run_scheduled_topic_monitor_daily():
     """APScheduler 可序列化入口：全平台话题监控每日发现+抓取，按话题逐条入队。"""
     try:
@@ -9713,6 +9736,55 @@ def api_tiktok_official_matrix_export():
         )
     except Exception as e:
         logger.error(f"tiktok_official matrix export failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/export-query')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_export_query():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+            'account_ids': _matrix_account_ids_arg(),
+            'date_from': request.args.get('date_from') or '',
+            'date_to': request.args.get('date_to') or '',
+            'creator': request.args.get('creator') or '',
+            'keyword': request.args.get('keyword') or '',
+        }
+        file_bytes = tiktok_official_service.build_matrix_query_export(filters=filters)
+        buf = BytesIO(file_bytes)
+        buf.seek(0)
+        export_date = datetime.datetime.now().date().isoformat()
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name=f'matrix_videos_query_{export_date}.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        logger.error(f"tiktok_official matrix export-query failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/publish-windows')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_video_publish_windows(business_id, item_id):
+    try:
+        rows = db.query_all(
+            """
+            SELECT window_hours, due_at, captured_at, video_views, likes, comments, shares, favorites,
+                   reach, total_time_watched, average_time_watched, full_video_watched_rate,
+                   engagement_rate, followers_count_snapshot, distribution_rate
+            FROM tiktok_official_video_publish_window_snapshots
+            WHERE business_id = %s AND item_id = %s
+            ORDER BY window_hours
+            """,
+            (business_id, item_id),
+        )
+        return jsonify({'status': 'success', 'windows': _json_safe_rows(rows)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix video publish-windows failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

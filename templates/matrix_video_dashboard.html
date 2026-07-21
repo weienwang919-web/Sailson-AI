@@ -143,6 +143,15 @@
 
     .pagination { display: flex; gap: 12px; align-items: center; margin-top: 18px; font-size: 12.5px; color: var(--text-secondary); }
 
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 100; align-items: center; justify-content: center; padding: 24px; }
+    .modal-overlay.open { display: flex; }
+    .modal-panel { background: var(--board-bg); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.25); max-width: 900px; width: 100%; max-height: 80vh; overflow-y: auto; padding: 24px; }
+    .modal-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .modal-panel-header h3 { margin: 0; font-size: 16px; }
+    .publish-windows-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .publish-windows-table th, .publish-windows-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-soft); text-align: right; white-space: nowrap; }
+    .publish-windows-table th:first-child, .publish-windows-table td:first-child { text-align: left; font-weight: 600; }
+
     ::-webkit-scrollbar { width: 9px; height: 9px; }
     ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 5px; }
   </style>
@@ -252,6 +261,7 @@
       <div class="form-group actions">
         <button class="btn btn-primary" onclick="applyVideoFilters()">查询</button>
         <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
+        <button class="btn btn-secondary" onclick="downloadQueryExport()">导出查询结果</button>
       </div>
     </div>
     <div class="status" id="filter-status"></div>
@@ -276,6 +286,7 @@
             <th>播放量（最新）</th>
             <th>次日播放量</th>
             <th>互动率（最新）</th>
+            <th>时间点数据</th>
           </tr>
         </thead>
         <tbody id="videos-body"></tbody>
@@ -288,6 +299,16 @@
     </div>
   </div>
 
+</div>
+
+<div class="modal-overlay" id="publish-windows-modal">
+  <div class="modal-panel">
+    <div class="modal-panel-header">
+      <h3>发布后时间点数据</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closePublishWindowsModal()">关闭</button>
+    </div>
+    <div id="publish-windows-body"></div>
+  </div>
 </div>
 
 <script>
@@ -765,7 +786,7 @@ function accountTypeBadge(type) {
 function renderVideos() {
   const body = document.getElementById('videos-body');
   if (!videos.length) {
-    body.innerHTML = '<tr><td colspan="16" class="muted">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="17" class="muted">暂无数据</td></tr>';
     return;
   }
   body.innerHTML = videos.map((v, idx) => {
@@ -792,6 +813,7 @@ function renderVideos() {
         <td>${fmt(v.video_views)}</td>
         <td>${fmt(v.next_day_views)}</td>
         <td>${pct(v.engagement_rate)}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="openPublishWindowsModal('${esc(v.business_id)}', '${esc(v.item_id)}')">查看</button></td>
       </tr>
     `;
   }).join('');
@@ -840,6 +862,68 @@ window.generateSparkCode = generateSparkCode;
 function downloadExport() {
   window.open('/api/tiktok-official/matrix-export', '_blank');
 }
+
+function downloadQueryExport() {
+  const params = withAccountIds(new URLSearchParams());
+  Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+  window.open('/api/tiktok-official/matrix-videos/export-query?' + params.toString(), '_blank');
+}
+
+const PUBLISH_WINDOW_LABELS = { 3: '3小时', 24: '24小时', 48: '48小时', 72: '72小时' };
+
+function closePublishWindowsModal() {
+  document.getElementById('publish-windows-modal').classList.remove('open');
+}
+window.closePublishWindowsModal = closePublishWindowsModal;
+
+async function openPublishWindowsModal(businessId, itemId) {
+  const modal = document.getElementById('publish-windows-modal');
+  const body = document.getElementById('publish-windows-body');
+  modal.classList.add('open');
+  body.innerHTML = '<div class="muted">加载中...</div>';
+  try {
+    const data = await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/publish-windows`);
+    const windows = data.windows || [];
+    if (!windows.length) {
+      body.innerHTML = '<div class="muted">该视频暂无发布后时间点数据（可能是上线前发布的老视频，未纳入采集）</div>';
+      return;
+    }
+    const rows = windows.map(w => {
+      const label = PUBLISH_WINDOW_LABELS[w.window_hours] || `${w.window_hours}小时`;
+      if (!w.captured_at) {
+        return `<tr><td>${esc(label)}</td><td colspan="9" class="muted">未到期/未采集</td></tr>`;
+      }
+      return `
+        <tr>
+          <td>${esc(label)}</td>
+          <td>${fmt(w.video_views)}</td>
+          <td>${fmt(w.likes)}</td>
+          <td>${fmt(w.comments)}</td>
+          <td>${fmt(w.shares)}</td>
+          <td>${fmt(w.reach)}</td>
+          <td>${fmt(w.average_time_watched)}</td>
+          <td>${pct(w.full_video_watched_rate)}</td>
+          <td>${pct(w.engagement_rate)}</td>
+          <td>${pct(w.distribution_rate)}</td>
+        </tr>
+      `;
+    }).join('');
+    body.innerHTML = `
+      <table class="publish-windows-table">
+        <thead>
+          <tr>
+            <th>时间点</th><th>播放量</th><th>点赞</th><th>评论</th><th>分享</th><th>reach</th>
+            <th>平均观看时长</th><th>完播率</th><th>互动率</th><th>Distribution Rate</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    body.innerHTML = '<div class="muted err">加载失败：' + esc(String(e.message || e)) + '</div>';
+  }
+}
+window.openPublishWindowsModal = openPublishWindowsModal;
 
 (async function init() {
   await loadAccountsForPicker();
