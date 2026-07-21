@@ -97,7 +97,7 @@
     .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
     .stat-card { background: var(--card-bg); border-radius: var(--radius-md); padding: 22px 24px; overflow: hidden; }
     .stat-label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .stat-value { font-size: 32px; font-weight: 800; color: var(--text-primary); line-height: 1.15; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-value { font-size: 28px; font-weight: 800; color: var(--text-primary); line-height: 1.2; letter-spacing: -.02em; white-space: normal; overflow-wrap: anywhere; word-break: normal; }
     .stat-up { color: var(--up); }
     .stat-down { color: var(--down); }
 
@@ -355,8 +355,7 @@ function fmt(v) {
 function fitStatValue(el) {
   if (!el) return;
   el.style.fontSize = '';
-  el.style.whiteSpace = '';
-  el.style.wordBreak = '';
+  el.style.whiteSpace = 'nowrap';
   const min = 15;
   let size = parseFloat(getComputedStyle(el).fontSize);
   while (el.scrollWidth > el.clientWidth + 1 && size > min) {
@@ -365,7 +364,6 @@ function fitStatValue(el) {
   }
   if (el.scrollWidth > el.clientWidth + 1) {
     el.style.whiteSpace = 'normal';
-    el.style.wordBreak = 'break-all';
   }
 }
 
