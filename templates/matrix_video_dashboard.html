@@ -134,8 +134,14 @@
     .badge-kol { background: rgba(124,58,237,.12); color: #7c3aed; }
     .badge-campaign { background: rgba(217,119,6,.12); color: #b45309; }
 
-    .hashtags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 200px; white-space: normal; }
-    .hashtag-chip { background: var(--accent-soft); color: #1d4ed8; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; overflow-wrap: anywhere; }
+    .hashtags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 240px; white-space: normal; align-content: flex-start; }
+    .hashtag-chip { background: var(--accent-soft); color: #1d4ed8; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+    .hashtag-more { background: var(--card-bg); color: var(--text-tertiary); font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; white-space: nowrap; cursor: default; }
+
+    .publish-window-cell { display: flex; flex-wrap: wrap; gap: 3px 8px; max-width: 190px; font-size: 11px; line-height: 1.5; }
+    .pw-chip { display: inline-flex; gap: 4px; color: var(--text-secondary); white-space: nowrap; }
+    .pw-chip .pw-h { color: var(--text-tertiary); }
+    .pw-chip .pw-v { color: var(--text-primary); font-weight: 600; }
 
     .caption-cell { max-width: 240px; white-space: normal; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; cursor: default; color: var(--text-secondary); }
 
@@ -293,7 +299,11 @@
             <th>播放量（最新）</th>
             <th>次日播放量</th>
             <th>互动率（最新）</th>
-            <th>时间点数据</th>
+            <th>发布后播放量（3h/24h/48h/72h）</th>
+            <th>完播率</th>
+            <th>平均观看时长</th>
+            <th>发布后互动率</th>
+            <th>Distribution Rate</th>
           </tr>
         </thead>
         <tbody id="videos-body"></tbody>
@@ -812,11 +822,17 @@ function accountTypeBadge(type) {
 function renderVideos() {
   const body = document.getElementById('videos-body');
   if (!videos.length) {
-    body.innerHTML = '<tr><td colspan="17" class="muted">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="21" class="muted">暂无数据</td></tr>';
     return;
   }
   body.innerHTML = videos.map((v, idx) => {
-    const hashtags = (v.hashtags || []).map(h => `<span class="hashtag-chip">#${esc(h)}</span>`).join('');
+    const allTags = v.hashtags || [];
+    const visibleTags = allTags.slice(0, 3);
+    const restTags = allTags.slice(3);
+    let hashtags = visibleTags.map(h => `<span class="hashtag-chip" title="#${esc(h)}">#${esc(h)}</span>`).join('');
+    if (restTags.length) {
+      hashtags += `<span class="hashtag-more" title="${esc(restTags.map(h => '#' + h).join(' '))}">+${restTags.length}</span>`;
+    }
     const sparkCell = v.spark_code
       ? `<span class="spark-code" title="${esc(v.spark_code)}">${esc(v.spark_code).slice(0, 12)}...</span><div class="muted" style="font-size:10.5px;margin-top:3px;">至 ${esc(fmt(v.spark_code_end_time))}</div>`
       : `<button class="btn btn-ghost btn-sm" onclick="generateSparkCode('${esc(v.business_id)}', '${esc(v.item_id)}', this)">生成</button>`;
@@ -839,10 +855,39 @@ function renderVideos() {
         <td>${fmt(v.video_views)}</td>
         <td>${fmt(v.next_day_views)}</td>
         <td>${pct(v.engagement_rate)}</td>
-        <td><button class="btn btn-ghost btn-sm" onclick="openPublishWindowsModal('${esc(v.business_id)}', '${esc(v.item_id)}')">查看</button></td>
+        <td>${pwViewsCell(v)}</td>
+        <td>${pct(pwLatestMetric(v, 'full_video_watched_rate'))}</td>
+        <td>${fmt(pwLatestMetric(v, 'average_time_watched'))}</td>
+        <td>${pct(pwLatestMetric(v, 'engagement_rate'))}</td>
+        <td>${pct(pwLatestMetric(v, 'distribution_rate'))}</td>
       </tr>
     `;
   }).join('');
+}
+
+const PUBLISH_WINDOW_HOURS = [3, 24, 48, 72];
+
+function pwViewsCell(v) {
+  const windows = v.publish_windows || [];
+  const byHours = {};
+  windows.forEach(w => { byHours[w.window_hours] = w; });
+  const chips = PUBLISH_WINDOW_HOURS.map(h => {
+    const w = byHours[h];
+    const val = (w && w.captured_at) ? fmt(w.video_views) : '-';
+    return `<span class="pw-chip"><span class="pw-h">${h}h</span><span class="pw-v">${val}</span></span>`;
+  }).join('');
+  const hasAny = windows.some(w => w.captured_at);
+  const detail = hasAny
+    ? `<button class="btn btn-ghost btn-sm" style="margin-top:4px;" onclick="openPublishWindowsModal('${esc(v.business_id)}', '${esc(v.item_id)}')">完整指标</button>`
+    : '';
+  return `<div class="publish-window-cell">${chips}</div>${detail}`;
+}
+
+function pwLatestMetric(v, field) {
+  const windows = (v.publish_windows || []).filter(w => w.captured_at);
+  if (!windows.length) return null;
+  const latest = windows.reduce((a, b) => (b.window_hours > a.window_hours ? b : a));
+  return latest[field];
 }
 
 async function saveTags(businessId, itemId, taskInput, kolInput) {

@@ -1369,6 +1369,25 @@ def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, o
         row["hashtags"] = _extract_hashtags(row.get("caption"))
         videos.append(row)
 
+    if videos:
+        pairs = tuple((v["business_id"], v["item_id"]) for v in videos)
+        window_rows = db.query_all(
+            """
+            SELECT business_id, item_id, window_hours, captured_at, video_views,
+                   average_time_watched, full_video_watched_rate, engagement_rate, distribution_rate
+            FROM tiktok_official_video_publish_window_snapshots
+            WHERE (business_id, item_id) IN %s
+            ORDER BY business_id, item_id, window_hours
+            """,
+            (pairs,),
+        ) or []
+        windows_map: dict[tuple, list] = {}
+        for w in window_rows:
+            key = (w["business_id"], w["item_id"])
+            windows_map.setdefault(key, []).append(w)
+        for v in videos:
+            v["publish_windows"] = windows_map.get((v["business_id"], v["item_id"]), [])
+
     return {
         "videos": videos,
         "total": total,
