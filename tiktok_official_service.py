@@ -1479,10 +1479,14 @@ def _matrix_account_filters_sql(filters: dict[str, Any]) -> tuple[list[str], lis
     where.append("a.business_id != ALL(%s)")
     params.append(_MATRIX_EXCLUDED_BUSINESS_IDS)
 
-    region = (filters.get("region") or "").strip()
-    if region:
-        where.append("a.region = %s")
-        params.append(region)
+    regions = [str(v).strip() for v in (filters.get("regions") or []) if str(v).strip()]
+    if not regions:
+        region = (filters.get("region") or "").strip()
+        if region:
+            regions = [region]
+    if regions:
+        where.append("a.region = ANY(%s)")
+        params.append(regions)
 
     account_type = (filters.get("account_type") or "").strip()
     if account_type:

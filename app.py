@@ -9608,12 +9608,18 @@ def _matrix_account_ids_arg():
     return [v.strip() for v in raw.split(',') if v.strip()]
 
 
+def _matrix_regions_arg():
+    raw = request.args.get('regions') or ''
+    return [v.strip() for v in raw.split(',') if v.strip()]
+
+
 @app.route('/api/tiktok-official/matrix-videos')
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_videos():
     try:
         filters = {
             'region': request.args.get('region') or '',
+            'regions': _matrix_regions_arg(),
             'account_type': request.args.get('account_type') or '',
             'account_ids': _matrix_account_ids_arg(),
             'date_from': request.args.get('date_from') or '',
@@ -9772,6 +9778,7 @@ def api_tiktok_official_matrix_export_query():
     try:
         filters = {
             'region': request.args.get('region') or '',
+            'regions': _matrix_regions_arg(),
             'account_type': request.args.get('account_type') or '',
             'account_ids': _matrix_account_ids_arg(),
             'date_from': request.args.get('date_from') or '',

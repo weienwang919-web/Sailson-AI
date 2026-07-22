@@ -115,6 +115,16 @@
     .form-group input { width: 100%; }
     .form-group.quick-range { flex: 0 0 auto; display: flex; gap: 8px; }
     .form-group.actions { flex: 0 0 auto; display: flex; gap: 10px; }
+    .region-select-wrap { position: relative; }
+    .region-select-btn { width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--card-bg); color: var(--text-primary); cursor: pointer; font-size: 13px; font-family: inherit; }
+    .region-select-btn:hover { border-color: var(--accent); }
+    .region-select-menu { display: none; position: absolute; top: 100%; left: 0; margin-top: 4px; background: #fff; border: 1px solid var(--border-soft); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); z-index: 30; min-width: 180px; max-height: 260px; overflow-y: auto; padding: 6px; }
+    .region-select-menu.open { display: block; }
+    .region-select-menu-item { padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 8px; color: var(--text-primary, #1f2937); }
+    .region-select-menu-item:hover { background: rgba(15,23,42,.05); }
+    .region-select-menu-item.active { color: var(--accent); font-weight: 600; }
+    .region-select-menu-sep { height: 1px; background: var(--border-soft); margin: 4px 2px; }
+    .region-select-menu-item input { pointer-events: none; }
 
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { border-bottom: 1px solid var(--border-soft); padding: 12px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
@@ -282,6 +292,17 @@
         <label>关键词/Tag</label>
         <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
       </div>
+      <div class="form-group">
+        <label>国家/地区</label>
+        <div class="region-select-wrap">
+          <button type="button" class="region-select-btn" id="region-select-btn" onclick="toggleRegionMenu(event)">全部国家</button>
+          <div class="region-select-menu" id="region-select-menu">
+            <div class="region-select-menu-item" onclick="clearRegionFilter(event)">全部</div>
+            <div class="region-select-menu-sep"></div>
+            <div id="region-select-options"></div>
+          </div>
+        </div>
+      </div>
       <div class="form-group actions">
         <button class="btn btn-primary" onclick="applyVideoFilters()">查询</button>
         <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
@@ -349,6 +370,7 @@ let filterBarOpen = false;
 
 let videos = [];
 let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '' };
+let selectedRegions = new Set();
 let videoSort = { field: 'create_time', order: 'desc' };
 let limit = 50;
 let offset = 0;
@@ -465,6 +487,7 @@ async function loadAccountsForPicker() {
   renderTypePills();
   updateFilterBarSummary();
   renderOverviewRegionOptions();
+  renderRegionFilterOptions();
 }
 
 function renderOverviewRegionOptions() {
@@ -475,6 +498,62 @@ function renderOverviewRegionOptions() {
   sel.innerHTML = '<option value="">全部国家/地区</option>' + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
   if (regions.includes(prev)) sel.value = prev;
 }
+
+function allKnownRegions() {
+  return Array.from(new Set(accountsList.map(a => a.region).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function renderRegionFilterOptions() {
+  const wrap = document.getElementById('region-select-options');
+  if (!wrap) return;
+  const regions = allKnownRegions();
+  wrap.innerHTML = regions.map(r => {
+    const active = selectedRegions.has(r);
+    return `<div class="region-select-menu-item ${active ? 'active' : ''}" onclick="toggleRegionFilterOption(event, '${esc(r)}')"><input type="checkbox" ${active ? 'checked' : ''}>${esc(r)}</div>`;
+  }).join('') || '<div class="muted" style="padding:6px 10px;">暂无国家数据</div>';
+  updateRegionSelectButtonLabel();
+}
+
+function updateRegionSelectButtonLabel() {
+  const btn = document.getElementById('region-select-btn');
+  if (!btn) return;
+  btn.textContent = selectedRegions.size === 0
+    ? '全部国家'
+    : `已选 ${selectedRegions.size} 个国家 (${Array.from(selectedRegions).join(',')})`;
+}
+
+function toggleRegionMenu(evt) {
+  evt.stopPropagation();
+  const menu = document.getElementById('region-select-menu');
+  document.querySelectorAll('.sort-menu.open').forEach(m => m.classList.remove('open'));
+  menu.classList.toggle('open');
+}
+window.toggleRegionMenu = toggleRegionMenu;
+
+function toggleRegionFilterOption(evt, region) {
+  evt.stopPropagation();
+  if (selectedRegions.has(region)) selectedRegions.delete(region);
+  else selectedRegions.add(region);
+  renderRegionFilterOptions();
+  offset = 0;
+  loadVideos();
+}
+window.toggleRegionFilterOption = toggleRegionFilterOption;
+
+function clearRegionFilter(evt) {
+  if (evt) evt.stopPropagation();
+  if (selectedRegions.size === 0) return;
+  selectedRegions.clear();
+  renderRegionFilterOptions();
+  offset = 0;
+  loadVideos();
+}
+window.clearRegionFilter = clearRegionFilter;
+
+document.addEventListener('click', () => {
+  const menu = document.getElementById('region-select-menu');
+  if (menu) menu.classList.remove('open');
+});
 
 function onAccountSelectionChanged() {
   renderAccountPicker();
@@ -810,6 +889,7 @@ async function loadVideos() {
   try {
     const params = withAccountIds(new URLSearchParams());
     Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    if (selectedRegions.size) params.set('regions', Array.from(selectedRegions).join(','));
     params.set('limit', limit);
     params.set('offset', offset);
     params.set('sort', videoSort.field);
@@ -995,6 +1075,7 @@ function downloadExport() {
 function downloadQueryExport() {
   const params = withAccountIds(new URLSearchParams());
   Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+  if (selectedRegions.size) params.set('regions', Array.from(selectedRegions).join(','));
   window.open('/api/tiktok-official/matrix-videos/export-query?' + params.toString(), '_blank');
 }
 
