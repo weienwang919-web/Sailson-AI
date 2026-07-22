@@ -70,6 +70,7 @@ from app import (
     update_task,
     run_scheduled_tiktok_official_daily_sync,
     run_scheduled_tiktok_official_publish_window_capture,
+    run_scheduled_tiktok_official_video_discovery,
 )
 logger.info("✅ app 模块加载完成")
 
@@ -153,6 +154,35 @@ def _maybe_trigger_publish_window_capture():
         run_scheduled_tiktok_official_publish_window_capture()
     except Exception as e:
         logger.error(f"❌ Worker 触发 TikTok 发布后时间点数据采集失败: {e}")
+
+# ============================================
+# TikTok 新视频发现：自检触发
+# 每日全量同步一天只跑一次，新视频从发布到被发现最多要等近24小时——
+# 3h 窗口的 due_at 早在发现前就已过期，5分钟的采集轮询一上来就会把
+# "发布后6-9小时"的状态误标成"3h"数据。这里加一个更高频、更轻量的
+# 发现轮询（只拉第1页视频列表，不刷新主页数据），把发现延迟压到30分钟内。
+# ============================================
+_last_video_discovery_check_key = None
+_VIDEO_DISCOVERY_CHECK_INTERVAL_MINUTES = 30
+
+
+def _maybe_trigger_video_discovery():
+    global _last_video_discovery_check_key
+    now = datetime.utcnow()
+    bucket = now.replace(
+        minute=(now.minute // _VIDEO_DISCOVERY_CHECK_INTERVAL_MINUTES) * _VIDEO_DISCOVERY_CHECK_INTERVAL_MINUTES,
+        second=0,
+        microsecond=0,
+    )
+    check_key = bucket.strftime('%Y-%m-%d %H:%M')
+    if check_key == _last_video_discovery_check_key:
+        return
+    _last_video_discovery_check_key = check_key
+    logger.info("⏰ Worker 触发 TikTok 新视频发现")
+    try:
+        run_scheduled_tiktok_official_video_discovery()
+    except Exception as e:
+        logger.error(f"❌ Worker 触发 TikTok 新视频发现失败: {e}")
 
 # ============================================
 # 优雅退出
@@ -281,6 +311,8 @@ def dispatch_task(task_row):
             _handle_tiktok_official_refresh(task_id, params)
         elif func_type == 'tiktok_official_publish_window_capture':
             _handle_tiktok_official_publish_window_capture(task_id, params)
+        elif func_type == 'tiktok_official_video_discovery':
+            _handle_tiktok_official_video_discovery(task_id, params)
         else:
             logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
             update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
@@ -675,6 +707,18 @@ def _handle_tiktok_official_publish_window_capture(task_id, params):
         update_task(task_id, status='failed', error=str(e)[:500])
 
 
+def _handle_tiktok_official_video_discovery(task_id, params):
+    """TikTok 官号矩阵：轻量新视频发现（每30分钟）。"""
+    import tiktok_official_service
+    try:
+        tiktok_official_service.run_video_discovery_task(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ tiktok_official_video_discovery 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
 # ============================================
 # 主循环
 # ============================================
@@ -725,6 +769,11 @@ def main():
                 _maybe_trigger_publish_window_capture()
             except Exception as exc:
                 logger.error(f"❌ TikTok 发布后时间点数据采集自检异常: {exc}")
+
+            try:
+                _maybe_trigger_video_discovery()
+            except Exception as exc:
+                logger.error(f"❌ TikTok 新视频发现自检异常: {exc}")
 
             claimed_any = False
             while len(futures) < WORKER_CONCURRENCY:

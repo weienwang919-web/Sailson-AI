@@ -266,6 +266,29 @@ def run_scheduled_tiktok_official_publish_window_capture():
         logger.error(f"❌ 创建 TikTok 发布后时间点数据采集任务失败: {e}")
 
 
+def run_scheduled_tiktok_official_video_discovery():
+    """由 worker 自检触发（每30分钟）：轻量拉取各账号视频列表第1页，尽早发现新视频，按账号分批入队。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                tiktok_official_service.run_video_discovery_task(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = tiktok_official_service.enqueue_video_discovery(
+            create_task,
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建 TikTok 新视频发现任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建 TikTok 新视频发现任务失败: {e}")
+
+
 def run_scheduled_topic_monitor_daily():
     """APScheduler 可序列化入口：全平台话题监控每日发现+抓取，按话题逐条入队。"""
     try:

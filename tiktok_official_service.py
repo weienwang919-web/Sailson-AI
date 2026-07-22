@@ -551,6 +551,40 @@ def enqueue_publish_window_capture(
     return task_ids
 
 
+def enqueue_video_discovery(
+    create_task_fn,
+    *,
+    update_task_params_fn,
+    after_enqueue_fn=None,
+) -> list[str]:
+    """每30分钟轻量轮询：只拉每个启用账号视频列表第1页，尽早发现新发布视频，
+    让 upsert_video() 尽快建好 3/24/48/72h 占位行，避免因发现延迟导致"3h"数据实际是发布后6-9小时的状态。"""
+    accounts = [
+        a for a in list_accounts()
+        if a.get("enabled", True) and (a.get("status") or "active") == "active"
+    ]
+    if not accounts:
+        return []
+
+    session_id = f"tiktok_official_video_discovery_{pysecrets.token_hex(8)}"
+    task_ids = []
+    for account in accounts:
+        task_id = pysecrets.token_hex(16)
+        business_id = account["business_id"]
+        create_task_fn(task_id, None, session_id, function_type="tiktok_official_video_discovery")
+        params = {
+            "source": "tiktok_official_video_discovery",
+            "trigger_type": "scheduled",
+            "session_id": session_id,
+            "business_id": business_id,
+        }
+        update_task_params_fn(task_id, params)
+        if after_enqueue_fn:
+            after_enqueue_fn(task_id, params)
+        task_ids.append(task_id)
+    return task_ids
+
+
 def fetch_videos(token: str, business_id: str, max_pages: int = 5) -> tuple[list[dict[str, Any]], dict[str, str]]:
     videos: list[dict[str, Any]] = []
     cursor = None
@@ -1196,7 +1230,10 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
     )
 
     create_time = _epoch_to_dt(video.get("create_time"))
-    if is_new_video and create_time:
+    # 只对"真的是最近发布"的视频建 3/24/48/72h 占位行——避免新授权账号首次同步时，
+    # 把整个历史视频库都当成"刚发布"，生成一堆 due_at 早已过期、一入库就被立刻
+    # 抓取的假时间点数据（实际抓到的是老视频的当前状态，却被贴上"3h"之类的标签）。
+    if is_new_video and create_time and create_time >= datetime.utcnow() - timedelta(hours=24):
         for window_hours in _PUBLISH_WINDOW_HOURS:
             db.execute(
                 """
@@ -2334,6 +2371,30 @@ def run_publish_window_capture(task_id: str, params: dict[str, Any], update_task
         update_task_fn(task_id, status="completed", progress=progress)
     except Exception as exc:
         logger.warning("⚠️ TikTok 发布后时间点数据采集失败：%s - %s", business_id, exc)
+        update_task_fn(task_id, status="failed", error=str(exc)[:500], progress="失败")
+
+
+def run_video_discovery_task(task_id: str, params: dict[str, Any], update_task_fn) -> None:
+    """轻量新视频发现：只拉该账号视频列表第1页，只为尽早 upsert 新视频、建好时间点占位行，
+    不做主页数据刷新（那部分仍由每日全量同步负责）。"""
+    business_id = params.get("business_id")
+    try:
+        update_task_fn(task_id, status="processing", progress="正在发现新视频...")
+        if not business_id:
+            update_task_fn(task_id, status="completed", progress="无目标账号")
+            return
+
+        token = get_access_token(business_id, auto_refresh=True)
+        if not token:
+            raise RuntimeError(f"{business_id} 缺少 access_token，请先完成 TikTok 账号授权")
+
+        videos, video_meta = fetch_videos(token, business_id, max_pages=1)
+        for video in videos:
+            upsert_video(business_id, video, video_meta)
+
+        update_task_fn(task_id, status="completed", progress=f"完成（扫描 {len(videos)} 条）")
+    except Exception as exc:
+        logger.warning("⚠️ TikTok 新视频发现失败：%s - %s", business_id, exc)
         update_task_fn(task_id, status="failed", error=str(exc)[:500], progress="失败")
 
 
