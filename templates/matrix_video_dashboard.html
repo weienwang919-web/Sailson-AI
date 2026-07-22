@@ -312,7 +312,6 @@
             <th class="sortable" data-sort="comments">评论<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'comments')">▾</span><div class="sort-menu" id="sort-menu-comments"><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'asc')">▲ 从低到高</div></div></th>
             <th class="sortable" data-sort="shares">转发<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'shares')">▾</span><div class="sort-menu" id="sort-menu-shares"><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'asc')">▲ 从低到高</div></div></th>
             <th class="sortable" data-sort="favorites">收藏<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'favorites')">▾</span><div class="sort-menu" id="sort-menu-favorites"><div class="sort-menu-item" onclick="applySortOption(event, 'favorites', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'favorites', 'asc')">▲ 从低到高</div></div></th>
-            <th class="sortable" data-sort="next_day_views">次日播放量<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'next_day_views')">▾</span><div class="sort-menu" id="sort-menu-next_day_views"><div class="sort-menu-item" onclick="applySortOption(event, 'next_day_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'next_day_views', 'asc')">▲ 从低到高</div></div></th>
             <th class="sortable" data-sort="engagement_rate">互动率（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'engagement_rate')">▾</span><div class="sort-menu" id="sort-menu-engagement_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'engagement_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'engagement_rate', 'asc')">▲ 从低到高</div></div></th>
             <th>发布后播放量（3h/24h/48h/72h）</th>
             <th class="sortable" data-sort="full_video_watched_rate">完播率<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'full_video_watched_rate')">▾</span><div class="sort-menu" id="sort-menu-full_video_watched_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'full_video_watched_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'full_video_watched_rate', 'asc')">▲ 从低到高</div></div></th>
@@ -878,7 +877,7 @@ function accountTypeBadge(type) {
 function renderVideos() {
   const body = document.getElementById('videos-body');
   if (!videos.length) {
-    body.innerHTML = '<tr><td colspan="25" class="muted">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="24" class="muted">暂无数据</td></tr>';
     return;
   }
   body.innerHTML = videos.map((v, idx) => {
@@ -913,7 +912,6 @@ function renderVideos() {
         <td>${fmt(v.comments)}</td>
         <td>${fmt(v.shares)}</td>
         <td>${fmt(v.favorites)}</td>
-        <td>${fmt(v.next_day_views)}</td>
         <td>${pct(v.engagement_rate)}</td>
         <td>${pwViewsCell(v)}</td>
         <td>${pct(pwLatestMetric(v, 'full_video_watched_rate'))}</td>

@@ -1300,7 +1300,6 @@ _MATRIX_VIDEO_SORT_FIELDS = {
     "comments": "v.comments",
     "shares": "v.shares",
     "favorites": "v.favorites",
-    "next_day_views": "next_day_views",
     "engagement_rate": "(CASE WHEN v.video_views > 0 THEN (v.likes + v.comments + v.shares + v.favorites)::numeric / v.video_views ELSE NULL END)",
     "full_video_watched_rate": "lw.full_video_watched_rate",
     "average_time_watched": "lw.average_time_watched",
@@ -1345,10 +1344,6 @@ def list_matrix_videos(
     joins_sql = """
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
-        LEFT JOIN tiktok_official_video_daily_snapshots d
-            ON d.business_id = v.business_id
-            AND d.item_id = v.item_id
-            AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
     """
     base_sql = f"{joins_sql} WHERE {where_sql}"
 
@@ -1379,8 +1374,7 @@ def list_matrix_videos(
         f"""
         SELECT
             v.*,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
-            d.video_views AS next_day_views
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
         {joins_sql}
         LEFT JOIN LATERAL (
             SELECT full_video_watched_rate, average_time_watched,
@@ -1822,14 +1816,9 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         f"""
         SELECT
             v.*,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
-            d.video_views AS next_day_views
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
-        LEFT JOIN tiktok_official_video_daily_snapshots d
-            ON d.business_id = v.business_id
-            AND d.item_id = v.item_id
-            AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
         WHERE {where_sql}
         ORDER BY v.create_time DESC NULLS LAST, v.updated_at DESC
         LIMIT %s
@@ -1864,7 +1853,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
     headers = [
         "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
-        "账号ID", "视频ID", "播放量（最新）", "点赞", "评论", "转发", "收藏", "次日播放量", "互动率（最新）",
+        "账号ID", "视频ID", "播放量（最新）", "点赞", "评论", "转发", "收藏", "互动率（最新）",
         "发布后播放量-3h", "发布后播放量-24h", "发布后播放量-48h", "发布后播放量-72h",
         "完播率（最新窗口）", "平均观看时长（最新窗口）", "发布后互动率（最新窗口）", "Distribution Rate（最新窗口）",
     ]
@@ -1910,7 +1899,6 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 int(row.get("comments") or 0),
                 int(row.get("shares") or 0),
                 int(row.get("favorites") or 0),
-                row.get("next_day_views"),
                 round(engagement_rate, 4),
                 *pw_views,
                 latest_window.get("full_video_watched_rate") if latest_window else None,
