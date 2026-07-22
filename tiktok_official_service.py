@@ -1293,7 +1293,25 @@ def _extract_hashtags(caption: str | None) -> list[str]:
     return _HASHTAG_RE.findall(caption)
 
 
-def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+_MATRIX_VIDEO_SORT_FIELDS = {
+    "create_time": "v.create_time",
+    "video_views": "v.video_views",
+    "next_day_views": "next_day_views",
+    "engagement_rate": "(CASE WHEN v.video_views > 0 THEN (v.likes + v.comments + v.shares + v.favorites)::numeric / v.video_views ELSE NULL END)",
+    "full_video_watched_rate": "lw.full_video_watched_rate",
+    "average_time_watched": "lw.average_time_watched",
+    "pw_engagement_rate": "lw.pw_engagement_rate",
+    "distribution_rate": "lw.distribution_rate",
+}
+
+
+def list_matrix_videos(
+    filters: dict[str, Any] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort: str = "create_time",
+    order: str = "desc",
+) -> dict[str, Any]:
     filters = filters or {}
     where, params = _matrix_account_filters_sql(filters)
 
@@ -1320,15 +1338,15 @@ def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, o
 
     where_sql = " AND ".join(where)
 
-    base_sql = f"""
+    joins_sql = """
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         LEFT JOIN tiktok_official_video_daily_snapshots d
             ON d.business_id = v.business_id
             AND d.item_id = v.item_id
             AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
-        WHERE {where_sql}
     """
+    base_sql = f"{joins_sql} WHERE {where_sql}"
 
     total_row = db.query_one(f"SELECT COUNT(*) AS count {base_sql}", tuple(params))
     total = int((total_row or {}).get("count") or 0)
@@ -1348,14 +1366,28 @@ def list_matrix_videos(filters: dict[str, Any] | None = None, limit: int = 50, o
     total_engagement = int(summary_row.get("total_engagement") or 0)
     overall_engagement_rate = (total_engagement / total_views) if total_views else 0.0
 
+    sort_field = sort if sort in _MATRIX_VIDEO_SORT_FIELDS else "create_time"
+    sort_dir = "ASC" if str(order).strip().lower() == "asc" else "DESC"
+    sort_expr = _MATRIX_VIDEO_SORT_FIELDS[sort_field]
+    sort_order_sql = f"{sort_expr} {sort_dir} NULLS LAST, v.create_time DESC NULLS LAST"
+
     rows = db.query_all(
         f"""
         SELECT
             v.*,
             a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
             d.video_views AS next_day_views
-        {base_sql}
-        ORDER BY v.create_time DESC NULLS LAST, v.updated_at DESC
+        {joins_sql}
+        LEFT JOIN LATERAL (
+            SELECT full_video_watched_rate, average_time_watched,
+                   engagement_rate AS pw_engagement_rate, distribution_rate
+            FROM tiktok_official_video_publish_window_snapshots w
+            WHERE w.business_id = v.business_id AND w.item_id = v.item_id AND w.captured_at IS NOT NULL
+            ORDER BY w.window_hours DESC
+            LIMIT 1
+        ) lw ON true
+        WHERE {where_sql}
+        ORDER BY {sort_order_sql}
         LIMIT %s OFFSET %s
         """,
         tuple(params + [limit, offset]),
@@ -1801,10 +1833,36 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         tuple(params + [_MATRIX_QUERY_EXPORT_MAX_ROWS]),
     ) or []
 
+    window_rows = []
+    windows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    if rows:
+        pairs = [(r["business_id"], r["item_id"]) for r in rows]
+        window_rows = db.query_all(
+            """
+            SELECT business_id, item_id, window_hours, captured_at, video_views, likes, comments,
+                   shares, favorites, reach, total_time_watched, average_time_watched,
+                   full_video_watched_rate, engagement_rate, followers_count_snapshot, distribution_rate
+            FROM tiktok_official_video_publish_window_snapshots
+            WHERE (business_id, item_id) IN %s
+            ORDER BY business_id, item_id, window_hours
+            """,
+            (tuple(pairs),),
+        ) or []
+        for w in window_rows:
+            windows_by_key.setdefault((w["business_id"], w["item_id"]), []).append(w)
+
+    def _latest_captured_window(key):
+        captured = [w for w in windows_by_key.get(key, []) if w.get("captured_at") is not None]
+        if not captured:
+            return None
+        return max(captured, key=lambda w: w["window_hours"])
+
     headers = [
         "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
         "账号ID", "视频ID", "播放量（最新）", "次日播放量", "互动率（最新）",
+        "发布后播放量-3h", "发布后播放量-24h", "发布后播放量-48h", "发布后播放量-72h",
+        "完播率（最新窗口）", "平均观看时长（最新窗口）", "发布后互动率（最新窗口）", "Distribution Rate（最新窗口）",
     ]
 
     wb = Workbook()
@@ -1822,6 +1880,13 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         views = int(row.get("video_views") or 0)
         engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
         engagement_rate = (engagement / views) if views else 0.0
+        key = (row["business_id"], row["item_id"])
+        windows_for_video = {w["window_hours"]: w for w in windows_by_key.get(key, [])}
+        pw_views = []
+        for h in (3, 24, 48, 72):
+            w = windows_for_video.get(h)
+            pw_views.append(w.get("video_views") if (w and w.get("captured_at") is not None) else None)
+        latest_window = _latest_captured_window(key)
         ws.append(
             [
                 row.get("task_no") or "",
@@ -1839,6 +1904,11 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 views,
                 row.get("next_day_views"),
                 round(engagement_rate, 4),
+                *pw_views,
+                latest_window.get("full_video_watched_rate") if latest_window else None,
+                latest_window.get("average_time_watched") if latest_window else None,
+                latest_window.get("engagement_rate") if latest_window else None,
+                latest_window.get("distribution_rate") if latest_window else None,
             ]
         )
     ws.freeze_panes = "A2"
@@ -1856,22 +1926,10 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         cell.font = header_font
 
     if rows:
-        pairs = [(r["business_id"], r["item_id"]) for r in rows]
         account_label_map = {
             (r["business_id"], r["item_id"]): (r.get("account_alias") or r.get("account_name") or r.get("display_name") or r.get("business_id"))
             for r in rows
         }
-        window_rows = db.query_all(
-            """
-            SELECT business_id, item_id, window_hours, captured_at, video_views, likes, comments,
-                   shares, favorites, reach, total_time_watched, average_time_watched,
-                   full_video_watched_rate, engagement_rate, followers_count_snapshot, distribution_rate
-            FROM tiktok_official_video_publish_window_snapshots
-            WHERE (business_id, item_id) IN %s
-            ORDER BY business_id, item_id, window_hours
-            """,
-            (tuple(pairs),),
-        ) or []
         for w in window_rows:
             key = (w["business_id"], w["item_id"])
             captured = w.get("captured_at") is not None

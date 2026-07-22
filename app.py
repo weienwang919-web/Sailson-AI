@@ -9602,7 +9602,11 @@ def api_tiktok_official_matrix_videos():
         offset = int(request.args.get('offset') or 0)
         limit = max(1, min(limit, 500))
         offset = max(0, offset)
-        result = tiktok_official_service.list_matrix_videos(filters=filters, limit=limit, offset=offset)
+        sort = request.args.get('sort') or 'create_time'
+        order = request.args.get('order') or 'desc'
+        result = tiktok_official_service.list_matrix_videos(
+            filters=filters, limit=limit, offset=offset, sort=sort, order=order
+        )
         return jsonify({
             'status': 'success',
             'videos': _json_safe_rows(result['videos']),

@@ -119,6 +119,10 @@
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { border-bottom: 1px solid var(--border-soft); padding: 12px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
     th { background: var(--card-bg); color: var(--text-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; position: sticky; top: 0; z-index: 1; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { color: var(--text-primary); }
+    th.sortable .sort-arrow { display: inline-block; margin-left: 3px; font-size: 9px; opacity: .5; }
+    th.sortable.sort-active .sort-arrow { opacity: 1; color: var(--accent, #4472C4); }
     tbody tr:hover { background: rgba(15,23,42,.025); }
     .table-wrap { overflow: auto; max-height: 640px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); margin-top: 18px; }
     .muted { color: var(--text-tertiary); }
@@ -290,20 +294,20 @@
             <th>国家</th>
             <th>账号类型</th>
             <th>对应KOL/Campaign</th>
-            <th>作品发布时间</th>
+            <th class="sortable" data-sort="create_time" onclick="setVideoSort('create_time')">作品发布时间<span class="sort-arrow"></span></th>
             <th>作品标题/文案</th>
             <th>话题标签</th>
             <th>Spark code</th>
             <th>账号ID</th>
             <th>视频ID</th>
-            <th>播放量（最新）</th>
-            <th>次日播放量</th>
-            <th>互动率（最新）</th>
+            <th class="sortable" data-sort="video_views" onclick="setVideoSort('video_views')">播放量（最新）<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="next_day_views" onclick="setVideoSort('next_day_views')">次日播放量<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="engagement_rate" onclick="setVideoSort('engagement_rate')">互动率（最新）<span class="sort-arrow"></span></th>
             <th>发布后播放量（3h/24h/48h/72h）</th>
-            <th>完播率</th>
-            <th>平均观看时长</th>
-            <th>发布后互动率</th>
-            <th>Distribution Rate</th>
+            <th class="sortable" data-sort="full_video_watched_rate" onclick="setVideoSort('full_video_watched_rate')">完播率<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="average_time_watched" onclick="setVideoSort('average_time_watched')">平均观看时长<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="pw_engagement_rate" onclick="setVideoSort('pw_engagement_rate')">发布后互动率<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="distribution_rate" onclick="setVideoSort('distribution_rate')">Distribution Rate<span class="sort-arrow"></span></th>
           </tr>
         </thead>
         <tbody id="videos-body"></tbody>
@@ -335,6 +339,7 @@ let filterBarOpen = false;
 
 let videos = [];
 let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '' };
+let videoSort = { field: 'create_time', order: 'desc' };
 let limit = 50;
 let offset = 0;
 let total = 0;
@@ -797,6 +802,8 @@ async function loadVideos() {
     Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
     params.set('limit', limit);
     params.set('offset', offset);
+    params.set('sort', videoSort.field);
+    params.set('order', videoSort.order);
     const data = await fetchJson('/api/tiktok-official/matrix-videos?' + params.toString());
     videos = data.videos || [];
     total = data.total || 0;
@@ -809,6 +816,32 @@ async function loadVideos() {
     statusEl.classList.add('err');
     statusEl.textContent = '加载失败：' + String(e.message || e);
   }
+}
+
+function setVideoSort(field) {
+  if (videoSort.field === field) {
+    videoSort.order = videoSort.order === 'desc' ? 'asc' : 'desc';
+  } else {
+    videoSort.field = field;
+    videoSort.order = 'desc';
+  }
+  offset = 0;
+  updateSortHeaders();
+  loadVideos();
+}
+window.setVideoSort = setVideoSort;
+
+function updateSortHeaders() {
+  document.querySelectorAll('th.sortable').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === videoSort.field) {
+      th.classList.add('sort-active');
+      if (arrow) arrow.textContent = videoSort.order === 'desc' ? '▼' : '▲';
+    } else {
+      th.classList.remove('sort-active');
+      if (arrow) arrow.textContent = '';
+    }
+  });
 }
 
 function accountTypeBadge(type) {
@@ -995,6 +1028,7 @@ async function openPublishWindowsModal(businessId, itemId) {
 window.openPublishWindowsModal = openPublishWindowsModal;
 
 (async function init() {
+  updateSortHeaders();
   await loadAccountsForPicker();
   refreshAll();
 })();
