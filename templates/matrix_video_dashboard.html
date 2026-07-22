@@ -119,10 +119,17 @@
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { border-bottom: 1px solid var(--border-soft); padding: 12px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
     th { background: var(--card-bg); color: var(--text-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; position: sticky; top: 0; z-index: 1; }
-    th.sortable { cursor: pointer; user-select: none; }
-    th.sortable:hover { color: var(--text-primary); }
-    th.sortable .sort-arrow { display: inline-block; margin-left: 3px; font-size: 9px; opacity: .5; }
-    th.sortable.sort-active .sort-arrow { opacity: 1; color: var(--accent, #4472C4); }
+    th.sortable { position: relative; padding-right: 26px; }
+    th.sortable .sort-indicator { display: inline-block; margin-left: 3px; font-size: 10px; color: var(--accent, #4472C4); font-weight: 700; }
+    th.sortable.sort-active { color: var(--text-primary); }
+    th.sortable .sort-toggle { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 11px; line-height: 1; padding: 5px 6px; border-radius: 4px; opacity: .55; }
+    th.sortable .sort-toggle:hover { opacity: 1; background: rgba(15,23,42,.06); }
+    th.sortable.sort-active .sort-toggle { opacity: 1; color: var(--accent, #4472C4); }
+    th.sortable .sort-menu { display: none; position: absolute; top: 100%; right: 0; margin-top: 2px; background: #fff; border: 1px solid var(--border-soft); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); z-index: 30; min-width: 92px; overflow: hidden; }
+    th.sortable .sort-menu.open { display: block; }
+    th.sortable .sort-menu-item { padding: 9px 14px; cursor: pointer; font-size: 12.5px; font-weight: 500; text-transform: none; letter-spacing: normal; color: var(--text-primary); white-space: nowrap; }
+    th.sortable .sort-menu-item:hover { background: rgba(68,114,196,.1); }
+    th.sortable .sort-menu-item.active { color: var(--accent, #4472C4); font-weight: 700; }
     tbody tr:hover { background: rgba(15,23,42,.025); }
     .table-wrap { overflow: auto; max-height: 640px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); margin-top: 18px; }
     .muted { color: var(--text-tertiary); }
@@ -294,20 +301,24 @@
             <th>国家</th>
             <th>账号类型</th>
             <th>对应KOL/Campaign</th>
-            <th class="sortable" data-sort="create_time" onclick="setVideoSort('create_time')">作品发布时间<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="create_time">作品发布时间<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'create_time')">▾</span><div class="sort-menu" id="sort-menu-create_time"><div class="sort-menu-item" onclick="applySortOption(event, 'create_time', 'desc')">▼ 从新到旧</div><div class="sort-menu-item" onclick="applySortOption(event, 'create_time', 'asc')">▲ 从旧到新</div></div></th>
             <th>作品标题/文案</th>
             <th>话题标签</th>
             <th>Spark code</th>
             <th>账号ID</th>
             <th>视频ID</th>
-            <th class="sortable" data-sort="video_views" onclick="setVideoSort('video_views')">播放量（最新）<span class="sort-arrow"></span></th>
-            <th class="sortable" data-sort="next_day_views" onclick="setVideoSort('next_day_views')">次日播放量<span class="sort-arrow"></span></th>
-            <th class="sortable" data-sort="engagement_rate" onclick="setVideoSort('engagement_rate')">互动率（最新）<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="video_views">播放量（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'video_views')">▾</span><div class="sort-menu" id="sort-menu-video_views"><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="likes">点赞<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'likes')">▾</span><div class="sort-menu" id="sort-menu-likes"><div class="sort-menu-item" onclick="applySortOption(event, 'likes', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'likes', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="comments">评论<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'comments')">▾</span><div class="sort-menu" id="sort-menu-comments"><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="shares">转发<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'shares')">▾</span><div class="sort-menu" id="sort-menu-shares"><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="favorites">收藏<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'favorites')">▾</span><div class="sort-menu" id="sort-menu-favorites"><div class="sort-menu-item" onclick="applySortOption(event, 'favorites', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'favorites', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="next_day_views">次日播放量<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'next_day_views')">▾</span><div class="sort-menu" id="sort-menu-next_day_views"><div class="sort-menu-item" onclick="applySortOption(event, 'next_day_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'next_day_views', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="engagement_rate">互动率（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'engagement_rate')">▾</span><div class="sort-menu" id="sort-menu-engagement_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'engagement_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'engagement_rate', 'asc')">▲ 从低到高</div></div></th>
             <th>发布后播放量（3h/24h/48h/72h）</th>
-            <th class="sortable" data-sort="full_video_watched_rate" onclick="setVideoSort('full_video_watched_rate')">完播率<span class="sort-arrow"></span></th>
-            <th class="sortable" data-sort="average_time_watched" onclick="setVideoSort('average_time_watched')">平均观看时长<span class="sort-arrow"></span></th>
-            <th class="sortable" data-sort="pw_engagement_rate" onclick="setVideoSort('pw_engagement_rate')">发布后互动率<span class="sort-arrow"></span></th>
-            <th class="sortable" data-sort="distribution_rate" onclick="setVideoSort('distribution_rate')">Distribution Rate<span class="sort-arrow"></span></th>
+            <th class="sortable" data-sort="full_video_watched_rate">完播率<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'full_video_watched_rate')">▾</span><div class="sort-menu" id="sort-menu-full_video_watched_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'full_video_watched_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'full_video_watched_rate', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="average_time_watched">平均观看时长<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'average_time_watched')">▾</span><div class="sort-menu" id="sort-menu-average_time_watched"><div class="sort-menu-item" onclick="applySortOption(event, 'average_time_watched', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'average_time_watched', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="pw_engagement_rate">发布后互动率<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'pw_engagement_rate')">▾</span><div class="sort-menu" id="sort-menu-pw_engagement_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'pw_engagement_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'pw_engagement_rate', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="distribution_rate">Distribution Rate<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'distribution_rate')">▾</span><div class="sort-menu" id="sort-menu-distribution_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'distribution_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'distribution_rate', 'asc')">▲ 从低到高</div></div></th>
           </tr>
         </thead>
         <tbody id="videos-body"></tbody>
@@ -818,29 +829,43 @@ async function loadVideos() {
   }
 }
 
-function setVideoSort(field) {
-  if (videoSort.field === field) {
-    videoSort.order = videoSort.order === 'desc' ? 'asc' : 'desc';
-  } else {
-    videoSort.field = field;
-    videoSort.order = 'desc';
-  }
+function toggleSortMenu(evt, field) {
+  evt.stopPropagation();
+  document.querySelectorAll('.sort-menu.open').forEach(m => {
+    if (m.id !== 'sort-menu-' + field) m.classList.remove('open');
+  });
+  const menu = document.getElementById('sort-menu-' + field);
+  if (menu) menu.classList.toggle('open');
+}
+window.toggleSortMenu = toggleSortMenu;
+
+function applySortOption(evt, field, order) {
+  evt.stopPropagation();
+  videoSort.field = field;
+  videoSort.order = order;
   offset = 0;
+  document.querySelectorAll('.sort-menu.open').forEach(m => m.classList.remove('open'));
   updateSortHeaders();
   loadVideos();
 }
-window.setVideoSort = setVideoSort;
+window.applySortOption = applySortOption;
+
+document.addEventListener('click', () => {
+  document.querySelectorAll('.sort-menu.open').forEach(m => m.classList.remove('open'));
+});
 
 function updateSortHeaders() {
   document.querySelectorAll('th.sortable').forEach(th => {
-    const arrow = th.querySelector('.sort-arrow');
-    if (th.dataset.sort === videoSort.field) {
-      th.classList.add('sort-active');
-      if (arrow) arrow.textContent = videoSort.order === 'desc' ? '▼' : '▲';
-    } else {
-      th.classList.remove('sort-active');
-      if (arrow) arrow.textContent = '';
-    }
+    const field = th.dataset.sort;
+    const indicator = th.querySelector('.sort-indicator');
+    const isActive = field === videoSort.field;
+    th.classList.toggle('sort-active', isActive);
+    if (indicator) indicator.textContent = isActive ? (videoSort.order === 'desc' ? '▼' : '▲') : '';
+    th.querySelectorAll('.sort-menu-item').forEach(item => {
+      const wantsDesc = item.textContent.indexOf('从高到低') !== -1 || item.textContent.indexOf('从新到旧') !== -1;
+      const itemOrder = wantsDesc ? 'desc' : 'asc';
+      item.classList.toggle('active', isActive && videoSort.order === itemOrder);
+    });
   });
 }
 
@@ -853,7 +878,7 @@ function accountTypeBadge(type) {
 function renderVideos() {
   const body = document.getElementById('videos-body');
   if (!videos.length) {
-    body.innerHTML = '<tr><td colspan="21" class="muted">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="25" class="muted">暂无数据</td></tr>';
     return;
   }
   body.innerHTML = videos.map((v, idx) => {
@@ -884,6 +909,10 @@ function renderVideos() {
         <td>${esc(fmt(v.business_id))}</td>
         <td>${esc(fmt(v.item_id))}</td>
         <td>${fmt(v.video_views)}</td>
+        <td>${fmt(v.likes)}</td>
+        <td>${fmt(v.comments)}</td>
+        <td>${fmt(v.shares)}</td>
+        <td>${fmt(v.favorites)}</td>
         <td>${fmt(v.next_day_views)}</td>
         <td>${pct(v.engagement_rate)}</td>
         <td>${pwViewsCell(v)}</td>

@@ -1296,6 +1296,10 @@ def _extract_hashtags(caption: str | None) -> list[str]:
 _MATRIX_VIDEO_SORT_FIELDS = {
     "create_time": "v.create_time",
     "video_views": "v.video_views",
+    "likes": "v.likes",
+    "comments": "v.comments",
+    "shares": "v.shares",
+    "favorites": "v.favorites",
     "next_day_views": "next_day_views",
     "engagement_rate": "(CASE WHEN v.video_views > 0 THEN (v.likes + v.comments + v.shares + v.favorites)::numeric / v.video_views ELSE NULL END)",
     "full_video_watched_rate": "lw.full_video_watched_rate",
@@ -1860,7 +1864,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
     headers = [
         "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
-        "账号ID", "视频ID", "播放量（最新）", "次日播放量", "互动率（最新）",
+        "账号ID", "视频ID", "播放量（最新）", "点赞", "评论", "转发", "收藏", "次日播放量", "互动率（最新）",
         "发布后播放量-3h", "发布后播放量-24h", "发布后播放量-48h", "发布后播放量-72h",
         "完播率（最新窗口）", "平均观看时长（最新窗口）", "发布后互动率（最新窗口）", "Distribution Rate（最新窗口）",
     ]
@@ -1902,6 +1906,10 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 row.get("business_id"),
                 row.get("item_id"),
                 views,
+                int(row.get("likes") or 0),
+                int(row.get("comments") or 0),
+                int(row.get("shares") or 0),
+                int(row.get("favorites") or 0),
                 row.get("next_day_views"),
                 round(engagement_rate, 4),
                 *pw_views,
