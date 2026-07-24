@@ -1671,23 +1671,43 @@ def matrix_snapshot_delta_range(
         ) or {}
         return int(row.get("views") or 0), int(row.get("engagement") or 0)
 
-    def _video_keys(snapshot_date):
+    def _video_metrics(snapshot_date):
         rows = db.query_all(
             f"""
-            SELECT DISTINCT d.business_id, d.item_id
+            SELECT d.business_id, d.item_id, d.video_views AS views,
+                   (d.likes + d.comments + d.shares + d.favorites) AS engagement
             FROM tiktok_official_video_daily_snapshots d
             LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
             WHERE {where_sql} AND d.snapshot_date = %s
             """,
             tuple(params + [snapshot_date]),
         ) or []
-        return {(r["business_id"], r["item_id"]) for r in rows}
+        return {(r["business_id"], r["item_id"]): (int(r["views"] or 0), int(r["engagement"] or 0)) for r in rows}
+
+    def _deltas(prev_date, cur_date):
+        # 当天快照同步未跑完时，部分视频会暂时不在当天快照里（不是真的下降）。
+        # 增量只按两天都有数据的视频交集比较，避免把"还没同步到"误判成"播放量归零"。
+        prev_map = _video_metrics(prev_date)
+        cur_map = _video_metrics(cur_date)
+        cur_views_total = sum(v for v, _ in cur_map.values())
+        cur_engagement_total = sum(e for _, e in cur_map.values())
+        matched_prev_views = sum(prev_map[k][0] for k in cur_map if k in prev_map)
+        matched_prev_engagement = sum(prev_map[k][1] for k in cur_map if k in prev_map)
+        return {
+            "new_video_count": len(cur_map.keys() - prev_map.keys()),
+            "views_delta": cur_views_total - matched_prev_views,
+            "engagement_delta": cur_engagement_total - matched_prev_engagement,
+            "cur_views_total": cur_views_total,
+            "cur_engagement_total": cur_engagement_total,
+        }
 
     views_start, engagement_start = _totals(date_from_actual)
     views_end, engagement_end = _totals(date_to_actual)
-    new_video_count = 0
-    if date_from_actual != date_to_actual:
-        new_video_count = len(_video_keys(date_to_actual) - _video_keys(date_from_actual))
+    range_delta = (
+        _deltas(date_from_actual, date_to_actual)
+        if date_from_actual != date_to_actual
+        else {"new_video_count": 0, "views_delta": 0, "engagement_delta": 0}
+    )
 
     rate_start = (engagement_start / views_start) if views_start else 0.0
     rate_end = (engagement_end / views_end) if views_end else 0.0
@@ -1697,15 +1717,13 @@ def matrix_snapshot_delta_range(
     daily = []
     for i in range(1, len(range_dates)):
         prev_date, cur_date = range_dates[i - 1], range_dates[i]
-        prev_views, prev_engagement = _totals(prev_date)
-        cur_views, cur_engagement = _totals(cur_date)
-        new_count = len(_video_keys(cur_date) - _video_keys(prev_date))
+        d = _deltas(prev_date, cur_date)
         daily.append({
             "date": cur_date.isoformat() if hasattr(cur_date, "isoformat") else cur_date,
-            "new_video_count": new_count,
-            "views_delta": cur_views - prev_views,
-            "engagement_delta": cur_engagement - prev_engagement,
-            "engagement_rate": (cur_engagement / cur_views) if cur_views else 0.0,
+            "new_video_count": d["new_video_count"],
+            "views_delta": d["views_delta"],
+            "engagement_delta": d["engagement_delta"],
+            "engagement_rate": (d["cur_engagement_total"] / d["cur_views_total"]) if d["cur_views_total"] else 0.0,
         })
 
     return {
@@ -1713,9 +1731,9 @@ def matrix_snapshot_delta_range(
         "date_to": range_to.isoformat(),
         "date_from_actual": date_from_actual.isoformat() if hasattr(date_from_actual, "isoformat") else date_from_actual,
         "date_to_actual": date_to_actual.isoformat() if hasattr(date_to_actual, "isoformat") else date_to_actual,
-        "new_video_count": new_video_count,
-        "views_delta": views_end - views_start,
-        "engagement_delta": engagement_end - engagement_start,
+        "new_video_count": range_delta["new_video_count"],
+        "views_delta": range_delta["views_delta"],
+        "engagement_delta": range_delta["engagement_delta"],
         "engagement_rate_start": rate_start,
         "engagement_rate_end": rate_end,
         "engagement_rate_change_pct": rate_change_pct,
