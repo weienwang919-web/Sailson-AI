@@ -9703,6 +9703,26 @@ def api_tiktok_official_matrix_snapshot_delta_range():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/matrix-videos/cumulative-views-range')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_cumulative_views_range():
+    try:
+        filters = {
+            'region': request.args.get('region') or '',
+            'account_type': request.args.get('account_type') or '',
+            'account_ids': _matrix_account_ids_arg(),
+        }
+        result = tiktok_official_service.matrix_cumulative_views_range(
+            filters=filters,
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix cumulative-views-range failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/tags', methods=['PATCH'])
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_video_tags(business_id, item_id):

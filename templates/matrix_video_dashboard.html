@@ -268,6 +268,21 @@
     <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
   </div>
 
+  <div class="board" id="board-cumulative">
+    <div class="board-head">
+      <h2>累计总播放量</h2>
+      <div class="date-range-controls">
+        <input type="date" id="cum-date-from" onchange="loadCumulativeViews()">
+        <span class="date-sep">→</span>
+        <input type="date" id="cum-date-to" onchange="loadCumulativeViews()">
+        <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
+        <button class="btn-chip" onclick="clearCumulativeRange()">清除</button>
+      </div>
+    </div>
+    <div class="chart-wrap" id="cum-chart-wrap" style="display:none;"><canvas id="cumChart"></canvas></div>
+  </div>
+
   <div class="board" id="board-videos">
     <div class="board-head"><h2>视频明细</h2></div>
     <div class="search-controls">
@@ -379,6 +394,7 @@ let debounceTimer = null;
 
 let pubChartInstance = null;
 let deltaChartInstance = null;
+let cumChartInstance = null;
 
 const CHART_TEXT_COLOR = '#6b7280';
 const CHART_GRID_COLOR = 'rgba(15,23,42,0.06)';
@@ -662,6 +678,7 @@ function refreshAll() {
   loadOverview();
   loadPublishRange();
   loadSnapshotDelta();
+  loadCumulativeViews();
   loadVideos();
 }
 
@@ -749,7 +766,7 @@ function renderPublishRange(data) {
         { label: '互动量', data: daily.map(d => d.engagement), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
       ],
     },
-    options: chartOptions(),
+    options: chartOptions(false),
   });
 }
 
@@ -820,11 +837,74 @@ function renderSnapshotDelta(d) {
         { label: '新增互动量', data: daily.map(x => x.engagement_delta), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
       ],
     },
-    options: chartOptions(),
+    options: chartOptions(false),
   });
 }
 
-function chartOptions() {
+/* ---------------- 看板四：每日累计总VV ---------------- */
+
+function setCumulativeQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('cum-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('cum-date-to').value = to.toISOString().slice(0, 10);
+  loadCumulativeViews();
+}
+
+function clearCumulativeRange() {
+  document.getElementById('cum-date-from').value = '';
+  document.getElementById('cum-date-to').value = '';
+  loadCumulativeViews();
+}
+
+async function loadCumulativeViews() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const df = document.getElementById('cum-date-from').value;
+    const dt = document.getElementById('cum-date-to').value;
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/cumulative-views-range?' + params.toString());
+    document.getElementById('cum-date-from').value = data.date_from || '';
+    document.getElementById('cum-date-to').value = data.date_to || '';
+    renderCumulativeViews(data);
+  } catch (e) {
+    renderCumulativeViews({ daily: [] });
+  }
+}
+
+function renderCumulativeViews(data) {
+  const daily = data.daily || [];
+  const wrap = document.getElementById('cum-chart-wrap');
+  if (daily.length < 2) {
+    wrap.style.display = 'none';
+    if (cumChartInstance) { cumChartInstance.destroy(); cumChartInstance = null; }
+    return;
+  }
+  wrap.style.display = 'block';
+  const ctx = document.getElementById('cumChart').getContext('2d');
+  if (cumChartInstance) cumChartInstance.destroy();
+  cumChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => d.date),
+      datasets: [
+        { label: '累计播放量', data: daily.map(d => d.cumulative_views), borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+      ],
+    },
+    options: chartOptions(true),
+  });
+}
+
+function chartOptions(singleAxis) {
+  const scales = {
+    x: { ticks: { color: CHART_TEXT_COLOR, font: { size: 11 } }, grid: { color: CHART_GRID_COLOR } },
+    y: { position: 'left', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { color: CHART_GRID_COLOR } },
+  };
+  if (!singleAxis) {
+    scales.y1 = { position: 'right', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { display: false } };
+  }
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -837,11 +917,7 @@ function chartOptions() {
         },
       },
     },
-    scales: {
-      x: { ticks: { color: CHART_TEXT_COLOR, font: { size: 11 } }, grid: { color: CHART_GRID_COLOR } },
-      y: { position: 'left', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { color: CHART_GRID_COLOR } },
-      y1: { position: 'right', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { display: false } },
-    },
+    scales,
   };
 }
 

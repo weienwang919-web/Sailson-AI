@@ -1723,6 +1723,50 @@ def matrix_snapshot_delta_range(
     }
 
 
+def matrix_cumulative_views_range(
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
+    """按视频发布日期截止到某日的累计总播放量（只增不减的曲线，非当日新增）。"""
+    filters = filters or {}
+    range_from, range_to = _matrix_date_range(date_from, date_to, days=30)
+    where, params = _matrix_account_filters_sql(filters)
+    where.append("v.create_time IS NOT NULL")
+    where.append("v.create_time::date <= %s")
+    params.append(range_to.isoformat())
+    where_sql = " AND ".join(where)
+
+    rows = db.query_all(
+        f"""
+        WITH daily AS (
+            SELECT v.create_time::date AS date, COALESCE(SUM(v.video_views), 0) AS views
+            FROM tiktok_official_video_snapshots v
+            LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+            WHERE {where_sql}
+            GROUP BY v.create_time::date
+        )
+        SELECT date, SUM(views) OVER (ORDER BY date) AS cumulative_views
+        FROM daily
+        ORDER BY date
+        """,
+        tuple(params),
+    ) or []
+
+    daily = [
+        {
+            "date": r["date"].isoformat() if hasattr(r["date"], "isoformat") else r["date"],
+            "cumulative_views": int(r["cumulative_views"] or 0),
+        }
+        for r in rows
+        if r["date"] >= range_from
+    ]
+
+    return {
+        "date_from": range_from.isoformat(),
+        "date_to": range_to.isoformat(),
+        "daily": daily,
+    }
+
+
 def build_matrix_export(export_date) -> bytes:
     rows = db.query_all(
         """
