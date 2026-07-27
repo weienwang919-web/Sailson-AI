@@ -657,7 +657,7 @@ function renderAccountPicker() {
     const allSelected = idsOfRegion.length > 0 && idsOfRegion.every(id => selectedAccountIds.has(id));
     const chips = list.map(a => {
       const selected = selectedAccountIds.has(a.business_id);
-      const label = a.account_alias || a.account_name || a.display_name || a.business_id;
+      const label = a.display_name || a.account_alias || a.account_name || a.business_id;
       const initial = esc(label).slice(0, 1).toUpperCase();
       return `<button class="account-chip ${selected ? 'selected' : ''}" title="${esc(label)}" onclick="toggleAccount('${esc(a.business_id)}')">
         <span class="account-chip-avatar">${initial}</span>
@@ -1053,7 +1053,7 @@ function renderVideos() {
         <td>${offset + idx + 1}</td>
         <td><input class="tag-input" value="${fmt(v.task_no) === '-' ? '' : esc(v.task_no)}" placeholder="-" onchange="saveTags('${esc(v.business_id)}', '${esc(v.item_id)}', this, null)"></td>
         <td>${v.share_url ? `<a class="link" href="${esc(v.share_url)}" target="_blank">链接 ↗</a>` : '<span class="muted">-</span>'}</td>
-        <td>${esc(fmt(v.account_alias || v.account_name || v.display_name))}</td>
+        <td>${esc(fmt(v.display_name || v.account_alias || v.account_name))}</td>
         <td>${v.region ? `<span class="badge badge-region">${esc(v.region)}</span>` : '<span class="muted">-</span>'}</td>
         <td>${accountTypeBadge(v.account_type)}</td>
         <td><input class="tag-input" value="${fmt(v.kol_campaign) === '-' ? '' : esc(v.kol_campaign)}" placeholder="-" onchange="saveTags('${esc(v.business_id)}', '${esc(v.item_id)}', null, this)"></td>

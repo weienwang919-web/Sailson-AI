@@ -1790,7 +1790,7 @@ def build_matrix_export(export_date) -> bytes:
         """
         SELECT
             v.*,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type, a.profile_deep_link
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE v.create_time::date = %s
@@ -1819,11 +1819,11 @@ def build_matrix_export(export_date) -> bytes:
             next_day_map[(r["business_id"], r["item_id"])] = r.get("next_day_views")
 
     headers = [
-        "序号", "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
+        "序号", "关联任务编号", "所属矩阵账号", "国家", "账号类型",
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
-        "账号ID", "视频ID", "播放量（最新）", "次日播放量", "互动率（最新）",
+        "主页链接", "视频链接", "播放量（最新）", "次日播放量", "互动率（最新）",
     ]
-    ACCOUNT_COL = 4  # "所属矩阵账号"
+    ACCOUNT_COL = 3  # "所属矩阵账号"
 
     wb = Workbook()
     ws = wb.active
@@ -1838,7 +1838,7 @@ def build_matrix_export(export_date) -> bytes:
     merge_start_row = None
     prev_account = object()
     for idx, row in enumerate(rows, start=1):
-        account_name = row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id")
+        account_name = row.get("display_name") or row.get("account_alias") or row.get("account_name") or row.get("business_id")
         views = int(row.get("video_views") or 0)
         engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
         engagement_rate = (engagement / views) if views else 0.0
@@ -1846,7 +1846,6 @@ def build_matrix_export(export_date) -> bytes:
             [
                 idx,
                 row.get("task_no") or "",
-                row.get("share_url") or "",
                 account_name,
                 row.get("region") or "",
                 row.get("account_type") or "",
@@ -1855,8 +1854,8 @@ def build_matrix_export(export_date) -> bytes:
                 row.get("caption") or "",
                 " ".join(_extract_hashtags(row.get("caption"))),
                 row.get("spark_code") or "",
-                row.get("business_id"),
-                row.get("item_id"),
+                row.get("profile_deep_link") or "",
+                row.get("share_url") or "",
                 views,
                 next_day_map.get((row.get("business_id"), row.get("item_id"))),
                 round(engagement_rate, 4),
@@ -1919,7 +1918,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         f"""
         SELECT
             v.*,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type, a.profile_deep_link
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE {where_sql}
@@ -1954,9 +1953,9 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         return max(captured, key=lambda w: w["window_hours"])
 
     headers = [
-        "关联任务编号", "作品发布链接", "所属矩阵账号", "国家", "账号类型",
+        "关联任务编号", "所属矩阵账号", "国家", "账号类型",
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
-        "账号ID", "视频ID", "播放量（最新）", "点赞", "评论", "转发", "收藏", "互动率（最新）",
+        "主页链接", "视频链接", "播放量（最新）", "点赞", "评论", "转发", "收藏", "互动率（最新）",
         "发布后播放量-3h", "发布后播放量-24h", "发布后播放量-48h", "发布后播放量-72h",
         "完播率（最新窗口）", "平均观看时长（最新窗口）", "发布后互动率（最新窗口）", "Distribution Rate（最新窗口）",
     ]
@@ -1972,7 +1971,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         cell.font = header_font
 
     for row in rows:
-        account_name = row.get("account_alias") or row.get("account_name") or row.get("display_name") or row.get("business_id")
+        account_name = row.get("display_name") or row.get("account_alias") or row.get("account_name") or row.get("business_id")
         views = int(row.get("video_views") or 0)
         engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
         engagement_rate = (engagement / views) if views else 0.0
@@ -1986,7 +1985,6 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         ws.append(
             [
                 row.get("task_no") or "",
-                row.get("share_url") or "",
                 account_name,
                 row.get("region") or "",
                 row.get("account_type") or "",
@@ -1995,8 +1993,8 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 row.get("caption") or "",
                 " ".join(_extract_hashtags(row.get("caption"))),
                 row.get("spark_code") or "",
-                row.get("business_id"),
-                row.get("item_id"),
+                row.get("profile_deep_link") or "",
+                row.get("share_url") or "",
                 views,
                 int(row.get("likes") or 0),
                 int(row.get("comments") or 0),
@@ -2013,7 +2011,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
     ws.freeze_panes = "A2"
 
     window_headers = [
-        "所属矩阵账号", "账号ID", "视频ID", "发布后小时数", "采集时间",
+        "所属矩阵账号", "主页链接", "视频链接", "发布后小时数", "采集时间",
         "播放量", "点赞", "评论", "分享", "收藏", "reach",
         "总观看时长", "平均观看时长", "完播率", "互动率",
         "粉丝数（采集时）", "Distribution Rate (views/followers)",
@@ -2026,17 +2024,22 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
 
     if rows:
         account_label_map = {
-            (r["business_id"], r["item_id"]): (r.get("account_alias") or r.get("account_name") or r.get("display_name") or r.get("business_id"))
+            (r["business_id"], r["item_id"]): (r.get("display_name") or r.get("account_alias") or r.get("account_name") or r.get("business_id"))
+            for r in rows
+        }
+        link_map = {
+            (r["business_id"], r["item_id"]): (r.get("profile_deep_link") or "", r.get("share_url") or "")
             for r in rows
         }
         for w in window_rows:
             key = (w["business_id"], w["item_id"])
+            profile_link, video_link = link_map.get(key, ("", ""))
             captured = w.get("captured_at") is not None
             ws2.append(
                 [
                     account_label_map.get(key, w["business_id"]),
-                    w["business_id"],
-                    w["item_id"],
+                    profile_link,
+                    video_link,
                     w["window_hours"],
                     w.get("captured_at") if captured else "未到期/未采集",
                     w.get("video_views") if captured else None,
