@@ -641,6 +641,7 @@ def build_account_auth_url(public_base: str, state: str | None = None) -> str:
         "user.insights",
         "video.list",
         "video.insights",
+        "biz.ads.recommend",
     ]
     params = {
         "client_key": app_id,
