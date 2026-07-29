@@ -308,6 +308,12 @@
         <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
       </div>
       <div class="form-group">
+        <label>投流标记</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400;height:34px;">
+          <input type="checkbox" id="only-boosted-input" onchange="applyVideoFilters()"> 只看已标记
+        </label>
+      </div>
+      <div class="form-group">
         <label>国家/地区</label>
         <div class="region-select-wrap">
           <button type="button" class="region-select-btn" id="region-select-btn" onclick="toggleRegionMenu(event)">全部国家</button>
@@ -341,6 +347,7 @@
             <th>作品标题/文案</th>
             <th>话题标签</th>
             <th>Spark code</th>
+            <th>投流标记</th>
             <th>账号ID</th>
             <th>视频ID</th>
             <th class="sortable" data-sort="video_views">播放量（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'video_views')">▾</span><div class="sort-menu" id="sort-menu-video_views"><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'asc')">▲ 从低到高</div></div></th>
@@ -384,7 +391,7 @@ let selectedAccountIds = new Set();
 let filterBarOpen = false;
 
 let videos = [];
-let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '' };
+let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '' };
 let selectedRegions = new Set();
 let videoSort = { field: 'create_time', order: 'desc' };
 let limit = 50;
@@ -943,6 +950,7 @@ function applyVideoFilters() {
   videoFilters.date_to = document.getElementById('date-to').value || '';
   videoFilters.creator = document.getElementById('creator-input').value.trim();
   videoFilters.keyword = document.getElementById('keyword-input').value.trim();
+  videoFilters.only_boosted = document.getElementById('only-boosted-input').checked ? '1' : '';
   offset = 0;
   loadVideos();
 }
@@ -1033,7 +1041,7 @@ function accountTypeBadge(type) {
 function renderVideos() {
   const body = document.getElementById('videos-body');
   if (!videos.length) {
-    body.innerHTML = '<tr><td colspan="24" class="muted">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="25" class="muted">暂无数据</td></tr>';
     return;
   }
   body.innerHTML = videos.map((v, idx) => {
@@ -1061,6 +1069,7 @@ function renderVideos() {
         <td class="caption-cell" title="${esc(caption)}">${esc(caption)}</td>
         <td><div class="hashtags">${hashtags || '<span class="muted">-</span>'}</div></td>
         <td>${sparkCell}</td>
+        <td style="text-align:center;"><input type="checkbox" ${v.is_boosted ? 'checked' : ''} onchange="toggleBoosted('${esc(v.business_id)}', '${esc(v.item_id)}', this)"></td>
         <td>${esc(fmt(v.business_id))}</td>
         <td>${esc(fmt(v.item_id))}</td>
         <td>${fmt(v.video_views)}</td>
@@ -1090,10 +1099,7 @@ function pwViewsCell(v) {
     const val = (w && w.captured_at) ? fmt(w.video_views) : '-';
     return `<span class="pw-chip"><span class="pw-h">${h}h</span><span class="pw-v">${val}</span></span>`;
   }).join('');
-  const hasAny = windows.some(w => w.captured_at);
-  const detail = hasAny
-    ? `<button class="btn btn-ghost btn-sm" style="margin-top:4px;" onclick="openPublishWindowsModal('${esc(v.business_id)}', '${esc(v.item_id)}')">完整指标</button>`
-    : '';
+  const detail = `<button class="btn btn-ghost btn-sm" style="margin-top:4px;" onclick="openPublishWindowsModal('${esc(v.business_id)}', '${esc(v.item_id)}')">完整指标</button>`;
   return `<div class="publish-window-cell">${chips}</div>${detail}`;
 }
 
@@ -1123,6 +1129,26 @@ async function saveTags(businessId, itemId, taskInput, kolInput) {
   }
 }
 window.saveTags = saveTags;
+
+async function toggleBoosted(businessId, itemId, checkbox) {
+  const video = videos.find(v => v.business_id === businessId && v.item_id === itemId);
+  const isBoosted = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/boosted`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_boosted: isBoosted }),
+    });
+    if (video) video.is_boosted = isBoosted;
+  } catch (e) {
+    checkbox.checked = !isBoosted;
+    alert('标记失败：' + String(e.message || e));
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+window.toggleBoosted = toggleBoosted;
 
 async function generateSparkCode(businessId, itemId, btn) {
   if (!confirm('生成 Spark 授权码会真实修改该视频在 TikTok 上的广告授权状态，确认继续？')) return;
@@ -1168,42 +1194,72 @@ async function openPublishWindowsModal(businessId, itemId) {
   modal.classList.add('open');
   body.innerHTML = '<div class="muted">加载中...</div>';
   try {
-    const data = await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/publish-windows`);
-    const windows = data.windows || [];
-    if (!windows.length) {
-      body.innerHTML = '<div class="muted">该视频暂无发布后时间点数据（可能是上线前发布的老视频，未纳入采集）</div>';
-      return;
-    }
-    const rows = windows.map(w => {
-      const label = PUBLISH_WINDOW_LABELS[w.window_hours] || `${w.window_hours}小时`;
-      if (!w.captured_at) {
-        return `<tr><td>${esc(label)}</td><td colspan="9" class="muted">未到期/未采集</td></tr>`;
-      }
-      return `
-        <tr>
-          <td>${esc(label)}</td>
-          <td>${fmt(w.video_views)}</td>
-          <td>${fmt(w.likes)}</td>
-          <td>${fmt(w.comments)}</td>
-          <td>${fmt(w.shares)}</td>
-          <td>${fmt(w.reach)}</td>
-          <td>${fmt(w.average_time_watched)}</td>
-          <td>${pct(w.full_video_watched_rate)}</td>
-          <td>${pct(w.engagement_rate)}</td>
-          <td>${pct(w.distribution_rate)}</td>
-        </tr>
-      `;
-    }).join('');
-    body.innerHTML = `
-      <table class="publish-windows-table">
-        <thead>
+    const [windowData, dailyData] = await Promise.all([
+      fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/publish-windows`),
+      fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/daily-views`),
+    ]);
+    const windows = windowData.windows || [];
+    const windowsHtml = windows.length ? (() => {
+      const rows = windows.map(w => {
+        const label = PUBLISH_WINDOW_LABELS[w.window_hours] || `${w.window_hours}小时`;
+        if (!w.captured_at) {
+          return `<tr><td>${esc(label)}</td><td colspan="9" class="muted">未到期/未采集</td></tr>`;
+        }
+        return `
           <tr>
-            <th>时间点</th><th>播放量</th><th>点赞</th><th>评论</th><th>分享</th><th>reach</th>
-            <th>平均观看时长</th><th>完播率</th><th>互动率</th><th>Distribution Rate</th>
+            <td>${esc(label)}</td>
+            <td>${fmt(w.video_views)}</td>
+            <td>${fmt(w.likes)}</td>
+            <td>${fmt(w.comments)}</td>
+            <td>${fmt(w.shares)}</td>
+            <td>${fmt(w.reach)}</td>
+            <td>${fmt(w.average_time_watched)}</td>
+            <td>${pct(w.full_video_watched_rate)}</td>
+            <td>${pct(w.engagement_rate)}</td>
+            <td>${pct(w.distribution_rate)}</td>
           </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+        `;
+      }).join('');
+      return `
+        <table class="publish-windows-table">
+          <thead>
+            <tr>
+              <th>时间点</th><th>播放量</th><th>点赞</th><th>评论</th><th>分享</th><th>reach</th>
+              <th>平均观看时长</th><th>完播率</th><th>互动率</th><th>Distribution Rate</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    })() : '<div class="muted">该视频暂无发布后时间点数据（可能是上线前发布的老视频，未纳入采集）</div>';
+
+    const dailySeries = dailyData.series || [];
+    const dailyHtml = dailySeries.length ? (() => {
+      const rows = dailySeries.map(p => `
+        <tr>
+          <td>${p.day_index === null || p.day_index === undefined ? '-' : '第' + p.day_index + '天'}</td>
+          <td>${esc(p.date)}</td>
+          <td>${fmt(p.video_views)}</td>
+          <td>${p.delta === null || p.delta === undefined ? '-' : fmt(p.delta)}</td>
+        </tr>
+      `).join('');
+      const stoppedNote = dailyData.stopped
+        ? `<div class="muted" style="margin-top:8px;">已连续5天播放量无新增，追踪到 ${esc(dailyData.stopped_date)} 为止</div>`
+        : '';
+      return `
+        <table class="publish-windows-table">
+          <thead><tr><th>第几天</th><th>日期</th><th>播放量</th><th>较前日新增</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${stoppedNote}
+      `;
+    })() : '<div class="muted">该视频暂无每日播放量数据</div>';
+
+    body.innerHTML = `
+      <h4 style="margin:0 0 8px;">发布后时间点数据</h4>
+      ${windowsHtml}
+      <h4 style="margin:20px 0 8px;">每日播放量</h4>
+      ${dailyHtml}
     `;
   } catch (e) {
     body.innerHTML = '<div class="muted err">加载失败：' + esc(String(e.message || e)) + '</div>';

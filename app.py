@@ -9626,6 +9626,7 @@ def api_tiktok_official_matrix_videos():
             'date_to': request.args.get('date_to') or '',
             'creator': request.args.get('creator') or '',
             'keyword': request.args.get('keyword') or '',
+            'only_boosted': request.args.get('only_boosted') == '1',
         }
         limit = int(request.args.get('limit') or 50)
         offset = int(request.args.get('offset') or 0)
@@ -9737,6 +9738,19 @@ def api_tiktok_official_matrix_video_tags(business_id, item_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/boosted', methods=['PATCH'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_video_boosted(business_id, item_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        is_boosted = bool(data.get('is_boosted'))
+        tiktok_official_service.set_video_boosted(business_id, item_id, is_boosted)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix video boosted update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/spark-code', methods=['POST'])
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_video_spark_code(business_id, item_id):
@@ -9805,6 +9819,7 @@ def api_tiktok_official_matrix_export_query():
             'date_to': request.args.get('date_to') or '',
             'creator': request.args.get('creator') or '',
             'keyword': request.args.get('keyword') or '',
+            'only_boosted': request.args.get('only_boosted') == '1',
         }
         file_bytes = tiktok_official_service.build_matrix_query_export(filters=filters)
         buf = BytesIO(file_bytes)
@@ -9839,6 +9854,17 @@ def api_tiktok_official_matrix_video_publish_windows(business_id, item_id):
         return jsonify({'status': 'success', 'windows': _json_safe_rows(rows)})
     except Exception as e:
         logger.error(f"tiktok_official matrix video publish-windows failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/daily-views')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_video_daily_views(business_id, item_id):
+    try:
+        result = tiktok_official_service.get_video_daily_view_series(business_id, item_id)
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official matrix video daily-views failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

@@ -254,6 +254,10 @@ def ensure_schema() -> None:
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS spark_code_start_time TIMESTAMP")
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS spark_code_end_time TIMESTAMP")
 
+    # 投流标记：人工标记该视频已投流，永久保留，供看板筛选
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS is_boosted BOOLEAN DEFAULT FALSE")
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS boosted_at TIMESTAMP")
+
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_official_video_daily_snapshots (
@@ -1265,6 +1269,103 @@ def update_video_tags(
     )
 
 
+def set_video_boosted(business_id: str, item_id: str, is_boosted: bool) -> None:
+    db.execute(
+        """
+        UPDATE tiktok_official_video_snapshots SET
+            is_boosted = %s,
+            boosted_at = CASE WHEN %s THEN COALESCE(boosted_at, NOW()) ELSE boosted_at END,
+            updated_at = NOW()
+        WHERE business_id = %s AND item_id = %s
+        """,
+        (is_boosted, is_boosted, business_id, item_id),
+    )
+
+
+_DEFAULT_FLAT_DAYS = 5
+
+
+def _truncate_flat_series(rows: list[dict[str, Any]], create_date, flat_days: int = _DEFAULT_FLAT_DAYS) -> dict[str, Any]:
+    """rows 需按 snapshot_date 升序。逐日算增量，连续 flat_days 天播放量不再增长（delta<=0）后截断序列。"""
+    series: list[dict[str, Any]] = []
+    prev_views = None
+    flat_streak = 0
+    stopped_date = None
+    for r in rows:
+        snapshot_date = r["snapshot_date"]
+        views = int(r.get("video_views") or 0)
+        delta = (views - prev_views) if prev_views is not None else None
+        day_index = (snapshot_date - create_date).days if create_date else None
+        series.append({
+            "date": snapshot_date,
+            "day_index": day_index,
+            "video_views": views,
+            "delta": delta,
+        })
+        if delta is not None:
+            flat_streak = flat_streak + 1 if delta <= 0 else 0
+        if flat_streak >= flat_days and stopped_date is None:
+            stopped_date = snapshot_date
+        prev_views = views
+
+    if stopped_date is not None:
+        series = [s for s in series if s["date"] <= stopped_date]
+
+    return {"series": series, "stopped": stopped_date is not None, "stopped_date": stopped_date}
+
+
+def get_video_daily_view_series(business_id: str, item_id: str, flat_days: int = _DEFAULT_FLAT_DAYS) -> dict[str, Any]:
+    """单个视频：发布日起的每日播放量序列，连续 flat_days 天不增长后截断。"""
+    video = db.query_one(
+        "SELECT create_time FROM tiktok_official_video_snapshots WHERE business_id = %s AND item_id = %s",
+        (business_id, item_id),
+    )
+    create_date = video["create_time"].date() if (video and video.get("create_time")) else None
+
+    rows = db.query_all(
+        """
+        SELECT snapshot_date, video_views
+        FROM tiktok_official_video_daily_snapshots
+        WHERE business_id = %s AND item_id = %s
+        ORDER BY snapshot_date
+        """,
+        (business_id, item_id),
+    ) or []
+
+    return _truncate_flat_series(rows, create_date, flat_days)
+
+
+def get_daily_view_series_bulk(
+    pairs: list[tuple[str, str]],
+    create_dates: dict[tuple[str, str], Any],
+    flat_days: int = _DEFAULT_FLAT_DAYS,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """导出用：一次查询多个视频的 daily_snapshots，Python 按 (business_id, item_id) 分组后复用截断逻辑。"""
+    if not pairs:
+        return {}
+    rows = db.query_all(
+        """
+        SELECT business_id, item_id, snapshot_date, video_views
+        FROM tiktok_official_video_daily_snapshots
+        WHERE (business_id, item_id) IN %s
+        ORDER BY business_id, item_id, snapshot_date
+        """,
+        (tuple(pairs),),
+    ) or []
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in rows:
+        key = (r["business_id"], r["item_id"])
+        grouped.setdefault(key, []).append(r)
+
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, group_rows in grouped.items():
+        create_time = create_dates.get(key)
+        create_date = create_time.date() if create_time else None
+        result[key] = _truncate_flat_series(group_rows, create_date, flat_days)
+    return result
+
+
 def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: int = 30) -> dict[str, Any]:
     token = get_access_token(business_id)
     if not token:
@@ -1376,6 +1477,9 @@ def list_matrix_videos(
     if keyword:
         where.append("v.caption ILIKE %s")
         params.append(f"%{keyword}%")
+
+    if filters.get("only_boosted"):
+        where.append("v.is_boosted = TRUE")
 
     where_sql = " AND ".join(where)
 
@@ -1913,6 +2017,9 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         where.append("v.caption ILIKE %s")
         params.append(f"%{keyword}%")
 
+    if filters.get("only_boosted"):
+        where.append("v.is_boosted = TRUE")
+
     where_sql = " AND ".join(where)
 
     rows = db.query_all(
@@ -1959,6 +2066,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         "主页链接", "视频链接", "播放量（最新）", "点赞", "评论", "转发", "收藏", "互动率（最新）",
         "发布后播放量-3h", "发布后播放量-24h", "发布后播放量-48h", "发布后播放量-72h",
         "完播率（最新窗口）", "平均观看时长（最新窗口）", "发布后互动率（最新窗口）", "Distribution Rate（最新窗口）",
+        "是否已投流",
     ]
 
     wb = Workbook()
@@ -2007,6 +2115,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 latest_window.get("average_time_watched") if latest_window else None,
                 latest_window.get("engagement_rate") if latest_window else None,
                 latest_window.get("distribution_rate") if latest_window else None,
+                "是" if row.get("is_boosted") else "否",
             ]
         )
     ws.freeze_panes = "A2"
@@ -2058,6 +2167,43 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 ]
             )
     ws2.freeze_panes = "A2"
+
+    daily_headers = [
+        "所属矩阵账号", "视频ID", "视频链接", "发布日期", "第几天", "日期", "播放量", "较前日新增",
+    ]
+    ws3 = wb.create_sheet(title="每日播放量")
+    ws3.append(daily_headers)
+    for cell in ws3[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    if rows:
+        pairs = [(r["business_id"], r["item_id"]) for r in rows]
+        create_dates = {(r["business_id"], r["item_id"]): r.get("create_time") for r in rows}
+        daily_series_map = get_daily_view_series_bulk(pairs, create_dates)
+        account_label_map = {
+            (r["business_id"], r["item_id"]): (r.get("display_name") or r.get("account_alias") or r.get("account_name") or r.get("business_id"))
+            for r in rows
+        }
+        link_map = {(r["business_id"], r["item_id"]): (r.get("share_url") or "") for r in rows}
+        for r in rows:
+            key = (r["business_id"], r["item_id"])
+            series = daily_series_map.get(key, {}).get("series") or []
+            create_time = create_dates.get(key)
+            for point in series:
+                ws3.append(
+                    [
+                        account_label_map.get(key, r["business_id"]),
+                        r["item_id"],
+                        link_map.get(key, ""),
+                        create_time.date() if create_time else None,
+                        point["day_index"],
+                        point["date"],
+                        point["video_views"],
+                        point["delta"],
+                    ]
+                )
+    ws3.freeze_panes = "A2"
 
     buf = BytesIO()
     wb.save(buf)
