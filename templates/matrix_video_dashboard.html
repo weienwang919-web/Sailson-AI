@@ -681,9 +681,12 @@ function renderAccountPicker() {
   wrap.innerHTML = html || '<div class="muted" style="padding:20px 0;">暂无账号，或搜索无匹配结果</div>';
 }
 
-function refreshAll() {
+async function refreshAll() {
+  // 总览是全量口径，必须在“按发布时间筛选”读完之后再读，
+  // 这样即使后台同步在两次请求之间插入新数据，总览也只会更大不会更小，
+  // 保证“筛选结果 <= 总览”恒成立。
+  await loadPublishRange();
   loadOverview();
-  loadPublishRange();
   loadSnapshotDelta();
   loadCumulativeViews();
   loadVideos();

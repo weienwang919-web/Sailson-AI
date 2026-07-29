@@ -1581,6 +1581,7 @@ def _matrix_account_filters_sql(filters: dict[str, Any]) -> tuple[list[str], lis
     where = ["1=1"]
     params: list[Any] = []
 
+    where.append("a.enabled = TRUE")
     where.append("a.business_id != ALL(%s)")
     params.append(_MATRIX_EXCLUDED_BUSINESS_IDS)
 
@@ -1632,7 +1633,6 @@ def _matrix_date_range(date_from: str | None, date_to: str | None, days: int = 7
 def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, Any]:
     filters = filters or {}
     where, params = _matrix_account_filters_sql(filters)
-    where.append("a.enabled = TRUE")
     where_sql = " AND ".join(where)
 
     row = db.query_one(
