@@ -1432,6 +1432,8 @@ def _extract_hashtags(caption: str | None) -> list[str]:
     return _HASHTAG_RE.findall(caption)
 
 
+_ENGAGEMENT_RATE_SQL = "(CASE WHEN v.video_views > 0 THEN (COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0))::numeric / v.video_views ELSE NULL END)"
+
 _MATRIX_VIDEO_SORT_FIELDS = {
     "create_time": "v.create_time",
     "video_views": "v.video_views",
@@ -1439,12 +1441,21 @@ _MATRIX_VIDEO_SORT_FIELDS = {
     "comments": "v.comments",
     "shares": "v.shares",
     "favorites": "v.favorites",
-    "engagement_rate": "(CASE WHEN v.video_views > 0 THEN (COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0))::numeric / v.video_views ELSE NULL END)",
+    "engagement_rate": _ENGAGEMENT_RATE_SQL,
     "full_video_watched_rate": "lw.full_video_watched_rate",
     "average_time_watched": "lw.average_time_watched",
     "pw_engagement_rate": "lw.pw_engagement_rate",
     "distribution_rate": "lw.distribution_rate",
 }
+
+
+def _matrix_engagement_filter_sql(filters: dict[str, Any]) -> str | None:
+    engagement_filter = (filters.get("engagement_filter") or "").strip()
+    if engagement_filter == "ge1":
+        return f"{_ENGAGEMENT_RATE_SQL} >= 0.01"
+    if engagement_filter == "lt1":
+        return f"(v.video_views IS NULL OR v.video_views = 0 OR {_ENGAGEMENT_RATE_SQL} < 0.01)"
+    return None
 
 
 def list_matrix_videos(
@@ -1482,6 +1493,10 @@ def list_matrix_videos(
         where.append("v.is_boosted = TRUE")
     elif filters.get("only_unboosted"):
         where.append("(v.is_boosted = FALSE OR v.is_boosted IS NULL)")
+
+    engagement_where = _matrix_engagement_filter_sql(filters)
+    if engagement_where:
+        where.append(engagement_where)
 
     where_sql = " AND ".join(where)
 
@@ -2023,6 +2038,10 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         where.append("v.is_boosted = TRUE")
     elif filters.get("only_unboosted"):
         where.append("(v.is_boosted = FALSE OR v.is_boosted IS NULL)")
+
+    engagement_where = _matrix_engagement_filter_sql(filters)
+    if engagement_where:
+        where.append(engagement_where)
 
     where_sql = " AND ".join(where)
 

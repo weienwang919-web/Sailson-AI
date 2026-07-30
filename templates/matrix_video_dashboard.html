@@ -110,11 +110,14 @@
     .chart-wrap { position: relative; height: 260px; margin-top: 22px; }
 
     /* ---- 视频明细表 ---- */
-    .search-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; }
-    .form-group { flex: 1; min-width: 160px; }
-    .form-group input { width: 100%; }
-    .form-group.quick-range { flex: 0 0 auto; display: flex; gap: 8px; }
-    .form-group.actions { flex: 0 0 auto; display: flex; gap: 10px; }
+    .search-controls { display: flex; flex-direction: column; gap: 14px; }
+    .search-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; }
+    .search-row + .search-row { padding-top: 14px; border-top: 1px dashed var(--border-soft); }
+    .search-row.actions-row { justify-content: flex-end; border-top: 1px solid var(--border-soft); }
+    .form-group { flex: 1; min-width: 160px; max-width: 220px; }
+    .form-group input, .form-group select { width: 100%; }
+    .form-group.quick-range { flex: 0 0 auto; display: flex; gap: 8px; max-width: none; }
+    .form-group.actions { flex: 0 0 auto; display: flex; gap: 10px; max-width: none; }
     .region-select-wrap { position: relative; }
     .region-select-btn { width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--card-bg); color: var(--text-primary); cursor: pointer; font-size: 13px; font-family: inherit; }
     .region-select-btn:hover { border-color: var(--accent); }
@@ -286,50 +289,66 @@
   <div class="board" id="board-videos">
     <div class="board-head"><h2>视频明细</h2></div>
     <div class="search-controls">
-      <div class="form-group">
-        <label>开始日期</label>
-        <input type="date" id="date-from" onchange="applyVideoFilters()">
-      </div>
-      <div class="form-group">
-        <label>结束日期</label>
-        <input type="date" id="date-to" onchange="applyVideoFilters()">
-      </div>
-      <div class="form-group quick-range">
-        <button class="btn btn-ghost btn-sm" onclick="setQuickRange(7)">最近7天</button>
-        <button class="btn btn-ghost btn-sm" onclick="setQuickRange(30)">最近30天</button>
-        <button class="btn btn-ghost btn-sm" onclick="clearRange()">清除</button>
-      </div>
-      <div class="form-group">
-        <label>创作者/账号</label>
-        <input type="text" id="creator-input" placeholder="别名或账号ID" oninput="debouncedApply()">
-      </div>
-      <div class="form-group">
-        <label>关键词/Tag</label>
-        <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
-      </div>
-      <div class="form-group">
-        <label>投流标记</label>
-        <select id="boosted-filter-input" onchange="applyVideoFilters()">
-          <option value="">全部</option>
-          <option value="boosted">只看已标记</option>
-          <option value="unboosted">只看未标记</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>国家/地区</label>
-        <div class="region-select-wrap">
-          <button type="button" class="region-select-btn" id="region-select-btn" onclick="toggleRegionMenu(event)">全部国家</button>
-          <div class="region-select-menu" id="region-select-menu">
-            <div class="region-select-menu-item" onclick="clearRegionFilter(event)">全部</div>
-            <div class="region-select-menu-sep"></div>
-            <div id="region-select-options"></div>
-          </div>
+      <div class="search-row">
+        <div class="form-group">
+          <label>开始日期</label>
+          <input type="date" id="date-from" onchange="applyVideoFilters()">
+        </div>
+        <div class="form-group">
+          <label>结束日期</label>
+          <input type="date" id="date-to" onchange="applyVideoFilters()">
+        </div>
+        <div class="form-group quick-range">
+          <button class="btn btn-ghost btn-sm" onclick="setQuickRange(7)">最近7天</button>
+          <button class="btn btn-ghost btn-sm" onclick="setQuickRange(30)">最近30天</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearRange()">清除</button>
         </div>
       </div>
-      <div class="form-group actions">
-        <button class="btn btn-primary" onclick="applyVideoFilters()">查询</button>
-        <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
-        <button class="btn btn-secondary" onclick="downloadQueryExport()">导出查询结果</button>
+      <div class="search-row">
+        <div class="form-group">
+          <label>创作者/账号</label>
+          <input type="text" id="creator-input" placeholder="别名或账号ID" oninput="debouncedApply()">
+        </div>
+        <div class="form-group">
+          <label>关键词/Tag</label>
+          <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
+        </div>
+      </div>
+      <div class="search-row">
+        <div class="form-group">
+          <label>国家/地区</label>
+          <div class="region-select-wrap">
+            <button type="button" class="region-select-btn" id="region-select-btn" onclick="toggleRegionMenu(event)">全部国家</button>
+            <div class="region-select-menu" id="region-select-menu">
+              <div class="region-select-menu-item" onclick="clearRegionFilter(event)">全部</div>
+              <div class="region-select-menu-sep"></div>
+              <div id="region-select-options"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>投流标记</label>
+          <select id="boosted-filter-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="boosted">只看已标记</option>
+            <option value="unboosted">只看未标记</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>互动率</label>
+          <select id="engagement-filter-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="ge1">≥1%</option>
+            <option value="lt1">＜1%</option>
+          </select>
+        </div>
+      </div>
+      <div class="search-row actions-row">
+        <div class="form-group actions">
+          <button class="btn btn-primary" onclick="applyVideoFilters()">查询</button>
+          <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
+          <button class="btn btn-secondary" onclick="downloadQueryExport()">导出查询结果</button>
+        </div>
       </div>
     </div>
     <div class="status" id="filter-status"></div>
@@ -393,7 +412,7 @@ let selectedAccountIds = new Set();
 let filterBarOpen = false;
 
 let videos = [];
-let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '' };
+let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '', engagement_filter: '' };
 let selectedRegions = new Set();
 let videoSort = { field: 'create_time', order: 'desc' };
 let limit = 50;
@@ -958,6 +977,7 @@ function applyVideoFilters() {
   const boostedFilter = document.getElementById('boosted-filter-input').value;
   videoFilters.only_boosted = boostedFilter === 'boosted' ? '1' : '';
   videoFilters.only_unboosted = boostedFilter === 'unboosted' ? '1' : '';
+  videoFilters.engagement_filter = document.getElementById('engagement-filter-input').value;
   offset = 0;
   loadVideos();
 }
