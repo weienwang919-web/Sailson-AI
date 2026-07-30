@@ -1140,10 +1140,10 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
             caption = EXCLUDED.caption,
             video_duration = EXCLUDED.video_duration,
             create_time = EXCLUDED.create_time,
-            likes = EXCLUDED.likes,
-            comments = EXCLUDED.comments,
-            shares = EXCLUDED.shares,
-            favorites = EXCLUDED.favorites,
+            likes = COALESCE(EXCLUDED.likes, tiktok_official_video_snapshots.likes),
+            comments = COALESCE(EXCLUDED.comments, tiktok_official_video_snapshots.comments),
+            shares = COALESCE(EXCLUDED.shares, tiktok_official_video_snapshots.shares),
+            favorites = COALESCE(EXCLUDED.favorites, tiktok_official_video_snapshots.favorites),
             reach = EXCLUDED.reach,
             video_views = EXCLUDED.video_views,
             total_time_watched = EXCLUDED.total_time_watched,
@@ -1217,10 +1217,10 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
         ) VALUES (%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (business_id, item_id, snapshot_date) DO UPDATE SET
             video_views = EXCLUDED.video_views,
-            likes = EXCLUDED.likes,
-            comments = EXCLUDED.comments,
-            shares = EXCLUDED.shares,
-            favorites = EXCLUDED.favorites,
+            likes = COALESCE(EXCLUDED.likes, tiktok_official_video_daily_snapshots.likes),
+            comments = COALESCE(EXCLUDED.comments, tiktok_official_video_daily_snapshots.comments),
+            shares = COALESCE(EXCLUDED.shares, tiktok_official_video_daily_snapshots.shares),
+            favorites = COALESCE(EXCLUDED.favorites, tiktok_official_video_daily_snapshots.favorites),
             fetched_at = NOW()
         """,
         (
@@ -1439,7 +1439,7 @@ _MATRIX_VIDEO_SORT_FIELDS = {
     "comments": "v.comments",
     "shares": "v.shares",
     "favorites": "v.favorites",
-    "engagement_rate": "(CASE WHEN v.video_views > 0 THEN (v.likes + v.comments + v.shares + v.favorites)::numeric / v.video_views ELSE NULL END)",
+    "engagement_rate": "(CASE WHEN v.video_views > 0 THEN (COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0))::numeric / v.video_views ELSE NULL END)",
     "full_video_watched_rate": "lw.full_video_watched_rate",
     "average_time_watched": "lw.average_time_watched",
     "pw_engagement_rate": "lw.pw_engagement_rate",
@@ -1498,7 +1498,7 @@ def list_matrix_videos(
         f"""
         SELECT
             COALESCE(SUM(v.video_views), 0) AS total_views,
-            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS total_engagement,
+            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS total_engagement,
             COUNT(DISTINCT v.business_id) AS account_count,
             COUNT(*) AS video_count
         {base_sql}
@@ -1643,7 +1643,7 @@ def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, 
             COUNT(DISTINCT a.business_id) AS account_count,
             COUNT(v.item_id) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS total_views,
-            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS total_engagement
+            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS total_engagement
         FROM tiktok_official_accounts a
         LEFT JOIN tiktok_official_video_snapshots v ON v.business_id = a.business_id
         WHERE {where_sql}
@@ -1678,7 +1678,7 @@ def matrix_publish_range_summary(
         SELECT
             COUNT(*) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS total_views,
-            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS total_engagement
+            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS total_engagement
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE {where_sql}
@@ -1694,7 +1694,7 @@ def matrix_publish_range_summary(
             v.create_time::date AS date,
             COUNT(*) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS views,
-            COALESCE(SUM(v.likes + v.comments + v.shares + v.favorites), 0) AS engagement
+            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS engagement
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE {where_sql}
@@ -1769,7 +1769,7 @@ def matrix_snapshot_delta_range(
             f"""
             SELECT
                 COALESCE(SUM(d.video_views), 0) AS views,
-                COALESCE(SUM(d.likes + d.comments + d.shares + d.favorites), 0) AS engagement
+                COALESCE(SUM(COALESCE(d.likes,0) + COALESCE(d.comments,0) + COALESCE(d.shares,0) + COALESCE(d.favorites,0)), 0) AS engagement
             FROM tiktok_official_video_daily_snapshots d
             LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
             WHERE {where_sql} AND d.snapshot_date = %s
@@ -1782,7 +1782,7 @@ def matrix_snapshot_delta_range(
         rows = db.query_all(
             f"""
             SELECT d.business_id, d.item_id, d.video_views AS views,
-                   (d.likes + d.comments + d.shares + d.favorites) AS engagement
+                   (COALESCE(d.likes,0) + COALESCE(d.comments,0) + COALESCE(d.shares,0) + COALESCE(d.favorites,0)) AS engagement
             FROM tiktok_official_video_daily_snapshots d
             LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
             WHERE {where_sql} AND d.snapshot_date = %s
