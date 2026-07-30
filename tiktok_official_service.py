@@ -1458,6 +1458,19 @@ def _matrix_engagement_filter_sql(filters: dict[str, Any]) -> str | None:
     return None
 
 
+def _matrix_views_filter_sql(filters: dict[str, Any]) -> str | None:
+    views_filter = (filters.get("views_filter") or "").strip()
+    if views_filter == "ge1000":
+        return "v.video_views >= 1000"
+    if views_filter == "lt1000":
+        return "(v.video_views IS NULL OR v.video_views < 1000)"
+    if views_filter == "ge500":
+        return "v.video_views >= 500"
+    if views_filter == "lt500":
+        return "(v.video_views IS NULL OR v.video_views < 500)"
+    return None
+
+
 def list_matrix_videos(
     filters: dict[str, Any] | None = None,
     limit: int = 50,
@@ -1497,6 +1510,10 @@ def list_matrix_videos(
     engagement_where = _matrix_engagement_filter_sql(filters)
     if engagement_where:
         where.append(engagement_where)
+
+    views_where = _matrix_views_filter_sql(filters)
+    if views_where:
+        where.append(views_where)
 
     where_sql = " AND ".join(where)
 
@@ -2042,6 +2059,10 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
     engagement_where = _matrix_engagement_filter_sql(filters)
     if engagement_where:
         where.append(engagement_where)
+
+    views_where = _matrix_views_filter_sql(filters)
+    if views_where:
+        where.append(views_where)
 
     where_sql = " AND ".join(where)
 
