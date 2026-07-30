@@ -123,6 +123,16 @@
 
   <div class="card">
     <h2>官号总览<span id="accounts-count" style="font-weight:400;font-size:12px;color:#666;"></span></h2>
+    <div class="toolbar" style="margin-bottom:12px;">
+      <div>
+        <label>粉丝数筛选</label>
+        <select id="followers-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+          <option value="900to1000">900-1000（补粉候选）</option>
+          <option value="needs_boost">已标记需补粉</option>
+        </select>
+      </div>
+    </div>
     <div class="grid" id="accounts"></div>
   </div>
 
@@ -234,14 +244,30 @@ async function loadAccounts() {
   sel.innerHTML = '<option value="">全部账号</option>' + accounts.map(a => (
     '<option value="' + a.business_id + '">' + (a.display_name || a.account_name || a.business_id) + '</option>'
   )).join('');
+  renderAccounts();
+}
+
+function renderAccounts() {
   const wrap = document.getElementById('accounts');
   if (!accounts.length) {
     wrap.innerHTML = '<div class="hint">暂无账号配置。请配置 TIKTOK_OFFICIAL_ACCOUNTS_JSON。</div>';
+    document.getElementById('accounts-count').textContent = '';
     return;
   }
+  const followersFilter = document.getElementById('followers-filter').value;
+  const filtered = accounts.filter(a => {
+    if (followersFilter === '900to1000') {
+      const f = Number(a.followers_count);
+      return Number.isFinite(f) && f >= 900 && f < 1000;
+    }
+    if (followersFilter === 'needs_boost') {
+      return !!a.needs_follower_boost;
+    }
+    return true;
+  });
   const regionOptions = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
   const typeOptions = ['KOL', 'Campaign'];
-  wrap.innerHTML = accounts.map(a => {
+  wrap.innerHTML = filtered.map(a => {
     const safeId = a.business_id.replace(/[^a-zA-Z0-9_-]/g, '_');
     const regionValue = a.region || '';
     const regionSelectOptions = ['<option value="">未设置</option>']
@@ -255,7 +281,10 @@ async function loadAccounts() {
     <div class="account">
       <div class="account-title">
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
-        <span class="pill">${a.enabled ? '启用' : '停用'}</span>
+        <span style="display:flex;gap:4px;">
+          ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
+          <span class="pill">${a.enabled ? '启用' : '停用'}</span>
+        </span>
       </div>
       <div class="metric-line">别名：${fmt(a.account_alias)} ｜ 代运营：${fmt(a.authorized_by)}</div>
       <div class="metric-line">状态：<span class="pill ${accountHealth(a).cls}">${accountHealth(a).label}</span></div>
@@ -269,11 +298,40 @@ async function loadAccounts() {
         <label>类型：<select id="type-${safeId}">${typeSelectOptions.join('')}</select></label>
         <button class="copy-btn" onclick="saveAccountMeta('${a.business_id}', 'region-${safeId}', 'type-${safeId}', this)">保存</button>
       </div>
+      <div class="metric-line" style="margin-top:6px;">
+        <label style="display:inline-flex;align-items:center;gap:4px;">
+          <input type="checkbox" id="boost-${safeId}" ${a.needs_follower_boost ? 'checked' : ''} onchange="toggleNeedsBoost('${a.business_id}', this)">
+          需补粉
+        </label>
+      </div>
     </div>
   `;
   }).join('');
-  document.getElementById('accounts-count').textContent = `（共 ${accounts.length} 个账号）`;
+  document.getElementById('accounts-count').textContent = `（共 ${filtered.length} 个账号${filtered.length !== accounts.length ? ` / 总 ${accounts.length} 个` : ''}）`;
 }
+
+async function toggleNeedsBoost(businessId, checkbox) {
+  const original = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/needs-boost`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ needs_boost: original }),
+    });
+    const account = accounts.find(a => a.business_id === businessId);
+    if (account) account.needs_follower_boost = original;
+    renderAccounts();
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+    checkbox.checked = !original;
+    checkbox.disabled = false;
+  }
+}
+window.toggleNeedsBoost = toggleNeedsBoost;
+window.renderAccounts = renderAccounts;
+
+
 
 async function saveAccountMeta(businessId, regionSelId, typeSelId, btn) {
   const regionSel = document.getElementById(regionSelId);

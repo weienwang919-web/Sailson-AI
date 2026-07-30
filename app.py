@@ -9597,6 +9597,19 @@ def api_tiktok_official_account_meta(business_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/accounts/<business_id>/needs-boost', methods=['PATCH'])
+@feature_required('tiktok_official')
+def api_tiktok_official_account_needs_boost(business_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        needs_boost = bool(data.get('needs_boost'))
+        tiktok_official_service.set_account_needs_boost(business_id, needs_boost)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"tiktok_official account needs-boost update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/matrix-video-dashboard')
 @feature_required('matrix_video_dashboard')
 def matrix_video_dashboard_page():

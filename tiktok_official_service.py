@@ -248,6 +248,9 @@ def ensure_schema() -> None:
     db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS region VARCHAR(16)")
     db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS account_type VARCHAR(16)")
 
+    # 需补粉标记：人工标记该账号需要补充粉丝，永久保留，供官号总览筛选
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS needs_follower_boost BOOLEAN DEFAULT FALSE")
+
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS task_no VARCHAR(128)")
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS kol_campaign VARCHAR(255)")
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS spark_code TEXT")
@@ -405,6 +408,18 @@ def set_account_meta(business_id: str, region: str | None = None, account_type: 
         WHERE business_id = %s
         """,
         (region or None, account_type or None, business_id),
+    )
+
+
+def set_account_needs_boost(business_id: str, needs_boost: bool) -> None:
+    db.execute(
+        """
+        UPDATE tiktok_official_accounts SET
+            needs_follower_boost = %s,
+            updated_at = NOW()
+        WHERE business_id = %s
+        """,
+        (bool(needs_boost), business_id),
     )
 
 
