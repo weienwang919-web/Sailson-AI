@@ -1468,6 +1468,8 @@ def _matrix_views_filter_sql(filters: dict[str, Any]) -> str | None:
         return "v.video_views >= 500"
     if views_filter == "lt500":
         return "(v.video_views IS NULL OR v.video_views < 500)"
+    if views_filter == "500to1000":
+        return "(v.video_views >= 500 AND v.video_views < 1000)"
     return None
 
 
