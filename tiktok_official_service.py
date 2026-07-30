@@ -2042,8 +2042,11 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
 
     window_rows = []
     windows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    daily_series_map: dict[tuple[str, str], dict[str, Any]] = {}
     if rows:
         pairs = [(r["business_id"], r["item_id"]) for r in rows]
+        create_dates = {(r["business_id"], r["item_id"]): r.get("create_time") for r in rows}
+        daily_series_map = get_daily_view_series_bulk(pairs, create_dates)
         window_rows = db.query_all(
             """
             SELECT business_id, item_id, window_hours, captured_at, video_views, likes, comments,
@@ -2064,11 +2067,17 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
             return None
         return max(captured, key=lambda w: w["window_hours"])
 
+    def _daily_views_at_day_index(key, day_index):
+        series = daily_series_map.get(key, {}).get("series") or []
+        point = next((p for p in series if p["day_index"] == day_index), None)
+        return point["video_views"] if point else None
+
     headers = [
         "关联任务编号", "所属矩阵账号", "国家", "账号类型",
         "对应KOL/Campaign", "作品发布时间", "作品标题/文案", "话题标签", "Spark code",
         "主页链接", "视频链接", "播放量（最新）", "点赞", "评论", "转发", "收藏", "互动率（最新）",
         "发布后播放量-3h", "发布后播放量-24h", "发布后播放量-48h", "发布后播放量-72h",
+        "发布后播放量-96h（每日快照，约第4天）", "发布后播放量-120h（每日快照，约第5天）",
         "完播率（最新窗口）", "平均观看时长（最新窗口）", "发布后互动率（最新窗口）", "Distribution Rate（最新窗口）",
         "是否已投流",
     ]
@@ -2094,6 +2103,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         for h in (3, 24, 48, 72):
             w = windows_for_video.get(h)
             pw_views.append(w.get("video_views") if (w and w.get("captured_at") is not None) else None)
+        daily_pw_views = [_daily_views_at_day_index(key, 4), _daily_views_at_day_index(key, 5)]
         latest_window = _latest_captured_window(key)
         ws.append(
             [
@@ -2115,6 +2125,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 int(row.get("favorites") or 0),
                 round(engagement_rate, 4),
                 *pw_views,
+                *daily_pw_views,
                 latest_window.get("full_video_watched_rate") if latest_window else None,
                 latest_window.get("average_time_watched") if latest_window else None,
                 latest_window.get("engagement_rate") if latest_window else None,
@@ -2182,9 +2193,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
         cell.font = header_font
 
     if rows:
-        pairs = [(r["business_id"], r["item_id"]) for r in rows]
         create_dates = {(r["business_id"], r["item_id"]): r.get("create_time") for r in rows}
-        daily_series_map = get_daily_view_series_bulk(pairs, create_dates)
         account_label_map = {
             (r["business_id"], r["item_id"]): (r.get("display_name") or r.get("account_alias") or r.get("account_name") or r.get("business_id"))
             for r in rows
