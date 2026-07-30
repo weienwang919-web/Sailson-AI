@@ -9627,6 +9627,7 @@ def api_tiktok_official_matrix_videos():
             'creator': request.args.get('creator') or '',
             'keyword': request.args.get('keyword') or '',
             'only_boosted': request.args.get('only_boosted') == '1',
+            'only_unboosted': request.args.get('only_unboosted') == '1',
         }
         limit = int(request.args.get('limit') or 50)
         offset = int(request.args.get('offset') or 0)
@@ -9820,6 +9821,7 @@ def api_tiktok_official_matrix_export_query():
             'creator': request.args.get('creator') or '',
             'keyword': request.args.get('keyword') or '',
             'only_boosted': request.args.get('only_boosted') == '1',
+            'only_unboosted': request.args.get('only_unboosted') == '1',
         }
         file_bytes = tiktok_official_service.build_matrix_query_export(filters=filters)
         buf = BytesIO(file_bytes)

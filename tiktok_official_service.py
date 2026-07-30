@@ -1480,6 +1480,8 @@ def list_matrix_videos(
 
     if filters.get("only_boosted"):
         where.append("v.is_boosted = TRUE")
+    elif filters.get("only_unboosted"):
+        where.append("(v.is_boosted = FALSE OR v.is_boosted IS NULL)")
 
     where_sql = " AND ".join(where)
 
@@ -2019,6 +2021,8 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
 
     if filters.get("only_boosted"):
         where.append("v.is_boosted = TRUE")
+    elif filters.get("only_unboosted"):
+        where.append("(v.is_boosted = FALSE OR v.is_boosted IS NULL)")
 
     where_sql = " AND ".join(where)
 
