@@ -8,6 +8,11 @@
 
 跑完直接把输出贴回来即可，此脚本只读，不写任何数据。
 """
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import database as db
 import tiktok_official_service as svc
 
