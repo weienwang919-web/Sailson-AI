@@ -98,6 +98,8 @@
     .stat-card { background: var(--card-bg); border-radius: var(--radius-md); padding: 22px 24px; overflow: hidden; }
     .stat-label { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .stat-value { font-size: 28px; font-weight: 800; color: var(--text-primary); line-height: 1.2; letter-spacing: -.02em; white-space: normal; overflow-wrap: anywhere; word-break: normal; }
+    .stat-breakdown { margin-top: 8px; font-size: 12px; color: var(--text-tertiary); line-height: 1.6; }
+    .stat-breakdown div { overflow-wrap: anywhere; }
     .stat-up { color: var(--up); }
     .stat-down { color: var(--down); }
 
@@ -264,8 +266,16 @@
     <div class="delta-range-hint muted" id="delta-range-hint" style="display:none;"></div>
     <div class="stat-grid">
       <div class="stat-card"><div class="stat-label">新增视频数</div><div class="stat-value" id="delta-new-videos">-</div></div>
-      <div class="stat-card"><div class="stat-label">新增播放量</div><div class="stat-value" id="delta-views">-</div></div>
-      <div class="stat-card"><div class="stat-label">新增互动量</div><div class="stat-value" id="delta-engagement">-</div></div>
+      <div class="stat-card">
+        <div class="stat-label">本期总新增播放量</div>
+        <div class="stat-value" id="delta-views">-</div>
+        <div class="stat-breakdown" id="delta-views-breakdown"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">本期总新增互动量</div>
+        <div class="stat-value" id="delta-engagement">-</div>
+        <div class="stat-breakdown" id="delta-engagement-breakdown"></div>
+      </div>
       <div class="stat-card"><div class="stat-label">平均互动率环比</div><div class="stat-value" id="delta-rate-change">-</div></div>
     </div>
     <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
@@ -848,7 +858,11 @@ async function loadSnapshotDelta() {
 function renderSnapshotDelta(d) {
   document.getElementById('delta-new-videos').textContent = fmt(d.new_video_count || 0);
   document.getElementById('delta-views').innerHTML = fmtDelta(d.views_delta);
+  document.getElementById('delta-views-breakdown').innerHTML =
+    `<div>新发布视频播放量：${fmt(d.new_video_views || 0)}</div><div>老视频新增播放量：${fmtDelta(d.existing_video_views_delta)}</div>`;
   document.getElementById('delta-engagement').innerHTML = fmtDelta(d.engagement_delta);
+  document.getElementById('delta-engagement-breakdown').innerHTML =
+    `<div>新发布视频互动量：${fmt(d.new_video_engagement || 0)}</div><div>老视频新增互动量：${fmtDelta(d.existing_video_engagement_delta)}</div>`;
   document.getElementById('delta-rate-change').innerHTML = fmtRateChangePct(d.engagement_rate_change_pct);
   fitAllStatValues();
 

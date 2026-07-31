@@ -132,6 +132,13 @@
           <option value="needs_boost">已标记需补粉</option>
         </select>
       </div>
+      <div>
+        <label>国家筛选</label>
+        <select id="region-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary" onclick="exportNeedsBoostLinks()">导出需补粉主页链接</button>
     </div>
     <div class="grid" id="accounts"></div>
   </div>
@@ -177,6 +184,7 @@ let currentTask = null;
 let authUrls = null;
 let currentVideoRows = [];
 const selectedExportVideos = new Map();
+const REGION_OPTIONS = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
@@ -244,6 +252,8 @@ async function loadAccounts() {
   sel.innerHTML = '<option value="">全部账号</option>' + accounts.map(a => (
     '<option value="' + a.business_id + '">' + (a.display_name || a.account_name || a.business_id) + '</option>'
   )).join('');
+  const regionFilterSel = document.getElementById('region-filter');
+  regionFilterSel.innerHTML = '<option value="">全部</option>' + REGION_OPTIONS.map(r => `<option value="${r}">${r}</option>`).join('');
   renderAccounts();
 }
 
@@ -255,7 +265,11 @@ function renderAccounts() {
     return;
   }
   const followersFilter = document.getElementById('followers-filter').value;
+  const regionFilter = document.getElementById('region-filter').value;
   const filtered = accounts.filter(a => {
+    if (regionFilter && a.region !== regionFilter) {
+      return false;
+    }
     if (followersFilter === '900to1000') {
       const f = Number(a.followers_count);
       return Number.isFinite(f) && f >= 900 && f < 1000;
@@ -265,7 +279,7 @@ function renderAccounts() {
     }
     return true;
   });
-  const regionOptions = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
+  const regionOptions = REGION_OPTIONS;
   const typeOptions = ['KOL', 'Campaign'];
   wrap.innerHTML = filtered.map(a => {
     const safeId = a.business_id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -670,6 +684,25 @@ async function showDetail(itemId, businessId) {
   } catch (e) {
     alert(String(e.message || e));
   }
+}
+
+function exportNeedsBoostLinks() {
+  const targets = accounts.filter(a => a.needs_follower_boost);
+  if (!targets.length) {
+    alert('当前没有标记为"需补粉"的账号');
+    return;
+  }
+  const lines = targets.map(a => {
+    const alias = a.account_alias || a.display_name || a.account_name || a.business_id;
+    const link = a.profile_deep_link || '（无主页链接）';
+    return `${alias}\t${link}`;
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tiktok_official_needs_boost_links.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 async function exportOfficial() {

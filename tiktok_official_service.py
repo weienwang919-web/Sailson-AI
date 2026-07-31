@@ -1803,6 +1803,8 @@ def matrix_snapshot_delta_range(
         "date_from": range_from.isoformat(), "date_to": range_to.isoformat(),
         "date_from_actual": None, "date_to_actual": None,
         "new_video_count": 0, "views_delta": 0, "engagement_delta": 0,
+        "new_video_views": 0, "existing_video_views_delta": 0,
+        "new_video_engagement": 0, "existing_video_engagement_delta": 0,
         "engagement_rate_start": 0.0, "engagement_rate_end": 0.0, "engagement_rate_change_pct": None,
         "daily": [],
     }
@@ -1845,14 +1847,22 @@ def matrix_snapshot_delta_range(
         # 增量只按两天都有数据的视频交集比较，避免把"还没同步到"误判成"播放量归零"。
         prev_map = _video_metrics(prev_date)
         cur_map = _video_metrics(cur_date)
+        new_keys = cur_map.keys() - prev_map.keys()
+        existing_keys = cur_map.keys() & prev_map.keys()
         cur_views_total = sum(v for v, _ in cur_map.values())
         cur_engagement_total = sum(e for _, e in cur_map.values())
-        matched_prev_views = sum(prev_map[k][0] for k in cur_map if k in prev_map)
-        matched_prev_engagement = sum(prev_map[k][1] for k in cur_map if k in prev_map)
+        new_video_views = sum(cur_map[k][0] for k in new_keys)
+        new_video_engagement = sum(cur_map[k][1] for k in new_keys)
+        existing_video_views_delta = sum(cur_map[k][0] - prev_map[k][0] for k in existing_keys)
+        existing_video_engagement_delta = sum(cur_map[k][1] - prev_map[k][1] for k in existing_keys)
         return {
-            "new_video_count": len(cur_map.keys() - prev_map.keys()),
-            "views_delta": cur_views_total - matched_prev_views,
-            "engagement_delta": cur_engagement_total - matched_prev_engagement,
+            "new_video_count": len(new_keys),
+            "new_video_views": new_video_views,
+            "new_video_engagement": new_video_engagement,
+            "existing_video_views_delta": existing_video_views_delta,
+            "existing_video_engagement_delta": existing_video_engagement_delta,
+            "views_delta": new_video_views + existing_video_views_delta,
+            "engagement_delta": new_video_engagement + existing_video_engagement_delta,
             "cur_views_total": cur_views_total,
             "cur_engagement_total": cur_engagement_total,
         }
@@ -1862,7 +1872,11 @@ def matrix_snapshot_delta_range(
     range_delta = (
         _deltas(date_from_actual, date_to_actual)
         if date_from_actual != date_to_actual
-        else {"new_video_count": 0, "views_delta": 0, "engagement_delta": 0}
+        else {
+            "new_video_count": 0, "views_delta": 0, "engagement_delta": 0,
+            "new_video_views": 0, "existing_video_views_delta": 0,
+            "new_video_engagement": 0, "existing_video_engagement_delta": 0,
+        }
     )
 
     rate_start = (engagement_start / views_start) if views_start else 0.0
@@ -1890,6 +1904,10 @@ def matrix_snapshot_delta_range(
         "new_video_count": range_delta["new_video_count"],
         "views_delta": range_delta["views_delta"],
         "engagement_delta": range_delta["engagement_delta"],
+        "new_video_views": range_delta["new_video_views"],
+        "existing_video_views_delta": range_delta["existing_video_views_delta"],
+        "new_video_engagement": range_delta["new_video_engagement"],
+        "existing_video_engagement_delta": range_delta["existing_video_engagement_delta"],
         "engagement_rate_start": rate_start,
         "engagement_rate_end": rate_end,
         "engagement_rate_change_pct": rate_change_pct,
