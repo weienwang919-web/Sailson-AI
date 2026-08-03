@@ -125,6 +125,10 @@
     <h2>官号总览<span id="accounts-count" style="font-weight:400;font-size:12px;color:#666;"></span></h2>
     <div class="toolbar" style="margin-bottom:12px;">
       <div>
+        <label>查找</label>
+        <input id="account-search" type="text" placeholder="用户名/账号名/别名" oninput="renderAccounts()" style="min-width:220px;">
+      </div>
+      <div>
         <label>粉丝数筛选</label>
         <select id="followers-filter" onchange="renderAccounts()">
           <option value="">全部</option>
@@ -266,7 +270,15 @@ function renderAccounts() {
   }
   const followersFilter = document.getElementById('followers-filter').value;
   const regionFilter = document.getElementById('region-filter').value;
+  const searchTerm = document.getElementById('account-search').value.trim().toLowerCase();
   const filtered = accounts.filter(a => {
+    if (searchTerm) {
+      const haystack = [a.username, a.account_name, a.display_name, a.account_alias]
+        .map(v => (v || '').toLowerCase());
+      if (!haystack.some(v => v.includes(searchTerm))) {
+        return false;
+      }
+    }
     if (regionFilter && a.region !== regionFilter) {
       return false;
     }
