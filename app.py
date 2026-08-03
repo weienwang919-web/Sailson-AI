@@ -9610,6 +9610,19 @@ def api_tiktok_official_account_needs_boost(business_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/accounts/<business_id>/enabled', methods=['PATCH'])
+@feature_required('tiktok_official')
+def api_tiktok_official_account_enabled(business_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        enabled = bool(data.get('enabled'))
+        tiktok_official_service.set_account_enabled(business_id, enabled)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"tiktok_official account enabled update failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/matrix-video-dashboard')
 @feature_required('matrix_video_dashboard')
 def matrix_video_dashboard_page():

@@ -423,6 +423,18 @@ def set_account_needs_boost(business_id: str, needs_boost: bool) -> None:
     )
 
 
+def set_account_enabled(business_id: str, enabled: bool) -> None:
+    db.execute(
+        """
+        UPDATE tiktok_official_accounts SET
+            enabled = %s,
+            updated_at = NOW()
+        WHERE business_id = %s
+        """,
+        (bool(enabled), business_id),
+    )
+
+
 def refresh_official_accounts(
     business_ids: list[str] | None = None,
     profile_days: int = 30,

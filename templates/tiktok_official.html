@@ -309,7 +309,7 @@ function renderAccounts() {
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
         <span style="display:flex;gap:4px;">
           ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
-          <span class="pill">${a.enabled ? '启用' : '停用'}</span>
+          <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
         </span>
       </div>
       <div class="metric-line">别名：${fmt(a.account_alias)} ｜ 代运营：${fmt(a.authorized_by)}</div>
@@ -355,6 +355,24 @@ async function toggleNeedsBoost(businessId, checkbox) {
   }
 }
 window.toggleNeedsBoost = toggleNeedsBoost;
+
+async function toggleEnabled(businessId, nextEnabled, el) {
+  el.style.pointerEvents = 'none';
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/enabled`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: nextEnabled }),
+    });
+    const account = accounts.find(a => a.business_id === businessId);
+    if (account) account.enabled = nextEnabled;
+    renderAccounts();
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+    el.style.pointerEvents = '';
+  }
+}
+window.toggleEnabled = toggleEnabled;
 window.renderAccounts = renderAccounts;
 
 
