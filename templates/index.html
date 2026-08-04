@@ -565,8 +565,7 @@
 
                 // 更新 Hero 统计
                 document.getElementById('total-comments-stat').textContent = data.comments.toLocaleString();
-                const activeUsers = Math.max(1, Math.floor(data.analyses / 10));
-                document.getElementById('active-users-stat').textContent = activeUsers;
+                document.getElementById('active-users-stat').textContent = data.user_count;
 
                 updateStatBadge('growth-indicator', data.badges?.reviews || { text: '0%', style: 'neutral' });
                 updateStatBadge('analyses-indicator', data.badges?.analyses || { text: 'Idle', style: 'neutral' });

@@ -457,8 +457,7 @@
 
                 // 更新 Hero 统计
                 document.getElementById('total-comments-stat').textContent = data.comments.toLocaleString();
-                const activeUsers = Math.max(1, Math.floor(data.analyses / 10));
-                document.getElementById('active-users-stat').textContent = activeUsers;
+                document.getElementById('active-users-stat').textContent = data.user_count;
 
                 // 移除 loading 状态
                 document.querySelectorAll('.stat-card').forEach(card => {

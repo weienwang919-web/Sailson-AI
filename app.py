@@ -2672,6 +2672,7 @@ def dashboard_stats():
             {('AND created_at < %s' if first_event_at else '')}
         """, tuple([last_month] + ([first_event_at] if first_event_at else []))) or {}
 
+        user_total = db.query_one("SELECT COUNT(*) AS count FROM users") or {}
         task_total = db.query_one("SELECT COUNT(*) AS count FROM task_queue") or {}
         task_current = db.query_one("""
             SELECT COUNT(*) AS count FROM task_queue
@@ -2708,11 +2709,14 @@ def dashboard_stats():
         pending = int(queue.get('pending') or 0)
         failed = int(queue.get('failed') or 0)
 
+        user_count = int(user_total.get('count') or 0)
+
         return jsonify({
             'comments': total_reviews,
             'analyses': total_analyses,
             'tokens': total_tokens,
             'growth': growth,
+            'user_count': user_count,
             'current_month': {
                 'comments': current_reviews,
                 'analyses': current_analyses,
@@ -2737,6 +2741,7 @@ def dashboard_stats():
             'analyses': 0,
             'tokens': 0,
             'growth': 0,
+            'user_count': 0,
             'badges': {
                 'reviews': {'text': '0%', 'style': 'neutral'},
                 'analyses': {'text': 'Idle', 'style': 'neutral'},
