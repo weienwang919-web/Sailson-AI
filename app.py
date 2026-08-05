@@ -1905,6 +1905,90 @@ def _render_tiktok_oauth_callback(callback_type: str):
     """, 200
 
 
+@app.route('/tiktok/spark/callback/', strict_slashes=False)
+def tiktok_spark_callback():
+    """公开 Spark 授权（独立新 App）回调页。不要加登录保护，供 TikTok 校验和 OAuth 返回。"""
+    return _render_tiktok_spark_callback()
+
+
+def _render_tiktok_spark_callback():
+    """Spark 授权小流程的回调结果页：只写 tiktok_spark_tokens，不碰账号矩阵主表。"""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    error = request.args.get('error')
+    error_description = request.args.get('error_description')
+    logger.info(f"TikTok Spark OAuth callback received: state={state or '-'}, has_code={bool(code)}")
+    title = "TikTok Spark callback"
+    invite = None
+    if error:
+        body = f"""
+        <p style="color:#b91c1c;">授权失败</p>
+        <p><strong>error:</strong> <code>{html.escape(error)}</code></p>
+        <p><strong>description:</strong> <code>{html.escape(error_description or '')}</code></p>
+        """
+    elif code:
+        try:
+            invite = tiktok_official_service.verify_and_consume_spark_invite(state or '')
+            public_base = _tiktok_public_base_url()
+            redirect_uri = f'{public_base}/tiktok/spark/callback'
+            token_data = tiktok_official_service.exchange_spark_code(
+                code,
+                redirect_uri,
+                account_alias=invite.get('account_alias'),
+                authorized_by=invite.get('authorized_by'),
+            )
+            open_id = token_data.get('open_id') or ''
+            scope = token_data.get('scope') or ''
+            alias = invite.get('account_alias') or ''
+            body = f"""
+            <p style="color:#166534;font-weight:700;">✅ 「{html.escape(alias)}」的 Spark 授权已完成。<br>Spark authorization completed for "{html.escape(alias)}".</p>
+            <p><strong>账号别名 / Account alias：</strong><code>{html.escape(alias)}</code></p>
+            <p><strong>open_id:</strong> <code>{html.escape(open_id)}</code></p>
+            <p><strong>scope:</strong> <code>{html.escape(str(scope))}</code></p>
+            <p>可以关闭这个页面了。/ You can close this page now.</p>
+            """
+        except ValueError as e:
+            logger.warning(f"TikTok spark invite validation failed: {e}")
+            body = f"""
+            <p style="color:#b91c1c;">{html.escape(str(e))}</p>
+            """
+        except Exception as e:
+            logger.error(f"TikTok spark token exchange failed: {e}")
+            if invite and invite.get('nonce'):
+                try:
+                    tiktok_official_service.release_spark_invite(invite['nonce'])
+                except Exception as release_err:
+                    logger.error(f"release_spark_invite failed for nonce={invite.get('nonce')}: {release_err}")
+            body = f"""
+            <p style="color:#b91c1c;">收到 code，但自动换 token 失败。这条授权链接可以直接重新点开再试一次，不用重新生成。<br>
+            Received the code, but failed to exchange it for a token. You can reopen this same link and try again — no need for a new one.</p>
+            <p><strong>错误 / Error：</strong><code>{html.escape(str(e))}</code></p>
+            <p><strong>code:</strong></p>
+            <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
+            <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
+            """
+    else:
+        body = """
+        <p>TikTok Spark callback ready.</p>
+        """
+    return f"""
+    <!doctype html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>{html.escape(title)}</title>
+    </head>
+    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;color:#111827;padding:32px;">
+      <div style="max-width:760px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.08);">
+        <h1 style="font-size:20px;margin-bottom:16px;">{html.escape(title)}</h1>
+        {body}
+      </div>
+    </body>
+    </html>
+    """, 200
+
+
 @app.route('/kol-tool')
 @login_required
 def kol_tool():
@@ -9472,6 +9556,59 @@ def api_tiktok_official_invites():
         return jsonify({'status': 'success', 'invites': _json_safe_rows(invites)})
     except Exception as e:
         logger.error(f"tiktok_official invites list failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/spark/invite', methods=['POST'])
+@feature_required('tiktok_official')
+def api_tiktok_official_spark_invite():
+    """管理员生成一次性 Spark 授权邀请链接（独立新 App，仅补齐 biz.spark.auth 权限，不影响主账号表）。"""
+    data = request.get_json(silent=True) or {}
+    account_alias = (data.get('account_alias') or '').strip()
+    if not account_alias:
+        return jsonify({'status': 'error', 'message': 'account_alias 不能为空'}), 400
+    ttl_seconds = int(data.get('ttl_seconds') or 3 * 24 * 3600)
+    try:
+        public_base = _tiktok_public_base_url()
+        invite = tiktok_official_service.build_spark_invite_link(
+            account_alias,
+            public_base,
+            authorized_by=session.get('username') or session.get('user_id'),
+            ttl_seconds=ttl_seconds,
+        )
+        return jsonify({
+            'status': 'success',
+            'url': invite['url'],
+            'account_alias': invite['account_alias'],
+            'expires_at': invite['expires_at'].isoformat() if invite.get('expires_at') else None,
+        })
+    except Exception as e:
+        logger.error(f"tiktok_official spark invite generation failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/spark/invites')
+@feature_required('tiktok_official')
+def api_tiktok_official_spark_invites():
+    """返回最近的 Spark 授权邀请记录。"""
+    try:
+        public_base = _tiktok_public_base_url()
+        invites = tiktok_official_service.list_spark_invites(public_base=public_base)
+        return jsonify({'status': 'success', 'invites': _json_safe_rows(invites)})
+    except Exception as e:
+        logger.error(f"tiktok_official spark invites list failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/spark/tokens')
+@feature_required('tiktok_official')
+def api_tiktok_official_spark_tokens():
+    """返回已完成 Spark 授权的账号别名列表，供管理端确认哪些账号已经能正常生成 Spark 授权码。"""
+    try:
+        tokens = tiktok_official_service.list_spark_tokens()
+        return jsonify({'status': 'success', 'tokens': _json_safe_rows(tokens)})
+    except Exception as e:
+        logger.error(f"tiktok_official spark tokens list failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

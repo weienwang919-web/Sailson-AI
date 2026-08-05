@@ -49,6 +49,13 @@ services:
         sync: false
       - key: TIKTOK_OFFICIAL_ACCOUNTS_JSON
         sync: false
+      # Spark Ads 独立授权小流程用的新 App（申请到 biz.spark.auth 权限后填入）
+      - key: TIKTOK_SPARK_APP_ID
+        sync: false
+      - key: TIKTOK_SPARK_APP_SECRET
+        sync: false
+      - key: TIKTOK_SPARK_SCOPES
+        sync: false
       # 官号 token 落库加解密密钥（Fernet key，web/worker 两个服务必须配成同一个值）
       - key: TIKTOK_TOKEN_ENC_KEY
         sync: false
