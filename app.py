@@ -9567,7 +9567,12 @@ def api_tiktok_official_spark_invite():
     account_alias = (data.get('account_alias') or '').strip()
     if not account_alias:
         return jsonify({'status': 'error', 'message': 'account_alias 不能为空'}), 400
-    ttl_seconds = int(data.get('ttl_seconds') or 3 * 24 * 3600)
+    if data.get('never_expire'):
+        ttl_seconds = None
+    elif data.get('ttl_seconds') is not None:
+        ttl_seconds = int(data.get('ttl_seconds'))
+    else:
+        ttl_seconds = 3 * 24 * 3600
     try:
         public_base = _tiktok_public_base_url()
         invite = tiktok_official_service.build_spark_invite_link(
