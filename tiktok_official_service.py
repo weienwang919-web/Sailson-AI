@@ -1010,11 +1010,19 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
     return {"account_alias": account_alias, "open_id": open_id, "scope": scope}
 
 
-def get_spark_access_token(account_alias: str | None) -> str | None:
+def get_spark_token_info(account_alias: str | None) -> dict[str, Any] | None:
+    """Spark token 是在另一个 App 下授权的，open_id 跟主流程的 business_id 不是同一个值。
+    调用 TikTok 接口时 body 里的 business_id 必须跟 access_token 自己的身份一致，
+    不能沿用主流程那个 business_id，否则 TikTok 会报 access token 不合法。"""
     if not account_alias:
         return None
-    row = db.query_one("SELECT access_token FROM tiktok_spark_tokens WHERE account_alias = %s", (account_alias,))
-    return crypto_util.decrypt((row or {}).get("access_token")) if row else None
+    row = db.query_one(
+        "SELECT access_token, open_id FROM tiktok_spark_tokens WHERE account_alias = %s",
+        (account_alias,),
+    )
+    if not row or not row.get("access_token"):
+        return None
+    return {"access_token": crypto_util.decrypt(row["access_token"]), "open_id": row.get("open_id")}
 
 
 def list_spark_tokens(limit: int = 100) -> list[dict[str, Any]]:
@@ -1626,7 +1634,15 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
     # 优先用该账号别名在独立 Spark 小流程里授权过的 token，没有的话再退回主账号 token（兼容老账号）。
     account_row = db.query_one("SELECT account_alias FROM tiktok_official_accounts WHERE business_id = %s", (business_id,))
     alias = (account_row or {}).get("account_alias")
-    token = get_spark_access_token(alias) or get_access_token(business_id)
+    spark_info = get_spark_token_info(alias)
+    if spark_info and spark_info.get("access_token"):
+        token = spark_info["access_token"]
+        # 用 Spark App 的 open_id 作为 business_id，跟这个 token 自己的身份对上，
+        # 否则 TikTok 会认为 token 跟 business_id 不匹配，报 access token 不合法。
+        call_business_id = spark_info.get("open_id") or business_id
+    else:
+        token = get_access_token(business_id)
+        call_business_id = business_id
     if not token:
         raise RuntimeError(f"business_id={business_id} 缺少 access_token，请先完成 TikTok 账号授权")
 
@@ -1634,7 +1650,7 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
         f"{API_BASE}/tt_video/authorize/",
         headers={"Access-Token": token, "Content-Type": "application/json"},
         json={
-            "business_id": business_id,
+            "business_id": call_business_id,
             "item_id": item_id,
             "is_ad_promotable": True,
             "authorization_days": authorization_days,
