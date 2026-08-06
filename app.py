@@ -13,6 +13,7 @@ from email.mime.text import MIMEText
 from urllib.parse import urlencode
 import pandas as pd
 import uuid
+import io
 import threading
 import requests
 from io import BytesIO
@@ -43,6 +44,16 @@ import agent_service
 import competitor_radar
 import tiktok_official_service
 import usage_service
+
+# mail-blaster 素材提交（独立子功能）。刻意做成软失败：
+# 这个模块出任何问题都不该让整个工作台起不来。
+try:
+    import mail_blaster_service
+    MAIL_BLASTER_AVAILABLE = True
+except Exception as _mb_import_exc:  # noqa: BLE001
+    mail_blaster_service = None
+    MAIL_BLASTER_AVAILABLE = False
+    print(f"[warn] mail-blaster 模块加载失败，该功能不可用: {_mb_import_exc}")
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -757,6 +768,15 @@ tiktok_official_service.ensure_schema()
 usage_service.ensure_schema()
 rag.ensure_tables()
 
+# mail-blaster 的 9 张表。worker.py 会 `from app import ...`，所以这里写一次
+# 两个进程都会执行到。包 try 是因为建表失败不该让整个工作台起不来。
+if MAIL_BLASTER_AVAILABLE:
+    try:
+        mail_blaster_service.ensure_schema()
+    except Exception as _mb_schema_exc:  # noqa: BLE001
+        logger.warning("mail-blaster 建表失败，该功能不可用：%s", _mb_schema_exc)
+        MAIL_BLASTER_AVAILABLE = False
+
 
 def recover_interrupted_tasks():
     """恢复被中断的任务。
@@ -851,6 +871,7 @@ def admin_required(f):
 FEATURE_KEYS = {
     'tiktok_official': 'TikTok 官号监控',
     'matrix_video_dashboard': '矩阵号视频监控看板',
+    'mail_blaster': '邮件素材提交',
 }
 
 
@@ -10079,6 +10100,312 @@ def _json_safe(value):
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.isoformat()
     return value
+
+
+# ============================================
+# mail-blaster：素材提交
+# 语义 = 一个收件人 ← N 个发件账号，各带 1 张图，发出 N 封信
+# （客户归档流程要求一素材一邮件）
+#
+# 发送不在这里跑：web 是 Render free 套餐，空闲 15 分钟休眠会把后台线程
+# 连同进程一起杀掉，且 gunicorn workers=1/threads=1。所以只负责入队，
+# 真正的 SMTP 循环在常驻的 worker 进程里，见 worker.py 的 mail_blaster_send。
+# ============================================
+
+def _mb_guard():
+    """模块不可用时给个能看懂的响应，而不是 500。"""
+    if not MAIL_BLASTER_AVAILABLE:
+        return jsonify({'status': 'error',
+                        'message': 'mail-blaster 模块未就绪，请查看服务端日志'}), 503
+    return None
+
+
+def _mb_fail(message, code=400):
+    return jsonify({'status': 'error', 'message': message}), code
+
+
+@app.route('/mail-blaster')
+@feature_required('mail_blaster')
+def mail_blaster_page():
+    if not MAIL_BLASTER_AVAILABLE:
+        return "mail-blaster 模块未就绪，请查看服务端日志", 503
+    return render_template(
+        'mail_blaster.html',
+        placeholders=mail_blaster_service.PLACEHOLDERS,
+        item_fields=mail_blaster_service.ITEM_FIELDS,
+        providers=mail_blaster_service.PROVIDERS,
+        defaults=mail_blaster_service.defaults_for_page(),
+    )
+
+
+# ---- 发件账号池 ----
+
+@app.route('/api/mail-blaster/accounts', methods=['GET'])
+@feature_required('mail_blaster')
+def api_mb_list_accounts():
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        only = request.args.get('sendable') == '1'
+        accounts = mail_blaster_service.list_accounts(only_sendable=only)
+        target = (request.args.get('cooldown_for') or '').strip().lower()
+        if target:
+            blocked_map = mail_blaster_service.cooldown_map([target]).get(target, {})
+            for a in accounts:
+                a['cooldown_until'] = blocked_map.get(a['id'], '')
+        return jsonify({'status': 'success', 'accounts': accounts,
+                        'cooldown_days': mail_blaster_service.COOLDOWN_DAYS})
+    except Exception as e:
+        logger.error(f"mail-blaster accounts failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/accounts', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_create_account():
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        return jsonify({'status': 'success',
+                        'account': mail_blaster_service.create_account(request.json or {})})
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster create account failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/accounts/<int:account_id>', methods=['PUT'])
+@feature_required('mail_blaster')
+def api_mb_update_account(account_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        return jsonify({'status': 'success',
+                        'account': mail_blaster_service.update_account(account_id, request.json or {})})
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster update account failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/accounts/<int:account_id>', methods=['DELETE'])
+@feature_required('mail_blaster')
+def api_mb_delete_account(account_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    mail_blaster_service.delete_account(account_id)
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/mail-blaster/accounts/<int:account_id>/test', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_test_account(account_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        return jsonify({'status': 'success',
+                        'account': mail_blaster_service.test_account(account_id)})
+    except Exception as e:
+        logger.error(f"mail-blaster test account failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/accounts/bulk-import', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_bulk_import():
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        text = (request.json or {}).get('text') or ''
+        return jsonify({'status': 'success', **mail_blaster_service.bulk_import(text)})
+    except Exception as e:
+        logger.error(f"mail-blaster bulk import failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+# ---- 图片（存在 BYTEA 里，不落盘）----
+
+@app.route('/api/mail-blaster/images/<int:image_id>')
+@feature_required('mail_blaster')
+def api_mb_image(image_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    loaded = mail_blaster_service.load_image(image_id)
+    if loaded is None:
+        return _mb_fail('图片不存在', 404)
+    blob, mime = loaded
+    return send_file(io.BytesIO(blob), mimetype=mime)
+
+
+# ---- 批次 ----
+
+@app.route('/api/mail-blaster/jobs/from-excel', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_create_job_from_excel():
+    if (blocked := _mb_guard()):
+        return blocked
+    upload = request.files.get('file')
+    if upload is None or not upload.filename:
+        return _mb_fail('没有收到 Excel 文件')
+    if not upload.filename.lower().endswith('.xlsx'):
+        return _mb_fail('只支持 .xlsx。.xls 存不了嵌入图片，请先另存为 .xlsx')
+    try:
+        result = mail_blaster_service.create_job_from_excel(
+            file_bytes=upload.read(),
+            fallback_recipient=(request.form.get('recipient') or '').strip(),
+            subject_tpl=request.form.get('subject_tpl') or '',
+            body_tpl=request.form.get('body_tpl') or '',
+            signature_tpl=request.form.get('signature_tpl') or '',
+            user_id=session.get('user_id'),
+            run_ocr=(request.form.get('ocr') or '1') == '1',
+        )
+        # 营业执照识别交给 worker：一张图 3–8 秒，在 web 里跑会把
+        # gunicorn 那唯一一个 worker 堵死，整站转圈。
+        if result['excel'].get('needs_ocr'):
+            ocr_task = f"mb_ocr_{uuid.uuid4().hex[:16]}"
+            create_task(ocr_task, session.get('user_id'),
+                        f"mail_blaster_ocr_{result['job']['id']}",
+                        function_type='mail_blaster_ocr')
+            set_task_params(ocr_task, {'job_id': result['job']['id']})
+            db.execute("UPDATE mb_jobs SET ocr_task_id = %s WHERE id = %s",
+                       (ocr_task, result['job']['id']))
+            result['ocr_task_id'] = ocr_task
+        return jsonify({'status': 'success', **result})
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster excel import failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/jobs/<int:job_id>/preview', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_preview(job_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        mail_blaster_service.sync_job(job_id, request.json or {})
+        return jsonify({'status': 'success',
+                        'previews': mail_blaster_service.build_previews(job_id)})
+    except ValueError as e:
+        return _mb_fail(str(e), 404)
+    except Exception as e:
+        logger.error(f"mail-blaster preview failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/jobs/<int:job_id>/send', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_send(job_id):
+    """只入队，不发信。真正的 SMTP 循环在 worker 进程里。"""
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        mail_blaster_service.sync_job(job_id, request.json or {})
+        state = mail_blaster_service.load_job(job_id)
+        has_recipient = any(i['recipient'] for i in state['items']) or state['job']['recipient']
+        if not has_recipient:
+            return _mb_fail('请先填写收件邮箱，或用带「收件邮箱」列的 Excel 导入')
+        if not any(i['sender_account_id'] for i in state['items']):
+            return _mb_fail('没有任何一行选了发件账号')
+
+        task_id = f"mb_{uuid.uuid4().hex[:16]}"
+        create_task(task_id, session.get('user_id'),
+                    f"mail_blaster_{job_id}", function_type='mail_blaster_send')
+        set_task_params(task_id, {'job_id': job_id})
+        db.execute("UPDATE mb_jobs SET task_id = %s, status = 'queued' WHERE id = %s",
+                   (task_id, job_id))
+        return jsonify({'status': 'success', 'task_id': task_id})
+    except ValueError as e:
+        return _mb_fail(str(e), 404)
+    except Exception as e:
+        logger.error(f"mail-blaster send failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/jobs/<int:job_id>/status')
+@feature_required('mail_blaster')
+def api_mb_job_status(job_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        return jsonify({'status': 'success', **mail_blaster_service.load_job(job_id)})
+    except ValueError as e:
+        return _mb_fail(str(e), 404)
+
+
+@app.route('/api/mail-blaster/items/<int:item_id>/resend', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_resend(item_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    row = db.query_one("SELECT job_id FROM mb_items WHERE id = %s", (item_id,))
+    if not row:
+        return _mb_fail('这一封不存在', 404)
+    task_id = f"mb_{uuid.uuid4().hex[:16]}"
+    create_task(task_id, session.get('user_id'),
+                f"mail_blaster_resend_{item_id}", function_type='mail_blaster_send')
+    set_task_params(task_id, {'job_id': row['job_id'], 'item_id': item_id})
+    return jsonify({'status': 'success', 'task_id': task_id})
+
+
+# ---- 模板库 / 历史 / 号码映射 ----
+
+@app.route('/api/mail-blaster/templates', methods=['GET'])
+@feature_required('mail_blaster')
+def api_mb_list_templates():
+    if (blocked := _mb_guard()):
+        return blocked
+    return jsonify({'status': 'success',
+                    'templates': _json_safe_rows(mail_blaster_service.list_templates())})
+
+
+@app.route('/api/mail-blaster/templates', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_save_template():
+    if (blocked := _mb_guard()):
+        return blocked
+    d = request.json or {}
+    try:
+        rows = mail_blaster_service.save_template(
+            d.get('name'), d.get('subject'), d.get('body'), d.get('signature'))
+        return jsonify({'status': 'success', 'templates': _json_safe_rows(rows)})
+    except ValueError as e:
+        return _mb_fail(str(e))
+
+
+@app.route('/api/mail-blaster/templates/<int:template_id>', methods=['DELETE'])
+@feature_required('mail_blaster')
+def api_mb_delete_template(template_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    return jsonify({'status': 'success',
+                    'templates': _json_safe_rows(mail_blaster_service.delete_template(template_id))})
+
+
+@app.route('/api/mail-blaster/history')
+@feature_required('mail_blaster')
+def api_mb_history():
+    if (blocked := _mb_guard()):
+        return blocked
+    rows = mail_blaster_service.list_history(
+        limit=int(request.args.get('limit') or 500),
+        keyword=request.args.get('q') or '')
+    return jsonify({'status': 'success', 'items': _json_safe_rows(rows)})
+
+
+@app.route('/api/mail-blaster/phones')
+@feature_required('mail_blaster')
+def api_mb_phones():
+    if (blocked := _mb_guard()):
+        return blocked
+    return jsonify({'status': 'success',
+                    'items': _json_safe_rows(mail_blaster_service.list_phone_assignments())})
+
 
 
 # ============================================

@@ -1,0 +1,203 @@
+:root {
+  --bg: #f5f5f7;
+  --card: #ffffff;
+  --line: #e3e3e6;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #0071e3;
+  --ok: #1a9c53;
+  --warn: #b7791f;
+  --err: #d1343b;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  background: rgba(255, 255, 255, .82);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 50;
+}
+.topbar-inner { display: flex; align-items: center; gap: 32px; height: 54px; }
+.brand { font-weight: 600; text-decoration: none; color: var(--text); font-size: 16px; }
+.topbar nav { display: flex; gap: 22px; }
+.topbar nav a {
+  text-decoration: none; color: var(--muted); font-size: 14px;
+  padding: 4px 0; border-bottom: 2px solid transparent;
+}
+.topbar nav a:hover { color: var(--text); }
+.topbar nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* ---------- 通用块 ---------- */
+main { padding: 28px 0 80px; }
+
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px;
+}
+.card > h2 {
+  margin: 0 0 4px; font-size: 16px; font-weight: 600;
+  display: flex; align-items: center; gap: 8px;
+}
+.card > .hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+
+.step-no {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-size: 12px; font-weight: 600;
+}
+
+.banner { border-radius: var(--radius); padding: 14px 18px; margin: 18px 0; font-size: 14px; }
+.banner-warn { background: #fff8e6; border: 1px solid #f0d9a0; color: #7a5a12; }
+.banner pre {
+  margin: 8px 0 0; padding: 8px 10px; background: #00000008;
+  border-radius: 6px; overflow-x: auto; font-size: 12px;
+}
+
+/* ---------- 表单 ---------- */
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+input[type=text], input[type=email], input[type=number], input[type=password],
+select, textarea {
+  width: 100%; padding: 9px 11px; font: inherit; font-size: 14px;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text);
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #0071e322;
+}
+textarea { resize: vertical; min-height: 90px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.field { margin-bottom: 14px; }
+.grid { display: grid; gap: 14px; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.checkline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
+.checkline input { width: auto; }
+
+button {
+  font: inherit; font-size: 14px; padding: 9px 16px; border-radius: 8px;
+  border: 1px solid var(--line); background: #fff; color: var(--text); cursor: pointer;
+}
+button:hover { background: #fafafa; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #0062c8; }
+button.danger { color: var(--err); border-color: #f0c4c6; }
+button.small { padding: 5px 10px; font-size: 13px; }
+
+/* ---------- 表格 ---------- */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+
+.pill {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; white-space: nowrap;
+}
+.pill-ready   { background: #e6f7ee; color: var(--ok); }
+.pill-failed  { background: #fdeaeb; color: var(--err); }
+.pill-draft   { background: #eee; color: var(--muted); }
+.pill-pending { background: #eee; color: var(--muted); }
+.pill-sending { background: #e8f1fd; color: var(--accent); }
+.pill-sent    { background: #e6f7ee; color: var(--ok); }
+.pill-oauth   { background: #e8f1fd; color: var(--accent); }
+.pill-skipped { background: #fdf4e3; color: var(--warn); }
+
+.errbox {
+  margin-top: 6px; font-size: 12px; color: var(--err); background: #fdeaeb;
+  border-radius: 6px; padding: 7px 9px; white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5;
+}
+
+.smtp-resp {
+  margin-top: 6px; font-size: 11.5px; color: var(--muted); background: #f4f6f8;
+  border-radius: 6px; padding: 6px 8px; word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5;
+}
+.smtp-resp .dim { opacity: .65; }
+
+.empty { padding: 34px; text-align: center; color: var(--muted); font-size: 14px; }
+
+/* ---------- 上传 ---------- */
+.drop {
+  border: 2px dashed var(--line); border-radius: var(--radius);
+  padding: 32px; text-align: center; color: var(--muted); cursor: pointer;
+  transition: .15s; background: #fcfcfd;
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: #f2f8ff; color: var(--accent); }
+
+.thumb {
+  width: 56px; height: 56px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--line); background: #fafafa; display: block;
+}
+
+/* ---------- 占位符说明 ---------- */
+.ph-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ph {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  background: #f0f0f3; border-radius: 5px; padding: 3px 7px; cursor: pointer; color: var(--text);
+}
+.ph:hover { background: #e2e8f5; color: var(--accent); }
+.ph small { color: var(--muted); margin-left: 5px; font-family: inherit; }
+
+/* ---------- 进度 ---------- */
+.progress { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 12px 0 6px; }
+.progress > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+
+/* ---------- 弹层 ---------- */
+.modal {
+  position: fixed; inset: 0; background: #00000055; z-index: 100;
+  display: none; align-items: center; justify-content: center; padding: 32px;
+}
+.modal.show { display: flex; }
+.modal-box {
+  background: #fff; border-radius: 14px; width: 100%; max-width: 720px;
+  max-height: 100%; display: flex; flex-direction: column; overflow: hidden;
+}
+.modal-box.wide { max-width: 900px; }
+.modal-head {
+  padding: 16px 22px; border-bottom: 1px solid var(--line);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.modal-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.modal-body { padding: 20px 22px; overflow-y: auto; }
+.modal-foot {
+  padding: 14px 22px; border-top: 1px solid var(--line);
+  display: flex; justify-content: flex-end; gap: 10px; align-items: center;
+}
+
+.mail-preview {
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff;
+}
+.mail-head { padding: 12px 16px; background: #fafafa; border-bottom: 1px solid var(--line); font-size: 13px; }
+.mail-head div { margin: 2px 0; }
+.mail-head span { color: var(--muted); display: inline-block; width: 52px; }
+.mail-body { padding: 18px; }
+.mail-body img { max-width: 100%; height: auto; }
+
+/* ---------- toast ---------- */
+.toast {
+  position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #1d1d1f; color: #fff; padding: 11px 20px; border-radius: 10px;
+  font-size: 14px; opacity: 0; pointer-events: none; transition: .22s; z-index: 200;
+  max-width: 80vw; white-space: pre-wrap;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: var(--err); }
+
+@media (max-width: 780px) {
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}邮件素材提交 · Sailson AI{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mail_blaster.css') }}">
+<style>
+  /* 这个页面用 mail-blaster 自带的浅色卡片风，和站内 Bootstrap 页面并存。
+     只在这个容器内生效，不污染其他页面。 */
+  .mb-scope { background: #f5f5f7; margin: -24px -12px 0; padding: 24px 12px 60px; }
+  .mb-scope .wrap { max-width: 1180px; margin: 0 auto; }
+  .mb-topline { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .mb-topline h1 { font-size: 22px; font-weight: 600; margin: 0; color: #1d1d1f; }
+  .mb-topline .spacer { margin-left: auto; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-scope">
+<div class="wrap">
+
+  <div class="mb-topline">
+    <h1>✉️ 邮件素材提交</h1>
+    <span class="hint" style="margin:0">一条素材 = 一封信，逐封发给对应收件人</span>
+    <span class="spacer"></span>
+    <button class="small" onclick="openAccounts()">发件账号池</button>
+    <button class="small" onclick="openHistory()">发信记录</button>
+    <a href="/" class="hint" style="margin:0">← 返回首页</a>
+  </div>
+
+  <div class="card">
+    <h2><span class="step-no">1</span> 默认收件邮箱</h2>
+    <p class="hint">
+      Excel 里有「收件邮箱」列时以那一列为准，逐行各发各的。
+      这里填的是<strong>兜底值</strong>，只在某行没写邮箱时使用。
+    </p>
+    <input type="email" id="recipient" placeholder="someone@example.com" autocomplete="off">
+  </div>
+
+  <div class="card">
+    <h2><span class="step-no">2</span> 导入 Excel</h2>
+    <p class="hint">
+      识别 <strong>图片 / name / id / number / 收件邮箱 / 发送状态</strong> 六列，图片直接嵌在单元格里。
+      表头不必在第一行。<strong>发送状态非空的行视为已发过，直接跳过</strong>；
+      「收件邮箱 + id」在发信记录里出现过的也会自动跳过，所以同一份表可以反复导入。
+    </p>
+    <div class="drop" id="drop-xlsx">
+      拖 .xlsx 到这里，或点击选择<br>
+      <small>只支持 .xlsx —— .xls 存不了嵌入图片</small>
+    </div>
+    <input type="file" id="xlsx-input" accept=".xlsx" style="display:none">
+    <div class="checkline" style="margin-top:10px">
+      <input type="checkbox" id="use-ocr" checked>
+      <label for="use-ocr">name / id / number 为空时，用营业执照 OCR 自动补（后台识别，不阻塞页面）</label>
+    </div>
+    <div id="upload-info" class="hint" style="margin-top:10px"></div>
+    <div id="excel-report"></div>
+    <div id="ocr-box"></div>
+  </div>
+
+  <div class="card" id="pair-card" style="display:none">
+    <h2><span class="step-no">3</span> 逐封确认</h2>
+    <p class="hint">
+      发件账号已自动轮换：<strong>7 天内给同一收件人发过的账号会被避开</strong>。
+      池子不够时会用冷却期内的并标出来，可以在下拉里手动换。
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:66px">图片</th>
+          <th style="width:190px">收件邮箱</th>
+          <th style="width:215px">发件账号</th>
+          <th style="width:130px">发件人显示名</th>
+          {% for key, label in item_fields %}
+          <th style="width:120px">{{ label }}</th>
+          {% endfor %}
+          <th style="width:130px">状态</th>
+        </tr>
+      </thead>
+      <tbody id="pair-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="card" id="tpl-card" style="display:none">
+    <h2><span class="step-no">4</span> 邮件模板</h2>
+    <p class="hint">
+      点占位符插入到光标处。正文可直接写 HTML。
+      <strong>改完点「保存模板」，下次打开自动带出来</strong>。
+    </p>
+    <div class="row" style="margin-bottom:12px">
+      <select id="tpl-picker" onchange="applyTemplate(this.value)" style="max-width:260px">
+        <option value="">— 模板库 —</option>
+      </select>
+      <button class="small" onclick="saveTemplate()">保存模板</button>
+      <button class="small danger" onclick="deleteTemplate()">删除</button>
+      <span id="tpl-info" class="hint" style="margin:0"></span>
+    </div>
+    <div class="field">
+      <label>主题</label>
+      <input type="text" id="subject-tpl" value="{{ defaults.subject }}">
+    </div>
+    <div class="grid grid-2">
+      <div class="field">
+        <label>正文</label>
+        <textarea id="body-tpl" rows="10">{{ defaults.body }}</textarea>
+      </div>
+      <div class="field">
+        <label>落款签名（<code>{{ '{{signature}}' }}</code> 渲染成这段）</label>
+        <textarea id="signature-tpl" rows="10">{{ defaults.signature }}</textarea>
+      </div>
+    </div>
+    <div class="ph-list">
+      {% for token, desc in placeholders %}
+      <span class="ph" onclick="insertPh('{{ token }}')">{{ token }}<small>{{ desc }}</small></span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card" id="send-card" style="display:none">
+    <h2><span class="step-no">5</span> 预览并发送</h2>
+    <p class="hint">
+      发送在后台 worker 进程里跑，每封之间随机停 3–8 秒。
+      <strong>提交后可以关掉页面</strong>，回来再看进度。
+    </p>
+    <div class="row">
+      <button onclick="doPreview()">预览全部</button>
+      <button class="primary" id="send-btn" onclick="doSend()">开始发送</button>
+      <span id="send-summary" class="hint" style="margin:0"></span>
+    </div>
+    <div class="progress" id="progress" style="display:none"><div></div></div>
+    <div id="pause-box"></div>
+  </div>
+</div>
+</div>
+
+<!-- 预览 -->
+<div class="modal" id="preview-modal">
+  <div class="modal-box wide">
+    <div class="modal-head"><h3>预览</h3>
+      <button class="small" onclick="closeModal('preview-modal')">关闭</button></div>
+    <div class="modal-body" id="preview-body"></div>
+    <div class="modal-foot">
+      <button class="small" onclick="stepPreview(-1)">← 上一封</button>
+      <span id="preview-pos" class="hint" style="margin:0"></span>
+      <button class="small" onclick="stepPreview(1)">下一封 →</button>
+    </div>
+  </div>
+</div>
+
+<!-- 账号池 -->
+<div class="modal" id="accounts-modal">
+  <div class="modal-box wide">
+    <div class="modal-head"><h3>发件账号池</h3>
+      <button class="small" onclick="closeModal('accounts-modal')">关闭</button></div>
+    <div class="modal-body">
+      <p class="hint">
+        只有<strong>已启用 + 测试通过</strong>的账号会参与自动配对。密码加密存库，页面上不回显。
+      </p>
+      <div class="row">
+        <input type="email" id="acc-email" placeholder="邮箱" style="flex:1">
+        <input type="password" id="acc-pass" placeholder="密码 / 授权码" style="flex:1">
+        <select id="acc-provider" style="max-width:190px">
+          {% for p in providers %}<option value="{{ p.key }}">{{ p.label }}</option>{% endfor %}
+        </select>
+        <button onclick="addAccount()">新增</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <textarea id="acc-bulk" rows="3" style="flex:1"
+          placeholder="批量粘贴，一行一个：&#10;  邮箱----密码                              （密码直连）&#10;  邮箱----密码----clientid----refreshtoken  （自动走 OAuth2）"></textarea>
+        <button class="small" onclick="bulkImport()">批量导入</button>
+      </div>
+      <div id="acc-bulk-result"></div>
+      <table style="margin-top:12px">
+        <thead><tr>
+          <th style="width:52px">启用</th><th>邮箱</th><th style="width:150px">显示名</th>
+          <th style="width:180px">SMTP</th><th style="width:130px">状态</th><th style="width:150px">操作</th>
+        </tr></thead>
+        <tbody id="acc-rows"></tbody>
+      </table>
+      <div id="acc-empty" class="empty">账号池是空的</div>
+    </div>
+  </div>
+</div>
+
+<!-- 发信记录 -->
+<div class="modal" id="history-modal">
+  <div class="modal-box wide">
+    <div class="modal-head"><h3>发信记录</h3>
+      <button class="small" onclick="closeModal('history-modal')">关闭</button></div>
+    <div class="modal-body">
+      <p class="hint">
+        跨批次留存。<strong>「收件邮箱 + id」在这里出现过的行，重新导入时会被自动跳过</strong>。
+      </p>
+      <div class="row">
+        <input type="text" id="hist-q" placeholder="搜收件人 / 素材 id / 名字 / 主题 / 发件邮箱"
+               style="flex:1" onkeydown="if(event.key==='Enter')loadHistory()">
+        <button onclick="loadHistory()">搜索</button>
+        <span id="hist-info" class="hint" style="margin:0"></span>
+      </div>
+      <table style="margin-top:12px">
+        <thead><tr>
+          <th style="width:140px">时间</th><th style="width:200px">收件人</th>
+          <th style="width:140px">素材 id</th><th>名字 / 主题</th><th style="width:200px">发件账号</th>
+        </tr></thead>
+        <tbody id="hist-rows"></tbody>
+      </table>
+      <div id="hist-empty" class="empty">还没有发信记录</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ITEM_FIELDS = {{ item_fields | tojson }};
+</script>
+<script src="{{ url_for('static', filename='js/mail_blaster.js') }}"></script>
+{% if defaults.loaded_from %}
+<script>window.addEventListener('load', () => toast('已载入模板「{{ defaults.loaded_from }}」'));</script>
+{% endif %}
+{% endblock %}

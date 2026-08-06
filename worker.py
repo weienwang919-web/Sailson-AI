@@ -268,6 +268,81 @@ def claim_task():
         return None
 
 
+def _handle_mail_blaster_send(task_id, params):
+    """mail-blaster 发信。
+
+    放在 worker 而不是 web：web 是 Render free 套餐，空闲 15 分钟休眠会把
+    后台线程连同进程一起杀掉（和当初 TikTok 每日同步踩的是同一个坑），
+    而且 gunicorn 那边 workers=1/threads=1，一个跑 SMTP 循环的线程会把它堵死。
+    """
+    try:
+        import mail_blaster_service as mb
+    except Exception as e:
+        logger.error(f"mail-blaster 模块不可用: {e}")
+        update_task(task_id, status='failed', error=f'mail-blaster 模块不可用: {e}')
+        return
+
+    job_id = params.get('job_id')
+    item_id = params.get('item_id')
+    if not job_id:
+        update_task(task_id, status='failed', error='缺少 job_id')
+        return
+
+    try:
+        if item_id:
+            # 单封重发
+            outcome = mb.send_item(int(job_id), int(item_id))
+            update_task(task_id, status='completed',
+                        progress=f'重发完成：{outcome}',
+                        result=json.dumps({'outcome': outcome}, ensure_ascii=False))
+            return
+
+        def _progress(text):
+            update_task(task_id, status='processing', progress=text)
+
+        summary = mb.run_job(int(job_id), progress=_progress)
+        update_task(task_id, status='completed',
+                    progress=f"共 {summary['total']} 封　成功 {summary['sent']}　失败 {summary['failed']}",
+                    result=json.dumps(summary, ensure_ascii=False))
+    except Exception as e:
+        logger.error(f"mail-blaster 发送任务失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=f'发送失败: {str(e)[:500]}')
+
+
+def _handle_mail_blaster_ocr(task_id, params):
+    """营业执照识别。放在 worker 是因为一张图 3–8 秒，
+    web 那边 gunicorn workers=1/threads=1，20 行就能把整个工作台堵两分钟。"""
+    try:
+        import mail_blaster_service as mb
+    except Exception as e:
+        logger.error(f"mail-blaster 模块不可用: {e}")
+        update_task(task_id, status='failed', error=f'mail-blaster 模块不可用: {e}')
+        return
+
+    job_id = params.get('job_id')
+    if not job_id:
+        update_task(task_id, status='failed', error='缺少 job_id')
+        return
+    try:
+        summary = mb.run_ocr_for_job(int(job_id),
+                                     progress=lambda t: update_task(task_id, status='processing',
+                                                                    progress=t))
+        update_task(task_id, status='completed',
+                    progress=f"识别 {summary['processed']} 行，补上 {summary['filled']} 行",
+                    result=json.dumps(summary, ensure_ascii=False))
+    except Exception as e:
+        logger.error(f"mail-blaster OCR 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            db.execute("UPDATE mb_jobs SET ocr_status = 'failed' WHERE id = %s", (int(job_id),))
+        except Exception:
+            pass
+        update_task(task_id, status='failed', error=f'识别失败: {str(e)[:500]}')
+
+
 def dispatch_task(task_row):
     """根据 function_type 分发到对应的处理函数。"""
     task_id = task_row['task_id']
@@ -313,6 +388,10 @@ def dispatch_task(task_row):
             _handle_tiktok_official_publish_window_capture(task_id, params)
         elif func_type == 'tiktok_official_video_discovery':
             _handle_tiktok_official_video_discovery(task_id, params)
+        elif func_type == 'mail_blaster_send':
+            _handle_mail_blaster_send(task_id, params)
+        elif func_type == 'mail_blaster_ocr':
+            _handle_mail_blaster_ocr(task_id, params)
         else:
             logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
             update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
@@ -747,6 +826,17 @@ def main():
             logger.info(f"♻️ 回退了 {reset_count} 个 claimed/processing 任务到 pending")
     except Exception as e:
         logger.warning(f"⚠️ 回退残留任务失败: {e}")
+
+    # mail-blaster：复位上次被杀时卡在 sending 的信。
+    # 刻意标成 failed 而不是 pending —— 那封信可能已经送达，
+    # 自动重发会让收件人收到两封，宁可让人来判断。
+    try:
+        import mail_blaster_service as _mb
+        stuck = _mb.reset_stuck_items()
+        if stuck:
+            logger.info(f"♻️ mail-blaster 复位了 {stuck} 封卡在发送中的信（投递结果未知，已标失败待人工确认）")
+    except Exception as e:
+        logger.warning(f"⚠️ mail-blaster 复位失败（不影响其他任务）: {e}")
 
     idle_count = 0
     futures = set()
