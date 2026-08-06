@@ -1047,16 +1047,28 @@ def parse_material_xlsx(data: bytes) -> dict:
         if len(emails) > 1:
             errors.append(f"第 {row_idx} 行有 {len(emails)} 个邮箱，只用第一个（{emails[0]}）。"
                           "一行一个收件人，要发给多个人请拆成多行。")
-        if len(blobs) > 1:
-            errors.append(f"第 {row_idx} 行有 {len(blobs)} 张图，只用了第一张")
         if not blobs:
             errors.append(f"第 {row_idx} 行（{label}）没有图片，这一行不会发信")
+            rows.append({"vars": dict(variables), "recipient": (emails[0].lower() if emails else ""),
+                         "image_bytes": None, "image_name": "",
+                         "excel_row": row_idx, "skip_reason": ""})
+            continue
 
-        blob = blobs[0] if blobs else None
-        ext = sniff_image(blob)[0] if blob else ""
-        rows.append({"vars": variables, "recipient": (emails[0].lower() if emails else ""),
-                     "image_bytes": blob, "image_name": f"{label}.{ext}" if blob else "",
-                     "excel_row": row_idx, "skip_reason": ""})
+        # 一行叠了多张图 = 多份素材。全部展开成独立的信，而不是只取第一张。
+        # 实测用户的表里第 2 行叠了 10 份不同的执照——只取第一张会静默丢掉 9 份。
+        # 每份素材一封信，本来就是这个功能的语义。
+        if len(blobs) > 1:
+            errors.append(
+                f"第 {row_idx} 行叠了 {len(blobs)} 张图，已展开成 {len(blobs)} 封"
+                "（每份素材一封信）。如果其中有误放的，在下面的表里删掉对应行即可。")
+
+        recipient = emails[0].lower() if emails else ""
+        for k, blob in enumerate(blobs):
+            ext = sniff_image(blob)[0]
+            suffix = f"-{k + 1}" if len(blobs) > 1 else ""
+            rows.append({"vars": dict(variables), "recipient": recipient,
+                         "image_bytes": blob, "image_name": f"{label}{suffix}.{ext}",
+                         "excel_row": row_idx, "skip_reason": ""})
 
     return {"rows": rows, "errors": errors, "header_row": header_row,
             "fields": present, "has_recipient": "recipient" in columns,
@@ -1180,27 +1192,46 @@ OCR_MODEL = "qwen-vl-max"
 OCR_TIMEOUT = 60
 
 OCR_PROMPT = """# Role
-You are an expert Document Processing AI specializing in business license (营业执照) data extraction.
+You extract registry data from Southeast Asian company registration documents.
 
-# Task
-Extract the following fields from the provided business license image. Extract ONLY what is
-actually printed on the document.
+# Documents you will see
+These are NOT Chinese 营业执照. Two formats dominate — find the labelled field, never
+the surrounding prose:
 
-1. `company_name` — the official registered entity name (主体名称 / 名称).
-2. `registration_id` — the Unified Social Credit Code (统一社会信用代码) or registration number.
-3. `registered_address` — the registered address (注册地址 / 住所) exactly as shown.
-4. `detected_country_code` — ISO 3166-1 alpha-2 code of the country/region that ISSUED this
-   license, inferred from the issuing authority and the address (e.g. CN, TH, PH, SG, MY, VN, ID).
+**Thailand — DBD หนังสือรับรอง (Certificate of Incorporation)**
+- company_name: the value of numbered item `1. ชื่อบริษัท` (e.g. "บริษัท จอร์นนี่ บางกอก จำกัด").
+  ⚠️ The sentence beginning `ขอรับรองว่าบริษัทนี้ ได้จดทะเบียนเป็นนิติบุคคล...` is boilerplate
+  legal text that appears on EVERY such certificate. It is NEVER the company name.
+  If you are about to return a sentence containing `ขอรับรอง` or `ประมวลกฎหมาย`, you have
+  grabbed the wrong block — go back and read item 1.
+- registration_id: the digits after `ทะเบียนนิติบุคคลเลขที่` (13 digits, e.g. 0115566030652).
+  Not the `ที่ E...` document number in the top-left corner.
+- registered_address: the value of numbered item `5. สำนักงานแห่งใหญ่ ตั้งอยู่เลขที่ ...`
+- detected_country_code: TH
 
-# Rules
-- If a field is not legible or not present, return an empty string "" for it.
-- NEVER invent, guess, or fabricate any value. An empty string is always better than a plausible
-  guess. Do not infer a registration number from the company name, and do not complete a
-  partially visible code.
-- If the image is not a business license at all, return all fields as empty strings.
+**Indonesia — OSS IZIN USAHA / IUMK / NIB**
+- company_name: value after `Nama Pemilik Usaha` (or `Nama Perusahaan`), e.g. "PT DAMAR SEJAHTERA"
+- registration_id: value after `Nomor Induk Berusaha` (NIB)
+- registered_address: value after `Alamat Rumah` (or `Alamat Usaha` / `Alamat Perusahaan`),
+  including city and province
+- detected_country_code: ID
 
-# Output Format
-Return ONLY a valid, raw JSON object. No markdown fences, no commentary.
+**Other formats** (Philippines SEC/DTI, Singapore ACRA, Malaysia SSM, Vietnam, Chinese 营业执照):
+find the field explicitly labelled as the entity name / registration number / registered address.
+
+# Hard rules
+1. Return the VALUE of a labelled field, never the label, never a full sentence, never
+   boilerplate that would appear identically on another company's document.
+2. NEVER invent, guess, complete, or "correct" a value. If a field is missing, illegible,
+   redacted, or you are not certain, return "" for it. An empty string is always better than
+   a plausible-looking wrong value — a wrong registration number is worse than no number.
+3. Transcribe digits one by one. Do not normalise, reformat, or drop leading zeros.
+4. company_name: keep the original script and the legal form
+   (บริษัท ... จำกัด / PT ... / ... Pte Ltd / ... Sdn Bhd). Do not translate.
+5. If the image is not a company registration document at all, return all fields as "".
+
+# Output
+Return ONLY a raw JSON object. No markdown fences, no commentary.
 
 {"company_name": "string", "registration_id": "string",
  "registered_address": "string", "detected_country_code": "string"}"""
