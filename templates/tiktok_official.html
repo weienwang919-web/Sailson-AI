@@ -204,6 +204,7 @@ let authUrls = null;
 let currentVideoRows = [];
 const selectedExportVideos = new Map();
 const REGION_OPTIONS = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
+window._sparkAliases = new Set();
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
@@ -323,6 +324,7 @@ function renderAccounts() {
       <div class="account-title">
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
         <span style="display:flex;gap:4px;">
+          ${window._sparkAliases.has(a.account_alias) ? '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>' : ''}
           ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
           <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
         </span>
@@ -626,6 +628,8 @@ async function loadSparkTokens() {
   try {
     const data = await fetchJson('/api/tiktok-official/spark/tokens');
     const rows = data.tokens || [];
+    window._sparkAliases = new Set(rows.map(t => t.account_alias).filter(Boolean));
+    renderAccounts();
     body.innerHTML = rows.map(t => `
       <tr>
         <td>${fmt(t.account_alias)}</td>
