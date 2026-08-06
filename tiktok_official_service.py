@@ -893,7 +893,7 @@ def build_spark_auth_url(public_base: str, state: str | None = None) -> str:
     app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()
     if not app_id:
         raise RuntimeError("TIKTOK_SPARK_APP_ID 未配置")
-    scopes_raw = (os.environ.get("TIKTOK_SPARK_SCOPES") or "user.info.basic,biz.spark.auth").strip()
+    scopes_raw = (os.environ.get("TIKTOK_SPARK_SCOPES") or "user.info.basic,biz.spark.auth,video.list").strip()
     scopes = [s.strip() for s in scopes_raw.split(",") if s.strip()]
     params = {
         "client_key": app_id,
@@ -1647,7 +1647,7 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
         raise RuntimeError(f"business_id={business_id} 缺少 access_token，请先完成 TikTok 账号授权")
 
     resp = requests.post(
-        f"{API_BASE}/tt_video/authorize/",
+        f"{API_BASE}/business/post/authorize/setting/",
         headers={"Access-Token": token, "Content-Type": "application/json"},
         json={
             "business_id": call_business_id,
