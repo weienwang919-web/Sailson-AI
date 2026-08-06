@@ -55,9 +55,43 @@ JPEG_QUALITY = 85
 # 建表
 # --------------------------------------------------------------------------- #
 
+# 建好之后的完整表清单，用来做启动快速路径
+_TABLES = {
+    "mb_sender_accounts", "mb_images", "mb_jobs", "mb_items", "mb_templates",
+    "mb_history", "mb_entity_phones", "mb_phone_pool", "mb_license_ocr",
+}
+# 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL
+_LATEST_COLUMNS = {("mb_jobs", "ocr_status"), ("mb_sender_accounts", "auth_mode")}
+
+
+def _schema_is_current() -> bool:
+    """一次查询判断表和列是否都齐了。
+
+    每条 DDL 都是一次到远程库的往返（Render 上约 1 秒），19 条就是 20 秒。
+    free 实例休眠唤醒时要重跑这一整套，会把 5 秒的健康检查直接拖超时——
+    web 服务因此挂过一次。所以先用一次查询走快速路径。
+    """
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_TABLES),))
+    except Exception:
+        return False        # 查不了就老老实实跑 DDL
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _TABLES <= have_tables and _LATEST_COLUMNS <= have_columns
+
+
 def ensure_schema() -> None:
     """幂等建表。app.py 模块级调用一次即可——worker.py 会 `from app import ...`，
-    所以这段在 web 和 worker 两个进程里都会执行到。"""
+    所以这段在 web 和 worker 两个进程里都会执行到。
+
+    已经建好时走快速路径直接返回，只花一次查询。
+    """
+    if _schema_is_current():
+        return
+
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_sender_accounts (
             id SERIAL PRIMARY KEY,
