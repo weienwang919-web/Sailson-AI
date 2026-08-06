@@ -1874,6 +1874,29 @@ def _render_tiktok_oauth_callback(callback_type: str):
                 <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
                 <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
                 """
+        elif callback_type == 'business':
+            try:
+                authorized_by = session.get('username', '')
+                result = tiktok_official_service.exchange_business_code(code, authorized_by=authorized_by)
+                advertiser_ids = result.get('advertiser_ids') or []
+                scope = result.get('scope') or ''
+                ids_html = ''.join(f'<li><code>{html.escape(str(aid))}</code></li>' for aid in advertiser_ids)
+                body = f"""
+                <p style="color:#166534;font-weight:700;">✅ 广告主授权成功，已保存 {len(advertiser_ids)} 个 advertiser_id 的 access token。</p>
+                <p><strong>advertiser_ids:</strong></p>
+                <ul>{ids_html}</ul>
+                <p><strong>scope:</strong> <code>{html.escape(str(scope))}</code></p>
+                <p>可以关闭这个页面了。/ You can close this page now.</p>
+                """
+            except Exception as e:
+                logger.error(f"TikTok business token exchange failed: {e}")
+                body = f"""
+                <p style="color:#b91c1c;">收到 code，但换 token 失败。可以重新点「广告主授权」按钮再试一次。</p>
+                <p><strong>错误 / Error：</strong><code>{html.escape(str(e))}</code></p>
+                <p><strong>code:</strong></p>
+                <textarea readonly style="width:100%;height:90px;">{html.escape(code)}</textarea>
+                <p><strong>state:</strong> <code>{html.escape(state or '')}</code></p>
+                """
         else:
             body = f"""
             <p style="color:#166534;">授权成功，复制下面的 code 给开发者换取 access token。</p>
@@ -9450,18 +9473,15 @@ def api_tiktok_official_accounts():
 @app.route('/api/tiktok-official/auth-urls')
 @feature_required('tiktok_official')
 def api_tiktok_official_auth_urls():
-    """业务号主授权入口（Business Portal，跟账号矩阵的一次性邀请链接是两套不同的授权体系，保留不变）。
+    """广告主授权入口（Business Portal）。投流相关权限（Ads Management/Reporting等）挂在
+    Spark App 下，所以这里用 TIKTOK_SPARK_APP_ID，跟账号矩阵的一次性邀请链接是两套不同的授权体系，保留不变。
 
     账号持有人（代运营）授权已改为一次性签名邀请链接，见 POST /api/tiktok-official/invite，
     不再从这里下发裸 state 的 account_url。
     """
-    app_id = (
-        os.environ.get('TIKTOK_APP_ID')
-        or os.environ.get('TIKTOK_CLIENT_KEY')
-        or ''
-    ).strip()
+    app_id = (os.environ.get('TIKTOK_SPARK_APP_ID') or '').strip()
     if not app_id:
-        return jsonify({'status': 'error', 'message': 'TIKTOK_APP_ID 未配置'}), 400
+        return jsonify({'status': 'error', 'message': 'TIKTOK_SPARK_APP_ID 未配置'}), 400
     public_base = _tiktok_public_base_url()
     business_redirect = f'{public_base}/tiktok/business/callback'
     business_params = {

@@ -271,6 +271,18 @@ def ensure_schema() -> None:
         )
         """
     )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_advertiser_tokens (
+            advertiser_id VARCHAR(64) PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            scope TEXT,
+            authorized_by VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
 
     # 矩阵号视频监控看板：账号级国家/账号类型 + 视频级人工标签/Spark授权码
     db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS region VARCHAR(16)")
@@ -1035,6 +1047,93 @@ def list_spark_tokens(limit: int = 100) -> list[dict[str, Any]]:
         """,
         (limit,),
     ) or []
+
+
+def exchange_business_code(code: str, authorized_by: str | None = None) -> dict[str, Any]:
+    """用广告主授权（Business Portal）的 code 换 access_token，按 advertiser_id 存入 tiktok_advertiser_tokens。
+
+    跟 exchange_spark_code/exchange_account_code 是完全不同的接口体系：这是 TikTok
+    Marketing/Business API 自己的 OAuth（POST .../oauth2/access_token/，JSON body），
+    不是 Login Kit 的 v2/oauth/token/（form body）。同样用 Spark App 的 app_id/secret，
+    因为投流相关权限（Ads Management/Reporting等）是挂在 Spark App 下的。
+    """
+    app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()
+    app_secret = (os.environ.get("TIKTOK_SPARK_APP_SECRET") or "").strip()
+    if not app_id:
+        raise RuntimeError("TIKTOK_SPARK_APP_ID 未配置")
+    if not app_secret:
+        raise RuntimeError("TIKTOK_SPARK_APP_SECRET 未配置")
+
+    resp = requests.post(
+        "https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/",
+        json={
+            "app_id": app_id,
+            "secret": app_secret,
+            "auth_code": unquote(code),
+        },
+        headers={"Content-Type": "application/json"},
+        timeout=60,
+    )
+    try:
+        payload = resp.json()
+    except Exception:
+        raise RuntimeError(f"广告主授权换 token 失败，响应非 JSON（HTTP {resp.status_code}）: {resp.text[:500]}")
+    if payload.get("code") != 0:
+        raise RuntimeError(f"广告主授权换 token 失败: {json.dumps(payload, ensure_ascii=False)[:500]}")
+
+    data = payload.get("data") or {}
+    access_token = str(data.get("access_token") or "").strip()
+    advertiser_ids = data.get("advertiser_ids") or []
+    if not access_token or not advertiser_ids:
+        raise RuntimeError(f"广告主授权返回缺少 access_token/advertiser_ids: {json.dumps(data, ensure_ascii=False)[:500]}")
+
+    scope = data.get("scope")
+    if isinstance(scope, list):
+        scope = ",".join(str(s) for s in scope)
+
+    save_advertiser_tokens(advertiser_ids, access_token, scope=scope, authorized_by=authorized_by)
+    return {"advertiser_ids": advertiser_ids, "scope": scope}
+
+
+def save_advertiser_tokens(advertiser_ids: list[str], access_token: str, scope: Any = None, authorized_by: str | None = None) -> None:
+    encrypted = crypto_util.encrypt(access_token)
+    for advertiser_id in advertiser_ids:
+        db.execute(
+            """
+            INSERT INTO tiktok_advertiser_tokens (advertiser_id, access_token, scope, authorized_by, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (advertiser_id) DO UPDATE SET
+                access_token = EXCLUDED.access_token,
+                scope = EXCLUDED.scope,
+                authorized_by = COALESCE(EXCLUDED.authorized_by, tiktok_advertiser_tokens.authorized_by),
+                updated_at = NOW()
+            """,
+            (str(advertiser_id), encrypted, scope, authorized_by),
+        )
+
+
+def list_advertiser_tokens(limit: int = 100) -> list[dict[str, Any]]:
+    return db.query_all(
+        """
+        SELECT advertiser_id, scope, authorized_by, created_at, updated_at
+        FROM tiktok_advertiser_tokens
+        ORDER BY updated_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    ) or []
+
+
+def get_advertiser_token_info(advertiser_id: str | None) -> dict[str, Any] | None:
+    if not advertiser_id:
+        return None
+    row = db.query_one(
+        "SELECT access_token FROM tiktok_advertiser_tokens WHERE advertiser_id = %s",
+        (advertiser_id,),
+    )
+    if not row or not row.get("access_token"):
+        return None
+    return {"access_token": crypto_util.decrypt(row["access_token"])}
 
 
 def exchange_account_code(code: str, redirect_uri: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:
