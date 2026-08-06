@@ -87,6 +87,48 @@ logger.info("✅ app 模块加载完成")
 _last_daily_sync_check_key = None
 
 
+# ============================================
+# 自检触发的两道守卫
+#
+# 原来的去重键只存在内存里（_last_*_check_key），worker 每次重启都会归零，
+# 下一轮立刻把整批任务再造一遍。88 个官号 × 每次全量入队，一天几次部署就能
+# 堆出几百个重复任务，把队列堵死、把交互式任务饿死。
+# 这里改成查库判断，重启不再重复；再加一道积压熔断，上一批没跑完就不再加码。
+# ============================================
+
+_BACKLOG_LIMIT = 60
+
+
+def _already_enqueued_since(function_type: str, since) -> bool:
+    """本轮时间桶内是否已经入过队。查库，所以重启也不会重复。"""
+    try:
+        row = db.query_one(
+            "SELECT 1 FROM task_queue WHERE function_type = %s AND created_at >= %s LIMIT 1",
+            (function_type, since),
+        )
+        return row is not None
+    except Exception as e:
+        logger.warning(f"⚠️ 检查 {function_type} 是否已入队失败，保守跳过本轮: {e}")
+        return True     # 查不了就别造任务，宁可少跑一轮也别堆积压
+
+
+def _backlog_too_deep(function_type: str) -> bool:
+    """上一批还堵着就别再加码了。"""
+    try:
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM task_queue "
+            "WHERE function_type = %s AND status IN ('pending', 'claimed')",
+            (function_type,),
+        )
+        n = (row or {}).get("n", 0)
+        if n >= _BACKLOG_LIMIT:
+            logger.warning(f"⏸️ {function_type} 还有 {n} 个待处理，本轮跳过入队")
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def _maybe_trigger_tiktok_daily_sync():
     global _last_daily_sync_check_key
     now_bj = datetime.utcnow() + timedelta(hours=8)
@@ -139,6 +181,10 @@ def _maybe_trigger_publish_window_capture():
     if check_key == _last_publish_window_check_key:
         return
     _last_publish_window_check_key = check_key
+    if _already_enqueued_since('tiktok_official_publish_window_capture', bucket):
+        return
+    if _backlog_too_deep('tiktok_official_publish_window_capture'):
+        return
     try:
         row = db.query_one(
             "SELECT 1 FROM tiktok_official_video_publish_window_snapshots "
@@ -178,6 +224,11 @@ def _maybe_trigger_video_discovery():
     if check_key == _last_video_discovery_check_key:
         return
     _last_video_discovery_check_key = check_key
+    # 内存那道只挡住同一进程内的重复；跨重启要靠查库
+    if _already_enqueued_since('tiktok_official_video_discovery', bucket):
+        return
+    if _backlog_too_deep('tiktok_official_video_discovery'):
+        return
     logger.info("⏰ Worker 触发 TikTok 新视频发现")
     try:
         run_scheduled_tiktok_official_video_discovery()

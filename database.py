@@ -26,7 +26,9 @@ def init_connection_pool():
         try:
             connection_pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
-                maxconn=10,
+                # worker 并发提到 8 之后，10 个连接会成为新瓶颈（线程排队等连接）。
+                # Postgres 那边 max_connections=103，web+worker 各 20 仍有充裕余量。
+                maxconn=int(os.environ.get('DB_POOL_MAX', '20')),
                 dsn=DATABASE_URL
             )
             logger.info("✅ 数据库连接池初始化成功")
