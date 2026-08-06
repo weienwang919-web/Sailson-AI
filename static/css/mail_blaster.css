@@ -201,3 +201,9 @@ td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size
 @media (max-width: 780px) {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
 }
+
+/* OCR 识别结果填进来的瞬间闪一下，让人看得见是哪几格被填了 */
+input.just-filled {
+  background: #e6f7ee;
+  transition: background 1.2s ease-out;
+}

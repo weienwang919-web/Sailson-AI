@@ -435,24 +435,61 @@ async function resend(itemId) {
 }
 
 
-/* ---------- 营业执照识别（在 worker 里跑，这里轮询）---------- */
+/* ---------- 营业执照识别（worker 里跑，这里逐行轮询填入）---------- */
 let ocrTimer = null;
+let ocrSeen = 0;
 
 function startOcrPolling() {
   if (ocrTimer) clearInterval(ocrTimer);
+  ocrSeen = 0;
   document.getElementById('ocr-box').innerHTML =
-    '<div class="smtp-resp">营业执照识别已提交后台，正在处理…（每张图 3–8 秒，' +
-    '期间可以先改模板，识别完会自动填进表格）</div>';
-  ocrTimer = setInterval(pollOcr, 3000);
+    '<div class="smtp-resp" id="ocr-line">营业执照识别已提交后台，等待 worker 领取…</div>';
+  ocrTimer = setInterval(pollOcr, 2000);
   pollOcr();
+}
+
+/* 只填空着的格子。用户手改过的一律不覆盖 —— 识别是来补空缺的，不是来抢方向盘的。 */
+function fillVarsFromItems(items) {
+  let filled = 0;
+  for (const item of items) {
+    const tr = document.querySelector(`#pair-rows tr[data-id="${item.id}"]`);
+    if (!tr) continue;
+    tr.querySelectorAll('.p-var').forEach(input => {
+      const incoming = (item.vars || {})[input.dataset.key] || '';
+      if (incoming && !input.value.trim()) {
+        input.value = incoming;
+        input.classList.add('just-filled');
+        setTimeout(() => input.classList.remove('just-filled'), 1600);
+        filled++;
+      }
+    });
+  }
+  return filled;
 }
 
 async function pollOcr() {
   if (!JOB) return;
   let data;
   try { data = await api(`/api/mail-blaster/jobs/${JOB.job.id}/status`); } catch (e) { return; }
+
   const st = data.job.ocr_status;
-  if (st === 'pending' || st === 'running') return;
+  const rep = data.job.ocr_report || { total: 0, notes: [] };
+  const done = rep.notes.length;
+
+  // 不管有没有跑完，先把已经识别出来的填进去
+  JOB = { ...JOB, items: data.items };
+  fillVarsFromItems(data.items);
+
+  if (st === 'running' || st === 'pending') {
+    if (done !== ocrSeen) {
+      ocrSeen = done;
+      renderOcrProgress(rep, false);
+    } else if (st === 'pending') {
+      const line = document.getElementById('ocr-line');
+      if (line) line.textContent = '营业执照识别已提交后台，等待 worker 领取…';
+    }
+    return;
+  }
 
   clearInterval(ocrTimer); ocrTimer = null;
   if (st === 'failed') {
@@ -460,26 +497,29 @@ async function pollOcr() {
       '<div class="errbox">营业执照识别失败，请手填 name / id / number（看 worker 日志排查）</div>';
     return;
   }
-  // 识别完了：把补上的值刷进表格
-  JOB = { ...JOB, ...data };
-  renderRows();
-  renderOcrReport(data.job.ocr_report || []);
+  renderOcrProgress(rep, true);
 }
 
-function renderOcrReport(notes) {
-  if (!notes.length) {
-    document.getElementById('ocr-box').innerHTML = '';
-    return;
-  }
-  const ok = notes.filter(n => Object.keys(n.filled || {}).length);
+function renderOcrProgress(rep, finished) {
+  const notes = rep.notes || [];
+  const total = rep.total || notes.length;
+  const pct = total ? Math.round(notes.length / total * 100) : 100;
+
+  const lines = notes.filter(n => Object.keys(n.filled || {}).length).map(n =>
+    `第 ${n.row} 行 —— ` + Object.entries(n.filled)
+      .map(([k, v]) => `${k}: ${esc(v)}`).join('，'));
   const bad = notes.filter(n => n.error);
   const warns = notes.filter(n => n.warn);
-  let h = '<div class="smtp-resp"><strong>营业执照识别完成：</strong>';
-  h += ok.length ? `已为 ${ok.length} 行补上空缺字段<br>` + ok.map(n =>
-    `第 ${n.row} 行 —— ` + Object.entries(n.filled)
-      .map(([k, v]) => `${k}: ${esc(v)}`).join('，')).join('<br>')
-    : '没有补上任何字段';
-  if (bad.length) h += '<br>' + bad.map(n => `第 ${n.row} 行 —— ${esc(n.error)}`).join('<br>');
+
+  let h = '<div class="smtp-resp" id="ocr-line">';
+  h += finished
+    ? `<strong>营业执照识别完成</strong>（${notes.length}/${total}）`
+    : `<strong>营业执照识别中…</strong> ${notes.length}/${total}`;
+  h += `<div class="progress" style="margin:8px 0 4px"><div style="width:${pct}%"></div></div>`;
+  if (lines.length) h += lines.join('<br>');
+  else if (finished) h += '没有补上任何字段';
+  if (bad.length) h += (lines.length ? '<br>' : '') +
+    bad.map(n => `第 ${n.row} 行 —— ${esc(n.error)}`).join('<br>');
   h += '</div>';
   if (warns.length) h += '<div class="errbox"><strong>需要人工核对：</strong><br>' +
     warns.map(n => `第 ${n.row} 行 —— ${esc(n.warn)}`).join('<br>') + '</div>';

@@ -1314,6 +1314,19 @@ MIN_GAP_SECONDS = 3.0
 MAX_GAP_SECONDS = 8.0
 
 
+def _parse_ocr_report(raw) -> dict:
+    """统一成 {total, notes}。老格式是裸的 notes 列表，兼容一下。"""
+    if not raw:
+        return {"total": 0, "notes": []}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"total": 0, "notes": []}
+    if isinstance(data, list):
+        return {"total": len(data), "notes": data}
+    return {"total": data.get("total") or 0, "notes": data.get("notes") or []}
+
+
 def _serialize_item(row: dict) -> dict:
     try:
         variables = json.loads(row["vars_json"]) if row.get("vars_json") else {}
@@ -1344,7 +1357,7 @@ def load_job(job_id: int) -> dict:
         "job": {"id": job["id"], "recipient": job["recipient"], "status": job["status"],
                 "paused_reason": job["paused_reason"], "task_id": job["task_id"],
                 "ocr_status": job.get("ocr_status") or "none",
-                "ocr_report": json.loads(job["ocr_report"]) if job.get("ocr_report") else [],
+                "ocr_report": _parse_ocr_report(job.get("ocr_report")),
                 "subject_tpl": job["subject_tpl"], "body_tpl": job["body_tpl"],
                 "signature_tpl": job["signature_tpl"]},
         "items": [_serialize_item(dict(r)) for r in items],
@@ -1672,10 +1685,17 @@ def run_ocr_for_job(job_id: int, progress=None) -> dict:
     识别完写回 vars_json，报告落在 mb_jobs.ocr_report 供页面轮询。
     单行失败不影响其它行。
     """
-    db.execute("UPDATE mb_jobs SET ocr_status = 'running' WHERE id = %s", (job_id,))
     items = db.query_all(
         "SELECT id, seq, image_id, vars_json FROM mb_items WHERE job_id = %s ORDER BY seq",
         (job_id,))
+    # 只有真正需要识别的行才计入总数，否则进度条会卡在中间不动
+    todo_total = sum(
+        1 for r in items
+        if r["image_id"] and any(
+            not ((json.loads(r["vars_json"]) if r["vars_json"] else {}).get(f) or "").strip()
+            for f in ("name", "id", "number")))
+    db.execute("UPDATE mb_jobs SET ocr_status = 'running', ocr_report = %s WHERE id = %s",
+               (json.dumps({"total": todo_total, "notes": []}, ensure_ascii=False), job_id))
 
     notes = []
     for n, row in enumerate(items, 1):
@@ -1730,11 +1750,14 @@ def run_ocr_for_job(job_id: int, progress=None) -> dict:
             note["error"] = f"{type(exc).__name__}: {exc}"[:160]
 
         notes.append(note)
+        # 每行立刻落盘，前端轮询才能一行一行地看到结果填进去
+        db.execute("UPDATE mb_jobs SET ocr_report = %s WHERE id = %s",
+                   (json.dumps({"total": todo_total, "notes": notes}, ensure_ascii=False), job_id))
         if progress:
-            progress(f"识别中 {n}/{len(items)}")
+            progress(f"识别中 {len(notes)}/{todo_total}")
 
     db.execute("UPDATE mb_jobs SET ocr_status = 'done', ocr_report = %s WHERE id = %s",
-               (json.dumps(notes, ensure_ascii=False), job_id))
+               (json.dumps({"total": todo_total, "notes": notes}, ensure_ascii=False), job_id))
     return {"processed": len(notes),
             "filled": sum(1 for x in notes if x["filled"]),
             "failed": sum(1 for x in notes if x["error"])}
