@@ -949,6 +949,64 @@ def list_spark_invites(limit: int = 20, public_base: str | None = None) -> list[
     return rows
 
 
+def build_spark_invite_batch(public_base: str, authorized_by: str | None = None) -> list[dict[str, Any]]:
+    """给所有账号批量生成 Spark 授权邀请链接（已授权过的账号不重复生成，只标记状态）。
+
+    批量分发出去的链接不知道对方什么时候会点，统一用永不过期，避免还没发到人手上就失效。
+    """
+    accounts = db.query_all(
+        "SELECT account_alias, account_name, region FROM tiktok_official_accounts "
+        "WHERE account_alias IS NOT NULL AND account_alias <> '' ORDER BY account_name"
+    ) or []
+    authorized = {
+        row["account_alias"]
+        for row in db.query_all("SELECT account_alias FROM tiktok_spark_tokens") or []
+    }
+    result = []
+    for account in accounts:
+        alias = account["account_alias"]
+        if alias in authorized:
+            result.append({
+                "account_alias": alias,
+                "account_name": account.get("account_name"),
+                "region": account.get("region"),
+                "status": "已授权",
+                "url": "",
+            })
+            continue
+        invite = build_spark_invite_link(alias, public_base, authorized_by=authorized_by, ttl_seconds=None)
+        result.append({
+            "account_alias": alias,
+            "account_name": account.get("account_name"),
+            "region": account.get("region"),
+            "status": "待授权",
+            "url": invite["url"],
+        })
+    return result
+
+
+def build_spark_invite_batch_xlsx(public_base: str, authorized_by: str | None = None) -> bytes:
+    rows = build_spark_invite_batch(public_base, authorized_by=authorized_by)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Spark授权链接"
+    ws.append(["账号别名", "账号名称", "地区", "状态", "Spark 授权链接"])
+    for row in rows:
+        ws.append([
+            row["account_alias"],
+            row.get("account_name"),
+            row.get("region"),
+            row["status"],
+            row["url"],
+        ])
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def exchange_spark_code(code: str, redirect_uri: str, account_alias: str, authorized_by: str | None = None) -> dict[str, Any]:
     """用 Spark App 的授权 code 换 access_token，按 account_alias 存入独立的 tiktok_spark_tokens。"""
     app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()

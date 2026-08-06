@@ -95,6 +95,7 @@
       </div>
       <button class="btn btn-primary" onclick="generateInviteLink()">生成授权邀请链接</button>
       <button class="btn btn-secondary" onclick="generateSparkInviteLink()" title="用另一个已申请到 biz.spark.auth 权限的新 App 单独授权，只在这个账号需要投流时用一次，不影响主授权">生成 Spark 授权链接</button>
+      <button class="btn btn-secondary" onclick="exportSparkInviteBatch()" title="导出所有账号的 Spark 授权链接（已授权的只标记状态，不重复生成）">批量导出 Spark 授权链接表格</button>
     </div>
     <div class="status" id="invite-status"></div>
     <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
@@ -622,6 +623,11 @@ async function generateSparkInviteLink() {
   }
 }
 window.generateSparkInviteLink = generateSparkInviteLink;
+
+function exportSparkInviteBatch() {
+  window.open('/api/tiktok-official/spark/invite-batch', '_blank');
+}
+window.exportSparkInviteBatch = exportSparkInviteBatch;
 
 async function loadSparkTokens() {
   const body = document.getElementById('spark-tokens-body');

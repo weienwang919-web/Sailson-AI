@@ -9658,6 +9658,29 @@ def api_tiktok_official_spark_tokens():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/tiktok-official/spark/invite-batch')
+@feature_required('tiktok_official')
+def api_tiktok_official_spark_invite_batch():
+    """批量导出所有账号的 Spark 授权链接（未授权的生成永不过期链接，已授权的只标记状态，不重复生成）。"""
+    try:
+        public_base = _tiktok_public_base_url()
+        out = tiktok_official_service.build_spark_invite_batch_xlsx(
+            public_base,
+            authorized_by=session.get('username') or session.get('user_id'),
+        )
+        buf = BytesIO(out)
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name='tiktok_spark_invite_links.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        logger.error(f"tiktok_official spark invite batch failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/tiktok-official/refresh', methods=['POST'])
 @feature_required('tiktok_official')
 def api_tiktok_official_refresh():
