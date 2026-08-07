@@ -525,7 +525,10 @@ def friendly_smtp_error(exc: Exception) -> str:
     raw = str(exc)
     low = raw.lower()
     hint = ""
-    if "5.7.139" in raw or "basic authentication is disabled" in low:
+    if "sendasdenied" in low or "not allowed to send as" in low or "5.2.252" in raw:
+        hint = ("SMTP 服务商拒绝代发：当前认证账号没有权限以替换后的发件地址发送。"
+                "Outlook/Exchange 通常要求管理员授予 Send As 权限，或改用允许该域名发信的账号/企业邮。")
+    elif "5.7.139" in raw or "basic authentication is disabled" in low:
         hint = "微软已对该账号禁用密码直连 SMTP，需改用 OAuth2 或换企业邮箱。"
     elif "535" in raw and "5.7.8" in raw:
         hint = ("Gmail 已永久关闭「登录密码直连 SMTP」。需先开两步验证，"
@@ -846,20 +849,21 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
                    extra_vars: dict | None = None, replacement_domain: str = "") -> dict:
     """真正发一封。异常往外抛，由调用方决定怎么记。"""
     replacement_domain = normalize_replacement_domain(replacement_domain)
-    sender_email = replace_sender_domain(account["email"], replacement_domain)
-    message_id_domain = replacement_domain or account["email"].rsplit("@", 1)[-1]
+    header_sender_email = replace_sender_domain(account["email"], replacement_domain)
+    envelope_sender_email = account["email"]
+    message_id_domain = account["email"].rsplit("@", 1)[-1]
     has_image = bool(image_bytes)
     cid = make_msgid(domain="mailblaster.local")[1:-1] if has_image else ""
     subject, html = compose(
         subject_tpl=subject_tpl, body_tpl=body_tpl, signature_tpl=signature_tpl,
-        sender_name=from_display, sender_email=sender_email, signature_name=signature_name,
+        sender_name=from_display, sender_email=header_sender_email, signature_name=signature_name,
         recipient=to_email, index=index, total=total, image_name=image_name,
         image_src=f"cid:{cid}" if has_image else "", extra_vars=extra_vars)
     html = rewrite_body_domains(html, replacement_domain)
 
     root = MIMEMultipart("related") if has_image else MIMEMultipart("alternative")
     root["Subject"] = subject
-    root["From"] = formataddr((from_display, sender_email))
+    root["From"] = formataddr((from_display, header_sender_email))
     root["To"] = to_email
     root["Date"] = formatdate(localtime=True)
     # 自签 Message-ID：回信/对账时拿它比对。已实测阿里云企业邮会原样保留。
@@ -883,7 +887,7 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 
     client = _open_smtp_recording(account)
     try:
-        client.sendmail(sender_email, [to_email], root.as_string())
+        client.sendmail(envelope_sender_email, [to_email], root.as_string())
         answer = getattr(client, "last_data_response", None)
         if answer:
             code, text = answer
@@ -895,7 +899,7 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
             client.quit()
         except Exception:
             pass
-    return {"subject": subject, "body_html": html, "sender_email": sender_email,
+    return {"subject": subject, "body_html": html, "sender_email": header_sender_email,
             "message_id": root["Message-ID"], "smtp_response": smtp_response}
 
 
