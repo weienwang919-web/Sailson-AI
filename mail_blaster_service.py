@@ -24,6 +24,7 @@ import os
 import re
 import smtplib
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from email.mime.image import MIMEImage
@@ -61,7 +62,10 @@ _TABLES = {
     "mb_history", "mb_entity_phones", "mb_phone_pool", "mb_license_ocr",
 }
 # 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL
-_LATEST_COLUMNS = {("mb_jobs", "ocr_status"), ("mb_sender_accounts", "auth_mode")}
+_LATEST_COLUMNS = {
+    ("mb_jobs", "ocr_status"), ("mb_jobs", "replace_domain_enabled"),
+    ("mb_jobs", "replacement_domain"), ("mb_sender_accounts", "auth_mode"),
+}
 
 
 def _schema_is_current() -> bool:
@@ -228,6 +232,8 @@ def ensure_schema() -> None:
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS ocr_status VARCHAR(20) NOT NULL DEFAULT 'none'",
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS ocr_report TEXT",
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS ocr_task_id VARCHAR(100)",
+        "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS replace_domain_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS replacement_domain VARCHAR(255) NOT NULL DEFAULT ''",
         # OAuth2（XOAUTH2）：微软已对部分账号禁用密码直连 SMTP，只能走 OAuth
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS auth_mode VARCHAR(16) NOT NULL DEFAULT 'password'",
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS encrypted_client_id TEXT",
@@ -678,6 +684,84 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def normalize_replacement_domain(value: str) -> str:
+    """用户填的是域名，不是 URL / 邮箱。这里收紧一点，避免误发。"""
+    domain = (value or "").strip().lower().rstrip(".")
+    if not domain:
+        return ""
+    if any(x in domain for x in ("://", "/", "?", "#", "@")) or re.search(r"\s", domain):
+        raise ValueError("替换域名只填域名本身，例如 tiktok.com，不要带 http、路径或邮箱")
+    if re.fullmatch(r"\d+(?:\.\d+){3}", domain):
+        raise ValueError("替换域名不能填 IP")
+    if len(domain) > 253 or "." not in domain:
+        raise ValueError("替换域名格式不对，例如 tiktok.com")
+    labels = domain.split(".")
+    for label in labels:
+        if (not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+                or not re.fullmatch(r"[a-z0-9-]+", label)):
+            raise ValueError("替换域名格式不对，例如 tiktok.com")
+    return domain
+
+
+def replacement_domain_for_job(job: dict) -> str:
+    if not job.get("replace_domain_enabled"):
+        return ""
+    domain = normalize_replacement_domain(job.get("replacement_domain") or "")
+    if not domain:
+        raise ValueError("已勾选替换域名，请填写目标域名")
+    return domain
+
+
+def replace_sender_domain(email: str, domain: str) -> str:
+    if not domain:
+        return email
+    local = (email or "").rsplit("@", 1)[0]
+    if not local or local == email:
+        raise ValueError("发件账号邮箱格式不对，无法替换域名")
+    return f"{local}@{domain}"
+
+
+def rewrite_url_domain(url: str, domain: str) -> str:
+    if not domain:
+        return url
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return url
+    userinfo = ""
+    hostport = parsed.netloc
+    if "@" in hostport:
+        userinfo, hostport = hostport.rsplit("@", 1)
+        userinfo += "@"
+    port = ""
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        if end != -1:
+            port = hostport[end + 1:]
+    elif ":" in hostport:
+        port = ":" + hostport.rsplit(":", 1)[-1]
+    return urllib.parse.urlunsplit((parsed.scheme, userinfo + domain + port,
+                                    parsed.path, parsed.query, parsed.fragment))
+
+
+def rewrite_body_domains(html: str, domain: str) -> str:
+    if not domain:
+        return html
+
+    def repl_attr(match):
+        prefix, quote, url = match.groups()
+        return prefix + quote + rewrite_url_domain(url, domain) + quote
+
+    html = re.sub(r"(?i)(\b(?:href|src)\s*=\s*)(['\"])(https?://[^'\"\s<>]+)\2",
+                  repl_attr, html or "")
+
+    def repl_bare(match):
+        url, tail = match.groups()
+        return rewrite_url_domain(url, domain) + tail
+
+    return re.sub(r"(?i)\b(https?://[^\s<'\"]+?)([).,;!?，。；！？、]*)(?=(?:\s|<|$))",
+                  repl_bare, html)
+
+
 def image_html(src: str, alt: str) -> str:
     return (f'<div style="margin:16px 0"><img src="{escape(src, quote=True)}" '
             f'alt="{escape(alt or "", quote=True)}" '
@@ -759,23 +843,27 @@ def _open_smtp_recording(account: dict):
 def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: str,
                    signature_tpl: str, from_display: str, signature_name: str,
                    image_bytes: bytes | None, image_name: str, index: int, total: int,
-                   extra_vars: dict | None = None) -> dict:
+                   extra_vars: dict | None = None, replacement_domain: str = "") -> dict:
     """真正发一封。异常往外抛，由调用方决定怎么记。"""
+    replacement_domain = normalize_replacement_domain(replacement_domain)
+    sender_email = replace_sender_domain(account["email"], replacement_domain)
+    message_id_domain = replacement_domain or account["email"].rsplit("@", 1)[-1]
     has_image = bool(image_bytes)
     cid = make_msgid(domain="mailblaster.local")[1:-1] if has_image else ""
     subject, html = compose(
         subject_tpl=subject_tpl, body_tpl=body_tpl, signature_tpl=signature_tpl,
-        sender_name=from_display, sender_email=account["email"], signature_name=signature_name,
+        sender_name=from_display, sender_email=sender_email, signature_name=signature_name,
         recipient=to_email, index=index, total=total, image_name=image_name,
         image_src=f"cid:{cid}" if has_image else "", extra_vars=extra_vars)
+    html = rewrite_body_domains(html, replacement_domain)
 
     root = MIMEMultipart("related") if has_image else MIMEMultipart("alternative")
     root["Subject"] = subject
-    root["From"] = formataddr((from_display, account["email"]))
+    root["From"] = formataddr((from_display, sender_email))
     root["To"] = to_email
     root["Date"] = formatdate(localtime=True)
     # 自签 Message-ID：回信/对账时拿它比对。已实测阿里云企业邮会原样保留。
-    root["Message-ID"] = make_msgid(domain=account["email"].rsplit("@", 1)[-1])
+    root["Message-ID"] = make_msgid(domain=message_id_domain)
 
     plain = MIMEText(html_to_text(html), "plain", "utf-8")
     html_part = MIMEText(html, "html", "utf-8")
@@ -795,7 +883,7 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 
     client = _open_smtp_recording(account)
     try:
-        client.sendmail(account["email"], [to_email], root.as_string())
+        client.sendmail(sender_email, [to_email], root.as_string())
         answer = getattr(client, "last_data_response", None)
         if answer:
             code, text = answer
@@ -807,7 +895,7 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
             client.quit()
         except Exception:
             pass
-    return {"subject": subject, "body_html": html,
+    return {"subject": subject, "body_html": html, "sender_email": sender_email,
             "message_id": root["Message-ID"], "smtp_response": smtp_response}
 
 
@@ -1423,6 +1511,8 @@ def load_job(job_id: int) -> dict:
                 "paused_reason": job["paused_reason"], "task_id": job["task_id"],
                 "ocr_status": job.get("ocr_status") or "none",
                 "ocr_report": _parse_ocr_report(job.get("ocr_report")),
+                "replace_domain_enabled": bool(job.get("replace_domain_enabled")),
+                "replacement_domain": job.get("replacement_domain") or "",
                 "subject_tpl": job["subject_tpl"], "body_tpl": job["body_tpl"],
                 "signature_tpl": job["signature_tpl"]},
         "items": [_serialize_item(dict(r)) for r in items],
@@ -1438,13 +1528,21 @@ def sync_job(job_id: int, data: dict) -> None:
     """
     cleaners = {"recipient": lambda v: (v or "").strip(),
                 "subject_tpl": lambda v: v or "", "body_tpl": lambda v: v or "",
-                "signature_tpl": lambda v: v or ""}
+                "signature_tpl": lambda v: v or "",
+                "replace_domain_enabled": lambda v: bool(v),
+                "replacement_domain": lambda v: (v or "").strip().lower().rstrip(".")}
     sets, args = [], {}
     for key, clean in cleaners.items():
         if key in data:
             sets.append(f"{key} = %({key})s")
             args[key] = clean(data[key])
     if sets:
+        if args.get("replace_domain_enabled"):
+            args["replacement_domain"] = normalize_replacement_domain(args.get("replacement_domain") or "")
+            if not args["replacement_domain"]:
+                raise ValueError("已勾选替换域名，请填写目标域名")
+        elif "replacement_domain" in args:
+            args["replacement_domain"] = normalize_replacement_domain(args["replacement_domain"])
         args["jid"] = job_id
         db.execute(f"UPDATE mb_jobs SET {', '.join(sets)} WHERE id = %(jid)s", args)
 
@@ -1523,6 +1621,7 @@ def send_item(job_id: int, item_id: int) -> str:
             extra_vars = {}
 
         auto_display, auto_signature = derive_names(account)
+        replacement_domain = replacement_domain_for_job(job)
         result = send_one_email(
             account=account, to_email=recipient,
             subject_tpl=job["subject_tpl"], body_tpl=job["body_tpl"],
@@ -1530,7 +1629,8 @@ def send_item(job_id: int, item_id: int) -> str:
             from_display=item["from_display"] or auto_display,
             signature_name=item["signature_name"] or auto_signature,
             image_bytes=blob, image_name=item["image_name"] or "",
-            index=item["seq"] + 1, total=total, extra_vars=extra_vars)
+            index=item["seq"] + 1, total=total, extra_vars=extra_vars,
+            replacement_domain=replacement_domain)
     except Exception as exc:
         _mark_failed(item_id, friendly_smtp_error(exc))
         return "failed"
@@ -1540,7 +1640,8 @@ def send_item(job_id: int, item_id: int) -> str:
         _mark_sent(item_id, result)
         record_send(recipient=recipient, material_id=extra_vars.get("id") or "",
                     material_name=extra_vars.get("name") or "",
-                    sender_account_id=account["id"], sender_email=account["email"],
+                    sender_account_id=account["id"],
+                    sender_email=result.get("sender_email") or account["email"],
                     job_id=job_id, item_id=item_id, subject=result.get("subject") or "",
                     message_id=result.get("message_id") or "")
     except Exception:
@@ -1596,6 +1697,7 @@ def build_previews(job_id: int) -> list[dict]:
     state = load_job(job_id)
     job, items = state["job"], state["items"]
     previews = []
+    replacement_domain = replacement_domain_for_job(job)
     for idx, item in enumerate(items, 1):
         account = get_account(item["sender_account_id"]) if item["sender_account_id"] else None
         if account is None:
@@ -1604,14 +1706,16 @@ def build_previews(job_id: int) -> list[dict]:
         recipient = item["recipient"] or job["recipient"]
         display = item["from_display"] or derive_names(account)[0]
         signature = item["signature_name"] or derive_names(account)[1]
+        sender_email = replace_sender_domain(account["email"], replacement_domain)
         subject, html = compose(
             subject_tpl=job["subject_tpl"], body_tpl=job["body_tpl"],
             signature_tpl=job["signature_tpl"], sender_name=display,
-            sender_email=account["email"], signature_name=signature,
+            sender_email=sender_email, signature_name=signature,
             recipient=recipient, index=idx, total=len(items),
             image_name=item["image_name"], image_src=item["image_url"] or "",
             extra_vars=item["vars"] or None)
-        previews.append({**item, "from_line": f"{display} <{account['email']}>",
+        html = rewrite_body_domains(html, replacement_domain)
+        previews.append({**item, "from_line": f"{display} <{sender_email}>",
                          "to_line": recipient, "subject": subject, "html": html})
     return previews
 
@@ -1666,7 +1770,9 @@ def _fill_from_license(row: dict) -> dict | None:
 
 def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
                           subject_tpl: str = "", body_tpl: str = "", signature_tpl: str = "",
-                          user_id=None, run_ocr: bool = True) -> dict:
+                          user_id=None, run_ocr: bool = True,
+                          replace_domain_enabled: bool = False,
+                          replacement_domain: str = "") -> dict:
     """从 Excel 建批次。已发过的行不入队，缺图/缺邮箱的行逐条点名。"""
     parsed = parse_material_xlsx(file_bytes)
 
@@ -1706,14 +1812,18 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
         r.get("image_bytes") and any(
             not (r["vars"].get(f) or "").strip() for f in ("name", "id", "number"))
         for r in usable)
+    replacement_domain = normalize_replacement_domain(replacement_domain)
+    if replace_domain_enabled and not replacement_domain:
+        raise ValueError("已勾选替换域名，请填写目标域名")
 
     pool = list_accounts(only_sendable=True)
     job_id = db.execute_and_fetch_id("""
-        INSERT INTO mb_jobs (user_id, recipient, subject_tpl, body_tpl, signature_tpl, ocr_status)
-        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+        INSERT INTO mb_jobs (user_id, recipient, subject_tpl, body_tpl, signature_tpl,
+            ocr_status, replace_domain_enabled, replacement_domain)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
     """, (user_id, fallback_recipient, subject_tpl or DEFAULT_SUBJECT_TPL,
           body_tpl or DEFAULT_BODY_TPL, signature_tpl or DEFAULT_SIGNATURE_TPL,
-          'pending' if needs_ocr else 'none'))
+          'pending' if needs_ocr else 'none', bool(replace_domain_enabled), replacement_domain))
 
     assignments = assign_accounts(pool, [r["_target"] for r in usable])
     cooldown_notes = []

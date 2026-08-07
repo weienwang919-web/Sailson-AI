@@ -10283,6 +10283,8 @@ def api_mb_create_job_from_excel():
             signature_tpl=request.form.get('signature_tpl') or '',
             user_id=session.get('user_id'),
             run_ocr=(request.form.get('ocr') or '1') == '1',
+            replace_domain_enabled=(request.form.get('replace_domain_enabled') or '') == '1',
+            replacement_domain=(request.form.get('replacement_domain') or '').strip(),
         )
         # 营业执照识别交给 worker：一张图 3–8 秒，在 web 里跑会把
         # gunicorn 那唯一一个 worker 堵死，整站转圈。

@@ -98,6 +98,16 @@
       <label>主题</label>
       <input type="text" id="subject-tpl" value="{{ defaults.subject }}">
     </div>
+    <div class="field">
+      <label class="checkline" style="margin:0 0 6px">
+        <input type="checkbox" id="replace-domain-enabled" onchange="toggleReplacementDomain()">
+        是否替换域名
+      </label>
+      <input type="text" id="replacement-domain" placeholder="tiktok.com" autocomplete="off" disabled>
+      <p class="hint" style="margin-top:6px">
+        勾选后，SMTP 登录仍使用账号池原账号，但 From / 信封发件人 / 正文链接域名会替换成这里填写的域名。
+      </p>
+    </div>
     <div class="grid grid-2">
       <div class="field">
         <label>正文</label>

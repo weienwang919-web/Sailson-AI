@@ -174,13 +174,39 @@ inputX.addEventListener('change', () => {
   inputX.value = '';
 });
 
+function replacementDomainSettings() {
+  const enabled = document.getElementById('replace-domain-enabled').checked;
+  const domain = document.getElementById('replacement-domain').value.trim();
+  return { replace_domain_enabled: enabled, replacement_domain: domain };
+}
+
+function ensureReplacementDomain() {
+  const s = replacementDomainSettings();
+  if (s.replace_domain_enabled && !s.replacement_domain) {
+    toast('已勾选替换域名，请填写目标域名', true);
+    return false;
+  }
+  return true;
+}
+
+function toggleReplacementDomain() {
+  const enabled = document.getElementById('replace-domain-enabled').checked;
+  const input = document.getElementById('replacement-domain');
+  input.disabled = !enabled;
+  if (enabled) input.focus();
+}
+
 async function uploadXlsx(file) {
+  if (!ensureReplacementDomain()) return;
   const form = new FormData();
+  const domainSettings = replacementDomainSettings();
   form.append('recipient', document.getElementById('recipient').value.trim());
   form.append('subject_tpl', document.getElementById('subject-tpl').value);
   form.append('body_tpl', document.getElementById('body-tpl').value);
   form.append('signature_tpl', document.getElementById('signature-tpl').value);
   form.append('ocr', document.getElementById('use-ocr').checked ? '1' : '0');
+  form.append('replace_domain_enabled', domainSettings.replace_domain_enabled ? '1' : '0');
+  form.append('replacement_domain', domainSettings.replacement_domain);
   form.append('file', file);
 
   document.getElementById('upload-info').textContent = `解析中… ${file.name}（含 OCR 时会慢一些）`;
@@ -291,6 +317,7 @@ function collect() {
     subject_tpl: document.getElementById('subject-tpl').value,
     body_tpl: document.getElementById('body-tpl').value,
     signature_tpl: document.getElementById('signature-tpl').value,
+    ...replacementDomainSettings(),
     items,
   };
 }
@@ -347,6 +374,7 @@ async function deleteTemplate() {
 /* ---------- 预览 ---------- */
 async function doPreview() {
   if (!JOB) return toast('先导入 Excel', true);
+  if (!ensureReplacementDomain()) return;
   try {
     PREVIEWS = (await api(`/api/mail-blaster/jobs/${JOB.job.id}/preview`,
                           { method: 'POST', body: collect() })).previews;
@@ -378,6 +406,7 @@ function stepPreview(d) {
 /* ---------- 发送（只入队，worker 真发）---------- */
 async function doSend() {
   if (!JOB) return toast('先导入 Excel', true);
+  if (!ensureReplacementDomain()) return;
   const state = collect();
   const n = state.items.filter(i => i.sender_account_id).length;
   if (!n) return toast('没有任何一行选了发件账号', true);
