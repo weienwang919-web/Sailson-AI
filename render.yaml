@@ -3,7 +3,7 @@ services:
   - type: web
     name: flaskproject
     env: python
-    plan: free
+    plan: standard
     buildCommand: "pip install -r requirements.txt"
     startCommand: "bash start_render.sh"
     healthCheckPath: /health

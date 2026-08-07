@@ -98,7 +98,54 @@ PROFILE_FIELDS = [
 ]
 
 
+_TABLES = {
+    "tiktok_official_accounts", "tiktok_official_video_snapshots",
+    "tiktok_official_profile_daily_metrics", "tiktok_official_tokens",
+    "tiktok_official_invites", "tiktok_spark_invites", "tiktok_spark_tokens",
+    "tiktok_advertiser_tokens", "tiktok_ad_spend_daily", "tiktok_ad_video_map",
+    "tiktok_official_video_daily_snapshots", "tiktok_matrix_video_exports",
+    "tiktok_official_video_publish_window_snapshots",
+}
+_LATEST_COLUMNS = {
+    ("tiktok_official_accounts", "account_alias"),
+    ("tiktok_official_accounts", "authorized_by"),
+    ("tiktok_official_accounts", "status"),
+    ("tiktok_official_accounts", "region"),
+    ("tiktok_official_accounts", "account_type"),
+    ("tiktok_official_accounts", "needs_follower_boost"),
+    ("tiktok_official_tokens", "account_alias"),
+    ("tiktok_official_tokens", "authorized_by"),
+    ("tiktok_official_tokens", "status"),
+    ("tiktok_ad_spend_daily", "ad_id"),
+    ("tiktok_ad_spend_daily", "tiktok_item_id"),
+    ("tiktok_ad_spend_daily", "video_play_actions"),
+    ("tiktok_official_video_snapshots", "task_no"),
+    ("tiktok_official_video_snapshots", "kol_campaign"),
+    ("tiktok_official_video_snapshots", "spark_code"),
+    ("tiktok_official_video_snapshots", "spark_code_start_time"),
+    ("tiktok_official_video_snapshots", "spark_code_end_time"),
+    ("tiktok_official_video_snapshots", "is_boosted"),
+    ("tiktok_official_video_snapshots", "boosted_at"),
+}
+
+
+def _schema_is_current() -> bool:
+    """一次查询判断表和列是否都齐了，省得每次启动都跑 40+ 条 DDL（Render 上每条约 1 秒）。"""
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_TABLES),))
+    except Exception:
+        return False
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _TABLES <= have_tables and _LATEST_COLUMNS <= have_columns
+
+
 def ensure_schema() -> None:
+    if _schema_is_current():
+        return
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_official_accounts (

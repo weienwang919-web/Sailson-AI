@@ -539,6 +539,37 @@ def get_prompt(feature, project):
     return (by_feature.get(project) or '').strip()
 
 
+# app.py 自己这 6 个 ensure_*_schema() 合起来要建的表/列，用来做启动快速路径。
+# 每条 DDL 都是一次到远程库的往返（Render 上约 1 秒），6 个函数 10+ 条 DDL 就是
+# 10+ 秒；加上其他模块的 ensure_schema() 累计能拖到 2 分钟，超过 Render 健康检查
+# 的 5 秒窗口，反复触发误判重启。schema 已就绪时先用一次查询确认，直接跳过。
+_STARTUP_TABLES = {
+    "task_queue", "analysis_results", "etl_file_outputs",
+    "agent_actions", "fb_post_metrics", "thai_report_datasets", "users",
+}
+_STARTUP_LATEST_COLUMNS = {
+    ("task_queue", "function_type"), ("task_queue", "record_id"), ("task_queue", "task_params"),
+    ("task_queue", "worker_id"), ("task_queue", "started_at"), ("task_queue", "finished_at"),
+    ("task_queue", "attempts"),
+    ("analysis_results", "result_json"),
+    ("users", "permissions"),
+}
+
+
+def _startup_schema_is_current() -> bool:
+    """一次查询判断上面这些表和列是否都齐了，齐了就跳过下面全部 6 个 ensure_*_schema()。"""
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_STARTUP_TABLES),))
+    except Exception:
+        return False        # 查不了就老老实实跑一遍 DDL
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _STARTUP_TABLES <= have_tables and _STARTUP_LATEST_COLUMNS <= have_columns
+
+
 def ensure_task_queue_schema():
     """确保 task_queue 表包含 function_type 字段（向后兼容老版本数据库）
 
@@ -756,13 +787,14 @@ def ensure_users_permissions_schema():
         logger.warning(f"⚠️ 无法为 users 表添加 permissions 列: {e}")
 
 
-# 启动时尽早检查相关表结构
-ensure_task_queue_schema()
-ensure_analysis_results_schema()
-ensure_etl_file_outputs_schema()
-ensure_agent_actions_schema()
-ensure_fb_post_metrics_schema()
-ensure_users_permissions_schema()
+# 启动时尽早检查相关表结构；已就绪时一次查询即可跳过下面全部 6 个函数
+if not _startup_schema_is_current():
+    ensure_task_queue_schema()
+    ensure_analysis_results_schema()
+    ensure_etl_file_outputs_schema()
+    ensure_agent_actions_schema()
+    ensure_fb_post_metrics_schema()
+    ensure_users_permissions_schema()
 profile_video_scheduler.ensure_schema()
 tiktok_official_service.ensure_schema()
 usage_service.ensure_schema()

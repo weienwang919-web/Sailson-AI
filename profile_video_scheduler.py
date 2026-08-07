@@ -160,7 +160,30 @@ class FeishuRecordNotFound(RuntimeError):
     pass
 
 
+_TABLES = {"video_profile_configs", "video_profile_runs", "video_profile_video_state"}
+_LATEST_COLUMNS = {
+    ("video_profile_video_state", "feishu_app_token"),
+    ("video_profile_video_state", "feishu_table_id"),
+}
+
+
+def _schema_is_current() -> bool:
+    """一次查询判断表和列是否都齐了，省得每次启动都跑一遍 DDL（Render 上每条约 1 秒）。"""
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_TABLES),))
+    except Exception:
+        return False
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _TABLES <= have_tables and _LATEST_COLUMNS <= have_columns
+
+
 def ensure_schema() -> None:
+    if _schema_is_current():
+        return
     try:
         db.execute(
             """
