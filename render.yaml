@@ -6,6 +6,7 @@ services:
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "bash start_render.sh"
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: "5000"
