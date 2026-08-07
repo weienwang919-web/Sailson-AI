@@ -27,7 +27,7 @@ from openai import OpenAI
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
-from functools import wraps
+from functools import wraps, partial
 import html
 from docx import Document
 from docx.shared import Pt, Inches
@@ -244,7 +244,7 @@ def run_scheduled_tiktok_official_daily_sync():
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = tiktok_official_service.enqueue_daily_sync(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             after_enqueue_fn=_after_enqueue,
         )
@@ -267,7 +267,7 @@ def run_scheduled_tiktok_official_publish_window_capture():
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = tiktok_official_service.enqueue_publish_window_capture(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             after_enqueue_fn=_after_enqueue,
         )
@@ -290,7 +290,7 @@ def run_scheduled_tiktok_official_video_discovery():
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = tiktok_official_service.enqueue_video_discovery(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             after_enqueue_fn=_after_enqueue,
         )
@@ -321,7 +321,7 @@ def run_scheduled_topic_monitor_daily():
             }
             if USE_DB_WORKER:
                 task_id_str = str(uuid.uuid4())
-                create_task(task_id_str, None, session_id, function_type='topic_monitor_run')
+                create_task(task_id_str, None, session_id, function_type='topic_monitor_run', lane='scheduled')
                 set_task_params(task_id_str, params)
             else:
                 def _run(_topic_id=topic_id, _task_id=task_id):
@@ -550,7 +550,7 @@ _STARTUP_TABLES = {
 _STARTUP_LATEST_COLUMNS = {
     ("task_queue", "function_type"), ("task_queue", "record_id"), ("task_queue", "task_params"),
     ("task_queue", "worker_id"), ("task_queue", "started_at"), ("task_queue", "finished_at"),
-    ("task_queue", "attempts"),
+    ("task_queue", "attempts"), ("task_queue", "lane"),
     ("analysis_results", "result_json"),
     ("users", "permissions"),
 }
@@ -609,6 +609,7 @@ def ensure_task_queue_schema():
         ("started_at", "TIMESTAMP"),
         ("finished_at", "TIMESTAMP"),
         ("attempts", "INTEGER DEFAULT 0"),
+        ("lane", "VARCHAR(16) NOT NULL DEFAULT 'interactive'"),
     ):
         try:
             db.execute(f"ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS {column_name} {ddl}")
@@ -959,8 +960,11 @@ def handle_fetch_exception(error):
 # 核心工具函数
 # ============================================
 
-def create_task(task_id, user_id, session_id, function_type=None):
+def create_task(task_id, user_id, session_id, function_type=None, lane='interactive'):
     """创建任务记录
+
+    lane: 'interactive'（默认，用户即时触发）或 'scheduled'（定时/自检批量触发）。
+    worker.py 按 lane 分开领取、预留独立并发槽位，避免定时批量任务把即时任务饿死。
 
     为兼容旧库：
     - 优先尝试写入 function_type 字段
@@ -971,9 +975,9 @@ def create_task(task_id, user_id, session_id, function_type=None):
     try:
         if TASK_QUEUE_HAS_FUNCTION_TYPE:
             db.execute("""
-                INSERT INTO task_queue (task_id, user_id, session_id, function_type, status, progress)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (task_id, user_id, session_id, function_type, 'pending', '任务已创建，等待 worker 领取'))
+                INSERT INTO task_queue (task_id, user_id, session_id, function_type, lane, status, progress)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (task_id, user_id, session_id, function_type, lane, 'pending', '任务已创建，等待 worker 领取'))
         else:
             db.execute("""
                 INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
@@ -1061,7 +1065,7 @@ def enqueue_due_profile_video_sync(hour=None):
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = profile_video_scheduler.enqueue_due_profile_video_sync(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             hour=hour if hour is not None else datetime.datetime.now().hour,
             after_enqueue_fn=_after_enqueue,
@@ -1085,7 +1089,7 @@ def enqueue_due_feishu_profile_video_sync(hour=None):
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = profile_video_scheduler.enqueue_due_feishu_profile_video_sync(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             hour=hour if hour is not None else datetime.datetime.now().hour,
             after_enqueue_fn=_after_enqueue,

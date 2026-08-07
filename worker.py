@@ -48,7 +48,12 @@ logger = logging.getLogger(__name__)
 # ============================================
 POLL_INTERVAL = int(os.environ.get('WORKER_POLL_INTERVAL', '3'))  # 秒
 WORKER_MAX_IDLE = int(os.environ.get('WORKER_MAX_IDLE', '0'))     # 0 = 永不退出
-WORKER_CONCURRENCY = max(1, int(os.environ.get('WORKER_CONCURRENCY', '3')))
+# 定时/自检批量任务和用户即时触发任务分开排队、预留独立并发槽位，
+# 避免一批定时任务（比如86个矩阵账号的视频发现自检）把并发槽位占满，
+# 导致用户点"立即执行"的即时任务要排队等待。
+WORKER_CONCURRENCY_INTERACTIVE = max(1, int(os.environ.get('WORKER_CONCURRENCY_INTERACTIVE', '6')))
+WORKER_CONCURRENCY_SCHEDULED = max(1, int(os.environ.get('WORKER_CONCURRENCY_SCHEDULED', '2')))
+WORKER_CONCURRENCY = WORKER_CONCURRENCY_INTERACTIVE + WORKER_CONCURRENCY_SCHEDULED
 WORKER_ID = os.environ.get('WORKER_ID') or f"worker-{os.getpid()}"
 
 # ============================================
@@ -292,8 +297,12 @@ signal.signal(signal.SIGINT, _signal_handler)
 # 任务拾取与分发
 # ============================================
 
-def claim_task():
-    """从 task_queue 中拾取一条 pending 任务（先进先出）。"""
+def claim_task(lane):
+    """从 task_queue 中拾取一条指定 lane 的 pending 任务（先进先出）。
+
+    lane='interactive'/'scheduled' 各自独立领取，配合 main() 里分开的并发槽位，
+    实现定时批量任务和用户即时任务互不抢占。
+    """
     try:
         row = db.execute_and_fetch_one("""
             UPDATE task_queue
@@ -307,12 +316,13 @@ def claim_task():
                 SELECT task_id FROM task_queue
                 WHERE status = 'pending'
                   AND task_params IS NOT NULL
+                  AND lane = %s
                 ORDER BY created_at ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
             RETURNING task_id, function_type, task_params, user_id, session_id
-        """, (WORKER_ID,))
+        """, (WORKER_ID, lane))
         return row
     except Exception as e:
         logger.error(f"❌ 拾取任务失败: {e}")
@@ -858,7 +868,7 @@ def main():
     logger.info("🏭 Worker 进程启动")
     logger.info(f"   轮询间隔: {POLL_INTERVAL}s")
     logger.info(f"   Worker ID: {WORKER_ID}")
-    logger.info(f"   并发数: {WORKER_CONCURRENCY}")
+    logger.info(f"   并发数: 即时 {WORKER_CONCURRENCY_INTERACTIVE} / 定时 {WORKER_CONCURRENCY_SCHEDULED}")
     logger.info("=" * 60)
 
     # 启动时只回退本 worker 上次残留的 claimed / processing，避免误抢其他实例正在跑的任务。
@@ -890,16 +900,18 @@ def main():
         logger.warning(f"⚠️ mail-blaster 复位失败（不影响其他任务）: {e}")
 
     idle_count = 0
-    futures = set()
+    futures_interactive = set()
+    futures_scheduled = set()
     with ThreadPoolExecutor(max_workers=WORKER_CONCURRENCY, thread_name_prefix='task-worker') as executor:
         while not _shutdown:
-            done = {future for future in futures if future.done()}
-            for future in done:
-                futures.discard(future)
-                try:
-                    future.result()
-                except Exception as exc:
-                    logger.error(f"❌ 并发任务 Future 异常: {exc}")
+            for futures in (futures_interactive, futures_scheduled):
+                done = {future for future in futures if future.done()}
+                for future in done:
+                    futures.discard(future)
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        logger.error(f"❌ 并发任务 Future 异常: {exc}")
 
             try:
                 _maybe_trigger_tiktok_daily_sync()
@@ -917,26 +929,34 @@ def main():
                 logger.error(f"❌ TikTok 新视频发现自检异常: {exc}")
 
             claimed_any = False
-            while len(futures) < WORKER_CONCURRENCY:
-                task_row = claim_task()
+            while len(futures_interactive) < WORKER_CONCURRENCY_INTERACTIVE:
+                task_row = claim_task('interactive')
                 if not task_row:
                     break
                 claimed_any = True
-                futures.add(executor.submit(dispatch_task, task_row))
+                futures_interactive.add(executor.submit(dispatch_task, task_row))
+            while len(futures_scheduled) < WORKER_CONCURRENCY_SCHEDULED:
+                task_row = claim_task('scheduled')
+                if not task_row:
+                    break
+                claimed_any = True
+                futures_scheduled.add(executor.submit(dispatch_task, task_row))
 
+            all_futures = futures_interactive | futures_scheduled
             if claimed_any:
                 idle_count = 0
-            elif futures:
-                wait(futures, timeout=POLL_INTERVAL, return_when=FIRST_COMPLETED)
+            elif all_futures:
+                wait(all_futures, timeout=POLL_INTERVAL, return_when=FIRST_COMPLETED)
             else:
                 idle_count += 1
                 if idle_count % 20 == 0:
                     logger.info(f"💤 空闲中... (已空转 {idle_count * POLL_INTERVAL}s)")
                 time.sleep(POLL_INTERVAL)
 
-        if futures:
-            logger.info(f"⏳ 正在等待 {len(futures)} 个运行中任务结束...")
-            wait(futures, timeout=30)
+        all_futures = futures_interactive | futures_scheduled
+        if all_futures:
+            logger.info(f"⏳ 正在等待 {len(all_futures)} 个运行中任务结束...")
+            wait(all_futures, timeout=30)
 
     logger.info("👋 Worker 进程已退出")
 
