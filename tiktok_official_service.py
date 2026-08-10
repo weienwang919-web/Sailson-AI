@@ -126,6 +126,8 @@ _LATEST_COLUMNS = {
     ("tiktok_official_video_snapshots", "spark_code_end_time"),
     ("tiktok_official_video_snapshots", "is_boosted"),
     ("tiktok_official_video_snapshots", "boosted_at"),
+    ("tiktok_spark_tokens", "expires_at"),
+    ("tiktok_spark_tokens", "refresh_expires_at"),
 }
 
 
@@ -318,6 +320,10 @@ def ensure_schema() -> None:
         )
         """
     )
+    # Spark token 原先没存过期时间，导致 access_token 到期后只能等 TikTok 接口报错才发现。
+    # 补上跟主账号 token 一样的过期时间跟踪，配合 get_spark_token_info() 里的自动刷新。
+    db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+    db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMP")
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_advertiser_tokens (
@@ -1102,17 +1108,22 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
     scope = token_data.get("scope")
     if isinstance(scope, list):
         scope = ",".join(scope)
+    now = datetime.utcnow()
+    expires_at = _seconds_from_now(now, token_data.get("expires_in"))
+    refresh_expires_at = _seconds_from_now(now, token_data.get("refresh_expires_in"))
 
     db.execute(
         """
-        INSERT INTO tiktok_spark_tokens (account_alias, open_id, access_token, refresh_token, scope, authorized_by, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+        INSERT INTO tiktok_spark_tokens (account_alias, open_id, access_token, refresh_token, scope, authorized_by, expires_at, refresh_expires_at, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         ON CONFLICT (account_alias) DO UPDATE SET
             open_id = EXCLUDED.open_id,
             access_token = EXCLUDED.access_token,
             refresh_token = COALESCE(EXCLUDED.refresh_token, tiktok_spark_tokens.refresh_token),
             scope = EXCLUDED.scope,
             authorized_by = COALESCE(EXCLUDED.authorized_by, tiktok_spark_tokens.authorized_by),
+            expires_at = EXCLUDED.expires_at,
+            refresh_expires_at = COALESCE(EXCLUDED.refresh_expires_at, tiktok_spark_tokens.refresh_expires_at),
             updated_at = NOW()
         """,
         (
@@ -1122,23 +1133,79 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
             crypto_util.encrypt(token_data.get("refresh_token")),
             scope,
             authorized_by,
+            expires_at,
+            refresh_expires_at,
         ),
     )
     return {"account_alias": account_alias, "open_id": open_id, "scope": scope}
 
 
-def get_spark_token_info(account_alias: str | None) -> dict[str, Any] | None:
+def refresh_spark_token(account_alias: str) -> str:
+    """用存量 refresh_token 换新的 Spark access_token，成功后重新加密落库，返回新的明文 access_token。"""
+    row = db.query_one(
+        "SELECT refresh_token, authorized_by FROM tiktok_spark_tokens WHERE account_alias = %s",
+        (account_alias,),
+    )
+    refresh_token = crypto_util.decrypt((row or {}).get("refresh_token"))
+    if not refresh_token:
+        raise RuntimeError(f"account_alias={account_alias} 没有可用的 refresh_token，需要重新走一遍 Spark 授权")
+
+    app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()
+    app_secret = (os.environ.get("TIKTOK_SPARK_APP_SECRET") or "").strip()
+    if not app_id or not app_secret:
+        raise RuntimeError("TIKTOK_SPARK_APP_ID / TIKTOK_SPARK_APP_SECRET 未配置")
+
+    resp = requests.post(
+        "https://open.tiktokapis.com/v2/oauth/token/",
+        data={
+            "client_key": app_id,
+            "client_secret": app_secret,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cache-Control": "no-cache",
+        },
+        timeout=60,
+    )
+    data = _parse_token_response(resp)
+    if not data.get("access_token"):
+        wrapped = data.get("data") if isinstance(data.get("data"), dict) else {}
+        data = {**data, **wrapped}
+    if not data.get("access_token"):
+        raise RuntimeError(f"TikTok Spark refresh_token 返回缺少 access_token: {json.dumps(data, ensure_ascii=False)[:500]}")
+
+    save_spark_token(data, account_alias=account_alias, authorized_by=(row or {}).get("authorized_by"))
+    logger.info(f"TikTok Spark token 已刷新: account_alias={account_alias}")
+    return data["access_token"]
+
+
+def get_spark_token_info(account_alias: str | None, auto_refresh: bool = True) -> dict[str, Any] | None:
     """Spark token 是在另一个 App 下授权的，open_id 跟主流程的 business_id 不是同一个值。
     调用 TikTok 接口时 body 里的 business_id 必须跟 access_token 自己的身份一致，
     不能沿用主流程那个 business_id，否则 TikTok 会报 access token 不合法。"""
     if not account_alias:
         return None
     row = db.query_one(
-        "SELECT access_token, open_id FROM tiktok_spark_tokens WHERE account_alias = %s",
+        "SELECT access_token, open_id, refresh_token, expires_at FROM tiktok_spark_tokens WHERE account_alias = %s",
         (account_alias,),
     )
     if not row or not row.get("access_token"):
         return None
+
+    expires_at = row.get("expires_at")
+    now = datetime.utcnow()
+    # 历史遗留行没存过 expires_at（迁移前授权的），一律当作需要刷新处理，而不是当成永不过期。
+    needs_refresh = expires_at is None or expires_at < now + timedelta(hours=1)
+    if auto_refresh and needs_refresh and row.get("refresh_token"):
+        try:
+            return {"access_token": refresh_spark_token(account_alias), "open_id": row.get("open_id")}
+        except Exception as exc:
+            if expires_at and expires_at < now:
+                raise RuntimeError(f"Spark token 刷新失败且旧 token 已过期，需重新授权或稍后重试: {exc}") from exc
+            logger.warning(f"TikTok Spark token 刷新失败，旧 token 尚未过期，暂用旧 token 兜底: account_alias={account_alias} err={exc}")
+
     return {"access_token": crypto_util.decrypt(row["access_token"]), "open_id": row.get("open_id")}
 
 
