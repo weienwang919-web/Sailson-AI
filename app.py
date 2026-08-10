@@ -2014,6 +2014,7 @@ def _render_tiktok_spark_callback():
             token_data = tiktok_official_service.exchange_spark_code(
                 code,
                 redirect_uri,
+                business_id=invite.get('business_id'),
                 account_alias=invite.get('account_alias'),
                 authorized_by=invite.get('authorized_by'),
             )
@@ -9641,9 +9642,13 @@ def api_tiktok_official_invites():
 def api_tiktok_official_spark_invite():
     """管理员生成一次性 Spark 授权邀请链接（独立新 App，仅补齐 biz.spark.auth 权限，不影响主账号表）。"""
     data = request.get_json(silent=True) or {}
-    account_alias = (data.get('account_alias') or '').strip()
-    if not account_alias:
-        return jsonify({'status': 'error', 'message': 'account_alias 不能为空'}), 400
+    business_id = (data.get('business_id') or '').strip()
+    if not business_id:
+        return jsonify({'status': 'error', 'message': 'business_id 不能为空'}), 400
+    account_row = db.query_one("SELECT account_alias, account_name FROM tiktok_official_accounts WHERE business_id = %s", (business_id,))
+    if not account_row:
+        return jsonify({'status': 'error', 'message': f'未找到 business_id={business_id} 对应的账号'}), 404
+    account_alias = account_row.get('account_alias') or ''
     if data.get('never_expire'):
         ttl_seconds = None
     elif data.get('ttl_seconds') is not None:
@@ -9653,6 +9658,7 @@ def api_tiktok_official_spark_invite():
     try:
         public_base = _tiktok_public_base_url()
         invite = tiktok_official_service.build_spark_invite_link(
+            business_id,
             account_alias,
             public_base,
             authorized_by=session.get('username') or session.get('user_id'),
@@ -9661,6 +9667,7 @@ def api_tiktok_official_spark_invite():
         return jsonify({
             'status': 'success',
             'url': invite['url'],
+            'business_id': invite['business_id'],
             'account_alias': invite['account_alias'],
             'expires_at': invite['expires_at'].isoformat() if invite.get('expires_at') else None,
         })

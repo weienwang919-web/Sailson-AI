@@ -128,6 +128,8 @@ _LATEST_COLUMNS = {
     ("tiktok_official_video_snapshots", "boosted_at"),
     ("tiktok_spark_tokens", "expires_at"),
     ("tiktok_spark_tokens", "refresh_expires_at"),
+    ("tiktok_spark_tokens", "business_id"),
+    ("tiktok_spark_invites", "business_id"),
 }
 
 
@@ -299,6 +301,7 @@ def ensure_schema() -> None:
         CREATE TABLE IF NOT EXISTS tiktok_spark_invites (
             nonce VARCHAR(64) PRIMARY KEY,
             account_alias VARCHAR(255) NOT NULL,
+            business_id VARCHAR(64),
             authorized_by VARCHAR(255),
             created_at TIMESTAMP DEFAULT NOW(),
             expires_at TIMESTAMP,
@@ -309,7 +312,8 @@ def ensure_schema() -> None:
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_spark_tokens (
-            account_alias VARCHAR(255) PRIMARY KEY,
+            account_alias VARCHAR(255),
+            business_id VARCHAR(64),
             open_id VARCHAR(128),
             access_token TEXT NOT NULL,
             refresh_token TEXT,
@@ -324,6 +328,35 @@ def ensure_schema() -> None:
     # 补上跟主账号 token 一样的过期时间跟踪，配合 get_spark_token_info() 里的自动刷新。
     db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
     db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMP")
+    # account_alias 在 tiktok_official_accounts 里并不保证唯一（不同账号的运营人员可能填了同一个别名），
+    # 但 Spark token 原来按 account_alias 做主键去重，导致撞名的两个账号会互相顶掉对方的 token，
+    # 生成推广码时用错身份，报 "item_id does not belong to the user"。改成按真正唯一的 business_id 做键。
+    db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS business_id VARCHAR(64)")
+    db.execute("ALTER TABLE tiktok_spark_invites ADD COLUMN IF NOT EXISTS business_id VARCHAR(64)")
+    try:
+        db.execute("ALTER TABLE tiktok_spark_tokens DROP CONSTRAINT IF EXISTS tiktok_spark_tokens_pkey")
+    except Exception as e:
+        logger.warning(f"drop tiktok_spark_tokens 旧主键失败（可能已经不存在）: {e}")
+    try:
+        db.execute("ALTER TABLE tiktok_spark_tokens ADD CONSTRAINT tiktok_spark_tokens_business_id_key UNIQUE (business_id)")
+    except Exception as e:
+        logger.warning(f"添加 tiktok_spark_tokens.business_id 唯一约束失败（可能已存在）: {e}")
+    # 只回填 account_alias 在主表里唯一对应一个 business_id 的安全情况；
+    # 撞名的账号回填不出真实归属，保持 business_id 为空，视为需要重新走一遍 Spark 邀请。
+    db.execute(
+        """
+        UPDATE tiktok_spark_tokens t
+        SET business_id = a.business_id
+        FROM (
+            SELECT account_alias, MIN(business_id) AS business_id
+            FROM tiktok_official_accounts
+            WHERE account_alias IS NOT NULL AND account_alias <> ''
+            GROUP BY account_alias
+            HAVING COUNT(*) = 1
+        ) a
+        WHERE t.account_alias = a.account_alias AND t.business_id IS NULL
+        """
+    )
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_advertiser_tokens (
@@ -897,12 +930,14 @@ def list_invites(limit: int = 20, public_base: str | None = None) -> list[dict[s
 # ==================== Spark Ads 独立授权小流程 ====================
 # 用另一个申请到 biz.spark.auth 权限的 TikTok App，单独走一遍账号持有人授权，
 # 只用来补齐"生成 Spark 授权码"所需的权限，不写入 tiktok_official_accounts/tiktok_official_tokens 主表。
-# 按 account_alias（跟主流程共用同一个别名）建表，与主表完全隔离，靠别名对应回同一个真实账号。
+# 按 business_id（跟主表的真正唯一键一致）建表，与主表完全隔离，靠 business_id 对应回同一个真实账号。
+# account_alias 只是展示用的别名，不保证唯一，不能用来做身份键（同名撞车会导致互相顶掉对方的 token）。
 
-def create_spark_invite(account_alias: str, authorized_by: str | None = None, ttl_seconds: int | None = 3 * 24 * 3600) -> dict[str, Any]:
+def create_spark_invite(business_id: str, account_alias: str | None = None, authorized_by: str | None = None, ttl_seconds: int | None = 3 * 24 * 3600) -> dict[str, Any]:
+    business_id = (business_id or "").strip()
+    if not business_id:
+        raise ValueError("business_id 不能为空")
     account_alias = (account_alias or "").strip()
-    if not account_alias:
-        raise ValueError("account_alias 不能为空")
     expires_at = None
     if ttl_seconds is not None:
         ttl_seconds = max(300, min(int(ttl_seconds), 365 * 24 * 3600))
@@ -910,13 +945,13 @@ def create_spark_invite(account_alias: str, authorized_by: str | None = None, tt
     nonce = pysecrets.token_hex(16)
     db.execute(
         """
-        INSERT INTO tiktok_spark_invites (nonce, account_alias, authorized_by, created_at, expires_at)
-        VALUES (%s, %s, %s, NOW(), %s)
+        INSERT INTO tiktok_spark_invites (nonce, account_alias, business_id, authorized_by, created_at, expires_at)
+        VALUES (%s, %s, %s, %s, NOW(), %s)
         """,
-        (nonce, account_alias, authorized_by, expires_at),
+        (nonce, account_alias, business_id, authorized_by, expires_at),
     )
-    state = _invite_serializer().dumps({"nonce": nonce, "account_alias": account_alias, "authorized_by": authorized_by, "flow": "spark"})
-    return {"state": state, "nonce": nonce, "account_alias": account_alias, "expires_at": expires_at}
+    state = _invite_serializer().dumps({"nonce": nonce, "account_alias": account_alias, "business_id": business_id, "authorized_by": authorized_by, "flow": "spark"})
+    return {"state": state, "nonce": nonce, "account_alias": account_alias, "business_id": business_id, "expires_at": expires_at}
 
 
 def verify_and_consume_spark_invite(state: str) -> dict[str, Any]:
@@ -944,6 +979,7 @@ def verify_and_consume_spark_invite(state: str) -> dict[str, Any]:
     return {
         "nonce": nonce,
         "account_alias": row.get("account_alias") or payload.get("account_alias"),
+        "business_id": row.get("business_id") or payload.get("business_id"),
         "authorized_by": row.get("authorized_by") or payload.get("authorized_by"),
     }
 
@@ -970,8 +1006,8 @@ def build_spark_auth_url(public_base: str, state: str | None = None) -> str:
     return "https://www.tiktok.com/v2/auth/authorize?" + urlencode(params)
 
 
-def build_spark_invite_link(account_alias: str, public_base: str, authorized_by: str | None = None, ttl_seconds: int | None = 3 * 24 * 3600) -> dict[str, Any]:
-    invite = create_spark_invite(account_alias, authorized_by=authorized_by, ttl_seconds=ttl_seconds)
+def build_spark_invite_link(business_id: str, account_alias: str | None, public_base: str, authorized_by: str | None = None, ttl_seconds: int | None = 3 * 24 * 3600) -> dict[str, Any]:
+    invite = create_spark_invite(business_id, account_alias=account_alias, authorized_by=authorized_by, ttl_seconds=ttl_seconds)
     invite["url"] = build_spark_auth_url(public_base, state=invite["state"])
     return invite
 
@@ -979,7 +1015,7 @@ def build_spark_invite_link(account_alias: str, public_base: str, authorized_by:
 def list_spark_invites(limit: int = 20, public_base: str | None = None) -> list[dict[str, Any]]:
     rows = db.query_all(
         """
-        SELECT nonce, account_alias, authorized_by, created_at, expires_at, used_at
+        SELECT nonce, account_alias, business_id, authorized_by, created_at, expires_at, used_at
         FROM tiktok_spark_invites
         ORDER BY created_at DESC
         LIMIT %s
@@ -995,6 +1031,7 @@ def list_spark_invites(limit: int = 20, public_base: str | None = None) -> list[
             state = _invite_serializer().dumps({
                 "nonce": row["nonce"],
                 "account_alias": row.get("account_alias"),
+                "business_id": row.get("business_id"),
                 "authorized_by": row.get("authorized_by"),
                 "flow": "spark",
             })
@@ -1005,21 +1042,26 @@ def list_spark_invites(limit: int = 20, public_base: str | None = None) -> list[
 def build_spark_invite_batch(public_base: str, authorized_by: str | None = None) -> list[dict[str, Any]]:
     """给所有账号批量生成 Spark 授权邀请链接（已授权过的账号不重复生成，只标记状态）。
 
+    按 business_id 判断"是否已授权"——account_alias 在主表里不保证唯一，两个不同账号
+    如果撞了同一个别名，按别名判断会把没授权过的那个也误标成"已授权"。
+
     批量分发出去的链接不知道对方什么时候会点，统一用永不过期，避免还没发到人手上就失效。
     """
     accounts = db.query_all(
-        "SELECT account_alias, account_name, region FROM tiktok_official_accounts "
+        "SELECT business_id, account_alias, account_name, region FROM tiktok_official_accounts "
         "WHERE account_alias IS NOT NULL AND account_alias <> '' ORDER BY account_name"
     ) or []
     authorized = {
-        row["account_alias"]
-        for row in db.query_all("SELECT account_alias FROM tiktok_spark_tokens") or []
+        row["business_id"]
+        for row in db.query_all("SELECT business_id FROM tiktok_spark_tokens WHERE business_id IS NOT NULL") or []
     }
     result = []
     for account in accounts:
+        business_id = account["business_id"]
         alias = account["account_alias"]
-        if alias in authorized:
+        if business_id in authorized:
             result.append({
+                "business_id": business_id,
                 "account_alias": alias,
                 "account_name": account.get("account_name"),
                 "region": account.get("region"),
@@ -1027,8 +1069,9 @@ def build_spark_invite_batch(public_base: str, authorized_by: str | None = None)
                 "url": "",
             })
             continue
-        invite = build_spark_invite_link(alias, public_base, authorized_by=authorized_by, ttl_seconds=None)
+        invite = build_spark_invite_link(business_id, alias, public_base, authorized_by=authorized_by, ttl_seconds=None)
         result.append({
+            "business_id": business_id,
             "account_alias": alias,
             "account_name": account.get("account_name"),
             "region": account.get("region"),
@@ -1043,12 +1086,13 @@ def build_spark_invite_batch_xlsx(public_base: str, authorized_by: str | None = 
     wb = Workbook()
     ws = wb.active
     ws.title = "Spark授权链接"
-    ws.append(["账号别名", "账号名称", "地区", "状态", "Spark 授权链接"])
+    ws.append(["账号别名", "账号名称", "地区", "business_id", "状态", "Spark 授权链接"])
     for row in rows:
         ws.append([
             row["account_alias"],
             row.get("account_name"),
             row.get("region"),
+            row.get("business_id"),
             row["status"],
             row["url"],
         ])
@@ -1060,8 +1104,8 @@ def build_spark_invite_batch_xlsx(public_base: str, authorized_by: str | None = 
     return buf.read()
 
 
-def exchange_spark_code(code: str, redirect_uri: str, account_alias: str, authorized_by: str | None = None) -> dict[str, Any]:
-    """用 Spark App 的授权 code 换 access_token，按 account_alias 存入独立的 tiktok_spark_tokens。"""
+def exchange_spark_code(code: str, redirect_uri: str, business_id: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:
+    """用 Spark App 的授权 code 换 access_token，按 business_id 存入独立的 tiktok_spark_tokens。"""
     app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()
     app_secret = (os.environ.get("TIKTOK_SPARK_APP_SECRET") or "").strip()
     if not app_id:
@@ -1093,15 +1137,16 @@ def exchange_spark_code(code: str, redirect_uri: str, account_alias: str, author
     if not data.get("access_token") or not data.get("open_id"):
         raise RuntimeError(f"TikTok token 返回缺少 access_token/open_id: {json.dumps(data, ensure_ascii=False)[:500]}")
 
-    save_spark_token(data, account_alias=account_alias, authorized_by=authorized_by)
+    save_spark_token(data, business_id=business_id, account_alias=account_alias, authorized_by=authorized_by)
     return data
 
 
-def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_by: str | None = None) -> dict[str, Any]:
-    account_alias = (account_alias or "").strip()
-    if not account_alias:
-        raise ValueError("account_alias 不能为空")
-    open_id = str(token_data.get("open_id") or "").strip()
+def save_spark_token(token_data: dict[str, Any], business_id: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:
+    business_id = (business_id or "").strip()
+    if not business_id:
+        raise ValueError("business_id 不能为空")
+    account_alias = (account_alias or "").strip() or None
+    open_id = str(token_data.get("open_id") or "").strip() or None
     access_token = str(token_data.get("access_token") or "").strip()
     if not access_token:
         raise ValueError("token_data 缺少 access_token")
@@ -1114,10 +1159,11 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
 
     db.execute(
         """
-        INSERT INTO tiktok_spark_tokens (account_alias, open_id, access_token, refresh_token, scope, authorized_by, expires_at, refresh_expires_at, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-        ON CONFLICT (account_alias) DO UPDATE SET
-            open_id = EXCLUDED.open_id,
+        INSERT INTO tiktok_spark_tokens (business_id, account_alias, open_id, access_token, refresh_token, scope, authorized_by, expires_at, refresh_expires_at, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (business_id) DO UPDATE SET
+            account_alias = COALESCE(EXCLUDED.account_alias, tiktok_spark_tokens.account_alias),
+            open_id = COALESCE(EXCLUDED.open_id, tiktok_spark_tokens.open_id),
             access_token = EXCLUDED.access_token,
             refresh_token = COALESCE(EXCLUDED.refresh_token, tiktok_spark_tokens.refresh_token),
             scope = EXCLUDED.scope,
@@ -1127,6 +1173,7 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
             updated_at = NOW()
         """,
         (
+            business_id,
             account_alias,
             open_id,
             crypto_util.encrypt(access_token),
@@ -1137,18 +1184,18 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
             refresh_expires_at,
         ),
     )
-    return {"account_alias": account_alias, "open_id": open_id, "scope": scope}
+    return {"business_id": business_id, "account_alias": account_alias, "open_id": open_id, "scope": scope}
 
 
-def refresh_spark_token(account_alias: str) -> str:
+def refresh_spark_token(business_id: str) -> str:
     """用存量 refresh_token 换新的 Spark access_token，成功后重新加密落库，返回新的明文 access_token。"""
     row = db.query_one(
-        "SELECT refresh_token, authorized_by FROM tiktok_spark_tokens WHERE account_alias = %s",
-        (account_alias,),
+        "SELECT refresh_token, account_alias, authorized_by FROM tiktok_spark_tokens WHERE business_id = %s",
+        (business_id,),
     )
     refresh_token = crypto_util.decrypt((row or {}).get("refresh_token"))
     if not refresh_token:
-        raise RuntimeError(f"account_alias={account_alias} 没有可用的 refresh_token，需要重新走一遍 Spark 授权")
+        raise RuntimeError(f"business_id={business_id} 没有可用的 refresh_token，需要重新走一遍 Spark 授权")
 
     app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()
     app_secret = (os.environ.get("TIKTOK_SPARK_APP_SECRET") or "").strip()
@@ -1176,20 +1223,24 @@ def refresh_spark_token(account_alias: str) -> str:
     if not data.get("access_token"):
         raise RuntimeError(f"TikTok Spark refresh_token 返回缺少 access_token: {json.dumps(data, ensure_ascii=False)[:500]}")
 
-    save_spark_token(data, account_alias=account_alias, authorized_by=(row or {}).get("authorized_by"))
-    logger.info(f"TikTok Spark token 已刷新: account_alias={account_alias}")
+    save_spark_token(data, business_id=business_id, account_alias=(row or {}).get("account_alias"), authorized_by=(row or {}).get("authorized_by"))
+    logger.info(f"TikTok Spark token 已刷新: business_id={business_id}")
     return data["access_token"]
 
 
-def get_spark_token_info(account_alias: str | None, auto_refresh: bool = True) -> dict[str, Any] | None:
+def get_spark_token_info(business_id: str | None, auto_refresh: bool = True) -> dict[str, Any] | None:
     """Spark token 是在另一个 App 下授权的，open_id 跟主流程的 business_id 不是同一个值。
     调用 TikTok 接口时 body 里的 business_id 必须跟 access_token 自己的身份一致，
-    不能沿用主流程那个 business_id，否则 TikTok 会报 access token 不合法。"""
-    if not account_alias:
+    不能沿用主流程那个 business_id，否则 TikTok 会报 access token 不合法。
+
+    按 business_id（而不是 account_alias）做键：account_alias 在主表里不保证唯一，
+    按别名查会把撞名账号的 token 张冠李戴，报 "item_id does not belong to the user"。
+    """
+    if not business_id:
         return None
     row = db.query_one(
-        "SELECT access_token, open_id, refresh_token, expires_at FROM tiktok_spark_tokens WHERE account_alias = %s",
-        (account_alias,),
+        "SELECT access_token, open_id, refresh_token, expires_at FROM tiktok_spark_tokens WHERE business_id = %s",
+        (business_id,),
     )
     if not row or not row.get("access_token"):
         return None
@@ -1200,11 +1251,11 @@ def get_spark_token_info(account_alias: str | None, auto_refresh: bool = True) -
     needs_refresh = expires_at is None or expires_at < now + timedelta(hours=1)
     if auto_refresh and needs_refresh and row.get("refresh_token"):
         try:
-            return {"access_token": refresh_spark_token(account_alias), "open_id": row.get("open_id")}
+            return {"access_token": refresh_spark_token(business_id), "open_id": row.get("open_id")}
         except Exception as exc:
             if expires_at and expires_at < now:
                 raise RuntimeError(f"Spark token 刷新失败且旧 token 已过期，需重新授权或稍后重试: {exc}") from exc
-            logger.warning(f"TikTok Spark token 刷新失败，旧 token 尚未过期，暂用旧 token 兜底: account_alias={account_alias} err={exc}")
+            logger.warning(f"TikTok Spark token 刷新失败，旧 token 尚未过期，暂用旧 token 兜底: business_id={business_id} err={exc}")
 
     return {"access_token": crypto_util.decrypt(row["access_token"]), "open_id": row.get("open_id")}
 
@@ -1212,7 +1263,7 @@ def get_spark_token_info(account_alias: str | None, auto_refresh: bool = True) -
 def list_spark_tokens(limit: int = 100) -> list[dict[str, Any]]:
     return db.query_all(
         """
-        SELECT account_alias, open_id, scope, authorized_by, created_at, updated_at
+        SELECT business_id, account_alias, open_id, scope, authorized_by, created_at, updated_at
         FROM tiktok_spark_tokens
         ORDER BY updated_at DESC
         LIMIT %s
@@ -1902,10 +1953,9 @@ def get_daily_view_series_bulk(
 
 def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: int = 30) -> dict[str, Any]:
     # 生成 Spark 授权码要求 access_token 带 biz.spark.auth 权限；主账号 token 大多没有这个权限，
-    # 优先用该账号别名在独立 Spark 小流程里授权过的 token，没有的话再退回主账号 token（兼容老账号）。
-    account_row = db.query_one("SELECT account_alias FROM tiktok_official_accounts WHERE business_id = %s", (business_id,))
-    alias = (account_row or {}).get("account_alias")
-    spark_info = get_spark_token_info(alias)
+    # 优先用该账号在独立 Spark 小流程里授权过的 token（按 business_id 直接查，account_alias 在
+    # 主表里不唯一，按别名查会把撞名账号的 token 张冠李戴），没有的话再退回主账号 token（兼容老账号）。
+    spark_info = get_spark_token_info(business_id)
     if spark_info and spark_info.get("access_token"):
         token = spark_info["access_token"]
         # 用 Spark App 的 open_id 作为 business_id，跟这个 token 自己的身份对上，

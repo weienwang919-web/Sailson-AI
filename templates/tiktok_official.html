@@ -84,6 +84,10 @@
         <input id="invite-alias" type="text" placeholder="例如 TH-Brand-01" style="min-width:220px;">
       </div>
       <div>
+        <label>Spark 授权账号</label>
+        <select id="spark-invite-account" style="min-width:260px;"></select>
+      </div>
+      <div>
         <label>有效期</label>
         <select id="invite-ttl">
           <option value="3600">1 小时</option>
@@ -205,7 +209,7 @@ let authUrls = null;
 let currentVideoRows = [];
 const selectedExportVideos = new Map();
 const REGION_OPTIONS = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
-window._sparkAliases = new Set();
+window._sparkBusinessIds = new Set();
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '-';
@@ -325,7 +329,7 @@ function renderAccounts() {
       <div class="account-title">
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
         <span style="display:flex;gap:4px;">
-          ${window._sparkAliases.has(a.account_alias) ? '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>' : ''}
+          ${window._sparkBusinessIds.has(a.business_id) ? '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>' : ''}
           ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
           <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
         </span>
@@ -352,6 +356,7 @@ function renderAccounts() {
   `;
   }).join('');
   document.getElementById('accounts-count').textContent = `（共 ${filtered.length} 个账号${filtered.length !== accounts.length ? ` / 总 ${accounts.length} 个` : ''}）`;
+  renderSparkAccountOptions();
 }
 
 async function toggleNeedsBoost(businessId, checkbox) {
@@ -587,12 +592,12 @@ async function generateInviteLinksBatch() {
 }
 
 async function generateSparkInviteLink() {
-  const alias = document.getElementById('invite-alias').value.trim();
+  const businessId = document.getElementById('spark-invite-account').value;
   const ttlChoice = document.getElementById('invite-ttl').value;
   const st = document.getElementById('spark-invite-status');
   const linkBox = document.getElementById('spark-invite-link');
-  if (!alias) {
-    st.textContent = '请先填写账号别名';
+  if (!businessId) {
+    st.textContent = '请先选择要授权的账号';
     st.className = 'status err';
     return;
   }
@@ -600,7 +605,7 @@ async function generateSparkInviteLink() {
   st.className = 'status';
   linkBox.style.display = 'none';
   try {
-    const payload = { account_alias: alias };
+    const payload = { business_id: businessId };
     if (ttlChoice === 'never') {
       payload.never_expire = true;
     } else {
@@ -624,6 +629,18 @@ async function generateSparkInviteLink() {
 }
 window.generateSparkInviteLink = generateSparkInviteLink;
 
+function renderSparkAccountOptions() {
+  const sel = document.getElementById('spark-invite-account');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = accounts.map(a => {
+    const shortId = String(a.business_id || '').slice(-6);
+    const label = `${a.account_alias || '(无别名)'} — ${a.account_name || ''} (${shortId})`;
+    return `<option value="${a.business_id}">${label}</option>`;
+  }).join('');
+  if (prev) sel.value = prev;
+}
+
 function exportSparkInviteBatch() {
   window.open('/api/tiktok-official/spark/invite-batch', '_blank');
 }
@@ -634,7 +651,7 @@ async function loadSparkTokens() {
   try {
     const data = await fetchJson('/api/tiktok-official/spark/tokens');
     const rows = data.tokens || [];
-    window._sparkAliases = new Set(rows.map(t => t.account_alias).filter(Boolean));
+    window._sparkBusinessIds = new Set(rows.map(t => t.business_id).filter(Boolean));
     renderAccounts();
     body.innerHTML = rows.map(t => `
       <tr>
