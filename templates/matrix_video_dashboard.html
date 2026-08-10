@@ -274,7 +274,7 @@
         <div class="stat-breakdown" id="delta-views-breakdown"></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">本期总新增互动量</div>
+        <div class="stat-label">本期总新增互动量（赞+转+评+藏）</div>
         <div class="stat-value" id="delta-engagement">-</div>
         <div class="stat-breakdown" id="delta-engagement-breakdown"></div>
       </div>
@@ -854,10 +854,10 @@ function renderSnapshotDelta(d) {
   document.getElementById('delta-new-videos').textContent = fmt(d.new_video_count || 0);
   document.getElementById('delta-views').innerHTML = fmtDelta(d.views_delta);
   document.getElementById('delta-views-breakdown').innerHTML =
-    `<div>新发布视频播放量：${fmt(d.new_video_views || 0)}</div><div>老视频新增播放量：${fmtDelta(d.existing_video_views_delta)}</div>`;
+    `<div>今日新发布视频播放量：${fmt(d.new_video_views || 0)}</div><div>往日发布视频新增播放量：${fmtDelta(d.existing_video_views_delta)}</div>`;
   document.getElementById('delta-engagement').innerHTML = fmtDelta(d.engagement_delta);
   document.getElementById('delta-engagement-breakdown').innerHTML =
-    `<div>新发布视频互动量：${fmt(d.new_video_engagement || 0)}</div><div>老视频新增互动量：${fmtDelta(d.existing_video_engagement_delta)}</div>`;
+    `<div>今日新发布视频互动量：${fmt(d.new_video_engagement || 0)}</div><div>往日发布视频新增互动量：${fmtDelta(d.existing_video_engagement_delta)}</div>`;
   document.getElementById('delta-rate-change').textContent = pct(d.engagement_rate_end);
   fitAllStatValues();
 
