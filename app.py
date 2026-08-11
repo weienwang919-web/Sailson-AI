@@ -9566,8 +9566,7 @@ def api_tiktok_official_accounts():
         accounts = tiktok_official_service.sync_configured_accounts()
         return jsonify({'status': 'success', 'accounts': _json_safe_rows(accounts)})
     except Exception as e:
-        logger.error(f"tiktok_official accounts failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official accounts', e)
 
 
 @app.route('/api/tiktok-official/auth-urls')
@@ -9625,8 +9624,7 @@ def api_tiktok_official_invite():
             'expires_at': invite['expires_at'].isoformat() if invite.get('expires_at') else None,
         })
     except Exception as e:
-        logger.error(f"tiktok_official invite generation failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official invite generation', e)
 
 
 @app.route('/api/tiktok-official/invites/batch', methods=['POST'])
@@ -9675,8 +9673,7 @@ def api_tiktok_official_invites():
         invites = tiktok_official_service.list_invites(public_base=public_base)
         return jsonify({'status': 'success', 'invites': _json_safe_rows(invites)})
     except Exception as e:
-        logger.error(f"tiktok_official invites list failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official invites list', e)
 
 
 @app.route('/api/tiktok-official/spark/invite', methods=['POST'])
@@ -9714,8 +9711,7 @@ def api_tiktok_official_spark_invite():
             'expires_at': invite['expires_at'].isoformat() if invite.get('expires_at') else None,
         })
     except Exception as e:
-        logger.error(f"tiktok_official spark invite generation failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official spark invite generation', e)
 
 
 @app.route('/api/tiktok-official/spark/invites')
@@ -9727,8 +9723,7 @@ def api_tiktok_official_spark_invites():
         invites = tiktok_official_service.list_spark_invites(public_base=public_base)
         return jsonify({'status': 'success', 'invites': _json_safe_rows(invites)})
     except Exception as e:
-        logger.error(f"tiktok_official spark invites list failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official spark invites list', e)
 
 
 @app.route('/api/tiktok-official/spark/tokens')
@@ -9739,8 +9734,7 @@ def api_tiktok_official_spark_tokens():
         tokens = tiktok_official_service.list_spark_tokens()
         return jsonify({'status': 'success', 'tokens': _json_safe_rows(tokens)})
     except Exception as e:
-        logger.error(f"tiktok_official spark tokens list failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official spark tokens list', e)
 
 
 @app.route('/api/tiktok-official/spark/invite-batch')
@@ -9762,8 +9756,7 @@ def api_tiktok_official_spark_invite_batch():
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
     except Exception as e:
-        logger.error(f"tiktok_official spark invite batch failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official spark invite batch', e)
 
 
 @app.route('/api/tiktok-official/ad-spend/summary')
@@ -9777,8 +9770,7 @@ def api_tiktok_official_ad_spend_summary():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official ad-spend summary failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official ad-spend summary', e)
 
 
 @app.route('/api/tiktok-official/ad-spend/by-country')
@@ -9792,8 +9784,7 @@ def api_tiktok_official_ad_spend_by_country():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official ad-spend by-country failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official ad-spend by-country', e)
 
 
 @app.route('/api/tiktok-official/ad-spend/by-video')
@@ -9807,8 +9798,7 @@ def api_tiktok_official_ad_spend_by_video():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official ad-spend by-video failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official ad-spend by-video', e)
 
 
 @app.route('/api/tiktok-official/ad-spend/paid-ratio')
@@ -9822,8 +9812,7 @@ def api_tiktok_official_ad_spend_paid_ratio():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official ad-spend paid-ratio failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official ad-spend paid-ratio', e)
 
 
 @app.route('/api/tiktok-official/refresh', methods=['POST'])
@@ -9886,8 +9875,7 @@ def api_tiktok_official_videos():
         result = tiktok_official_service.list_videos(business_id=business_id, page=page, page_size=page_size)
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official videos failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official videos', e)
 
 
 @app.route('/api/tiktok-official/videos/<item_id>')
@@ -9900,8 +9888,7 @@ def api_tiktok_official_video_detail(item_id):
             return jsonify({'status': 'error', 'message': '视频不存在'}), 404
         return jsonify({'status': 'success', 'video': _json_safe(row)})
     except Exception as e:
-        logger.error(f"tiktok_official video detail failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official video detail', e)
 
 
 @app.route('/api/tiktok-official/profile-metrics')
@@ -9913,8 +9900,7 @@ def api_tiktok_official_profile_metrics():
         rows = tiktok_official_service.list_profile_metrics(business_id=business_id, days=days)
         return jsonify({'status': 'success', 'items': _json_safe_rows(rows)})
     except Exception as e:
-        logger.error(f"tiktok_official profile metrics failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official profile metrics', e)
 
 
 @app.route('/api/tiktok-official/export', methods=['POST'])
@@ -9935,8 +9921,7 @@ def api_tiktok_official_export():
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
     except Exception as e:
-        logger.error(f"tiktok_official export failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official export', e)
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/meta', methods=['PATCH'])
@@ -9949,8 +9934,7 @@ def api_tiktok_official_account_meta(business_id):
         tiktok_official_service.set_account_meta(business_id, region=region, account_type=account_type)
         return jsonify({'status': 'success'})
     except Exception as e:
-        logger.error(f"tiktok_official account meta update failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official account meta update', e)
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/needs-boost', methods=['PATCH'])
@@ -9962,8 +9946,7 @@ def api_tiktok_official_account_needs_boost(business_id):
         tiktok_official_service.set_account_needs_boost(business_id, needs_boost)
         return jsonify({'status': 'success'})
     except Exception as e:
-        logger.error(f"tiktok_official account needs-boost update failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official account needs-boost update', e)
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/enabled', methods=['PATCH'])
@@ -9975,8 +9958,7 @@ def api_tiktok_official_account_enabled(business_id):
         tiktok_official_service.set_account_enabled(business_id, enabled)
         return jsonify({'status': 'success'})
     except Exception as e:
-        logger.error(f"tiktok_official account enabled update failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official account enabled update', e)
 
 
 @app.route('/matrix-video-dashboard')
@@ -10048,8 +10030,7 @@ def api_tiktok_official_matrix_videos():
             'summary': _json_safe(result['summary']),
         })
     except Exception as e:
-        logger.error(f"tiktok_official matrix videos failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix videos', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/overview')
@@ -10060,8 +10041,7 @@ def api_tiktok_official_matrix_overview():
         result = tiktok_official_service.matrix_overview_summary(filters=filters)
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix overview failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix overview', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/publish-range')
@@ -10076,8 +10056,7 @@ def api_tiktok_official_matrix_publish_range():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix publish-range failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix publish-range', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/snapshot-delta-range')
@@ -10092,8 +10071,7 @@ def api_tiktok_official_matrix_snapshot_delta_range():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix snapshot-delta-range failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix snapshot-delta-range', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/cumulative-views-range')
@@ -10108,8 +10086,71 @@ def api_tiktok_official_matrix_cumulative_views_range():
         )
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix cumulative-views-range failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix cumulative-views-range', e)
+
+
+@app.route('/api/tiktok-official/matrix-videos/report-panel')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_report_panel():
+    try:
+        result = tiktok_official_service.matrix_report_panel(
+            filters=_matrix_filters_from_request(),
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        return _api_error('tiktok_official matrix report-panel', e)
+
+
+@app.route('/api/tiktok-official/matrix-videos/unpublished-export')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_unpublished_export():
+    try:
+        out = tiktok_official_service.build_unpublished_accounts_export(
+            filters=_matrix_filters_from_request(),
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        buf = BytesIO(out)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True,
+            download_name='tiktok_matrix_unpublished_accounts.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        return _api_error('tiktok_official matrix unpublished-export', e)
+
+
+@app.route('/api/tiktok-official/matrix-config/daily-expected-videos', methods=['GET', 'PUT'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_daily_expected():
+    try:
+        if request.method == 'GET':
+            return jsonify({
+                'status': 'success',
+                'value': tiktok_official_service.get_daily_expected_videos(),
+            })
+        # 改配置只放开给管理员，避免看板使用者误改影响全员的汇报口径
+        if session.get('role') != 'admin':
+            return jsonify({'status': 'error', 'message': '只有管理员可以修改每日应发视频数'}), 403
+        data = request.get_json(silent=True) or {}
+        try:
+            value = int(data.get('value'))
+        except (TypeError, ValueError):
+            return jsonify({'status': 'error', 'message': '请填写整数'}), 400
+        if value < 0 or value > 100:
+            return jsonify({'status': 'error', 'message': '每日应发视频数应在 0-100 之间'}), 400
+        tiktok_official_service.set_global_config(
+            tiktok_official_service.CONFIG_DAILY_EXPECTED_VIDEOS,
+            value,
+            updated_by=session.get('username') or session.get('user_id'),
+            description='矩阵号看板：每个账号每天应发视频数',
+        )
+        return jsonify({'status': 'success', 'value': value})
+    except Exception as e:
+        return _api_error('tiktok_official matrix daily-expected config', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/tags', methods=['PATCH'])
@@ -10122,8 +10163,7 @@ def api_tiktok_official_matrix_video_tags(business_id, item_id):
         tiktok_official_service.update_video_tags(business_id, item_id, task_no=task_no, kol_campaign=kol_campaign)
         return jsonify({'status': 'success'})
     except Exception as e:
-        logger.error(f"tiktok_official matrix video tags update failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix video tags update', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/boosted', methods=['PATCH'])
@@ -10145,8 +10185,7 @@ def api_tiktok_official_matrix_video_boosted(business_id, item_id):
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
-        logger.error(f"tiktok_official matrix video boosted update failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix video boosted update', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/spark-code', methods=['POST'])
@@ -10158,8 +10197,7 @@ def api_tiktok_official_matrix_video_spark_code(business_id, item_id):
         result = tiktok_official_service.authorize_video_for_ads(business_id, item_id, authorization_days=authorization_days)
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix video spark-code failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix video spark-code', e)
 
 
 @app.route('/api/tiktok-official/matrix-export')
@@ -10200,8 +10238,7 @@ def api_tiktok_official_matrix_export():
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
     except Exception as e:
-        logger.error(f"tiktok_official matrix export failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix export', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/export-query')
@@ -10220,8 +10257,7 @@ def api_tiktok_official_matrix_export_query():
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
     except Exception as e:
-        logger.error(f"tiktok_official matrix export-query failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix export-query', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/publish-windows')
@@ -10241,8 +10277,7 @@ def api_tiktok_official_matrix_video_publish_windows(business_id, item_id):
         )
         return jsonify({'status': 'success', 'windows': _json_safe_rows(rows)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix video publish-windows failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix video publish-windows', e)
 
 
 @app.route('/api/tiktok-official/matrix-videos/<business_id>/<item_id>/daily-views')
@@ -10252,8 +10287,18 @@ def api_tiktok_official_matrix_video_daily_views(business_id, item_id):
         result = tiktok_official_service.get_video_daily_view_series(business_id, item_id)
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
-        logger.error(f"tiktok_official matrix video daily-views failed: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return _api_error('tiktok_official matrix video daily-views', e)
+
+
+def _api_error(label, exc, status=500):
+    """统一的 API 异常响应：日志留完整堆栈，响应不把内部细节漏给普通用户。
+
+    管理员仍然能看到原始异常文本，方便排查；其他角色只看到通用提示，
+    避免 SQL 报错之类把表结构暴露到前端。
+    """
+    logger.error(f"{label} failed: {exc}", exc_info=True)
+    message = str(exc) if session.get('role') == 'admin' else '服务异常，请稍后重试或联系管理员'
+    return jsonify({'status': 'error', 'message': message}), status
 
 
 def _json_safe_rows(rows):
