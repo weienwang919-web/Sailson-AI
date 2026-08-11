@@ -26,7 +26,7 @@ import smtplib
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -51,6 +51,21 @@ LOCAL_SMTP_PORT = int(os.environ.get("MAIL_BLASTER_LOCAL_SMTP_PORT", "1025"))
 LOCAL_SMTP_USE_TLS = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_USE_TLS", "false").lower() == "true"
 LOCAL_SMTP_USE_SSL = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_USE_SSL", "false").lower() == "true"
 
+# ---- 建联的两道时间护栏 ----
+# 冷启动收件人互不相识，密集投递最容易触发频控和垃圾判定，
+# 所以节奏比素材提交（3–8 秒）慢一个数量级。
+OUTREACH_MIN_GAP_SECONDS = float(os.environ.get("MAIL_BLASTER_OUTREACH_MIN_GAP") or 20)
+OUTREACH_MAX_GAP_SECONDS = float(os.environ.get("MAIL_BLASTER_OUTREACH_MAX_GAP") or 45)
+SEND_WINDOW = os.environ.get("MAIL_BLASTER_SEND_WINDOW", "08:00-22:00")
+
+# 配额和发送窗口都按这个时区算。
+# 全项目其它地方（app.py 的 AT TIME ZONE、worker.py 的 utcnow()+8h、
+# APScheduler 的 timezone）都是北京时间，只有 quota_state 原来用的
+# date_trunc('day', NOW()) 跟着 Postgres 服务器时区走 —— Render 上是 UTC，
+# 于是「今日配额」实际在北京时间早上 8 点重置、08:00-22:00 的窗口
+# 实际是北京时间 16:00-06:00。两道护栏看起来在工作，却整整偏 8 小时。
+SEND_TZ_NAME = os.environ.get("MAIL_BLASTER_TZ", "Asia/Shanghai")
+
 MAX_IMAGE_BYTES = 1_500_000
 MAX_IMAGE_EDGE = 1600
 JPEG_QUALITY = 85
@@ -64,11 +79,16 @@ JPEG_QUALITY = 85
 _TABLES = {
     "mb_sender_accounts", "mb_images", "mb_jobs", "mb_items", "mb_templates",
     "mb_history", "mb_entity_phones", "mb_phone_pool", "mb_license_ocr",
+    "mb_suppression",
 }
-# 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL
+# 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL。
+# 新增列务必登记到这里，否则线上库走快速路径直接 return，DDL 一条都不跑，
+# 故障现象是 worker 任务里的 UndefinedColumn 而不是启动报错，很难联想。
 _LATEST_COLUMNS = {
     ("mb_jobs", "ocr_status"), ("mb_jobs", "replace_domain_enabled"),
     ("mb_jobs", "replacement_domain"), ("mb_sender_accounts", "auth_mode"),
+    ("mb_jobs", "mode"), ("mb_jobs", "sender_account_id"),
+    ("mb_templates", "mode"), ("mb_history", "mode"),
 }
 
 
@@ -173,7 +193,7 @@ def ensure_schema() -> None:
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_templates (
             id SERIAL PRIMARY KEY,
-            name VARCHAR(255) UNIQUE NOT NULL,
+            name VARCHAR(255) NOT NULL,
             subject TEXT NOT NULL DEFAULT '',
             body_html TEXT NOT NULL DEFAULT '',
             signature_html TEXT NOT NULL DEFAULT '',
@@ -194,6 +214,17 @@ def ensure_schema() -> None:
             subject TEXT NOT NULL DEFAULT '',
             message_id TEXT NOT NULL DEFAULT '',
             sent_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    # 建联专用：永不投递的地址。退订请求、硬退信、手动拉黑都进这里。
+    # reason 允许空串（手动拉黑常常懒得填），所以判定函数返回 None 才表示「不在名单里」。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_suppression (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            source VARCHAR(16) NOT NULL DEFAULT 'manual',
+            created_at TIMESTAMP DEFAULT NOW()
         )
     """)
     db.execute("""
@@ -242,6 +273,17 @@ def ensure_schema() -> None:
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS auth_mode VARCHAR(16) NOT NULL DEFAULT 'password'",
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS encrypted_client_id TEXT",
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS encrypted_refresh_token TEXT",
+        # KOL 建联：素材提交是「一个收件人 ← N 个发件账号」，建联是「一个发件账号 → N 个收件人」，
+        # 轴反过来了。mode 区分两者，sender_account_id 存建联整批共用的那个账号。
+        "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'material'",
+        "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS sender_account_id INTEGER "
+        "REFERENCES mb_sender_accounts(id) ON DELETE SET NULL",
+        "ALTER TABLE mb_templates ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'material'",
+        "ALTER TABLE mb_history ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'material'",
+        # 模板唯一键 (name) → (mode, name)：两套模板库各自独立命名。
+        # 不换的话建联存一个叫「默认」的模板会顶掉素材提交的同名模板。
+        "ALTER TABLE mb_templates DROP CONSTRAINT IF EXISTS mb_templates_name_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_mb_templates_mode_name ON mb_templates(mode, name)",
     ):
         db.execute(stmt)
 
@@ -250,6 +292,9 @@ def ensure_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_mb_history_dedupe ON mb_history(recipient, material_id)",
         "CREATE INDEX IF NOT EXISTS idx_mb_history_sender ON mb_history(recipient, sender_account_id, sent_at)",
         "CREATE INDEX IF NOT EXISTS idx_mb_history_sent_at ON mb_history(sent_at DESC)",
+        # quota_state 每封信查一次，条件是 (sender_account_id, sent_at)。
+        # idx_mb_history_sender 首列是 recipient，服务不了这个查询。
+        "CREATE INDEX IF NOT EXISTS idx_mb_history_quota ON mb_history(sender_account_id, sent_at)",
     ):
         db.execute(stmt)
 
@@ -260,23 +305,32 @@ def ensure_schema() -> None:
 
 PROVIDERS = [
     {"key": "aliyun_qiye", "label": "阿里云企业邮箱", "smtp_host": "smtp.qiye.aliyun.com",
-     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": []},
+     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": [],
+     "note": "在邮箱设置里开启 SMTP 服务。企业版可能需要管理员先放开客户端登录。"},
     {"key": "tencent_exmail", "label": "腾讯企业邮箱", "smtp_host": "smtp.exmail.qq.com",
-     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": []},
+     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": [],
+     "note": "需要在「安全设置」里开启客户端专用密码，密码填那个而不是登录密码。"},
     {"key": "feishu", "label": "飞书邮箱", "smtp_host": "smtp.feishu.cn",
-     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": []},
+     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": [],
+     "note": "在飞书邮箱设置里生成客户端专用密码。"},
     {"key": "outlook", "label": "Outlook / Hotmail", "smtp_host": "smtp-mail.outlook.com",
      "smtp_port": 587, "use_ssl": False, "use_tls": True,
-     "domains": ["outlook.com", "hotmail.com", "live.com", "msn.com"]},
+     "domains": ["outlook.com", "hotmail.com", "live.com", "msn.com"],
+     "note": "微软正在收紧密码直连。报 535 5.7.139 说明该账号已被禁用密码登录，只能改走 OAuth2。"},
     {"key": "gmail", "label": "Gmail", "smtp_host": "smtp.gmail.com",
      "smtp_port": 587, "use_ssl": False, "use_tls": True,
-     "domains": ["gmail.com", "googlemail.com"]},
+     "domains": ["gmail.com", "googlemail.com"],
+     "note": "Google 已永久关闭「登录密码直连 SMTP」，报 535 5.7.8 就是这个原因。"
+             "必须先开两步验证，再去 myaccount.google.com/apppasswords 生成 16 位应用专用密码（填的时候去掉空格）。"},
     {"key": "qq", "label": "QQ 邮箱", "smtp_host": "smtp.qq.com",
-     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": ["qq.com", "foxmail.com"]},
+     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": ["qq.com", "foxmail.com"],
+     "note": "在设置-账户里开启 SMTP 并生成授权码，密码填授权码而不是 QQ 密码。"},
     {"key": "163", "label": "网易 163", "smtp_host": "smtp.163.com",
-     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": ["163.com"]},
+     "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": ["163.com"],
+     "note": "在网页版设置里开启 SMTP 服务并获取授权码，密码填授权码。"},
     {"key": "custom", "label": "自定义", "smtp_host": "", "smtp_port": 587,
-     "use_ssl": False, "use_tls": True, "domains": []},
+     "use_ssl": False, "use_tls": True, "domains": [],
+     "note": "自己填 SMTP 服务器和端口。465 一般配 SSL，587 一般配 STARTTLS。"},
 ]
 _BY_KEY = {p["key"]: p for p in PROVIDERS}
 _BY_DOMAIN = {d: p for p in PROVIDERS for d in p["domains"]}
@@ -323,7 +377,9 @@ def serialize_account(row: dict) -> dict:
         "smtp_username": row.get("smtp_username") or "",
         "use_ssl": bool(row["use_ssl"]), "use_tls": bool(row["use_tls"]),
         "enabled": bool(row["enabled"]), "sort_order": row.get("sort_order") or 0,
-        "daily_limit": row.get("daily_limit") or DEFAULT_DAILY_LIMIT,
+        # 同样别用 or：存的 0 是「今天一封都别发」，不是「没设置」
+        "daily_limit": (DEFAULT_DAILY_LIMIT if row.get("daily_limit") is None
+                        else int(row["daily_limit"])),
         "auth_mode": row.get("auth_mode") or "password",
         "has_client_id": bool(row.get("encrypted_client_id")),
         "has_refresh_token": bool(row.get("encrypted_refresh_token")),
@@ -332,6 +388,16 @@ def serialize_account(row: dict) -> dict:
         "last_error": row.get("last_error"),
         "has_password": bool(row.get("encrypted_password")),
     }
+
+
+def usable_account(acc: dict) -> bool:
+    """能不能拿来发信。和前端 mail_blaster_common.js 里的 usable() 是同一条规则，
+    改一处要同步改另一处——前端只是为了少一次往返，服务端这份才是准的。"""
+    if not acc.get("enabled") or acc.get("status") != "ready":
+        return False
+    if (acc.get("auth_mode") or "password") == "xoauth2":
+        return bool(acc.get("has_client_id") and acc.get("has_refresh_token"))
+    return bool(acc.get("has_password"))
 
 
 def list_accounts(only_sendable: bool = False) -> list[dict]:
@@ -362,16 +428,28 @@ def _normalize_account(payload: dict) -> dict:
         port = int(payload.get("smtp_port") or preset["smtp_port"])
     except (TypeError, ValueError):
         raise ValueError(f"{email}：SMTP 端口不是数字") from None
-    if "use_ssl" in payload or "use_tls" in payload:
-        use_ssl, use_tls = bool(payload.get("use_ssl")), bool(payload.get("use_tls"))
-    else:
-        use_ssl, use_tls = preset["use_ssl"], preset["use_tls"]
+    # SSL / STARTTLS 各自独立判断。以前是「两个 key 都不在才取预设」，
+    # 于是表单只传一个的时候，另一个会被静默当成 False。
+    use_ssl = bool(payload["use_ssl"]) if "use_ssl" in payload else preset["use_ssl"]
+    use_tls = bool(payload["use_tls"]) if "use_tls" in payload else preset["use_tls"]
     # 带了 refresh_token 就走 OAuth2，否则密码直连
     auth_mode = (payload.get("auth_mode") or "").strip()
     if not auth_mode:
         has_token = bool((payload.get("refresh_token") or "").strip()) or bool(
             payload.get("encrypted_refresh_token"))
         auth_mode = "xoauth2" if has_token else "password"
+
+    # 用 is None 判断而不是 or：0 是有意义的值。
+    # daily_limit=0 表示「这个账号今天一封都别发」，用 or 会被静默改成默认的 10。
+    limit_raw = payload.get("daily_limit")
+    order_raw = payload.get("sort_order")
+    try:
+        daily_limit = DEFAULT_DAILY_LIMIT if limit_raw is None or limit_raw == "" else int(limit_raw)
+        sort_order = 0 if order_raw is None or order_raw == "" else int(order_raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{email}：每日上限和排序必须是数字") from None
+    if daily_limit < 0:
+        raise ValueError(f"{email}：每日上限不能是负数")
 
     return {
         "email": email, "provider": key, "smtp_host": host, "smtp_port": port,
@@ -381,8 +459,8 @@ def _normalize_account(payload: dict) -> dict:
         "smtp_username": (payload.get("smtp_username") or "").strip() or None,
         "use_ssl": use_ssl, "use_tls": use_tls,
         "enabled": bool(payload.get("enabled", True)),
-        "sort_order": int(payload.get("sort_order") or 0),
-        "daily_limit": int(payload.get("daily_limit") or DEFAULT_DAILY_LIMIT),
+        "sort_order": sort_order,
+        "daily_limit": daily_limit,
     }
 
 
@@ -658,6 +736,44 @@ PLACEHOLDERS = [
     ("{{signature}}", "落款签名（不写则自动放正文末尾）"),
 ]
 
+# ---- KOL 建联 ----
+# 素材提交是内部往来，建联是冷启动外联，两者的默认文案和护栏都不一样。
+
+DEFAULT_OUTREACH_SUBJECT_TPL = "Collaboration with {{name}}"
+DEFAULT_OUTREACH_BODY_TPL = (
+    "Hi {{name}},\n\n"
+    "I'm {{sender_name}}. I came across your content on {{platform}} and really "
+    "enjoyed it — we'd love to explore a collaboration with you.\n\n"
+    "Would you be open to sharing your rates and availability?\n\n"
+    "{{signature}}"
+)
+DEFAULT_OUTREACH_SIGNATURE_TPL = "Best regards,\n{{sender_name}}\n{{sender_email}}"
+
+# 退订出口。模板里没写 {{unsubscribe}} 也会自动补到正文末尾——
+# 这个出口不能因为谁忘了写占位符就消失。
+DEFAULT_UNSUBSCRIBE_TEXT = (
+    "If you'd rather not hear from us, just reply with \"unsubscribe\" "
+    "and we won't contact you again."
+)
+
+# 建联的内置占位符。没有 {{image}}/{{image_name}}（建联的信不带图），
+# 也没有 {{unsubscribe}}（自动追加，没有「插入位置」可选）。
+# 名单里的每一列会额外生成一个占位符，由页面动态渲染。
+OUTREACH_PLACEHOLDERS = [
+    ("{{sender_name}}", "发件账号的显示名（自动推导，可手改）"),
+    ("{{sender_email}}", "发件邮箱地址"),
+    ("{{recipient}}", "收件邮箱地址"),
+    ("{{index}}", "第几封（从 1 开始）"),
+    ("{{total}}", "本批共几封"),
+    ("{{signature}}", "落款签名（不写则自动放正文末尾）"),
+]
+
+# 名单里叫这些名字的列会和内置变量撞车，解析时自动改名（recipient → recipient_1）
+RESERVED_KEYS = {
+    "sender_name", "sender_email", "recipient", "index", "total",
+    "image", "image_name", "signature", "unsubscribe",
+}
+
 
 def render(text: str, variables: dict) -> str:
     """简单的 {{key}} 替换。刻意不用 Jinja——正文里出现 {% 就会炸。"""
@@ -841,14 +957,23 @@ def send_local_test_email(*, sender_name: str, sender_email: str, to_email: str,
     }
 
 
+def unsubscribe_html(text: str) -> str:
+    """退订出口渲染成正文末尾的灰色小字块。escape 掉，退订文案不允许带 HTML。"""
+    return ('<div style="margin:24px 0 0;padding-top:12px;border-top:1px solid #e5e5e7;'
+            'font-size:12px;line-height:1.6;color:#86868b">'
+            f'{escape(text, quote=False)}</div>')
+
+
 def compose(*, subject_tpl, body_tpl, signature_tpl, sender_name, sender_email,
             signature_name, recipient, index, total, image_name="", image_src="",
-            extra_vars=None) -> tuple[str, str]:
+            extra_vars=None, unsubscribe_text="") -> tuple[str, str]:
     """渲染出 (主题, 正文 HTML)。
 
     image_src 传空表示这封信没有图，此时不自动补 {{image}}，模板里写了也替换成空。
     extra_vars 是该行的自定义参数；与内置变量同名时以内置的为准，
     避免名单里一列叫 recipient 就把收件人顶掉。
+    unsubscribe_text 只有建联会传。模板里没写 {{unsubscribe}} 就自动补到末尾——
+    这个出口不能因为谁忘了写占位符就消失。素材提交传空，此时残留的占位符替换成空串。
     """
     has_image = bool(image_src)
     base_vars = {**(extra_vars or {}), "sender_name": sender_name, "sender_email": sender_email,
@@ -864,10 +989,14 @@ def compose(*, subject_tpl, body_tpl, signature_tpl, sender_name, sender_email,
             raw = raw.rstrip() + "\n\n{{image}}\n\n{{signature}}"
     elif "{{signature}}" not in raw:
         raw = raw.rstrip() + "\n\n{{signature}}"
+    if unsubscribe_text and "{{unsubscribe}}" not in raw:
+        raw = raw.rstrip() + "\n\n{{unsubscribe}}"
 
     body = to_html(render(raw, base_vars))
     body = body.replace("{{image}}", image_html(image_src, image_name) if has_image else "")
     body = body.replace("{{signature}}", signature_html)
+    body = body.replace("{{unsubscribe}}",
+                        unsubscribe_html(unsubscribe_text) if unsubscribe_text else "")
     html = ('<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
             "Helvetica,Arial,sans-serif;font-size:15px;line-height:1.7;color:#1d1d1f\">"
             f"{body}</div>")
@@ -916,7 +1045,8 @@ def _open_smtp_recording(account: dict):
 def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: str,
                    signature_tpl: str, from_display: str, signature_name: str,
                    image_bytes: bytes | None, image_name: str, index: int, total: int,
-                   extra_vars: dict | None = None, replacement_domain: str = "") -> dict:
+                   extra_vars: dict | None = None, replacement_domain: str = "",
+                   unsubscribe_text: str = "") -> dict:
     """真正发一封。异常往外抛，由调用方决定怎么记。"""
     replacement_domain = normalize_replacement_domain(replacement_domain)
     header_sender_email = replace_sender_domain(account["email"], replacement_domain)
@@ -928,7 +1058,8 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
         subject_tpl=subject_tpl, body_tpl=body_tpl, signature_tpl=signature_tpl,
         sender_name=from_display, sender_email=header_sender_email, signature_name=signature_name,
         recipient=to_email, index=index, total=total, image_name=image_name,
-        image_src=f"cid:{cid}" if has_image else "", extra_vars=extra_vars)
+        image_src=f"cid:{cid}" if has_image else "", extra_vars=extra_vars,
+        unsubscribe_text=unsubscribe_text)
     html = rewrite_body_domains(html, replacement_domain)
 
     root = MIMEMultipart("related") if has_image else MIMEMultipart("alternative")
@@ -938,6 +1069,13 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
     root["Date"] = formatdate(localtime=True)
     # 自签 Message-ID：回信/对账时拿它比对。已实测阿里云企业邮会原样保留。
     root["Message-ID"] = make_msgid(domain=message_id_domain)
+    if unsubscribe_text:
+        # 用 envelope 地址而不是替换后的 header 地址：开了域名替换时，
+        # 替换出来的域名不是任何人在读的信箱，退订回信会直接消失。
+        #
+        # 刻意不加 List-Unsubscribe-Post：RFC 8058 的一键退订要求有一个
+        # 无需确认就处理的 URL 端点，我们没有。声明了不兑现比不声明更糟。
+        root["List-Unsubscribe"] = f"<mailto:{envelope_sender_email}?subject=unsubscribe>"
 
     plain = MIMEText(html_to_text(html), "plain", "utf-8")
     html_part = MIMEText(html, "html", "utf-8")
@@ -977,37 +1115,41 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 # 模板库
 # --------------------------------------------------------------------------- #
 
-def list_templates() -> list[dict]:
+def list_templates(mode: str = "material") -> list[dict]:
     return [dict(r) for r in db.query_all(
-        "SELECT * FROM mb_templates ORDER BY updated_at DESC")]
+        "SELECT * FROM mb_templates WHERE mode = %s ORDER BY updated_at DESC", (mode,))]
 
 
-def save_template(name: str, subject: str, body: str, signature: str) -> list[dict]:
+def save_template(name: str, subject: str, body: str, signature: str,
+                  mode: str = "material") -> list[dict]:
     name = (name or "").strip()
     if not name:
         raise ValueError("给模板起个名字")
     db.execute("""
-        INSERT INTO mb_templates (name, subject, body_html, signature_html, updated_at)
-        VALUES (%s, %s, %s, %s, NOW())
-        ON CONFLICT (name) DO UPDATE SET subject = EXCLUDED.subject,
+        INSERT INTO mb_templates (mode, name, subject, body_html, signature_html, updated_at)
+        VALUES (%s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (mode, name) DO UPDATE SET subject = EXCLUDED.subject,
             body_html = EXCLUDED.body_html, signature_html = EXCLUDED.signature_html,
             updated_at = NOW()
-    """, (name, subject or "", body or "", signature or ""))
-    return list_templates()
+    """, (mode, name, subject or "", body or "", signature or ""))
+    return list_templates(mode)
 
 
-def delete_template(template_id: int) -> list[dict]:
+def delete_template(template_id: int, mode: str = "material") -> list[dict]:
     db.execute("DELETE FROM mb_templates WHERE id = %s", (template_id,))
-    return list_templates()
+    return list_templates(mode)
 
 
-def defaults_for_page() -> dict:
+def defaults_for_page(mode: str = "material") -> dict:
     """页面初始值：有存过的模板就用最近改的那个，没有才退回内置默认。"""
-    saved = list_templates()
+    saved = list_templates(mode)
     if saved:
         t = saved[0]
         return {"subject": t["subject"], "body": t["body_html"],
                 "signature": t["signature_html"], "loaded_from": t["name"]}
+    if mode == "outreach":
+        return {"subject": DEFAULT_OUTREACH_SUBJECT_TPL, "body": DEFAULT_OUTREACH_BODY_TPL,
+                "signature": DEFAULT_OUTREACH_SIGNATURE_TPL, "loaded_from": ""}
     return {"subject": DEFAULT_SUBJECT_TPL, "body": DEFAULT_BODY_TPL,
             "signature": DEFAULT_SIGNATURE_TPL, "loaded_from": ""}
 
@@ -1017,13 +1159,15 @@ def defaults_for_page() -> dict:
 # --------------------------------------------------------------------------- #
 
 def record_send(*, recipient, material_id="", material_name="", sender_account_id=None,
-                sender_email="", job_id=None, item_id=None, subject="", message_id="") -> None:
+                sender_email="", job_id=None, item_id=None, subject="", message_id="",
+                mode="material") -> None:
     db.execute("""
         INSERT INTO mb_history (recipient, material_id, material_name, sender_account_id,
-                                sender_email, job_id, item_id, subject, message_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                sender_email, job_id, item_id, subject, message_id, mode)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, ((recipient or "").strip().lower(), material_id or "", material_name or "",
-          sender_account_id, sender_email or "", job_id, item_id, subject or "", message_id or ""))
+          sender_account_id, sender_email or "", job_id, item_id, subject or "",
+          message_id or "", mode or "material"))
 
 
 def already_sent(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
@@ -1038,9 +1182,12 @@ def already_sent(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
     return wanted & have
 
 
-def list_history(limit: int = 500, keyword: str = "") -> list[dict]:
+def list_history(limit: int = 500, keyword: str = "", mode: str = "") -> list[dict]:
     sql = "SELECT * FROM mb_history WHERE 1=1"
     args: list = []
+    if mode:
+        sql += " AND mode = %s"
+        args.append(mode)
     if keyword:
         sql += (" AND (material_id ILIKE %s OR material_name ILIKE %s OR subject ILIKE %s"
                 " OR sender_email ILIKE %s OR recipient ILIKE %s)")
@@ -1048,6 +1195,53 @@ def list_history(limit: int = 500, keyword: str = "") -> list[dict]:
     sql += " ORDER BY sent_at DESC, id DESC LIMIT %s"
     args.append(int(limit))
     return [dict(r) for r in db.query_all(sql, tuple(args))]
+
+
+# --------------------------------------------------------------------------- #
+# 抑制名单（只作用于建联）
+# --------------------------------------------------------------------------- #
+# 冷邮件四道护栏之一。退订请求、硬退信、手动拉黑都进这张表，
+# 解析名单时先剔一遍，真正发之前再拦一次——中间隔着人工编辑和 API 调用，
+# 只在解析期过滤挡不住直接 POST。
+
+def list_suppressed() -> list[dict]:
+    return [dict(r) for r in db.query_all(
+        "SELECT * FROM mb_suppression ORDER BY created_at DESC, id DESC")]
+
+
+def suppress(email: str, reason: str = "", source: str = "manual") -> None:
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        raise ValueError(f"邮箱格式不正确：{email or '(空)'}")
+    db.execute("""
+        INSERT INTO mb_suppression (email, reason, source) VALUES (%s, %s, %s)
+        ON CONFLICT (email) DO UPDATE SET reason = EXCLUDED.reason, source = EXCLUDED.source
+    """, (email, reason or "", source or "manual"))
+
+
+def unsuppress(email: str) -> None:
+    db.execute("DELETE FROM mb_suppression WHERE email = %s", ((email or "").strip().lower(),))
+
+
+def is_suppressed(email: str) -> str | None:
+    """在名单里就返回原因，不在返回 None。
+
+    ⚠️ 原因**可能是空字符串**（手动拉黑常常懒得填理由），
+    所以调用方必须判 `is not None`，判真值会把「拉黑了但没写理由」当成没拉黑。
+    """
+    row = db.query_one("SELECT reason FROM mb_suppression WHERE email = %s",
+                       ((email or "").strip().lower(),))
+    return None if row is None else (row["reason"] or "")
+
+
+def filter_suppressed(emails: list[str]) -> set[str]:
+    """一次查完，返回这批里命中名单的那些。"""
+    targets = list({(e or "").strip().lower() for e in emails if e})
+    if not targets:
+        return set()
+    rows = db.query_all(
+        "SELECT email FROM mb_suppression WHERE email = ANY(%s)", (targets,))
+    return {r["email"] for r in rows}
 
 
 def cooldown_map(recipients: list[str], days: int = COOLDOWN_DAYS) -> dict[str, dict[int, str]]:
@@ -1103,9 +1297,73 @@ def assign_accounts(pool: list[dict], targets: list[str],
 def quota_state(account_id: int, daily_limit: int) -> dict:
     row = db.query_one(
         "SELECT COUNT(*) AS c FROM mb_history WHERE sender_account_id = %s "
-        "AND sent_at >= date_trunc('day', NOW())", (account_id,))
+        "AND sent_at >= %s", (account_id, _today_start_utc()))
     used = row["c"] if row else 0
     return {"used": used, "limit": daily_limit, "remaining": max(0, daily_limit - used)}
+
+
+# --------------------------------------------------------------------------- #
+# 时间护栏：配额的「今日」和发送窗口
+# --------------------------------------------------------------------------- #
+# 这两样必须钉在同一个时区，否则会各偏各的。见文件头 SEND_TZ_NAME 的注释。
+
+def _send_tz():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(SEND_TZ_NAME)
+    except Exception:
+        # 认不出时区名就退回东八区，别因为配置写错就整个停发
+        return timezone(timedelta(hours=8))
+
+
+def now_local() -> datetime:
+    return datetime.now(_send_tz())
+
+
+def _today_start_utc() -> datetime:
+    """本地时区的今天零点，换算成带时区的时间戳交给 Postgres 比较。
+
+    原来是 date_trunc('day', NOW())，跟着 Postgres 服务器时区走（Render 上是 UTC），
+    于是「今日配额」在北京时间早上 8 点才重置。
+    """
+    local = now_local()
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def parse_send_window(spec: str = "") -> tuple[int, int] | None:
+    """'08:00-22:00' → (480, 1320)，单位是当天第几分钟。
+
+    格式写错按「没有窗口」处理而不是「拒发」——
+    不能因为一个配置笔误就让整个功能静默停摆。
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    m = re.match(r"^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$", spec)
+    if not m:
+        logger.warning("mail-blaster: 发送窗口 %r 格式不对，按无窗口处理", spec)
+        return None
+    h1, m1, h2, m2 = (int(x) for x in m.groups())
+    if not (0 <= h1 < 24 and 0 <= h2 <= 24 and 0 <= m1 < 60 and 0 <= m2 < 60):
+        logger.warning("mail-blaster: 发送窗口 %r 超出范围，按无窗口处理", spec)
+        return None
+    return h1 * 60 + m1, h2 * 60 + m2
+
+
+def outside_send_window(spec: str = None, at: datetime = None) -> str:
+    """在窗口内返回空串；不在返回一句中文原因。"""
+    window = parse_send_window(SEND_WINDOW if spec is None else spec)
+    if window is None:
+        return ""
+    start, end = window
+    at = at or now_local()
+    minutes = at.hour * 60 + at.minute
+    inside = (start <= minutes < end) if start < end else (minutes >= start or minutes < end)
+    if inside:
+        return ""
+    return (f"现在是 {at.strftime('%H:%M')}（{SEND_TZ_NAME}），"
+            f"不在发送窗口 {SEND_WINDOW} 内。冷启动建联刻意避开非工作时间，"
+            f"等到窗口内再发。")
 
 
 # --------------------------------------------------------------------------- #
@@ -1269,6 +1527,233 @@ def parse_material_xlsx(data: bytes) -> dict:
     return {"rows": rows, "errors": errors, "header_row": header_row,
             "fields": present, "has_recipient": "recipient" in columns,
             "has_status": "status" in columns, "sheet": ws.title}
+
+
+# --------------------------------------------------------------------------- #
+# KOL 建联名单：粘贴 / Excel 两个入口，一个核心
+# --------------------------------------------------------------------------- #
+# 和素材提交的区别：素材那边列名是**闭集**（认不出就丢），
+# 建联这边认不出的列恰恰是最有用的——每一列都变成一个模板占位符。
+
+# 锚定匹配，判断「整格就是一个邮箱」。
+# 刻意不叫 _EMAIL_RE：那个名字上面已经占用了，是非锚定的 findall 版本，
+# 供 parse_material_xlsx 从一格里抠出多个邮箱用。同名会静默覆盖并搞坏素材提交。
+_EMAIL_EXACT_RE = re.compile(r"^[^@\s,;、]+@[^@\s,;、]+\.[^@\s,;、]+$")
+
+_KOL_DELIMS = ("\t", ",", ";", "|")
+
+
+def _cell_text(value) -> str:
+    """Excel 单元格转字符串。整数别带 .0 尾巴——
+    粉丝数 180000 渲染成 180000.0 会出现在每一封信里。"""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    return str(value).strip()
+
+
+def sniff_delimiter(text: str) -> str:
+    """只看第一行。默认 tab——名单绝大多数是从表格里复制出来的。"""
+    first = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    for d in _KOL_DELIMS:
+        if first.count(d):
+            return d
+    return "\t"
+
+
+def normalize_key(header: str, taken: set[str]) -> str:
+    """列名 → 占位符名。中文原样保留（{{key}} 是纯字符串替换，不是 Jinja）。"""
+    key = re.sub(r"[{}]", "", str(header or "")).strip()
+    key = re.sub(r"\s+", "_", key)
+    if not key:
+        key = "col"
+    if key in RESERVED_KEYS:      # 和内置变量撞名，改名并在页面上显示改后的名字
+        key = f"{key}_1"
+    base, n = key, 2
+    while key in taken:
+        key = f"{base}_{n}"
+        n += 1
+    taken.add(key)
+    return key
+
+
+def _build_kol_rows(headers: list[str], body_rows: list[list[str]], *,
+                    first_lineno: int) -> dict:
+    """名单解析的唯一核心。粘贴和 Excel 都走这里，
+    所以两条路的报错文案、去重行为在构造上就一致，不靠自觉。
+
+    headers 传空列表表示无表头，列名自动生成 col1..colN。
+    """
+    width = max([len(headers)] + [len(r) for r in body_rows] or [0])
+    if headers:
+        raw_headers = list(headers) + [""] * (width - len(headers))
+    else:
+        raw_headers = [f"col{i + 1}" for i in range(width)]
+
+    # 邮箱列：先按别名认（复用素材那套词汇表），认不出就挑 @ 最多的那列
+    email_idx = None
+    for i, h in enumerate(raw_headers):
+        if _match_column(h) == "recipient":
+            email_idx = i
+            break
+    if email_idx is None:
+        best, best_hits = None, 0
+        for i in range(width):
+            hits = sum(1 for r in body_rows
+                       if i < len(r) and _EMAIL_EXACT_RE.match((r[i] or "").strip()))
+            if hits > best_hits:
+                best, best_hits = i, hits
+        email_idx = best if best is not None else 0
+
+    taken: set[str] = set()
+    columns, key_of = [], {}
+    for i, h in enumerate(raw_headers):
+        if i == email_idx:
+            continue
+        key = normalize_key(h, taken)
+        key_of[i] = key
+        columns.append(key)
+
+    rows, errors, duplicates, seen = [], [], [], set()
+    for offset, cells in enumerate(body_rows):
+        lineno = first_lineno + offset
+        email = (cells[email_idx] if email_idx < len(cells) else "").strip()
+        if not email and not any((c or "").strip() for c in cells):
+            continue                                   # 整行空，静默跳过
+        if not email:
+            errors.append(f"第 {lineno} 行：没有邮箱，这一行不会发信")
+            continue
+        if not _EMAIL_EXACT_RE.match(email):
+            errors.append(f"第 {lineno} 行：邮箱格式不对 —— '{email}'")
+            continue
+        email = email.lower()
+        if email in seen:
+            duplicates.append(email)
+            continue
+        seen.add(email)
+        rows.append({"email": email,
+                     "vars": {key_of[i]: (cells[i].strip() if i < len(cells) else "")
+                              for i in key_of},
+                     "lineno": lineno})
+
+    return {"rows": rows, "columns": columns,
+            "email_column": raw_headers[email_idx] if headers else None,
+            "errors": errors, "duplicates": sorted(set(duplicates))}
+
+
+def parse_kol_list(text: str) -> dict:
+    """粘贴的名单。首行不含邮箱就当表头。"""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return {"rows": [], "columns": [], "email_column": None,
+                "errors": [], "duplicates": []}
+    delim = sniff_delimiter(text)
+
+    def split(line):
+        return [c.strip().strip('"').strip() for c in line.split(delim)]
+
+    first = split(lines[0])
+    has_header = not any(_EMAIL_EXACT_RE.match(c) for c in first)
+    headers = first if has_header else []
+    body = [split(ln) for ln in (lines[1:] if has_header else lines)]
+    return _build_kol_rows(headers, body, first_lineno=2 if has_header else 1)
+
+
+def _find_kol_header(rows: list[list[str]]) -> int | None:
+    """表头行下标；返回 None 表示这张表没有表头。
+
+    刻意不复用 _find_header()——它要求「至少认出 2 个已知列」，
+    那是素材提交的承重逻辑；建联名单的列名可以全是自定义的，会被它一票否决。
+    """
+    for i, cells in enumerate(rows[:MAX_SCAN_ROWS]):
+        if not any((c or "").strip() for c in cells):
+            continue
+        # 第一个非空行里出现了邮箱 → 它是数据行，这张表没表头
+        return None if any(_EMAIL_EXACT_RE.match((c or "").strip()) for c in cells) else i
+    return None
+
+
+def parse_kol_xlsx(data: bytes) -> dict:
+    """上传的 Excel 名单。和粘贴走同一个核心。"""
+    try:
+        wb = load_workbook(io.BytesIO(data), data_only=True)
+    except Exception as exc:
+        raise ValueError(f"这个文件打不开，确认是 .xlsx 吗？（{exc}）") from None
+    ws = wb.active
+    grid = [[_cell_text(c) for c in row]
+            for row in ws.iter_rows(values_only=True)]
+    if not any(any(c for c in r) for r in grid):
+        raise ValueError("表是空的")
+    header_idx = _find_kol_header(grid)
+    if header_idx is None:
+        first_data = next((i for i, r in enumerate(grid) if any(c for c in r)), 0)
+        out = _build_kol_rows([], grid[first_data:], first_lineno=first_data + 1)
+    else:
+        out = _build_kol_rows(grid[header_idx], grid[header_idx + 1:],
+                              first_lineno=header_idx + 2)
+    out["sheet"] = ws.title
+    return out
+
+
+KOL_TEMPLATE_HEADERS = ["邮箱", "达人名字", "平台", "粉丝数"]
+
+
+def build_kol_template_xlsx() -> bytes:
+    """名单模板。示例行放说明页，**不能放数据页**——
+    留在数据页会被当成真实收件人发出去。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "KOL名单"
+    ws.append(KOL_TEMPLATE_HEADERS)
+    fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for col, width in zip("ABCD", (34, 22, 16, 14)):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+
+    doc = wb.create_sheet("填写说明")
+    for line in [
+        ["怎么填"],
+        [""],
+        ["1. 第一行是表头，除「邮箱」外的每一列都会变成一个模板占位符。"],
+        ["   比如「达人名字」这列，在邮件模板里写 {{达人名字}} 就会替换成该行的值。"],
+        ["2. 列可以自由增删改名，中文列名没问题。想加「国家」「合作过没」就直接加一列。"],
+        ["3. 「邮箱」这列必须有，可以叫 邮箱 / email / mail / 收件邮箱，位置不限。"],
+        ["4. 邮箱重复的只保留第一条；格式不对的会被指出行号，不会静默丢掉。"],
+        ["5. 列名如果和内置变量撞车（recipient、sender_name、index 等），"],
+        ["   会自动改名成 recipient_1 这样，页面上会显示改后的名字。"],
+        [""],
+        ["内置占位符（不用在名单里写，系统自动填）"],
+        ["{{sender_name}}", "发件账号的显示名"],
+        ["{{sender_email}}", "发件邮箱地址"],
+        ["{{recipient}}", "收件邮箱地址"],
+        ["{{index}} / {{total}}", "第几封 / 本批共几封"],
+        ["{{signature}}", "落款签名，不写则自动放正文末尾"],
+        [""],
+        ["示例（照这样填在「KOL名单」页）"],
+        KOL_TEMPLATE_HEADERS,
+        ["amy@example.com", "Amy", "TikTok", "125000"],
+        ["ben@example.com", "Ben", "YouTube", "82000"],
+    ]:
+        doc.append(line)
+    doc["A1"].font = Font(bold=True, size=13)
+    doc["A11"].font = Font(bold=True)
+    doc["A18"].font = Font(bold=True)
+    doc.column_dimensions["A"].width = 40
+    doc.column_dimensions["B"].width = 30
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # --------------------------------------------------------------------------- #
@@ -1582,6 +2067,8 @@ def load_job(job_id: int) -> dict:
         counts[it["status"]] = counts.get(it["status"], 0) + 1
     return {
         "job": {"id": job["id"], "recipient": job["recipient"], "status": job["status"],
+                "mode": job.get("mode") or "material",
+                "sender_account_id": job.get("sender_account_id"),
                 "paused_reason": job["paused_reason"], "task_id": job["task_id"],
                 "ocr_status": job.get("ocr_status") or "none",
                 "ocr_report": _parse_ocr_report(job.get("ocr_report")),
@@ -1673,6 +2160,16 @@ def send_item(job_id: int, item_id: int) -> str:
                           (job_id,)) or {}).get("c", 0)
     item = dict(row)
     recipient = (item["recipient"] or job["recipient"] or "").strip()
+    is_outreach = (job.get("mode") or "material") == "outreach"
+
+    # 抑制名单闸门。放在标 sending 之前：命中是「主动决定不发」，
+    # 不是发送失败，所以走 _mark_skipped 而不是 _mark_failed。
+    # ⚠️ 必须判 is not None —— 原因可能是空字符串（手动拉黑常常不写理由）。
+    if is_outreach:
+        reason = is_suppressed(recipient)
+        if reason is not None:
+            _mark_skipped(item_id, f"在抑制名单里，未发送。原因：{reason or '未填'}")
+            return "skipped"
 
     db.execute("UPDATE mb_items SET status = 'sending', error = NULL WHERE id = %s", (item_id,))
 
@@ -1680,7 +2177,8 @@ def send_item(job_id: int, item_id: int) -> str:
     try:
         if "@" not in recipient:
             raise ValueError("收件邮箱没填或格式不对")
-        account = get_account(item["sender_account_id"]) if item["sender_account_id"] else None
+        account_id = item["sender_account_id"] or job.get("sender_account_id")
+        account = get_account(account_id) if account_id else None
         if account is None:
             raise ValueError("还没选发件账号")
 
@@ -1704,7 +2202,8 @@ def send_item(job_id: int, item_id: int) -> str:
             signature_name=item["signature_name"] or auto_signature,
             image_bytes=blob, image_name=item["image_name"] or "",
             index=item["seq"] + 1, total=total, extra_vars=extra_vars,
-            replacement_domain=replacement_domain)
+            replacement_domain=replacement_domain,
+            unsubscribe_text=DEFAULT_UNSUBSCRIBE_TEXT if is_outreach else "")
     except Exception as exc:
         _mark_failed(item_id, friendly_smtp_error(exc))
         return "failed"
@@ -1717,10 +2216,30 @@ def send_item(job_id: int, item_id: int) -> str:
                     sender_account_id=account["id"],
                     sender_email=result.get("sender_email") or account["email"],
                     job_id=job_id, item_id=item_id, subject=result.get("subject") or "",
-                    message_id=result.get("message_id") or "")
+                    message_id=result.get("message_id") or "",
+                    mode="outreach" if is_outreach else "material")
     except Exception:
         logger.exception("mail-blaster: 第 %s 封已投递但记账失败", item_id)
     return "sent"
+
+
+# 因配额/窗口而暂停的行，error 里带这个前缀。
+# 它们和「抑制名单命中」不同：那是永久决定，这只是「今天先不发」，
+# 所以重跑时要能捡回来 —— 否则暂停提示里那句「明天再点一次发送即可继续」是骗人的。
+PAUSE_SKIP_MARK = "⏸"
+
+
+def _pause_job(job_id: int, reason: str, remaining_ids: list[int], skip_reason: str = "") -> None:
+    """整批暂停：剩余的标 skipped 并把原因写在批次上。
+
+    状态仍然置 'done' 而不是新增一个 'paused' —— 前端的轮询终止条件和
+    暂停提示框都是按 done + paused_reason 判断的，改状态会让页面一直转圈。
+    """
+    if remaining_ids:
+        db.execute("UPDATE mb_items SET status = 'skipped', error = %s WHERE id = ANY(%s)",
+                   (skip_reason or reason, list(remaining_ids)))
+    db.execute("UPDATE mb_jobs SET status = 'done', finished_at = NOW(), paused_reason = %s "
+               "WHERE id = %s", (reason, job_id))
 
 
 def run_job(job_id: int, progress=None) -> dict:
@@ -1728,14 +2247,58 @@ def run_job(job_id: int, progress=None) -> dict:
     import random
     import time
 
+    job = db.query_one("SELECT mode, sender_account_id FROM mb_jobs WHERE id = %s", (job_id,))
+    is_outreach = ((job or {}).get("mode") or "material") == "outreach"
     db.execute("UPDATE mb_jobs SET status = 'sending', paused_reason = NULL WHERE id = %s",
                (job_id,))
     pending = [r["id"] for r in db.query_all(
         "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
         "ORDER BY seq ASC", (job_id,))]
+    if is_outreach:
+        # 上一轮因配额/窗口暂停的行捡回来重发。
+        # 抑制名单命中的不在此列 —— 那是永久决定，没有前缀，捡不回来。
+        resume = [r["id"] for r in db.query_all(
+            "SELECT id FROM mb_items WHERE job_id = %s AND status = 'skipped' "
+            "AND error LIKE %s ORDER BY seq ASC", (job_id, f"{PAUSE_SKIP_MARK}%"))]
+        if resume:
+            db.execute("UPDATE mb_items SET status = 'pending', error = NULL "
+                       "WHERE id = ANY(%s)", (resume,))
+            pending = [r["id"] for r in db.query_all(
+                "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
+                "ORDER BY seq ASC", (job_id,))]
+
+    # 建联的节奏刻意慢一个数量级：冷启动收件人互不相识，
+    # 密集投递最容易触发频控和垃圾判定。
+    lo, hi = ((OUTREACH_MIN_GAP_SECONDS, OUTREACH_MAX_GAP_SECONDS) if is_outreach
+              else (MIN_GAP_SECONDS, MAX_GAP_SECONDS))
+    account = (get_account((job or {}).get("sender_account_id"))
+               if is_outreach and (job or {}).get("sender_account_id") else None)
+    daily_limit = (serialize_account(account)["daily_limit"] if account
+                   else DEFAULT_DAILY_LIMIT)
 
     sent = failed = skipped = 0
+    paused = ""
     for i, item_id in enumerate(pending):
+        # 窗口和配额每轮都查。20–45 秒间隔下 200 封要跑两小时，
+        # 只在开头查一次会直接冲过 22:00；配额也要重查，
+        # 这样同一个账号上的并发批次才会互相尊重。
+        if is_outreach:
+            paused = outside_send_window()
+            if paused:
+                _pause_job(job_id, paused, pending[i:],
+                           f"{PAUSE_SKIP_MARK} 不在发送窗口内，未发送")
+                break
+            if account:
+                q = quota_state(account["id"], daily_limit)
+                if q["remaining"] <= 0:
+                    paused = (f"{account['email']} 今日配额已用满"
+                              f"（{q['used']}/{q['limit']}），剩余 {len(pending) - i} 封未发。"
+                              f"明天再点一次发送即可继续。")
+                    _pause_job(job_id, paused, pending[i:],
+                               f"{PAUSE_SKIP_MARK} 今日配额已用满"
+                               f"（{q['used']}/{q['limit']}），未发送")
+                    break
+
         outcome = send_item(job_id, item_id)
         if outcome == "sent":
             sent += 1
@@ -1746,10 +2309,14 @@ def run_job(job_id: int, progress=None) -> dict:
         if progress:
             progress(f"已处理 {i + 1}/{len(pending)}　成功 {sent}　失败 {failed}")
         if i < len(pending) - 1:
-            time.sleep(random.uniform(MIN_GAP_SECONDS, MAX_GAP_SECONDS))
+            time.sleep(random.uniform(lo, hi))
 
-    db.execute("UPDATE mb_jobs SET status = 'done', finished_at = NOW() WHERE id = %s", (job_id,))
-    return {"total": len(pending), "sent": sent, "failed": failed, "skipped": skipped}
+    if not paused:
+        db.execute("UPDATE mb_jobs SET status = 'done', finished_at = NOW() WHERE id = %s",
+                   (job_id,))
+    return {"total": len(pending), "sent": sent, "failed": failed,
+            "skipped": skipped + (len(pending) - sent - failed - skipped if paused else 0),
+            "paused_reason": paused}
 
 
 def reset_stuck_items() -> int:
@@ -1772,8 +2339,12 @@ def build_previews(job_id: int) -> list[dict]:
     job, items = state["job"], state["items"]
     previews = []
     replacement_domain = replacement_domain_for_job(job)
+    # 建联的退订块必须在预览里就看得见，否则这道护栏要等信发出去才现身
+    unsubscribe_text = (DEFAULT_UNSUBSCRIBE_TEXT
+                        if (job.get("mode") or "material") == "outreach" else "")
     for idx, item in enumerate(items, 1):
-        account = get_account(item["sender_account_id"]) if item["sender_account_id"] else None
+        account_id = item["sender_account_id"] or job.get("sender_account_id")
+        account = get_account(account_id) if account_id else None
         if account is None:
             previews.append({**item, "error": "还没选发件账号"})
             continue
@@ -1787,7 +2358,7 @@ def build_previews(job_id: int) -> list[dict]:
             sender_email=sender_email, signature_name=signature,
             recipient=recipient, index=idx, total=len(items),
             image_name=item["image_name"], image_src=item["image_url"] or "",
-            extra_vars=item["vars"] or None)
+            extra_vars=item["vars"] or None, unsubscribe_text=unsubscribe_text)
         html = rewrite_body_domains(html, replacement_domain)
         previews.append({**item, "from_line": f"{display} <{sender_email}>",
                          "to_line": recipient, "subject": subject, "html": html})
@@ -1923,6 +2494,61 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
         "has_status": parsed["has_status"], "total_rows": len(parsed["rows"]),
         "imported": len(usable), "skipped": skipped, "cooldown": cooldown_notes,
         "cooldown_days": COOLDOWN_DAYS, "needs_ocr": needs_ocr, "errors": parsed["errors"],
+    }
+    return payload
+
+
+def create_outreach_job(*, sender_account_id: int, rows: list[dict],
+                        subject_tpl: str = "", body_tpl: str = "", signature_tpl: str = "",
+                        user_id=None) -> dict:
+    """从解析好的名单建一个建联批次。
+
+    和素材提交的轴反过来：整批共用一个发件账号，每一行是一个收件人 + 一组变量。
+    """
+    account = get_account(int(sender_account_id)) if sender_account_id else None
+    if account is None:
+        raise ValueError("请先选一个发件账号")
+    acc = serialize_account(account)
+    if not usable_account(acc):
+        raise ValueError(f"{acc['email']} 还不可用：需要「已启用 + 测试通过 + 有凭据」")
+
+    if not rows:
+        raise ValueError("名单是空的")
+
+    # 服务端再过一遍抑制名单。解析期那次挡不住直接 POST，
+    # 而且从解析到建批次之间可能有人刚把某个地址拉黑。
+    dropped = filter_suppressed([r.get("email") for r in rows])
+    usable = [r for r in rows if (r.get("email") or "").strip().lower() not in dropped]
+    if not usable:
+        raise ValueError("名单里的地址全都在抑制名单里，没有可发送的行")
+
+    job_id = db.execute_and_fetch_id("""
+        INSERT INTO mb_jobs (user_id, mode, sender_account_id, recipient,
+            subject_tpl, body_tpl, signature_tpl)
+        VALUES (%s, 'outreach', %s, '', %s, %s, %s) RETURNING id
+    """, (user_id, account["id"],
+          subject_tpl or DEFAULT_OUTREACH_SUBJECT_TPL,
+          body_tpl or DEFAULT_OUTREACH_BODY_TPL,
+          signature_tpl or DEFAULT_OUTREACH_SIGNATURE_TPL))
+
+    # 用 execute_values 批量插。素材那边逐行 execute 是因为每行都要先 store_image，
+    # 这里没有这个约束，500 行名单逐行插就是 500 次 Render 往返。
+    with db.get_db_cursor(commit=True) as cur:
+        execute_values(cur, """
+            INSERT INTO mb_items (job_id, seq, sender_account_id, recipient,
+                vars_json, from_display, signature_name)
+            VALUES %s
+        """, [(job_id, seq, account["id"], (r["email"] or "").strip().lower(),
+               json.dumps(r.get("vars") or {}, ensure_ascii=False),
+               acc["effective_display_name"], acc["effective_signature_name"])
+              for seq, r in enumerate(usable)])
+
+    payload = load_job(job_id)
+    payload["quota"] = quota_state(account["id"], acc["daily_limit"])
+    payload["account"] = acc
+    payload["list"] = {
+        "total_rows": len(rows), "imported": len(usable),
+        "suppressed": sorted(dropped),
     }
     return payload
 
