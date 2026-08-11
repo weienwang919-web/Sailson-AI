@@ -9993,6 +9993,17 @@ def matrix_video_dashboard_page():
     )
 
 
+@app.route('/matrix-dashboard')
+@feature_required('matrix_video_dashboard')
+def matrix_dashboard_page():
+    """合并后的矩阵号看板：数据看板 + 账号运维。旧的 /tiktok-official 与
+    /matrix-video-dashboard 都重定向到这里。"""
+    return render_template(
+        'matrix_dashboard.html',
+        publish_window_hours=list(tiktok_official_service.PUBLISH_WINDOW_HOURS),
+    )
+
+
 def _matrix_csv_arg(name):
     raw = request.args.get(name) or ''
     return [v.strip() for v in raw.split(',') if v.strip()]
