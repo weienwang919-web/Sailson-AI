@@ -182,6 +182,140 @@
     <div class="status" id="rp-status"></div>
   </div>
 
+  <div class="board" id="board-ops">
+    <div class="filter-bar-header" onclick="toggleOpsPanel()">
+      <div class="filter-bar-title">账号运维</div>
+      <div class="filter-bar-summary">刷新同步 · 矩阵授权 · Spark · 账号配置 · 主页趋势</div>
+      <div class="filter-bar-chevron" id="ops-chevron">▾</div>
+    </div>
+    <div id="ops-body" style="display:none; margin-top:22px;">
+  <div class="card">
+    <h2>刷新与导出</h2>
+    <div class="toolbar">
+      <div>
+        <label>账号</label>
+        <select id="account-select"><option value="">全部账号</option></select>
+      </div>
+      <div>
+        <label>主页趋势天数</label>
+        <input id="profile-days" type="number" min="1" max="60" value="30">
+      </div>
+      <div>
+        <label>视频页数（每页最多20）</label>
+        <input id="max-pages" type="number" min="1" max="50" value="5">
+      </div>
+      <button class="btn btn-primary" id="refresh-btn" onclick="refreshOfficial()">刷新官方数据</button>
+      <button class="btn btn-secondary" onclick="openBusinessAuth()">广告主授权</button>
+      <button class="btn btn-secondary" onclick="loadAll()">重新加载</button>
+    </div>
+    <div class="status" id="refresh-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>账号矩阵授权</h2>
+    <div class="toolbar">
+      <div>
+        <label>账号别名</label>
+        <input id="invite-alias" type="text" placeholder="例如 TH-Brand-01" style="min-width:220px;">
+      </div>
+      <div>
+        <label>有效期</label>
+        <select id="invite-ttl">
+          <option value="3600">1 小时</option>
+          <option value="86400" selected>24 小时</option>
+          <option value="259200">3 天</option>
+          <option value="604800">7 天</option>
+          <option value="never">永不过期</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="generateInviteLink()">生成授权邀请链接</button>
+      <button class="btn btn-secondary" onclick="generateSparkInviteLink()" title="用另一个已申请到 biz.spark.auth 权限的新 App 单独授权，只在这个账号需要投流时用一次，不影响主授权">生成 Spark 授权链接</button>
+      <button class="btn btn-secondary" onclick="exportSparkInviteBatch()" title="导出所有账号的 Spark 授权链接（已授权的只标记状态，不重复生成）">批量导出 Spark 授权链接表格</button>
+    </div>
+    <div class="status" id="invite-status"></div>
+    <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
+    <div class="status" id="spark-invite-status"></div>
+    <textarea id="spark-invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
+
+    <div style="margin-top:16px;border-top:1px solid #eee;padding-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">批量生成（每行一个账号别名）</div>
+      <textarea id="batch-invite-aliases" placeholder="TH-Brand-01&#10;TH-Brand-02&#10;..." style="width:100%;height:80px;font-size:12px;"></textarea>
+      <div class="toolbar" style="margin-top:8px;">
+        <button class="btn btn-primary" onclick="generateInviteLinksBatch()">批量生成邀请链接</button>
+      </div>
+      <div class="status" id="batch-invite-status"></div>
+      <textarea id="batch-invite-links" readonly style="display:none;width:100%;margin-top:8px;height:160px;font-size:12px;"></textarea>
+    </div>
+
+    <div style="margin-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">邀请记录</div>
+      <div class="table-wrap" style="max-height:220px;">
+        <table>
+          <thead>
+            <tr><th>别名</th><th>状态</th><th>创建时间</th><th>过期时间</th><th>授权人</th><th>链接</th></tr>
+          </thead>
+          <tbody id="invites-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">已完成 Spark 授权的账号</div>
+      <div class="table-wrap" style="max-height:200px;">
+        <table>
+          <thead>
+            <tr><th>别名</th><th>scope</th><th>授权人</th><th>更新时间</th></tr>
+          </thead>
+          <tbody id="spark-tokens-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>官号总览<span id="accounts-count" style="font-weight:400;font-size:12px;color:#666;"></span></h2>
+    <div class="toolbar" style="margin-bottom:12px;">
+      <div>
+        <label>查找</label>
+        <input id="account-search" type="text" placeholder="用户名/账号名/别名" oninput="renderAccounts()" style="min-width:220px;">
+      </div>
+      <div>
+        <label>粉丝数筛选</label>
+        <select id="followers-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+          <option value="900to1000">900-1000（补粉候选）</option>
+          <option value="needs_boost">已标记需补粉</option>
+        </select>
+      </div>
+      <div>
+        <label>国家筛选</label>
+        <select id="region-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary" onclick="exportNeedsBoostLinks()">导出需补粉主页链接</button>
+    </div>
+    <div class="grid" id="accounts"></div>
+  </div>
+
+  <div class="card">
+    <h2>主页每日趋势</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>日期</th><th>账号</th><th>粉丝数</th><th>播放</th><th>触达</th><th>主页访问</th><th>点赞</th><th>评论</th><th>分享</th><th>新增粉</th><th>掉粉</th>
+          </tr>
+        </thead>
+        <tbody id="metrics-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    </div>
+  </div>
+
   <div class="board" id="board-videos">
     <div class="board-head"><h2>视频明细</h2></div>
     <div class="search-controls">
@@ -1400,6 +1534,538 @@ window.openPublishWindowsModal = openPublishWindowsModal;
   await loadAccountsForPicker();
   refreshAll();
 })();
+
+/* ============ 账号运维（自 /tiktok-official 迁移） ============
+   投流数据和视频明细没有搬——新看板已有更完整的版本。
+   旧页的视频导出勾选逻辑一并去掉了（依赖那张不再存在的表）。 */
+let opsLoaded = false;
+
+function toggleOpsPanel() {
+  const body = document.getElementById('ops-body');
+  const open = body.style.display === 'none';
+  body.style.display = open ? 'block' : 'none';
+  document.getElementById('ops-chevron').classList.toggle('open', open);
+  // 运维数据只在首次展开时拉，不拖慢看板首屏
+  if (open && !opsLoaded) { opsLoaded = true; loadOpsAll(); }
+}
+window.toggleOpsPanel = toggleOpsPanel;
+
+async function loadOpsAll() {
+  await loadAccounts();
+  loadInvites();
+  loadSparkTokens();
+  loadMetrics();
+}
+window.loadOpsAll = loadOpsAll;
+
+let accounts = [];
+let currentTask = null;
+let authUrls = null;
+const REGION_OPTIONS = ['TH', 'MM', 'PH', 'ID', 'MY', '其他'];
+
+function fmt(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  if (typeof v === 'number') return v.toLocaleString();
+  return String(v);
+}
+
+function pct(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return (n * 100).toFixed(2) + '%';
+}
+
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.status === 'error') throw new Error(data.message || ('HTTP ' + res.status));
+  return data;
+}
+
+async function loadAccounts() {
+  const data = await fetchJson('/api/tiktok-official/accounts');
+  accounts = data.accounts || [];
+  const sel = document.getElementById('account-select');
+  sel.innerHTML = '<option value="">全部账号</option>' + accounts.map(a => (
+    '<option value="' + a.business_id + '">' + (a.display_name || a.account_name || a.business_id) + '</option>'
+  )).join('');
+  const regionFilterSel = document.getElementById('region-filter');
+  regionFilterSel.innerHTML = '<option value="">全部</option>' + REGION_OPTIONS.map(r => `<option value="${r}">${r}</option>`).join('');
+  renderAccounts();
+}
+
+function renderAccounts() {
+  const wrap = document.getElementById('accounts');
+  if (!accounts.length) {
+    wrap.innerHTML = '<div class="hint">暂无账号配置。请配置 TIKTOK_OFFICIAL_ACCOUNTS_JSON。</div>';
+    document.getElementById('accounts-count').textContent = '';
+    return;
+  }
+  const followersFilter = document.getElementById('followers-filter').value;
+  const regionFilter = document.getElementById('region-filter').value;
+  const searchTerm = document.getElementById('account-search').value.trim().toLowerCase();
+  const filtered = accounts.filter(a => {
+    if (searchTerm) {
+      const haystack = [a.username, a.account_name, a.display_name, a.account_alias]
+        .map(v => (v || '').toLowerCase());
+      if (!haystack.some(v => v.includes(searchTerm))) {
+        return false;
+      }
+    }
+    if (regionFilter && a.region !== regionFilter) {
+      return false;
+    }
+    if (followersFilter === '900to1000') {
+      const f = Number(a.followers_count);
+      return Number.isFinite(f) && f >= 900 && f < 1000;
+    }
+    if (followersFilter === 'needs_boost') {
+      return !!a.needs_follower_boost;
+    }
+    return true;
+  });
+  const regionOptions = REGION_OPTIONS;
+  const typeOptions = ['KOL', 'Campaign'];
+  wrap.innerHTML = filtered.map(a => {
+    const safeId = a.business_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const regionValue = a.region || '';
+    const regionSelectOptions = ['<option value="">未设置</option>']
+      .concat(regionOptions.map(r => `<option value="${r}" ${r === regionValue ? 'selected' : ''}>${r}</option>`));
+    if (regionValue && !regionOptions.includes(regionValue)) {
+      regionSelectOptions.push(`<option value="${fmt(regionValue)}" selected>${fmt(regionValue)}（自定义）</option>`);
+    }
+    const typeSelectOptions = ['<option value="">未设置</option>']
+      .concat(typeOptions.map(t => `<option value="${t}" ${t === a.account_type ? 'selected' : ''}>${t}</option>`));
+    return `
+    <div class="account">
+      <div class="account-title">
+        <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
+        <span style="display:flex;gap:4px;">
+          ${window._sparkAliases.has(a.account_alias) ? '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>' : ''}
+          ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
+          <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
+        </span>
+      </div>
+      <div class="metric-line">别名：${fmt(a.account_alias)} ｜ 代运营：${fmt(a.authorized_by)}</div>
+      <div class="metric-line">状态：<span class="pill ${accountHealth(a).cls}">${accountHealth(a).label}</span></div>
+      <div class="metric-line">用户名：${fmt(a.username)}</div>
+      <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总赞：${fmt(a.total_likes)} ｜ 视频：${fmt(a.videos_count)}</div>
+      <div class="metric-line">企业号：${a.is_business_account === true ? '是' : a.is_business_account === false ? '否' : '-' } ｜ 认证：${a.is_verified === true ? '是' : a.is_verified === false ? '否' : '-'}</div>
+      <div class="metric-line">最近刷新：${fmt(a.last_refreshed_at)}</div>
+      ${a.profile_deep_link ? `<a class="link" href="${a.profile_deep_link}" target="_blank">打开主页</a>` : ''}
+      <div class="metric-line" style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <label>国家：<select id="region-${safeId}">${regionSelectOptions.join('')}</select></label>
+        <label>类型：<select id="type-${safeId}">${typeSelectOptions.join('')}</select></label>
+        <button class="copy-btn" onclick="saveAccountMeta('${a.business_id}', 'region-${safeId}', 'type-${safeId}', this)">保存</button>
+      </div>
+      <div class="metric-line" style="margin-top:6px;">
+        <label style="display:inline-flex;align-items:center;gap:4px;">
+          <input type="checkbox" id="boost-${safeId}" ${a.needs_follower_boost ? 'checked' : ''} onchange="toggleNeedsBoost('${a.business_id}', this)">
+          需补粉
+        </label>
+      </div>
+    </div>
+  `;
+  }).join('');
+  document.getElementById('accounts-count').textContent = `（共 ${filtered.length} 个账号${filtered.length !== accounts.length ? ` / 总 ${accounts.length} 个` : ''}）`;
+}
+
+async function toggleNeedsBoost(businessId, checkbox) {
+  const original = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/needs-boost`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ needs_boost: original }),
+    });
+    const account = accounts.find(a => a.business_id === businessId);
+    if (account) account.needs_follower_boost = original;
+    renderAccounts();
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+    checkbox.checked = !original;
+    checkbox.disabled = false;
+  }
+}
+window.toggleNeedsBoost = toggleNeedsBoost;
+
+async function toggleEnabled(businessId, nextEnabled, el) {
+  el.style.pointerEvents = 'none';
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/enabled`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: nextEnabled }),
+    });
+    const account = accounts.find(a => a.business_id === businessId);
+    if (account) account.enabled = nextEnabled;
+    renderAccounts();
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+    el.style.pointerEvents = '';
+  }
+}
+window.toggleEnabled = toggleEnabled;
+window.renderAccounts = renderAccounts;
+
+
+
+async function saveAccountMeta(businessId, regionSelId, typeSelId, btn) {
+  const regionSel = document.getElementById(regionSelId);
+  const typeSel = document.getElementById(typeSelId);
+  let region = regionSel.value;
+  if (region === '其他') {
+    region = (window.prompt('请输入国家/地区代码', '') || '').trim();
+    if (!region) return;
+  }
+  const accountType = typeSel.value;
+  const original = btn.textContent;
+  btn.textContent = '保存中...';
+  btn.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/meta`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ region, account_type: accountType }),
+    });
+    await loadAccounts();
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+window.saveAccountMeta = saveAccountMeta;
+
+function inviteStatusInfo(inv) {
+  return inv.used_at
+    ? { label: '已授权', cls: 'pill-ok' }
+    : { label: '未授权', cls: 'pill-pending' };
+}
+
+async function copyInviteLink(url, btn) {
+  try {
+    await navigator.clipboard.writeText(url);
+    const original = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (e) {
+    alert('复制失败，请手动复制：' + url);
+  }
+}
+
+window.copyInviteLink = copyInviteLink;
+window._inviteUrls = {};
+
+async function loadInvites() {
+  const body = document.getElementById('invites-body');
+  try {
+    const data = await fetchJson('/api/tiktok-official/invites');
+    const rows = data.invites || [];
+    window._inviteUrls = {};
+    body.innerHTML = rows.map((inv, idx) => {
+      const status = inviteStatusInfo(inv);
+      let linkCell = '<span class="muted">-</span>';
+      if (inv.url) {
+        window._inviteUrls[idx] = inv.url;
+        linkCell = `<button class="copy-btn" onclick="copyInviteLink(window._inviteUrls[${idx}], this)">📋 复制链接</button>`;
+      }
+      return `
+      <tr>
+        <td>${fmt(inv.account_alias)}</td>
+        <td><span class="pill ${status.cls}">${status.label}</span></td>
+        <td>${fmt(inv.created_at)}</td>
+        <td>${inv.expires_at ? fmt(inv.expires_at) : '永不过期'}</td>
+        <td>${fmt(inv.authorized_by)}</td>
+        <td>${linkCell}</td>
+      </tr>
+    `;
+    }).join('') || '<tr><td colspan="6" class="muted">暂无邀请记录</td></tr>';
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" class="muted">加载失败：${String(e.message || e)}</td></tr>`;
+  }
+}
+
+function parseUtcTimestamp(s) {
+  // 后端存的是 naive UTC（datetime.utcnow()），isoformat() 序列化后不带时区后缀；
+  // 浏览器 Date 解析不带时区的 ISO 字符串会当成本地时间（UTC+8），导致过期时间算早了 8 小时。
+  if (!s) return NaN;
+  const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(s);
+  return new Date(hasTz ? s : s + 'Z').getTime();
+}
+
+function accountHealth(a) {
+  if (!a.token_expires_at) return { label: '需要授权', cls: 'pill-pending' };
+  if (a.status && a.status !== 'active') return { label: '已停用', cls: '' };
+  const expiresAt = parseUtcTimestamp(a.token_expires_at);
+  if (Number.isNaN(expiresAt)) return { label: '正常', cls: 'pill-ok' };
+  const hoursLeft = (expiresAt - Date.now()) / 3600000;
+  if (hoursLeft <= 0) {
+    const refreshExpiresAt = parseUtcTimestamp(a.token_refresh_expires_at);
+    if (!Number.isNaN(refreshExpiresAt) && refreshExpiresAt > Date.now()) {
+      return { label: 'access token 已到期，下次同步自动刷新', cls: 'pill-pending' };
+    }
+    return { label: '已过期，需要重新授权', cls: 'pill-err' };
+  }
+  if (hoursLeft <= 2) return { label: 'token 即将过期', cls: 'pill-pending' };
+  return { label: '正常', cls: 'pill-ok' };
+}
+
+async function loadAuthUrls() {
+  try {
+    authUrls = await fetchJson('/api/tiktok-official/auth-urls');
+  } catch (e) {
+    authUrls = null;
+    const st = document.getElementById('refresh-status');
+    st.textContent = '授权入口暂不可用：' + String(e.message || e);
+    st.className = 'status err';
+  }
+}
+
+async function generateInviteLink() {
+  const alias = document.getElementById('invite-alias').value.trim();
+  const ttlChoice = document.getElementById('invite-ttl').value;
+  const st = document.getElementById('invite-status');
+  const linkBox = document.getElementById('invite-link');
+  if (!alias) {
+    st.textContent = '请先填写账号别名';
+    st.className = 'status err';
+    return;
+  }
+  st.textContent = '生成中...';
+  st.className = 'status';
+  linkBox.style.display = 'none';
+  try {
+    const payload = { account_alias: alias };
+    if (ttlChoice === 'never') {
+      payload.never_expire = true;
+    } else {
+      payload.ttl_seconds = Number(ttlChoice);
+    }
+    const data = await fetchJson('/api/tiktok-official/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    linkBox.value = data.url;
+    linkBox.style.display = 'block';
+    linkBox.select();
+    const expiryText = data.expires_at ? ('有效期至 ' + new Date(data.expires_at).toLocaleString()) : '永不过期';
+    st.textContent = '已生成（' + expiryText + '，仅可使用一次）。复制下面的链接发给代运营人员：';
+    st.className = 'status ok';
+    await loadInvites();
+  } catch (e) {
+    st.textContent = '生成失败：' + String(e.message || e);
+    st.className = 'status err';
+  }
+}
+
+async function generateInviteLinksBatch() {
+  const raw = document.getElementById('batch-invite-aliases').value;
+  const ttlChoice = document.getElementById('invite-ttl').value;
+  const st = document.getElementById('batch-invite-status');
+  const linkBox = document.getElementById('batch-invite-links');
+  const aliases = raw.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!aliases.length) {
+    st.textContent = '请先每行填写一个账号别名';
+    st.className = 'status err';
+    return;
+  }
+  st.textContent = `生成中...（共 ${aliases.length} 个）`;
+  st.className = 'status';
+  linkBox.style.display = 'none';
+  try {
+    const payload = { account_aliases: aliases };
+    if (ttlChoice === 'never') {
+      payload.never_expire = true;
+    } else {
+      payload.ttl_seconds = Number(ttlChoice);
+    }
+    const data = await fetchJson('/api/tiktok-official/invites/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const results = data.results || [];
+    linkBox.value = results.map(r => r.error ? `${r.account_alias}: 生成失败 - ${r.error}` : `${r.account_alias}: ${r.url}`).join('\n');
+    linkBox.style.display = 'block';
+    const failCount = results.filter(r => r.error).length;
+    st.textContent = failCount
+      ? `完成，${results.length - failCount} 个成功，${failCount} 个失败（详见下方）`
+      : `已生成 ${results.length} 条链接，每条仅可使用一次，请分别发给对应代运营人员`;
+    st.className = failCount ? 'status err' : 'status ok';
+    await loadInvites();
+  } catch (e) {
+    st.textContent = '批量生成失败：' + String(e.message || e);
+    st.className = 'status err';
+  }
+}
+
+async function generateSparkInviteLink() {
+  const alias = document.getElementById('invite-alias').value.trim();
+  const ttlChoice = document.getElementById('invite-ttl').value;
+  const st = document.getElementById('spark-invite-status');
+  const linkBox = document.getElementById('spark-invite-link');
+  if (!alias) {
+    st.textContent = '请先填写账号别名';
+    st.className = 'status err';
+    return;
+  }
+  st.textContent = '生成中...';
+  st.className = 'status';
+  linkBox.style.display = 'none';
+  try {
+    const payload = { account_alias: alias };
+    if (ttlChoice === 'never') {
+      payload.never_expire = true;
+    } else {
+      payload.ttl_seconds = Number(ttlChoice);
+    }
+    const data = await fetchJson('/api/tiktok-official/spark/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    linkBox.value = data.url;
+    linkBox.style.display = 'block';
+    linkBox.select();
+    const expiryText = data.expires_at ? ('有效期至 ' + new Date(data.expires_at).toLocaleString()) : '永不过期';
+    st.textContent = '已生成（' + expiryText + '，仅可使用一次）。发给该账号所有人，用这个新 App 重新授权一次：';
+    st.className = 'status ok';
+  } catch (e) {
+    st.textContent = '生成失败：' + String(e.message || e);
+    st.className = 'status err';
+  }
+}
+window.generateSparkInviteLink = generateSparkInviteLink;
+
+function exportSparkInviteBatch() {
+  window.open('/api/tiktok-official/spark/invite-batch', '_blank');
+}
+window.exportSparkInviteBatch = exportSparkInviteBatch;
+
+async function loadSparkTokens() {
+  const body = document.getElementById('spark-tokens-body');
+  try {
+    const data = await fetchJson('/api/tiktok-official/spark/tokens');
+    const rows = data.tokens || [];
+    window._sparkAliases = new Set(rows.map(t => t.account_alias).filter(Boolean));
+    renderAccounts();
+    body.innerHTML = rows.map(t => `
+      <tr>
+        <td>${fmt(t.account_alias)}</td>
+        <td>${fmt(t.scope)}</td>
+        <td>${fmt(t.authorized_by)}</td>
+        <td>${fmt(t.updated_at)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="4" class="muted">暂无已完成 Spark 授权的账号</td></tr>';
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="4" class="muted">加载失败：${String(e.message || e)}</td></tr>`;
+  }
+}
+
+async function openBusinessAuth() {
+  if (!authUrls) await loadAuthUrls();
+  if (authUrls && authUrls.business_url) {
+    window.open(authUrls.business_url, '_blank', 'noopener,noreferrer');
+  }
+}
+
+async function loadMetrics() {
+  const bid = document.getElementById('account-select').value;
+  const days = document.getElementById('profile-days').value || 30;
+  const qs = new URLSearchParams({ days });
+  if (bid) qs.set('business_id', bid);
+  const data = await fetchJson('/api/tiktok-official/profile-metrics?' + qs.toString());
+  const rows = data.items || [];
+  document.getElementById('metrics-body').innerHTML = rows.map(r => `
+    <tr>
+      <td>${fmt(r.metric_date)}</td><td>${fmt(r.business_id)}</td><td>${fmt(r.followers_count)}</td><td>${fmt(r.video_views)}</td>
+      <td>${fmt(r.unique_video_views)}</td><td>${fmt(r.profile_views)}</td><td>${fmt(r.likes)}</td><td>${fmt(r.comments)}</td>
+      <td>${fmt(r.shares)}</td><td>${fmt(r.daily_new_followers)}</td><td>${fmt(r.daily_lost_followers)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="11" class="muted">暂无趋势数据</td></tr>';
+}
+
+async function refreshOfficial() {
+  const btn = document.getElementById('refresh-btn');
+  const st = document.getElementById('refresh-status');
+  const bid = document.getElementById('account-select').value;
+  btn.disabled = true;
+  st.className = 'status';
+  st.textContent = '提交刷新任务...';
+  try {
+    const payload = {
+      business_ids: bid ? [bid] : [],
+      profile_days: Number(document.getElementById('profile-days').value || 30),
+      max_pages: Number(document.getElementById('max-pages').value || 5),
+    };
+    const data = await fetchJson('/api/tiktok-official/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    currentTask = data.task_id;
+    pollRefresh(currentTask);
+  } catch (e) {
+    st.textContent = String(e.message || e);
+    st.className = 'status err';
+    btn.disabled = false;
+  }
+}
+
+function pollRefresh(taskId) {
+  const btn = document.getElementById('refresh-btn');
+  const st = document.getElementById('refresh-status');
+  let n = 0;
+  const timer = setInterval(async () => {
+    n++;
+    try {
+      const data = await fetchJson('/api/tiktok-official/refresh-status/' + encodeURIComponent(taskId));
+      st.textContent = data.progress || data.status || '';
+      if (data.status === 'completed') {
+        clearInterval(timer);
+        st.textContent = '刷新完成';
+        st.className = 'status ok';
+        btn.disabled = false;
+        await loadOpsAll();
+      } else if (data.status === 'failed') {
+        clearInterval(timer);
+        st.textContent = data.error || '刷新失败';
+        st.className = 'status err';
+        btn.disabled = false;
+      } else if (n > 1200) {
+        clearInterval(timer);
+        st.textContent = '轮询超时，请稍后刷新页面查看';
+        btn.disabled = false;
+      }
+    } catch (e) {
+      st.textContent = String(e.message || e);
+    }
+  }, 2000);
+}
+
+function exportNeedsBoostLinks() {
+  const targets = accounts.filter(a => a.needs_follower_boost);
+  if (!targets.length) {
+    alert('当前没有标记为"需补粉"的账号');
+    return;
+  }
+  const lines = targets.map(a => {
+    const alias = a.account_alias || a.display_name || a.account_name || a.business_id;
+    const link = a.profile_deep_link || '（无主页链接）';
+    return `${alias}\t${link}`;
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tiktok_official_needs_boost_links.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 </script>
 </body>
 </html>
