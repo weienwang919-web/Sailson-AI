@@ -14,7 +14,8 @@ async function loadPool() {
   const keep = sel.value;
   const ok = POOL.filter(usable);
   sel.innerHTML = ok.length
-    ? ok.map(a => `<option value="${a.id}">${esc(a.email)}（今日上限 ${a.daily_limit}${
+    ? ok.map(a => `<option value="${a.id}">${esc(a.email)}（今日上限 ${
+        a.daily_limit === null ? '不限' : a.daily_limit}${
         a.can_receive ? '' : '，收不了回信'}）</option>`).join('')
     : '<option value="">还没有可用账号</option>';
   if (keep && ok.some(a => String(a.id) === keep)) sel.value = keep;
@@ -218,7 +219,8 @@ async function doSend(btn) {
   const n = PARSED.rows.length;
   const mins = Math.round(n * (GAP_MIN + GAP_MAX) / 2 / 60);
   if (!confirm(`给 ${n} 个达人发建联邮件？\n\n` +
-               `发件账号：${account.email}（今日上限 ${account.daily_limit}）\n` +
+               `发件账号：${account.email}（今日上限 ${
+                 account.daily_limit === null ? '不限' : account.daily_limit}）\n` +
                `节奏：每封间隔 ${GAP_MIN}–${GAP_MAX} 秒，预计约 ${mins} 分钟\n` +
                `发送窗口：${SEND_WINDOW}\n\n` +
                `每封都会带退订出口，抑制名单里的地址不会收到。`)) return;

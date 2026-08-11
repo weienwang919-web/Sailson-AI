@@ -168,12 +168,14 @@
 
       <div class="field">
         <label>每日发信上限</label>
-        <input type="number" id="f-daily-limit" min="0" value="10">
+        <input type="number" id="f-daily-limit" min="0" placeholder="留空 = 不限量">
         <p class="hint">
-          这是<strong>每个账号每天的硬上限</strong>：建联批次发到上限就会整批暂停，第二天再点发送继续。
+          <strong>留空 = 不限量</strong>。阿里云企业邮这类自有企业邮箱不需要在这里再兜一个上限，
+          留空即可。<br>
+          填了数字就是<strong>每天的硬上限</strong>：建联批次发到上限会整批暂停，第二天再点发送继续；
           填 <strong>0</strong> 表示今天完全停发这个账号。
-          额度按<strong>账号</strong>算，不按用途分——如果某个号用途是「通用」、两个功能都在用，
-          它们会共享同一个额度。新域名建议从小往上加，信誉建立起来再调高。
+          额度按<strong>账号</strong>算，不按用途分——用途是「通用」的号两个功能会共享同一个额度。
+          用新域名冷启动时建议先填个小数，信誉建立起来再放开。
         </p>
       </div>
 

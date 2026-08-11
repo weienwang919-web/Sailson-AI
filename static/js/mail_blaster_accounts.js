@@ -27,7 +27,8 @@ async function renderAccounts() {
       <td class="mono">${esc(a.smtp_host)}:${a.smtp_port}${
         a.use_ssl ? ' SSL' : (a.use_tls ? ' TLS' : '')}</td>
       <td class="mono">${a.can_receive ? esc(a.imap_host) : '<span class="pill">收不了</span>'}</td>
-      <td class="mono">${a.daily_limit}${a.daily_limit === 0 ? ' <span class="pill">已停发</span>' : ''}</td>
+      <td class="mono">${a.daily_limit === null ? '不限'
+        : a.daily_limit + (a.daily_limit === 0 ? ' <span class="pill">已停发</span>' : '')}</td>
       <td><span class="pill pill-${a.status}">${ACC_STATUS_TEXT[a.status] || a.status}</span>
         ${a.last_error ? `<div class="errbox">${esc(a.last_error)}</div>` : ''}</td>
       <td>
@@ -112,7 +113,7 @@ function newAccount() {
   $f('f-provider').value = 'custom';
   $f('f-auth-mode').value = 'password';
   $f('f-purpose').value = 'both';
-  $f('f-daily-limit').value = 10;
+  $f('f-daily-limit').value = '';   // 留空 = 不限量
   $f('f-sort-order').value = 0;
   $f('f-enabled').checked = true;
   $f('f-email').disabled = false;
@@ -140,7 +141,7 @@ function editAccount(id) {
   $f('f-imap-ssl').checked = a.imap_ssl !== false;
   $f('f-display').value = a.display_name || '';
   $f('f-signature').value = a.signature_name || '';
-  $f('f-daily-limit').value = a.daily_limit;
+  $f('f-daily-limit').value = a.daily_limit === null ? '' : a.daily_limit;
   $f('f-sort-order').value = a.sort_order || 0;
   $f('f-ssl').checked = !!a.use_ssl;
   $f('f-tls').checked = !!a.use_tls;
@@ -202,8 +203,9 @@ async function saveAccount(btn) {
     // 这两个必须成对提交：后端只在两个 key 都缺席时才回落到服务商预设
     use_ssl: $f('f-ssl').checked,
     use_tls: $f('f-tls').checked,
-    // 用 Number 而不是 || ：0 是「今天一封都别发」，不是「没填」
-    daily_limit: Number($f('f-daily-limit').value),
+    // 留空提交空串（后端存 NULL = 不限量），0 是「今天一封都别发」，
+    // 所以不能用 Number() 把空串变成 0——那是完全相反的意思
+    daily_limit: $f('f-daily-limit').value.trim(),
     sort_order: Number($f('f-sort-order').value),
     enabled: $f('f-enabled').checked,
   };

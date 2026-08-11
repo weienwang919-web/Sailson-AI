@@ -672,7 +672,13 @@ def _save_extraction(inbox_id: int, data: dict, *, model: str, tokens: int) -> N
 
 
 def analyze_pending(ai_call=None, limit: int = 30, progress=None, user_id=None) -> dict:
-    """把还没分析过的回信跑一遍。单封失败不影响其它封。
+    """把还没分析过的**KOL 回信**跑一遍。单封失败不影响其它封。
+
+    ⚠️ 只分析 thread_id 不为空的，也就是**确认匹配上我们发出去的那封**的来信。
+    收件箱里还会有垃圾邮件、通知信、内部往来——那些一律不送去问 AI，
+    否则每一封无关邮件都在烧 token，而且模型对它们的输出只会是噪音。
+    匹配不上的留在「认领不了主的来信」列表里，人工认领后（claim_message
+    会补上 thread_id）下一轮自然会分析。
 
     刻意按时间**正序**处理：同一条会话线在一轮里收到多封时，
     状态机要按时间推进、最后停在最新那封上。倒序处理会让旧信覆盖新信的状态。
@@ -680,7 +686,8 @@ def analyze_pending(ai_call=None, limit: int = 30, progress=None, user_id=None) 
     rows = db.query_all("""
         SELECT m.id FROM mb_inbox_messages m
         LEFT JOIN mb_inbox_extractions e ON e.inbox_id = m.id
-        WHERE e.id IS NULL OR e.status = 'pending'
+        WHERE (e.id IS NULL OR e.status = 'pending')
+          AND m.thread_id IS NOT NULL
         ORDER BY m.received_at ASC NULLS LAST, m.id ASC LIMIT %s
     """, (limit,))
     out = {"total": len(rows), "done": 0, "failed": 0}

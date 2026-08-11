@@ -106,14 +106,20 @@ def _schema_is_current() -> bool:
     """
     try:
         rows = db.query_all(
-            "SELECT table_name, column_name FROM information_schema.columns "
+            "SELECT table_name, column_name, is_nullable FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = ANY(%s)",
             (sorted(_TABLES),))
     except Exception:
         return False        # 查不了就老老实实跑 DDL
     have_tables = {r["table_name"] for r in rows}
     have_columns = {(r["table_name"], r["column_name"]) for r in rows}
-    return _TABLES <= have_tables and _LATEST_COLUMNS <= have_columns
+    if not (_TABLES <= have_tables and _LATEST_COLUMNS <= have_columns):
+        return False
+    # 约束变更 information_schema.columns 的存在性查不出来，得单独看一眼。
+    # 漏了这条，线上库会一直走快速路径、永远跑不到 DROP NOT NULL 那句。
+    nullable = next((r for r in rows if r["table_name"] == "mb_sender_accounts"
+                     and r["column_name"] == "daily_limit"), None)
+    return bool(nullable) and nullable.get("is_nullable") == "YES"
 
 
 def ensure_schema() -> None:
@@ -140,7 +146,7 @@ def ensure_schema() -> None:
             use_tls BOOLEAN NOT NULL DEFAULT TRUE,
             enabled BOOLEAN NOT NULL DEFAULT TRUE,
             sort_order INTEGER NOT NULL DEFAULT 0,
-            daily_limit INTEGER NOT NULL DEFAULT 10,
+            daily_limit INTEGER,        -- NULL = 不限量，0 = 今天停发
             status VARCHAR(20) NOT NULL DEFAULT 'draft',
             last_test_at TIMESTAMP,
             last_error TEXT,
@@ -396,6 +402,11 @@ def ensure_schema() -> None:
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS imap_port INTEGER",
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS "
         "imap_ssl BOOLEAN NOT NULL DEFAULT TRUE",
+        # daily_limit 允许为 NULL = 不限量。阿里云企业邮这类自有企业邮箱
+        # 不需要我们再兜一个日发信上限，原来的 NOT NULL DEFAULT 10 会让
+        # 每批建联发到第 10 封就暂停。0 仍然表示「今天停发」。
+        "ALTER TABLE mb_sender_accounts ALTER COLUMN daily_limit DROP NOT NULL",
+        "ALTER TABLE mb_sender_accounts ALTER COLUMN daily_limit DROP DEFAULT",
     ):
         db.execute(stmt)
 
@@ -507,9 +518,8 @@ def serialize_account(row: dict) -> dict:
         "smtp_username": row.get("smtp_username") or "",
         "use_ssl": bool(row["use_ssl"]), "use_tls": bool(row["use_tls"]),
         "enabled": bool(row["enabled"]), "sort_order": row.get("sort_order") or 0,
-        # 同样别用 or：存的 0 是「今天一封都别发」，不是「没设置」
-        "daily_limit": (DEFAULT_DAILY_LIMIT if row.get("daily_limit") is None
-                        else int(row["daily_limit"])),
+        # None = 不限量，0 = 今天停发，别用 or 把两者都吃掉
+        "daily_limit": (None if row.get("daily_limit") is None else int(row["daily_limit"])),
         "auth_mode": row.get("auth_mode") or "password",
         "purpose": row.get("purpose") or "both",
         "imap_host": row.get("imap_host") or "",
@@ -583,15 +593,17 @@ def _normalize_account(payload: dict) -> dict:
 
     # 用 is None 判断而不是 or：0 是有意义的值。
     # daily_limit=0 表示「这个账号今天一封都别发」，用 or 会被静默改成默认的 10。
+    # 留空（None）表示**不限量**——阿里云企业邮这类自有企业邮箱不需要我们再兜一个
+    # 日发信上限，硬套默认的 10 会让每批建联发到第 10 封就暂停。
     limit_raw = payload.get("daily_limit")
     order_raw = payload.get("sort_order")
     try:
-        daily_limit = DEFAULT_DAILY_LIMIT if limit_raw is None or limit_raw == "" else int(limit_raw)
+        daily_limit = None if limit_raw is None or limit_raw == "" else int(limit_raw)
         sort_order = 0 if order_raw is None or order_raw == "" else int(order_raw)
     except (TypeError, ValueError):
         raise ValueError(f"{email}：每日上限和排序必须是数字") from None
-    if daily_limit < 0:
-        raise ValueError(f"{email}：每日上限不能是负数")
+    if daily_limit is not None and daily_limit < 0:
+        raise ValueError(f"{email}：每日上限不能是负数（留空=不限量，0=今天停发）")
 
     purpose = (payload.get("purpose") or "").strip()
     if purpose not in ("material", "outreach", "both"):
@@ -1537,11 +1549,16 @@ def assign_accounts(pool: list[dict], targets: list[str],
     return result
 
 
-def quota_state(account_id: int, daily_limit: int) -> dict:
+def quota_state(account_id: int, daily_limit: int | None) -> dict:
+    """daily_limit 传 None 表示不限量，此时 remaining 也是 None。
+    调用方判耗尽要写 `remaining is not None and remaining <= 0`，
+    不能直接判真值——0 和 None 是两件完全不同的事。"""
     row = db.query_one(
         "SELECT COUNT(*) AS c FROM mb_history WHERE sender_account_id = %s "
         "AND sent_at >= %s", (account_id, _today_start_utc()))
     used = row["c"] if row else 0
+    if daily_limit is None:
+        return {"used": used, "limit": None, "remaining": None}
     return {"used": used, "limit": daily_limit, "remaining": max(0, daily_limit - used)}
 
 
@@ -2519,8 +2536,8 @@ def run_job(job_id: int, progress=None) -> dict:
               else (MIN_GAP_SECONDS, MAX_GAP_SECONDS))
     account = (get_account((job or {}).get("sender_account_id"))
                if is_outreach and (job or {}).get("sender_account_id") else None)
-    daily_limit = (serialize_account(account)["daily_limit"] if account
-                   else DEFAULT_DAILY_LIMIT)
+    # None 表示这个账号不限量，quota_state 会据此跳过配额检查
+    daily_limit = serialize_account(account)["daily_limit"] if account else None
 
     sent = failed = skipped = 0
     paused = ""
@@ -2536,7 +2553,7 @@ def run_job(job_id: int, progress=None) -> dict:
                 break
             if account:
                 q = quota_state(account["id"], daily_limit)
-                if q["remaining"] <= 0:
+                if q["remaining"] is not None and q["remaining"] <= 0:
                     paused = (f"{account['email']} 今日配额已用满"
                               f"（{q['used']}/{q['limit']}），剩余 {len(pending) - i} 封未发。"
                               f"明天再点一次发送即可继续。")
