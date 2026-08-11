@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>矩阵号视频监控看板</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+<div class="page-header">
+  <h1>矩阵号视频监控看板</h1>
+  <div class="subtitle">PUBG Mobile 矩阵号切片视频数据汇总，用于客户回报及优秀视频复刻激励。</div>
+  <a class="back-link" href="/">← 返回首页</a>
+</div>
+
+<div class="container">
+
+  <div class="board" id="filter-bar">
+    <div class="filter-bar-header" onclick="toggleFilterBar()">
+      <div class="filter-bar-title">达人筛选</div>
+      <div class="filter-bar-summary" id="filter-bar-summary">全部达人</div>
+      <div class="filter-bar-chevron" id="filter-bar-chevron">▾</div>
+    </div>
+    <div class="filter-bar-body" id="filter-bar-body" style="display:none;">
+      <div class="account-search-row">
+        <input type="text" id="account-search" placeholder="搜索达人别名 / 账号ID" oninput="renderAccountPicker()">
+        <div class="pill-row" id="type-quick-pills"></div>
+      </div>
+      <div class="account-groups" id="account-groups"></div>
+    </div>
+  </div>
+
+  <div class="board" id="board-overview">
+    <div class="board-head">
+      <h2>总览</h2>
+      <div class="date-range-controls">
+        <select id="ov-region" onchange="loadOverview()">
+          <option value="">全部国家/地区</option>
+        </select>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">总账号数</div><div class="stat-value" id="ov-accounts">-</div></div>
+      <div class="stat-card"><div class="stat-label">总视频条数</div><div class="stat-value" id="ov-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="ov-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">总互动数（赞+评+转+藏）</div><div class="stat-value" id="ov-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="ov-rate">-</div></div>
+      <div class="stat-card"><div class="stat-label">投流付费播放</div><div class="stat-value" id="ov-paid-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">投流占比</div><div class="stat-value" id="ov-paid-ratio">-</div></div>
+    </div>
+    <div class="coverage-note" id="ov-coverage"></div>
+    <div class="chart-pies">
+      <div>
+        <div class="chart-col-title">各国播放量占比</div>
+        <div class="chart-wrap"><canvas id="viewsPie"></canvas></div>
+      </div>
+      <div>
+        <div class="chart-col-title">各国投流消耗占比</div>
+        <div class="chart-wrap"><canvas id="spendPie"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="board" id="board-report">
+    <div class="board-head">
+      <h2>汇报面板</h2>
+      <div class="date-range-controls">
+        <input type="date" id="rp-date-from">
+        <span class="date-sep">—</span>
+        <input type="date" id="rp-date-to">
+        <button class="btn-chip" onclick="setReportRange(1)">昨天</button>
+        <button class="btn-chip" onclick="setReportRange(7)">最近7天</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportUnpublished()">导出未发账号</button>
+      </div>
+    </div>
+    <div class="report-grid">
+      <div class="report-hero">
+        <div class="stat-label">实发 / 应发视频数</div>
+        <div class="stat-value">
+          <span class="actual" id="rp-actual">-</span>
+          <span class="slash">/</span>
+          <span class="expected" id="rp-expected">-</span>
+        </div>
+        <div class="fulfillment-bar" id="rp-bar"><span style="width:0%"></span></div>
+        <div class="stat-breakdown" id="rp-rate">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">未达标账号数</div>
+        <div class="stat-value" id="rp-missing">-</div>
+        <div class="stat-breakdown" id="rp-missing-note"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">每日应发（每账号）</div>
+        <div class="stat-value" id="rp-per-account">-</div>
+        <div class="stat-breakdown">
+          <input type="number" id="rp-expected-input" min="0" max="100" style="width:70px" title="仅管理员可改">
+          <button class="btn btn-ghost btn-sm" onclick="saveExpectedVideos()">保存</button>
+        </div>
+      </div>
+    </div>
+    <div class="board-head" style="margin:22px 0 12px;"><h2 style="font-size:13px;">播放量分档条数（累计最新数）</h2></div>
+    <div class="tier-list" id="rp-tiers"></div>
+    <div class="status" id="rp-status"></div>
+  </div>
+
+
+  <div class="board" id="board-publish">
+    <div class="board-head">
+      <h2>按发布时间筛选</h2>
+      <div class="date-range-controls">
+        <input type="date" id="pub-date-from" onchange="loadPublishRange()">
+        <span class="date-sep">→</span>
+        <input type="date" id="pub-date-to" onchange="loadPublishRange()">
+        <button class="btn-chip" onclick="setPublishQuickRange(7)">最近7天</button>
+        <button class="btn-chip" onclick="setPublishQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="clearPublishRange()">清除</button>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">视频条数</div><div class="stat-value" id="pub-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="pub-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">总互动量（赞+评+转+藏）</div><div class="stat-value" id="pub-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="pub-rate">-</div></div>
+    </div>
+    <div class="chart-wrap" id="pub-chart-wrap" style="display:none;"><canvas id="pubChart"></canvas></div>
+  </div>
+
+  <div class="board" id="board-delta">
+    <div class="board-head">
+      <h2>每日快照增量</h2>
+      <div class="date-range-controls">
+        <input type="date" id="delta-date-from" onchange="loadSnapshotDelta()">
+        <span class="date-sep">→</span>
+        <input type="date" id="delta-date-to" onchange="loadSnapshotDelta()">
+        <button class="btn-chip" onclick="setDeltaQuickRange(7)">最近7天</button>
+        <button class="btn-chip" onclick="setDeltaQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="clearDeltaRange()">清除</button>
+      </div>
+    </div>
+    <div class="delta-range-hint muted" id="delta-range-hint" style="display:none;"></div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">新增视频数</div><div class="stat-value" id="delta-new-videos">-</div></div>
+      <div class="stat-card">
+        <div class="stat-label">本期总新增播放量</div>
+        <div class="stat-value" id="delta-views">-</div>
+        <div class="stat-breakdown" id="delta-views-breakdown"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">本期总新增互动量（赞+转+评+藏）</div>
+        <div class="stat-value" id="delta-engagement">-</div>
+        <div class="stat-breakdown" id="delta-engagement-breakdown"></div>
+      </div>
+      <div class="stat-card"><div class="stat-label">互动率</div><div class="stat-value" id="delta-rate-change">-</div></div>
+    </div>
+    <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
+  </div>
+
+  <div class="board" id="board-cumulative">
+    <div class="board-head">
+      <h2>累计总播放量</h2>
+      <div class="date-range-controls">
+        <input type="date" id="cum-date-from" onchange="loadCumulativeViews()">
+        <span class="date-sep">→</span>
+        <input type="date" id="cum-date-to" onchange="loadCumulativeViews()">
+        <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
+        <button class="btn-chip" onclick="clearCumulativeRange()">清除</button>
+      </div>
+    </div>
+    <div class="chart-wrap" id="cum-chart-wrap" style="display:none;"><canvas id="cumChart"></canvas></div>
+  </div>
+
+  <div class="board" id="board-videos">
+    <div class="board-head"><h2>视频明细</h2></div>
+    <div class="search-controls">
+      <div class="search-row">
+        <div class="form-group">
+          <label>开始日期</label>
+          <input type="date" id="date-from" onchange="applyVideoFilters()">
+        </div>
+        <div class="form-group">
+          <label>结束日期</label>
+          <input type="date" id="date-to" onchange="applyVideoFilters()">
+        </div>
+        <div class="form-group quick-range">
+          <button class="btn btn-ghost btn-sm" onclick="setQuickRange(7)">最近7天</button>
+          <button class="btn btn-ghost btn-sm" onclick="setQuickRange(30)">最近30天</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearRange()">清除</button>
+        </div>
+      </div>
+      <div class="search-row">
+        <div class="form-group">
+          <label>创作者/账号</label>
+          <input type="text" id="creator-input" placeholder="别名或账号ID" oninput="debouncedApply()">
+        </div>
+        <div class="form-group">
+          <label>关键词/Tag</label>
+          <input type="text" id="keyword-input" placeholder="标题、文案或 #tag" oninput="debouncedApply()">
+        </div>
+      </div>
+      <div class="search-row">
+        <div class="form-group">
+          <label>国家/地区</label>
+          <div class="region-select-wrap">
+            <button type="button" class="region-select-btn" id="region-select-btn" onclick="toggleRegionMenu(event)">全部国家</button>
+            <div class="region-select-menu" id="region-select-menu">
+              <div class="region-select-menu-item" onclick="clearRegionFilter(event)">全部</div>
+              <div class="region-select-menu-sep"></div>
+              <div id="region-select-options"></div>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>投流标记</label>
+          <select id="boosted-filter-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="boosted">只看已标记</option>
+            <option value="unboosted">只看未标记</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>互动率</label>
+          <select id="engagement-filter-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="ge1">≥1%</option>
+            <option value="lt1">＜1%</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>最新播放量</label>
+          <select id="views-filter-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="ge1000">≥1000</option>
+            <option value="lt1000">＜1000</option>
+            <option value="ge500">≥500</option>
+            <option value="lt500">＜500</option>
+            <option value="500to1000">500-1000</option>
+          </select>
+        </div>
+      </div>
+      <div class="search-row actions-row">
+        <div class="form-group actions">
+          <button class="btn btn-primary" onclick="applyVideoFilters()">查询</button>
+          <button class="btn btn-secondary" onclick="downloadExport()">下载报表（前一日）</button>
+          <button class="btn btn-secondary" onclick="downloadQueryExport()">导出查询结果</button>
+        </div>
+      </div>
+    </div>
+    <div class="status" id="filter-status"></div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>No.</th>
+            <th>关联任务编号</th>
+            <th>作品发布链接</th>
+            <th>所属矩阵账号</th>
+            <th>国家</th>
+            <th>账号类型</th>
+            <th>对应KOL/Campaign</th>
+            <th class="sortable" data-sort="create_time">作品发布时间<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'create_time')">▾</span><div class="sort-menu" id="sort-menu-create_time"><div class="sort-menu-item" onclick="applySortOption(event, 'create_time', 'desc')">▼ 从新到旧</div><div class="sort-menu-item" onclick="applySortOption(event, 'create_time', 'asc')">▲ 从旧到新</div></div></th>
+            <th>作品标题/文案</th>
+            <th>话题标签</th>
+            <th>Spark code</th>
+            <th>投流标记</th>
+            <th>账号ID</th>
+            <th>视频ID</th>
+            <th class="sortable" data-sort="video_views">播放量（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'video_views')">▾</span><div class="sort-menu" id="sort-menu-video_views"><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="likes">点赞<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'likes')">▾</span><div class="sort-menu" id="sort-menu-likes"><div class="sort-menu-item" onclick="applySortOption(event, 'likes', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'likes', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="comments">评论<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'comments')">▾</span><div class="sort-menu" id="sort-menu-comments"><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="shares">转发<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'shares')">▾</span><div class="sort-menu" id="sort-menu-shares"><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="favorites">收藏<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'favorites')">▾</span><div class="sort-menu" id="sort-menu-favorites"><div class="sort-menu-item" onclick="applySortOption(event, 'favorites', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'favorites', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="engagement_rate">互动率（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'engagement_rate')">▾</span><div class="sort-menu" id="sort-menu-engagement_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'engagement_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'engagement_rate', 'asc')">▲ 从低到高</div></div></th>
+            <th>发布后播放量（3h/24h/48h/72h）</th>
+            <th class="sortable" data-sort="full_video_watched_rate">完播率<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'full_video_watched_rate')">▾</span><div class="sort-menu" id="sort-menu-full_video_watched_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'full_video_watched_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'full_video_watched_rate', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="average_time_watched">平均观看时长<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'average_time_watched')">▾</span><div class="sort-menu" id="sort-menu-average_time_watched"><div class="sort-menu-item" onclick="applySortOption(event, 'average_time_watched', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'average_time_watched', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="pw_engagement_rate">发布后互动率<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'pw_engagement_rate')">▾</span><div class="sort-menu" id="sort-menu-pw_engagement_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'pw_engagement_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'pw_engagement_rate', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="distribution_rate">Distribution Rate<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'distribution_rate')">▾</span><div class="sort-menu" id="sort-menu-distribution_rate"><div class="sort-menu-item" onclick="applySortOption(event, 'distribution_rate', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'distribution_rate', 'asc')">▲ 从低到高</div></div></th>
+          </tr>
+        </thead>
+        <tbody id="videos-body"></tbody>
+      </table>
+    </div>
+    <div class="pagination">
+      <button class="btn btn-ghost btn-sm" onclick="prevPage()">← 上一页</button>
+      <span id="page-info">-</span>
+      <button class="btn btn-ghost btn-sm" onclick="nextPage()">下一页 →</button>
+    </div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="publish-windows-modal">
+  <div class="modal-panel">
+    <div class="modal-panel-header">
+      <h3>发布后时间点数据</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closePublishWindowsModal()">关闭</button>
+    </div>
+    <div id="publish-windows-body"></div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/dashboard-core.js') }}"></script>
+<script src="{{ url_for('static', filename='js/date-range.js') }}"></script>
+<script>
+let accountsList = [];
+let selectedAccountIds = new Set();
+let filterBarOpen = false;
+
+let videos = [];
+let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '', engagement_filter: '', views_filter: '' };
+let selectedRegions = new Set();
+let videoSort = { field: 'create_time', order: 'desc' };
+let limit = 50;
+let offset = 0;
+let total = 0;
+let debounceTimer = null;
+
+let pubChartInstance = null;
+let deltaChartInstance = null;
+let cumChartInstance = null;
+
+const CHART_TEXT_COLOR = '#6b7280';
+const CHART_GRID_COLOR = 'rgba(15,23,42,0.06)';
+
+
+
+
+
+
+
+
+
+
+function debouncedApply() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => applyVideoFilters(), 400);
+}
+
+/* ---------------- 达人筛选栏 ---------------- */
+
+function toggleFilterBar() {
+  filterBarOpen = !filterBarOpen;
+  document.getElementById('filter-bar-body').style.display = filterBarOpen ? 'block' : 'none';
+  document.getElementById('filter-bar-chevron').classList.toggle('open', filterBarOpen);
+}
+
+function accountIdsParam() {
+  return Array.from(selectedAccountIds).join(',');
+}
+
+function withAccountIds(params) {
+  const ids = accountIdsParam();
+  if (ids) params.set('account_ids', ids);
+  return params;
+}
+
+// PUBG MOBILE 官方品牌主账号，误加进了官号授权体系，不是矩阵切片账号，矩阵看板不展示该账号
+const MATRIX_EXCLUDED_BUSINESS_IDS = new Set(['-000UA9EpttJ5qzoWWRbZ7pT7qyGfmhW62C2']);
+
+async function loadAccountsForPicker() {
+  try {
+    const data = await fetchJson('/api/tiktok-official/accounts');
+    accountsList = (data.accounts || []).filter(a => !MATRIX_EXCLUDED_BUSINESS_IDS.has(a.business_id));
+  } catch (e) {
+    accountsList = [];
+  }
+  renderAccountPicker();
+  renderTypePills();
+  updateFilterBarSummary();
+  renderOverviewRegionOptions();
+  renderRegionFilterOptions();
+}
+
+function renderOverviewRegionOptions() {
+  const sel = document.getElementById('ov-region');
+  if (!sel) return;
+  const prev = sel.value;
+  const regions = Array.from(new Set(accountsList.map(a => a.region).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = '<option value="">全部国家/地区</option>' + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+  if (regions.includes(prev)) sel.value = prev;
+}
+
+function allKnownRegions() {
+  return Array.from(new Set(accountsList.map(a => a.region).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function renderRegionFilterOptions() {
+  const wrap = document.getElementById('region-select-options');
+  if (!wrap) return;
+  const regions = allKnownRegions();
+  wrap.innerHTML = regions.map(r => {
+    const active = selectedRegions.has(r);
+    return `<div class="region-select-menu-item ${active ? 'active' : ''}" onclick="toggleRegionFilterOption(event, '${esc(r)}')"><input type="checkbox" ${active ? 'checked' : ''}>${esc(r)}</div>`;
+  }).join('') || '<div class="muted" style="padding:6px 10px;">暂无国家数据</div>';
+  updateRegionSelectButtonLabel();
+}
+
+function updateRegionSelectButtonLabel() {
+  const btn = document.getElementById('region-select-btn');
+  if (!btn) return;
+  btn.textContent = selectedRegions.size === 0
+    ? '全部国家'
+    : `已选 ${selectedRegions.size} 个国家 (${Array.from(selectedRegions).join(',')})`;
+}
+
+function toggleRegionMenu(evt) {
+  evt.stopPropagation();
+  const menu = document.getElementById('region-select-menu');
+  document.querySelectorAll('.sort-menu.open').forEach(m => m.classList.remove('open'));
+  menu.classList.toggle('open');
+}
+window.toggleRegionMenu = toggleRegionMenu;
+
+function toggleRegionFilterOption(evt, region) {
+  evt.stopPropagation();
+  if (selectedRegions.has(region)) selectedRegions.delete(region);
+  else selectedRegions.add(region);
+  renderRegionFilterOptions();
+  offset = 0;
+  loadVideos();
+}
+window.toggleRegionFilterOption = toggleRegionFilterOption;
+
+function clearRegionFilter(evt) {
+  if (evt) evt.stopPropagation();
+  if (selectedRegions.size === 0) return;
+  selectedRegions.clear();
+  renderRegionFilterOptions();
+  offset = 0;
+  loadVideos();
+}
+window.clearRegionFilter = clearRegionFilter;
+
+document.addEventListener('click', () => {
+  const menu = document.getElementById('region-select-menu');
+  if (menu) menu.classList.remove('open');
+});
+
+function onAccountSelectionChanged() {
+  renderAccountPicker();
+  renderTypePills();
+  updateFilterBarSummary();
+  offset = 0;
+  refreshAll();
+}
+
+function updateFilterBarSummary() {
+  const el = document.getElementById('filter-bar-summary');
+  el.textContent = selectedAccountIds.size === 0
+    ? `全部达人 (${accountsList.length})`
+    : `已选择 ${selectedAccountIds.size} 位达人`;
+}
+
+function toggleAccount(bid) {
+  if (selectedAccountIds.has(bid)) selectedAccountIds.delete(bid);
+  else selectedAccountIds.add(bid);
+  onAccountSelectionChanged();
+}
+window.toggleAccount = toggleAccount;
+
+function toggleAccountType(type) {
+  const ids = accountsList.filter(a => (a.account_type || '') === type).map(a => a.business_id);
+  const allSelected = ids.length > 0 && ids.every(id => selectedAccountIds.has(id));
+  ids.forEach(id => allSelected ? selectedAccountIds.delete(id) : selectedAccountIds.add(id));
+  onAccountSelectionChanged();
+}
+window.toggleAccountType = toggleAccountType;
+
+function clearAccountSelection() {
+  selectedAccountIds.clear();
+  onAccountSelectionChanged();
+}
+window.clearAccountSelection = clearAccountSelection;
+
+function toggleRegionGroup(region) {
+  const ids = accountsList.filter(a => (a.region || '未分组') === region).map(a => a.business_id);
+  const allSelected = ids.length > 0 && ids.every(id => selectedAccountIds.has(id));
+  ids.forEach(id => allSelected ? selectedAccountIds.delete(id) : selectedAccountIds.add(id));
+  onAccountSelectionChanged();
+}
+window.toggleRegionGroup = toggleRegionGroup;
+
+function renderTypePills() {
+  const wrap = document.getElementById('type-quick-pills');
+  const types = [{ key: '', label: '全部' }, { key: 'KOL', label: 'KOL' }, { key: 'Campaign', label: 'Campaign' }];
+  wrap.innerHTML = types.map(t => {
+    let active;
+    if (t.key === '') {
+      active = selectedAccountIds.size === 0;
+    } else {
+      const ids = accountsList.filter(a => (a.account_type || '') === t.key).map(a => a.business_id);
+      active = ids.length > 0 && ids.every(id => selectedAccountIds.has(id));
+    }
+    const handler = t.key === '' ? 'clearAccountSelection()' : `toggleAccountType('${esc(t.key)}')`;
+    return `<button class="pill-btn ${active ? 'active' : ''}" onclick="${handler}">${esc(t.label)}</button>`;
+  }).join('');
+}
+
+function renderAccountPicker() {
+  const query = (document.getElementById('account-search').value || '').trim().toLowerCase();
+  const grouped = {};
+  accountsList.forEach(a => {
+    const region = a.region || '未分组';
+    (grouped[region] = grouped[region] || []).push(a);
+  });
+  const regions = Object.keys(grouped).sort((a, b) => {
+    if (a === '未分组') return 1;
+    if (b === '未分组') return -1;
+    return a.localeCompare(b);
+  });
+
+  const wrap = document.getElementById('account-groups');
+  const html = regions.map(region => {
+    const all = grouped[region];
+    const list = all.filter(a => {
+      if (!query) return true;
+      const hay = `${a.account_alias || ''} ${a.account_name || ''} ${a.display_name || ''} ${a.business_id || ''}`.toLowerCase();
+      return hay.includes(query);
+    });
+    if (!list.length) return '';
+    const idsOfRegion = all.map(a => a.business_id);
+    const allSelected = idsOfRegion.length > 0 && idsOfRegion.every(id => selectedAccountIds.has(id));
+    const chips = list.map(a => {
+      const selected = selectedAccountIds.has(a.business_id);
+      const label = a.display_name || a.account_alias || a.account_name || a.business_id;
+      const initial = esc(label).slice(0, 1).toUpperCase();
+      return `<button class="account-chip ${selected ? 'selected' : ''}" title="${esc(label)}" onclick="toggleAccount('${esc(a.business_id)}')">
+        <span class="account-chip-avatar">${initial}</span>
+        <span class="account-chip-label">${esc(label)}</span>
+      </button>`;
+    }).join('');
+    return `
+      <div class="account-group">
+        <div class="account-group-title ${allSelected ? 'active' : ''}" onclick="toggleRegionGroup('${esc(region)}')"><span>${esc(region)}</span><span class="account-group-count">${list.length}</span></div>
+        <div class="account-group-chips">${chips}</div>
+      </div>
+    `;
+  }).join('');
+  wrap.innerHTML = html || '<div class="muted" style="padding:20px 0;">暂无账号，或搜索无匹配结果</div>';
+}
+
+async function refreshAll() {
+  // 总览是全量口径，必须在“按发布时间筛选”读完之后再读，
+  // 这样即使后台同步在两次请求之间插入新数据，总览也只会更大不会更小，
+  // 保证“筛选结果 <= 总览”恒成立。
+  await loadPublishRange();
+  loadOverview();
+  loadSnapshotDelta();
+  loadCumulativeViews();
+  loadReportPanel();
+  loadAdSpendPies();
+  loadVideos();
+}
+
+/* ---------------- 看板一：总览 ---------------- */
+
+async function loadOverview() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const region = document.getElementById('ov-region').value;
+    if (region) params.set('region', region);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/overview?' + params.toString());
+    renderOverview(data);
+  } catch (e) {
+    renderOverview({});
+  }
+}
+
+function renderOverview(d) {
+  document.getElementById('ov-accounts').textContent = fmt(d.account_count || 0);
+  document.getElementById('ov-videos').textContent = fmt(d.video_count || 0);
+  document.getElementById('ov-views').textContent = fmt(d.total_views || 0);
+  document.getElementById('ov-engagement').textContent = fmt(d.total_engagement || 0);
+  document.getElementById('ov-rate').textContent = pct(d.engagement_rate || 0);
+
+  // 定格口径的覆盖率要显式说明，否则「视频条数」比实际少会被当成 bug
+  const note = document.getElementById('ov-coverage');
+  const total = d.video_total || 0;
+  const got = d.video_count || 0;
+  if (total) {
+    const miss = total - got;
+    note.innerHTML = `口径：<strong>发布日定格值</strong>（发布日次日凌晨采集，之后不再变化），`
+      + `不是累计到今天的数字。当前 <strong>${fmt(got)}/${fmt(total)}</strong> 条视频有定格数据`
+      + (miss > 0 ? `，另 ${fmt(miss)} 条暂无（发布于每日快照开始之前，或今天刚发还没到次日凌晨）。` : '。');
+  } else {
+    note.textContent = '';
+  }
+}
+
+/* ---------------- 总览：投流指标与饼图 ---------------- */
+
+let viewsPieChart = null, spendPieChart = null;
+
+const PIE_COLORS = ['#2563eb', '#7c3aed', '#d97706', '#16a34a', '#e11d48', '#0891b2', '#64748b', '#a16207'];
+
+function renderPie(canvasId, existing, labels, values, unitFmt) {
+  const el = document.getElementById(canvasId);
+  if (!el) return existing;
+  if (existing) existing.destroy();
+  if (!labels.length) return null;
+  return new Chart(el, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: labels.map((_, i) => PIE_COLORS[i % PIE_COLORS.length]), borderWidth: 0 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '58%',
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const total = ctx.dataset.data.reduce((a, b) => a + Number(b || 0), 0);
+              const v = Number(ctx.raw || 0);
+              const share = total ? (v / total * 100).toFixed(1) + '%' : '-';
+              return `${ctx.label}: ${unitFmt(v)} (${share})`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+async function loadAdSpendPies() {
+  // 各国播放量占比：用视频明细的汇总按地区聚合拿不到，直接读账号列表里的地区分布口径，
+  // 这里复用发布区间接口的地区维度需要后端支持，暂时用投流按国家 + 总览做双饼。
+  try {
+    const p = new URLSearchParams();
+    const [byCountry, ratio] = await Promise.all([
+      fetchJson('/api/tiktok-official/ad-spend/by-country?' + p.toString()).catch(() => ({ rows: [] })),
+      fetchJson('/api/tiktok-official/ad-spend/paid-ratio?' + p.toString()).catch(() => ({})),
+    ]);
+    document.getElementById('ov-paid-views').textContent = fmt(ratio.paid_views || 0);
+    document.getElementById('ov-paid-ratio').textContent = pct(ratio.paid_ratio || 0);
+
+    const rows = (byCountry.rows || []).filter(r => Number(r.spend || 0) > 0).slice(0, 8);
+    spendPieChart = renderPie('spendPie', spendPieChart,
+      rows.map(r => r.country_code || '未归类'),
+      rows.map(r => Number(r.spend || 0)),
+      v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+    const vrows = (byCountry.rows || []).filter(r => Number(r.impressions || 0) > 0).slice(0, 8);
+    viewsPieChart = renderPie('viewsPie', viewsPieChart,
+      vrows.map(r => r.country_code || '未归类'),
+      vrows.map(r => Number(r.impressions || 0)), fmtShort);
+  } catch (e) {
+    document.getElementById('ov-paid-views').textContent = '-';
+    document.getElementById('ov-paid-ratio').textContent = '-';
+  }
+}
+
+/* ---------------- 汇报面板 ---------------- */
+
+function setReportRange(days) {
+  const end = new Date();
+  end.setDate(end.getDate() - 1);           // 汇报看昨天，当天数据没跑完
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  const iso = d => d.toISOString().slice(0, 10);
+  document.getElementById('rp-date-from').value = iso(start);
+  document.getElementById('rp-date-to').value = iso(end);
+  loadReportPanel();
+}
+window.setReportRange = setReportRange;
+
+async function loadReportPanel() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const f = document.getElementById('rp-date-from').value;
+    const t = document.getElementById('rp-date-to').value;
+    if (f) params.set('date_from', f);
+    if (t) params.set('date_to', t);
+    const d = await fetchJson('/api/tiktok-official/matrix-videos/report-panel?' + params.toString());
+    if (!f) document.getElementById('rp-date-from').value = d.date_from || '';
+    if (!t) document.getElementById('rp-date-to').value = d.date_to || '';
+
+    document.getElementById('rp-actual').textContent = fmt(d.actual_total || 0);
+    document.getElementById('rp-expected').textContent = fmt(d.expected_total || 0);
+    const rate = d.fulfillment_rate || 0;
+    document.getElementById('rp-rate').textContent =
+      `达成率 ${(rate * 100).toFixed(1)}%　·　${d.account_count} 个账号 × ${d.expected_per_account_per_day} 条/天 × ${d.days} 天`;
+    const bar = document.getElementById('rp-bar');
+    bar.className = 'fulfillment-bar' + (rate < 0.8 ? ' low' : '');
+    bar.firstElementChild.style.width = Math.min(100, rate * 100) + '%';
+
+    document.getElementById('rp-missing').textContent = fmt(d.accounts_missing_count || 0);
+    document.getElementById('rp-missing-note').textContent =
+      d.accounts_missing_count ? '含完全未发布的账号，可导出名单' : '全部达标';
+    document.getElementById('rp-per-account').textContent = fmt(d.expected_per_account_per_day);
+    document.getElementById('rp-expected-input').value = d.expected_per_account_per_day;
+
+    const tiers = (d.view_tiers || []).map(t =>
+      `<div class="tier-chip"><div class="tier-label">≥ ${t.threshold / 10000}万播放</div><div class="tier-count">${fmt(t.count)}</div></div>`
+    ).join('');
+    document.getElementById('rp-tiers').innerHTML = tiers +
+      `<div class="tier-chip tier-low"><div class="tier-label">&lt; ${d.low_view_threshold} 播放</div>` +
+      `<div class="tier-count">${fmt(d.low_view_count || 0)}</div></div>`;
+    setStatus('rp-status', '');
+  } catch (e) {
+    setStatus('rp-status', '汇报面板加载失败：' + e.message, true);
+  }
+}
+
+async function saveExpectedVideos() {
+  const v = document.getElementById('rp-expected-input').value;
+  try {
+    await fetchJson('/api/tiktok-official/matrix-config/daily-expected-videos', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: Number(v) }),
+    });
+    setStatus('rp-status', '已保存，每日应发数改为 ' + v);
+    loadReportPanel();
+  } catch (e) {
+    setStatus('rp-status', '保存失败：' + e.message, true);
+  }
+}
+window.saveExpectedVideos = saveExpectedVideos;
+
+function exportUnpublished() {
+  const params = withAccountIds(new URLSearchParams());
+  const f = document.getElementById('rp-date-from').value;
+  const t = document.getElementById('rp-date-to').value;
+  if (f) params.set('date_from', f);
+  if (t) params.set('date_to', t);
+  window.open('/api/tiktok-official/matrix-videos/unpublished-export?' + params.toString(), '_blank');
+}
+window.exportUnpublished = exportUnpublished;
+
+
+/* ---------------- 看板二：按发布时间筛选 ---------------- */
+
+function setPublishQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('pub-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('pub-date-to').value = to.toISOString().slice(0, 10);
+  loadPublishRange();
+}
+
+function clearPublishRange() {
+  document.getElementById('pub-date-from').value = '';
+  document.getElementById('pub-date-to').value = '';
+  loadPublishRange();
+}
+
+async function loadPublishRange() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const df = document.getElementById('pub-date-from').value;
+    const dt = document.getElementById('pub-date-to').value;
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/publish-range?' + params.toString());
+    document.getElementById('pub-date-from').value = data.date_from || '';
+    document.getElementById('pub-date-to').value = data.date_to || '';
+    renderPublishRange(data);
+  } catch (e) {
+    renderPublishRange({ summary: {}, daily: [] });
+  }
+}
+
+function renderPublishRange(data) {
+  const s = data.summary || {};
+  document.getElementById('pub-videos').textContent = fmt(s.video_count || 0);
+  document.getElementById('pub-views').textContent = fmt(s.total_views || 0);
+  document.getElementById('pub-engagement').textContent = fmt(s.total_engagement || 0);
+  document.getElementById('pub-rate').textContent = pct(s.engagement_rate || 0);
+
+  const daily = data.daily || [];
+  const wrap = document.getElementById('pub-chart-wrap');
+  if (data.date_from === data.date_to || daily.length < 2) {
+    wrap.style.display = 'none';
+    if (pubChartInstance) { pubChartInstance.destroy(); pubChartInstance = null; }
+    return;
+  }
+  wrap.style.display = 'block';
+  const ctx = document.getElementById('pubChart').getContext('2d');
+  if (pubChartInstance) pubChartInstance.destroy();
+  pubChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => d.date),
+      datasets: [
+        { label: '播放量', data: daily.map(d => d.views), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+        { label: '互动量', data: daily.map(d => d.engagement), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
+      ],
+    },
+    options: chartOptions(false),
+  });
+}
+
+/* ---------------- 看板三：每日快照增量 ---------------- */
+
+function setDeltaQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('delta-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('delta-date-to').value = to.toISOString().slice(0, 10);
+  loadSnapshotDelta();
+}
+
+function clearDeltaRange() {
+  document.getElementById('delta-date-from').value = '';
+  document.getElementById('delta-date-to').value = '';
+  loadSnapshotDelta();
+}
+
+async function loadSnapshotDelta() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const df = document.getElementById('delta-date-from').value;
+    const dt = document.getElementById('delta-date-to').value;
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/snapshot-delta-range?' + params.toString());
+    document.getElementById('delta-date-from').value = data.date_from || '';
+    document.getElementById('delta-date-to').value = data.date_to || '';
+    renderSnapshotDelta(data);
+  } catch (e) {
+    renderSnapshotDelta({});
+  }
+}
+
+function renderSnapshotDelta(d) {
+  document.getElementById('delta-new-videos').textContent = fmt(d.new_video_count || 0);
+  document.getElementById('delta-views').innerHTML = fmtDelta(d.views_delta);
+  document.getElementById('delta-views-breakdown').innerHTML =
+    `<div>今日新发布视频播放量：${fmt(d.new_video_views || 0)}</div><div>往日发布视频新增播放量：${fmtDelta(d.existing_video_views_delta)}</div>`;
+  document.getElementById('delta-engagement').innerHTML = fmtDelta(d.engagement_delta);
+  document.getElementById('delta-engagement-breakdown').innerHTML =
+    `<div>今日新发布视频互动量：${fmt(d.new_video_engagement || 0)}</div><div>往日发布视频新增互动量：${fmtDelta(d.existing_video_engagement_delta)}</div>`;
+  document.getElementById('delta-rate-change').textContent = pct(d.engagement_rate_end);
+
+  const hintEl = document.getElementById('delta-range-hint');
+  if (d.date_from_actual && (d.date_from_actual !== d.date_from || d.date_to_actual !== d.date_to)) {
+    hintEl.textContent = `暂无该日精确快照，实际对比：${d.date_from_actual} → ${d.date_to_actual}`;
+    hintEl.style.display = 'block';
+  } else {
+    hintEl.style.display = 'none';
+  }
+
+  const daily = d.daily || [];
+  const wrap = document.getElementById('delta-chart-wrap');
+  if (daily.length < 2) {
+    wrap.style.display = 'none';
+    if (deltaChartInstance) { deltaChartInstance.destroy(); deltaChartInstance = null; }
+    return;
+  }
+  wrap.style.display = 'block';
+  const ctx = document.getElementById('deltaChart').getContext('2d');
+  if (deltaChartInstance) deltaChartInstance.destroy();
+  deltaChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(x => x.date),
+      datasets: [
+        { label: '新增播放量', data: daily.map(x => x.views_delta), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+        { label: '新增互动量', data: daily.map(x => x.engagement_delta), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
+      ],
+    },
+    options: chartOptions(false),
+  });
+}
+
+/* ---------------- 看板四：每日累计总VV ---------------- */
+
+function setCumulativeQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('cum-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('cum-date-to').value = to.toISOString().slice(0, 10);
+  loadCumulativeViews();
+}
+
+function clearCumulativeRange() {
+  document.getElementById('cum-date-from').value = '';
+  document.getElementById('cum-date-to').value = '';
+  loadCumulativeViews();
+}
+
+async function loadCumulativeViews() {
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    const df = document.getElementById('cum-date-from').value;
+    const dt = document.getElementById('cum-date-to').value;
+    if (df) params.set('date_from', df);
+    if (dt) params.set('date_to', dt);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos/cumulative-views-range?' + params.toString());
+    document.getElementById('cum-date-from').value = data.date_from || '';
+    document.getElementById('cum-date-to').value = data.date_to || '';
+    renderCumulativeViews(data);
+  } catch (e) {
+    renderCumulativeViews({ daily: [] });
+  }
+}
+
+function renderCumulativeViews(data) {
+  const daily = data.daily || [];
+  const wrap = document.getElementById('cum-chart-wrap');
+  if (daily.length < 2) {
+    wrap.style.display = 'none';
+    if (cumChartInstance) { cumChartInstance.destroy(); cumChartInstance = null; }
+    return;
+  }
+  wrap.style.display = 'block';
+  const ctx = document.getElementById('cumChart').getContext('2d');
+  if (cumChartInstance) cumChartInstance.destroy();
+  cumChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => d.date),
+      datasets: [
+        { label: '累计播放量', data: daily.map(d => d.cumulative_views), borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+      ],
+    },
+    options: chartOptions(true),
+  });
+}
+
+function chartOptions(singleAxis) {
+  const scales = {
+    x: { ticks: { color: CHART_TEXT_COLOR, font: { size: 11 } }, grid: { color: CHART_GRID_COLOR } },
+    y: { position: 'left', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { color: CHART_GRID_COLOR } },
+  };
+  if (!singleAxis) {
+    scales.y1 = { position: 'right', ticks: { color: CHART_TEXT_COLOR, callback: v => fmt(v) }, grid: { display: false } };
+  }
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 11 }, color: CHART_TEXT_COLOR } },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => `${ctx.dataset.label || ''}: ${fmt(ctx.parsed.y)}`,
+        },
+      },
+    },
+    scales,
+  };
+}
+
+/* ---------------- 视频明细 ---------------- */
+
+function setQuickRange(days) {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  document.getElementById('date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('date-to').value = to.toISOString().slice(0, 10);
+  applyVideoFilters();
+}
+
+function clearRange() {
+  document.getElementById('date-from').value = '';
+  document.getElementById('date-to').value = '';
+  applyVideoFilters();
+}
+
+function applyVideoFilters() {
+  videoFilters.date_from = document.getElementById('date-from').value || '';
+  videoFilters.date_to = document.getElementById('date-to').value || '';
+  videoFilters.creator = document.getElementById('creator-input').value.trim();
+  videoFilters.keyword = document.getElementById('keyword-input').value.trim();
+  const boostedFilter = document.getElementById('boosted-filter-input').value;
+  videoFilters.only_boosted = boostedFilter === 'boosted' ? '1' : '';
+  videoFilters.only_unboosted = boostedFilter === 'unboosted' ? '1' : '';
+  videoFilters.engagement_filter = document.getElementById('engagement-filter-input').value;
+  videoFilters.views_filter = document.getElementById('views-filter-input').value;
+  offset = 0;
+  loadVideos();
+}
+
+function prevPage() {
+  offset = Math.max(0, offset - limit);
+  loadVideos();
+}
+
+function nextPage() {
+  if (offset + limit >= total) return;
+  offset += limit;
+  loadVideos();
+}
+
+async function loadVideos() {
+  const statusEl = document.getElementById('filter-status');
+  statusEl.classList.remove('err');
+  statusEl.textContent = '加载中...';
+  try {
+    const params = withAccountIds(new URLSearchParams());
+    Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    if (selectedRegions.size) params.set('regions', Array.from(selectedRegions).join(','));
+    params.set('limit', limit);
+    params.set('offset', offset);
+    params.set('sort', videoSort.field);
+    params.set('order', videoSort.order);
+    const data = await fetchJson('/api/tiktok-official/matrix-videos?' + params.toString());
+    videos = data.videos || [];
+    total = data.total || 0;
+    renderVideos();
+    document.getElementById('page-info').textContent = total
+      ? `第 ${Math.floor(offset / limit) + 1} 页，共 ${Math.ceil(total / limit)} 页`
+      : '无数据';
+    statusEl.textContent = `共 ${fmt(total)} 条视频`;
+  } catch (e) {
+    statusEl.classList.add('err');
+    statusEl.textContent = '加载失败：' + String(e.message || e);
+  }
+}
+
+function toggleSortMenu(evt, field) {
+  evt.stopPropagation();
+  document.querySelectorAll('.sort-menu.open').forEach(m => {
+    if (m.id !== 'sort-menu-' + field) m.classList.remove('open');
+  });
+  const menu = document.getElementById('sort-menu-' + field);
+  if (menu) menu.classList.toggle('open');
+}
+window.toggleSortMenu = toggleSortMenu;
+
+function applySortOption(evt, field, order) {
+  evt.stopPropagation();
+  videoSort.field = field;
+  videoSort.order = order;
+  offset = 0;
+  document.querySelectorAll('.sort-menu.open').forEach(m => m.classList.remove('open'));
+  updateSortHeaders();
+  loadVideos();
+}
+window.applySortOption = applySortOption;
+
+document.addEventListener('click', () => {
+  document.querySelectorAll('.sort-menu.open').forEach(m => m.classList.remove('open'));
+});
+
+function updateSortHeaders() {
+  document.querySelectorAll('th.sortable').forEach(th => {
+    const field = th.dataset.sort;
+    const indicator = th.querySelector('.sort-indicator');
+    const isActive = field === videoSort.field;
+    th.classList.toggle('sort-active', isActive);
+    if (indicator) indicator.textContent = isActive ? (videoSort.order === 'desc' ? '▼' : '▲') : '';
+    th.querySelectorAll('.sort-menu-item').forEach(item => {
+      const wantsDesc = item.textContent.indexOf('从高到低') !== -1 || item.textContent.indexOf('从新到旧') !== -1;
+      const itemOrder = wantsDesc ? 'desc' : 'asc';
+      item.classList.toggle('active', isActive && videoSort.order === itemOrder);
+    });
+  });
+}
+
+function accountTypeBadge(type) {
+  if (!type) return '<span class="muted">-</span>';
+  const cls = type === 'KOL' ? 'badge-kol' : 'badge-campaign';
+  return `<span class="badge ${cls}">${esc(type)}</span>`;
+}
+
+window._sparkCodes = {};
+
+async function copySparkCode(idx, btn) {
+  const code = window._sparkCodes[idx];
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    const original = btn.textContent;
+    btn.textContent = '✅';
+    setTimeout(() => { btn.textContent = original; }, 1200);
+  } catch (e) {
+    alert('复制失败，请手动复制：' + code);
+  }
+}
+window.copySparkCode = copySparkCode;
+
+function renderVideos() {
+  const body = document.getElementById('videos-body');
+  if (!videos.length) {
+    body.innerHTML = '<tr><td colspan="25" class="muted">暂无数据</td></tr>';
+    return;
+  }
+  window._sparkCodes = {};
+  body.innerHTML = videos.map((v, idx) => {
+    const allTags = v.hashtags || [];
+    const visibleTags = allTags.slice(0, 3);
+    const restTags = allTags.slice(3);
+    let hashtags = visibleTags.map(h => `<span class="hashtag-chip" title="#${esc(h)}">#${esc(h)}</span>`).join('');
+    if (restTags.length) {
+      hashtags += `<span class="hashtag-more" title="${esc(restTags.map(h => '#' + h).join(' '))}">+${restTags.length}</span>`;
+    }
+    if (v.spark_code) window._sparkCodes[idx] = v.spark_code;
+    const sparkCell = v.spark_code
+      ? `<span class="spark-code" title="${esc(v.spark_code)}">${esc(v.spark_code).slice(0, 12)}...</span><button class="spark-copy-btn" onclick="copySparkCode(${idx}, this)" title="复制完整 Spark Code">📋</button><div class="muted" style="font-size:10.5px;margin-top:3px;">至 ${esc(fmt(v.spark_code_end_time))}</div>`
+      : `<button class="btn btn-ghost btn-sm" onclick="generateSparkCode('${esc(v.business_id)}', '${esc(v.item_id)}', this)">生成</button>`;
+    const caption = fmt(v.caption);
+    return `
+      <tr>
+        <td>${offset + idx + 1}</td>
+        <td><input class="tag-input" value="${fmt(v.task_no) === '-' ? '' : esc(v.task_no)}" placeholder="-" onchange="saveTags('${esc(v.business_id)}', '${esc(v.item_id)}', this, null)"></td>
+        <td>${v.share_url ? `<a class="link" href="${esc(v.share_url)}" target="_blank">链接 ↗</a>` : '<span class="muted">-</span>'}</td>
+        <td>${esc(fmt(v.display_name || v.account_alias || v.account_name))}</td>
+        <td>${v.region ? `<span class="badge badge-region">${esc(v.region)}</span>` : '<span class="muted">-</span>'}</td>
+        <td>${accountTypeBadge(v.account_type)}</td>
+        <td><input class="tag-input" value="${fmt(v.kol_campaign) === '-' ? '' : esc(v.kol_campaign)}" placeholder="-" onchange="saveTags('${esc(v.business_id)}', '${esc(v.item_id)}', null, this)"></td>
+        <td>${esc(fmt(v.create_time))}</td>
+        <td class="caption-cell" title="${esc(caption)}">${esc(caption)}</td>
+        <td><div class="hashtags">${hashtags || '<span class="muted">-</span>'}</div></td>
+        <td>${sparkCell}</td>
+        <td style="text-align:center;"><input type="checkbox" ${v.is_boosted ? 'checked' : ''} onchange="toggleBoosted('${esc(v.business_id)}', '${esc(v.item_id)}', this)"></td>
+        <td>${esc(fmt(v.business_id))}</td>
+        <td>${esc(fmt(v.item_id))}</td>
+        <td>${fmt(v.video_views)}</td>
+        <td>${fmt(v.likes)}</td>
+        <td>${fmt(v.comments)}</td>
+        <td>${fmt(v.shares)}</td>
+        <td>${fmt(v.favorites)}</td>
+        <td>${pct(v.engagement_rate)}</td>
+        <td>${pwViewsCell(v)}</td>
+        <td>${pct(pwLatestMetric(v, 'full_video_watched_rate'))}</td>
+        <td>${fmt(pwLatestMetric(v, 'average_time_watched'))}</td>
+        <td>${pct(pwLatestMetric(v, 'engagement_rate'))}</td>
+        <td>${pct(pwLatestMetric(v, 'distribution_rate'))}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// 由后端注入，唯一真相源是 tiktok_official_service.PUBLISH_WINDOW_HOURS
+const PUBLISH_WINDOW_HOURS = {{ publish_window_hours | tojson }};
+
+function pwViewsCell(v) {
+  const windows = v.publish_windows || [];
+  const byHours = {};
+  windows.forEach(w => { byHours[w.window_hours] = w; });
+  const chips = PUBLISH_WINDOW_HOURS.map(h => {
+    const w = byHours[h];
+    const val = (w && w.captured_at) ? fmt(w.video_views) : '-';
+    return `<span class="pw-chip"><span class="pw-h">${h}h</span><span class="pw-v">${val}</span></span>`;
+  }).join('');
+  const detail = `<button class="btn btn-ghost btn-sm" style="margin-top:4px;" onclick="openPublishWindowsModal('${esc(v.business_id)}', '${esc(v.item_id)}')">完整指标</button>`;
+  return `<div class="publish-window-cell">${chips}</div>${detail}`;
+}
+
+function pwLatestMetric(v, field) {
+  const windows = (v.publish_windows || []).filter(w => w.captured_at);
+  if (!windows.length) return null;
+  const latest = windows.reduce((a, b) => (b.window_hours > a.window_hours ? b : a));
+  return latest[field];
+}
+
+async function saveTags(businessId, itemId, taskInput, kolInput) {
+  const video = videos.find(v => v.business_id === businessId && v.item_id === itemId);
+  const taskNo = taskInput ? taskInput.value.trim() : (video ? video.task_no : '');
+  const kolCampaign = kolInput ? kolInput.value.trim() : (video ? video.kol_campaign : '');
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/tags`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_no: taskNo, kol_campaign: kolCampaign }),
+    });
+    if (video) {
+      video.task_no = taskNo;
+      video.kol_campaign = kolCampaign;
+    }
+  } catch (e) {
+    alert('保存失败：' + String(e.message || e));
+  }
+}
+window.saveTags = saveTags;
+
+async function toggleBoosted(businessId, itemId, checkbox) {
+  const video = videos.find(v => v.business_id === businessId && v.item_id === itemId);
+  const isBoosted = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/boosted`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_boosted: isBoosted }),
+    });
+    if (video) video.is_boosted = isBoosted;
+  } catch (e) {
+    checkbox.checked = !isBoosted;
+    alert('标记失败：' + String(e.message || e));
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+window.toggleBoosted = toggleBoosted;
+
+async function generateSparkCode(businessId, itemId, btn) {
+  if (!confirm('生成 Spark 授权码会真实修改该视频在 TikTok 上的广告授权状态，确认继续？')) return;
+  const original = btn.textContent;
+  btn.textContent = '生成中...';
+  btn.disabled = true;
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/spark-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authorization_days: 30 }),
+    });
+    await loadVideos();
+  } catch (e) {
+    alert('生成失败：' + String(e.message || e));
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+window.generateSparkCode = generateSparkCode;
+
+function downloadExport() {
+  window.open('/api/tiktok-official/matrix-export', '_blank');
+}
+
+function downloadQueryExport() {
+  const params = withAccountIds(new URLSearchParams());
+  Object.entries(videoFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+  if (selectedRegions.size) params.set('regions', Array.from(selectedRegions).join(','));
+  window.open('/api/tiktok-official/matrix-videos/export-query?' + params.toString(), '_blank');
+}
+
+function closePublishWindowsModal() {
+  document.getElementById('publish-windows-modal').classList.remove('open');
+}
+window.closePublishWindowsModal = closePublishWindowsModal;
+
+async function openPublishWindowsModal(businessId, itemId) {
+  const modal = document.getElementById('publish-windows-modal');
+  const body = document.getElementById('publish-windows-body');
+  modal.classList.add('open');
+  body.innerHTML = '<div class="muted">加载中...</div>';
+  try {
+    const [windowData, dailyData] = await Promise.all([
+      fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/publish-windows`),
+      fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/daily-views`),
+    ]);
+    const windows = windowData.windows || [];
+    const windowsHtml = windows.length ? (() => {
+      const rows = windows.map(w => {
+        const label = `${w.window_hours}小时`;
+        if (!w.captured_at) {
+          return `<tr><td>${esc(label)}</td><td colspan="9" class="muted">未到期/未采集</td></tr>`;
+        }
+        return `
+          <tr>
+            <td>${esc(label)}</td>
+            <td>${fmt(w.video_views)}</td>
+            <td>${fmt(w.likes)}</td>
+            <td>${fmt(w.comments)}</td>
+            <td>${fmt(w.shares)}</td>
+            <td>${fmt(w.reach)}</td>
+            <td>${fmt(w.average_time_watched)}</td>
+            <td>${pct(w.full_video_watched_rate)}</td>
+            <td>${pct(w.engagement_rate)}</td>
+            <td>${pct(w.distribution_rate)}</td>
+          </tr>
+        `;
+      }).join('');
+      return `
+        <table class="publish-windows-table">
+          <thead>
+            <tr>
+              <th>时间点</th><th>播放量</th><th>点赞</th><th>评论</th><th>分享</th><th>reach</th>
+              <th>平均观看时长</th><th>完播率</th><th>互动率</th><th>Distribution Rate</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    })() : '<div class="muted">该视频暂无发布后时间点数据（可能是上线前发布的老视频，未纳入采集）</div>';
+
+    const dailySeries = dailyData.series || [];
+    const dailyHtml = dailySeries.length ? (() => {
+      const rows = dailySeries.map(p => `
+        <tr>
+          <td>${p.day_index === null || p.day_index === undefined ? '-' : '第' + p.day_index + '天'}</td>
+          <td>${esc(p.date)}</td>
+          <td>${fmt(p.video_views)}</td>
+          <td>${p.delta === null || p.delta === undefined ? '-' : fmt(p.delta)}</td>
+        </tr>
+      `).join('');
+      const stoppedNote = dailyData.stopped
+        ? `<div class="muted" style="margin-top:8px;">已连续5天播放量无新增，追踪到 ${esc(dailyData.stopped_date)} 为止</div>`
+        : '';
+      return `
+        <table class="publish-windows-table">
+          <thead><tr><th>第几天</th><th>日期</th><th>播放量</th><th>较前日新增</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${stoppedNote}
+      `;
+    })() : '<div class="muted">该视频暂无每日播放量数据</div>';
+
+    body.innerHTML = `
+      <h4 style="margin:0 0 8px;">发布后时间点数据</h4>
+      ${windowsHtml}
+      <h4 style="margin:20px 0 8px;">每日播放量</h4>
+      ${dailyHtml}
+    `;
+  } catch (e) {
+    body.innerHTML = '<div class="muted err">加载失败：' + esc(String(e.message || e)) + '</div>';
+  }
+}
+window.openPublishWindowsModal = openPublishWindowsModal;
+
+(async function init() {
+  updateSortHeaders();
+  await loadAccountsForPicker();
+  refreshAll();
+})();
+</script>
+</body>
+</html>
