@@ -1694,22 +1694,30 @@ def enqueue_ad_spend_sync(
     return [task_id]
 
 
+# 投流数据的矩阵范围约束。授权广告主账户下不是所有投放都投给我们的矩阵号——
+# 建 ad→视频映射时虽然按 item_id 白名单过滤过，但那个白名单是「我们视频库里有」，
+# 里面同样包含被排除的品牌主账号和已停用账号的视频。所以读取侧必须再限一道，
+# 否则总览（走账号过滤）和投流接口（不走）会算出两个对不上的数。
+
+
 def get_ad_spend_summary(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
-    """按日汇总全部账户的消耗/曝光/点击/转化，供趋势图使用。"""
+    """按日汇总消耗/曝光/点击/转化，供趋势图使用。只统计投给矩阵号视频的部分。"""
     start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
     rows = db.query_all(
         """
-        SELECT stat_date,
-               SUM(spend)::float AS spend,
-               SUM(impressions)::bigint AS impressions,
-               SUM(clicks)::bigint AS clicks,
-               SUM(conversions)::bigint AS conversions
-        FROM tiktok_ad_spend_daily
-        WHERE stat_date BETWEEN %s AND %s
-        GROUP BY stat_date
-        ORDER BY stat_date
+        SELECT s.stat_date,
+               SUM(s.spend)::float AS spend,
+               SUM(s.impressions)::bigint AS impressions,
+               SUM(s.clicks)::bigint AS clicks,
+               SUM(s.conversions)::bigint AS conversions
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE s.stat_date BETWEEN %s AND %s AND s.tiktok_item_id IS NOT NULL AND a.enabled = TRUE AND a.business_id != ALL(%s)
+        GROUP BY s.stat_date
+        ORDER BY s.stat_date
         """,
-        (start_date, end_date),
+        (start_date, end_date, _MATRIX_EXCLUDED_BUSINESS_IDS),
     ) or []
     return {"date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "rows": rows}
 
@@ -1719,17 +1727,19 @@ def get_ad_spend_by_country(date_from: str | None = None, date_to: str | None = 
     start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
     rows = db.query_all(
         """
-        SELECT country_code,
-               SUM(spend)::float AS spend,
-               SUM(impressions)::bigint AS impressions,
-               SUM(clicks)::bigint AS clicks,
-               SUM(conversions)::bigint AS conversions
-        FROM tiktok_ad_spend_daily
-        WHERE stat_date BETWEEN %s AND %s
-        GROUP BY country_code
+        SELECT s.country_code,
+               SUM(s.spend)::float AS spend,
+               SUM(s.impressions)::bigint AS impressions,
+               SUM(s.clicks)::bigint AS clicks,
+               SUM(s.conversions)::bigint AS conversions
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE s.stat_date BETWEEN %s AND %s AND s.tiktok_item_id IS NOT NULL AND a.enabled = TRUE AND a.business_id != ALL(%s)
+        GROUP BY s.country_code
         ORDER BY spend DESC
         """,
-        (start_date, end_date),
+        (start_date, end_date, _MATRIX_EXCLUDED_BUSINESS_IDS),
     ) or []
     return {"date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "rows": rows}
 
@@ -1745,17 +1755,22 @@ def get_ad_spend_by_video(date_from: str | None = None, date_to: str | None = No
                SUM(s.video_play_actions)::bigint AS video_play_actions
         FROM tiktok_ad_spend_daily s
         JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
-        WHERE s.stat_date BETWEEN %s AND %s
+        JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE s.stat_date BETWEEN %s AND %s AND s.tiktok_item_id IS NOT NULL
+          AND a.enabled = TRUE AND a.business_id != ALL(%s)
         GROUP BY s.tiktok_item_id, v.business_id, v.caption, v.thumbnail_url
         ORDER BY spend DESC
         """,
-        (start_date, end_date),
+        (start_date, end_date, _MATRIX_EXCLUDED_BUSINESS_IDS),
     ) or []
     return {"date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "rows": rows}
 
 
 def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
-    """投流流量占比：仅覆盖被投流命中的视频，不是全矩阵口径。
+    """投流流量占比：仅覆盖被投流命中的**矩阵号**视频，不是全矩阵口径。
+
+    授权广告主账户下不是所有投放都投给矩阵号，分子分母都限定在
+    enabled 且未被排除的矩阵账号范围内，跟总览保持一致。
 
     分子是这些视频在投放报表里的 video_play_actions（TikTok 报表口径的每日增量，直接 SUM 即可）。
     分母是同一批视频在区间内的**总播放增量**——注意 TikTok 的 video_views 本身已经包含了
@@ -1771,17 +1786,25 @@ def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = N
     start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
     paid_row = db.query_one(
         """
-        SELECT COALESCE(SUM(spend), 0)::float AS spend,
-               COALESCE(SUM(video_play_actions), 0) AS paid_views
-        FROM tiktok_ad_spend_daily WHERE stat_date BETWEEN %s AND %s AND tiktok_item_id IS NOT NULL
+        SELECT COALESCE(SUM(s.spend), 0)::float AS spend,
+               COALESCE(SUM(s.video_play_actions), 0) AS paid_views
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE s.stat_date BETWEEN %s AND %s AND s.tiktok_item_id IS NOT NULL
+          AND a.enabled = TRUE AND a.business_id != ALL(%s)
         """,
-        (start_date, end_date),
+        (start_date, end_date, _MATRIX_EXCLUDED_BUSINESS_IDS),
     ) or {}
     delta_row = db.query_one(
         """
         WITH items AS (
-            SELECT DISTINCT tiktok_item_id FROM tiktok_ad_spend_daily
-            WHERE stat_date BETWEEN %(from)s AND %(to)s AND tiktok_item_id IS NOT NULL
+            SELECT DISTINCT s.tiktok_item_id
+            FROM tiktok_ad_spend_daily s
+            JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+            JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+            WHERE s.stat_date BETWEEN %(from)s AND %(to)s AND s.tiktok_item_id IS NOT NULL
+              AND a.enabled = TRUE AND a.business_id != ALL(%(excluded)s)
         ),
         start_snap AS (
             SELECT DISTINCT ON (d.item_id) d.item_id, d.video_views
@@ -1801,7 +1824,7 @@ def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = N
         FROM end_snap e
         LEFT JOIN start_snap s ON s.item_id = e.item_id
         """,
-        {"from": start_date, "to": end_date},
+        {"from": start_date, "to": end_date, "excluded": _MATRIX_EXCLUDED_BUSINESS_IDS},
     ) or {}
     paid_views = int(paid_row.get("paid_views") or 0)
     total_views_delta = int(delta_row.get("total_views_delta") or 0)
