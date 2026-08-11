@@ -118,6 +118,7 @@ _TABLES = {
     "tiktok_advertiser_tokens", "tiktok_ad_spend_daily", "tiktok_ad_video_map",
     "tiktok_official_video_daily_snapshots", "tiktok_matrix_video_exports",
     "tiktok_official_video_publish_window_snapshots",
+    "app_global_configs",
 }
 _LATEST_COLUMNS = {
     ("tiktok_official_accounts", "account_alias"),
@@ -486,6 +487,19 @@ def ensure_schema() -> None:
             distribution_rate DOUBLE PRECISION,
             created_at TIMESTAMP DEFAULT NOW(),
             UNIQUE (business_id, item_id, window_hours)
+        )
+        """
+    )
+
+    # 通用全局配置（key-value），目前存看板的「每日应发视频数」，后续别的全局项也放这里。
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_global_configs (
+            config_key VARCHAR(64) PRIMARY KEY,
+            config_value TEXT,
+            description TEXT,
+            updated_by VARCHAR(128),
+            updated_at TIMESTAMP DEFAULT NOW()
         )
         """
     )
@@ -3097,6 +3111,186 @@ def matrix_cumulative_views_range(
         "date_to": range_to.isoformat(),
         "daily": daily,
     }
+
+
+# ============================================
+# 全局配置 + 汇报面板
+# ============================================
+
+CONFIG_DAILY_EXPECTED_VIDEOS = "matrix_daily_expected_videos_per_account"
+_DEFAULT_DAILY_EXPECTED_VIDEOS = 1
+
+# 汇报面板的播放量分档（条数），单位是播放次数
+_REPORT_VIEW_TIERS = (100_000, 200_000, 500_000, 1_000_000)
+_REPORT_LOW_VIEW_THRESHOLD = 200
+
+
+def get_global_config(key: str, default: str | None = None) -> str | None:
+    row = db.query_one("SELECT config_value FROM app_global_configs WHERE config_key = %s", (key,))
+    if not row or row.get("config_value") is None:
+        return default
+    return row["config_value"]
+
+
+def set_global_config(key: str, value: str, updated_by: str | None = None, description: str | None = None) -> None:
+    db.execute(
+        """
+        INSERT INTO app_global_configs (config_key, config_value, description, updated_by, updated_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ON CONFLICT (config_key) DO UPDATE SET
+            config_value = EXCLUDED.config_value,
+            description = COALESCE(EXCLUDED.description, app_global_configs.description),
+            updated_by = EXCLUDED.updated_by,
+            updated_at = NOW()
+        """,
+        (key, str(value), description, updated_by),
+    )
+
+
+def get_daily_expected_videos() -> int:
+    """每个账号每天应发视频数（全局统一值）。
+
+    配置表可能还没建（首次部署 ensure_schema 之前），读不到一律回退默认值，
+    不要让汇报面板因为一个配置项整个挂掉。
+    """
+    try:
+        return max(0, int(get_global_config(CONFIG_DAILY_EXPECTED_VIDEOS) or _DEFAULT_DAILY_EXPECTED_VIDEOS))
+    except Exception as exc:
+        logger.warning("读取每日应发视频数配置失败，回退默认值 %s：%s", _DEFAULT_DAILY_EXPECTED_VIDEOS, exc)
+        return _DEFAULT_DAILY_EXPECTED_VIDEOS
+
+
+def _publish_day_sql(alias: str = "v") -> str:
+    """视频的北京发布日。create_time 存的是 naive UTC，先按 UTC 解释再转北京。"""
+    return f"({alias}.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date"
+
+
+def matrix_report_panel(
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+) -> dict[str, Any]:
+    """汇报面板：应发/实发对比 + 播放量分档条数。
+
+    应发 = 命中筛选的账号数 x 每日应发数 x 天数（每日应发数是全局配置，页面可改）。
+    实发 = 这些账号在区间内按**北京发布日**计的视频条数。
+    播放量分档用的是「累计最新数」（当前态表的 video_views），不是发布日定格值——
+    汇报场景关心的是这条视频到今天为止跑到了多少量级。
+    """
+    filters = filters or {}
+    # 汇报默认看「昨天」，当天数据还没跑完没有汇报意义
+    if not date_from and not date_to:
+        yesterday = _business_date() - timedelta(days=1)
+        range_from = range_to = yesterday
+    else:
+        range_from, range_to = _matrix_date_range(date_from, date_to, days=1)
+    days = max(1, (range_to - range_from).days + 1)
+
+    where, params = _matrix_account_filters_sql(filters)
+    where_sql = " AND ".join(where)
+    publish_day = _publish_day_sql("v")
+
+    per_account = get_daily_expected_videos()
+
+    # 一条查询同时拿到：账号数、实发条数、各播放量分档条数
+    tier_cols = ",\n            ".join(
+        f"COUNT(v.item_id) FILTER (WHERE v.video_views >= {t}) AS tier_{t}" for t in _REPORT_VIEW_TIERS
+    )
+    row = db.query_one(
+        f"""
+        SELECT
+            COUNT(DISTINCT a.business_id) AS account_count,
+            COUNT(v.item_id) AS actual_total,
+            {tier_cols},
+            COUNT(v.item_id) FILTER (WHERE COALESCE(v.video_views, 0) < {_REPORT_LOW_VIEW_THRESHOLD}) AS tier_low
+        FROM tiktok_official_accounts a
+        LEFT JOIN tiktok_official_video_snapshots v
+               ON v.business_id = a.business_id
+              AND v.create_time IS NOT NULL
+              AND {publish_day} BETWEEN %s AND %s
+        WHERE {where_sql}
+        """,
+        tuple([range_from, range_to] + params),
+    ) or {}
+
+    account_count = int(row.get("account_count") or 0)
+    actual_total = int(row.get("actual_total") or 0)
+    expected_total = account_count * per_account * days
+
+    # 未达标账号（含完全没发的），供「导出未发视频账号」用
+    missing_rows = db.query_all(
+        f"""
+        SELECT a.business_id, a.account_alias, a.account_name, a.display_name,
+               a.region, a.account_type, a.profile_deep_link,
+               COUNT(v.item_id) AS published
+        FROM tiktok_official_accounts a
+        LEFT JOIN tiktok_official_video_snapshots v
+               ON v.business_id = a.business_id
+              AND v.create_time IS NOT NULL
+              AND {publish_day} BETWEEN %s AND %s
+        WHERE {where_sql}
+        GROUP BY a.business_id, a.account_alias, a.account_name, a.display_name,
+                 a.region, a.account_type, a.profile_deep_link
+        HAVING COUNT(v.item_id) < %s
+        ORDER BY COUNT(v.item_id), a.region NULLS LAST, a.account_alias NULLS LAST
+        """,
+        tuple([range_from, range_to] + params + [per_account * days]),
+    ) or []
+
+    for m in missing_rows:
+        m["published"] = int(m.get("published") or 0)
+        m["expected"] = per_account * days
+        m["shortfall"] = m["expected"] - m["published"]
+
+    return {
+        "date_from": range_from.isoformat(),
+        "date_to": range_to.isoformat(),
+        "days": days,
+        "account_count": account_count,
+        "expected_per_account_per_day": per_account,
+        "expected_total": expected_total,
+        "actual_total": actual_total,
+        "fulfillment_rate": (actual_total / expected_total) if expected_total else 0.0,
+        "view_tiers": [
+            {"threshold": t, "count": int(row.get(f"tier_{t}") or 0)} for t in _REPORT_VIEW_TIERS
+        ],
+        "low_view_threshold": _REPORT_LOW_VIEW_THRESHOLD,
+        "low_view_count": int(row.get("tier_low") or 0),
+        "accounts_missing": missing_rows,
+        "accounts_missing_count": len(missing_rows),
+    }
+
+
+def build_unpublished_accounts_export(
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+) -> bytes:
+    """导出未达标（含未发）账号名单。"""
+    data = matrix_report_panel(filters, date_from, date_to)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "未发视频账号"
+    headers = ["账号别名", "账号名称", "国家/地区", "账号类型", "应发", "实发", "缺口", "主页链接"]
+    ws.append(headers)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+    for m in data["accounts_missing"]:
+        ws.append([
+            m.get("account_alias") or "",
+            m.get("display_name") or m.get("account_name") or "",
+            m.get("region") or "",
+            m.get("account_type") or "",
+            m.get("expected"),
+            m.get("published"),
+            m.get("shortfall"),
+            m.get("profile_deep_link") or "",
+        ])
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
 
 
 def build_matrix_export(export_date) -> bytes:
