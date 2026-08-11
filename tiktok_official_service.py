@@ -2580,6 +2580,13 @@ def _matrix_engagement_filter_sql(filters: dict[str, Any]) -> str | None:
 
 def _matrix_views_filter_sql(filters: dict[str, Any]) -> str | None:
     views_filter = (filters.get("views_filter") or "").strip()
+    # 汇报口径的播放量分档（跟汇报面板的 _REPORT_VIEW_TIERS 对应）
+    tiers = {"ge10w": 100_000, "ge20w": 200_000, "ge50w": 500_000, "ge100w": 1_000_000}
+    if views_filter in tiers:
+        return f"v.video_views >= {tiers[views_filter]}"
+    if views_filter == "lt200":
+        return "(v.video_views IS NULL OR v.video_views < 200)"
+    # 以下为旧口径，保留兼容已有链接
     if views_filter == "ge1000":
         return "v.video_views >= 1000"
     if views_filter == "lt1000":
@@ -2591,6 +2598,42 @@ def _matrix_views_filter_sql(filters: dict[str, Any]) -> str | None:
     if views_filter == "500to1000":
         return "(v.video_views >= 500 AND v.video_views < 1000)"
     return None
+
+
+def _matrix_keyword_where(filters: dict[str, Any], video_alias: str | None = None,
+                          snapshot_business: str | None = None, snapshot_item: str | None = None):
+    """关键词筛选，**视频级**：只统计文案命中的那些视频，不是"该账号有命中视频就全算"。
+
+    TikTok 官方 API 没有独立标题字段，只有 caption/文案，关键词搜的就是它。
+    直接有 v 别名时用 v.caption；只有日快照别名时（每日快照看板）用 EXISTS 回查视频表。
+    返回 (条件, 参数列表)，没有关键词则返回 (None, [])。
+    """
+    keyword = (filters.get("keyword") or "").strip()
+    if not keyword:
+        return None, []
+    like = f"%{keyword}%"
+    if video_alias:
+        return f"{video_alias}.caption ILIKE %s", [like]
+    return (
+        "EXISTS (SELECT 1 FROM tiktok_official_video_snapshots kv "
+        f"WHERE kv.business_id = {snapshot_business} AND kv.item_id = {snapshot_item} "
+        "AND kv.caption ILIKE %s)"
+    ), [like]
+
+
+# 每条视频的投流汇总，供视频明细的「投流数量」列和「投流占比」筛选使用
+_AD_PER_VIDEO_SQL = """
+    LEFT JOIN (
+        SELECT tiktok_item_id,
+               COALESCE(SUM(spend), 0)::float AS ad_spend,
+               COALESCE(SUM(video_play_actions), 0) AS ad_paid_views
+        FROM tiktok_ad_spend_daily
+        WHERE tiktok_item_id IS NOT NULL
+        GROUP BY tiktok_item_id
+    ) ads ON ads.tiktok_item_id = v.item_id
+"""
+# 单条视频的投流播放占比：付费播放 / 累计总播放
+_AD_PAID_RATIO_SQL = "(COALESCE(ads.ad_paid_views, 0)::numeric / NULLIF(v.video_views, 0))"
 
 
 def list_matrix_videos(
@@ -2629,6 +2672,12 @@ def list_matrix_videos(
     elif filters.get("only_unboosted"):
         where.append("(v.is_boosted = FALSE OR v.is_boosted IS NULL)")
 
+    # 投流状态三态（人工标记）
+    boost_status = (filters.get("boost_status") or "").strip().lower()
+    if boost_status in BOOST_STATUSES:
+        where.append("v.boost_status = %s")
+        params.append(boost_status)
+
     engagement_where = _matrix_engagement_filter_sql(filters)
     if engagement_where:
         where.append(engagement_where)
@@ -2637,11 +2686,21 @@ def list_matrix_videos(
     if views_where:
         where.append(views_where)
 
+    # 投流占比门槛（如 ≥30%）。占比是每条视频的 付费播放/累计播放。
+    paid_ratio_min = filters.get("paid_ratio_min")
+    if paid_ratio_min not in (None, ""):
+        try:
+            where.append(f"{_AD_PAID_RATIO_SQL} >= %s")
+            params.append(float(paid_ratio_min))
+        except (TypeError, ValueError):
+            pass
+
     where_sql = " AND ".join(where)
 
-    joins_sql = """
+    joins_sql = f"""
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        {_AD_PER_VIDEO_SQL}
     """
     base_sql = f"{joins_sql} WHERE {where_sql}"
 
@@ -2671,7 +2730,9 @@ def list_matrix_videos(
         f"""
         SELECT
             v.*,
-            a.account_alias, a.account_name, a.display_name, a.region, a.account_type
+            a.account_alias, a.account_name, a.display_name, a.region, a.account_type,
+            COALESCE(ads.ad_spend, 0) AS ad_spend,
+            COALESCE(ads.ad_paid_views, 0) AS ad_paid_views
         {joins_sql}
         LEFT JOIN LATERAL (
             SELECT full_video_watched_rate, average_time_watched,
@@ -2694,6 +2755,9 @@ def list_matrix_videos(
         views = int(row.get("video_views") or 0)
         engagement = int((row.get("likes") or 0) + (row.get("comments") or 0) + (row.get("shares") or 0) + (row.get("favorites") or 0))
         row["engagement_rate"] = (engagement / views) if views else 0.0
+        # 单条视频的投流播放占比，供明细表展示（≥30% 的筛选在 SQL 层做）
+        paid_views = int(row.get("ad_paid_views") or 0)
+        row["ad_paid_ratio"] = (paid_views / views) if views else None
         row["hashtags"] = _extract_hashtags(row.get("caption"))
         videos.append(row)
 
@@ -2832,6 +2896,10 @@ def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, 
     """
     filters = filters or {}
     where, params = _matrix_account_filters_sql(filters)
+    kw, kw_params = _matrix_keyword_where(filters, video_alias="v")
+    if kw:
+        where.append(kw)
+        params.extend(kw_params)
     where_sql = " AND ".join(where)
     frozen = _frozen_video_cte(where_sql)
 
@@ -2920,6 +2988,10 @@ def matrix_publish_range_summary(
     filters = filters or {}
     range_from, range_to = _matrix_date_range(date_from, date_to, days=7)
     where, params = _matrix_account_filters_sql(filters)
+    kw, kw_params = _matrix_keyword_where(filters, video_alias="v")
+    if kw:
+        where.append(kw)
+        params.extend(kw_params)
     where.append("v.create_time >= %s")
     where.append("v.create_time < (%s::date + INTERVAL '1 day')")
     params.extend([range_from.isoformat(), range_to.isoformat()])
@@ -2988,6 +3060,11 @@ def matrix_snapshot_delta_range(
     filters = filters or {}
     range_from, range_to = _matrix_date_range(date_from, date_to, days=7)
     where, params = _matrix_account_filters_sql(filters)
+    kw, kw_params = _matrix_keyword_where(
+        filters, snapshot_business="d.business_id", snapshot_item="d.item_id")
+    if kw:
+        where.append(kw)
+        params.extend(kw_params)
     where_sql = " AND ".join(where)
 
     available_rows = db.query_all(
@@ -3112,6 +3189,13 @@ def matrix_snapshot_delta_range(
 
     # 本期新增投流量：投放报表本身就是按天的增量，区间内直接 SUM 即可，
     # 不像播放量那样需要首尾快照做差。
+    # 这条查询的 FROM 里没有 d 别名，不能复用上面那份 where_sql（关键词条件引用了 d）。
+    # 单独按 v 别名重建一份账号+关键词条件。
+    spend_where, spend_params = _matrix_account_filters_sql(filters)
+    skw, skw_params = _matrix_keyword_where(filters, video_alias="v")
+    if skw:
+        spend_where.append(skw)
+        spend_params.extend(skw_params)
     spend_row = db.query_one(
         f"""
         SELECT COALESCE(SUM(s.spend), 0)::float AS spend,
@@ -3119,10 +3203,10 @@ def matrix_snapshot_delta_range(
         FROM tiktok_ad_spend_daily s
         JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
         JOIN tiktok_official_accounts a ON a.business_id = v.business_id
-        WHERE {where_sql} AND s.tiktok_item_id IS NOT NULL
+        WHERE {" AND ".join(spend_where)} AND s.tiktok_item_id IS NOT NULL
           AND s.stat_date BETWEEN %s AND %s
         """,
-        tuple(params + [date_from_actual, date_to_actual]),
+        tuple(spend_params + [date_from_actual, date_to_actual]),
     ) or {}
     spend_delta = float(spend_row.get("spend") or 0)
     paid_views_delta = int(spend_row.get("paid_views") or 0)
@@ -3168,6 +3252,10 @@ def matrix_cumulative_views_range(
     filters = filters or {}
     range_from, range_to = _matrix_date_range(date_from, date_to, days=30)
     where, params = _matrix_account_filters_sql(filters)
+    kw, kw_params = _matrix_keyword_where(filters, video_alias="v")
+    if kw:
+        where.append(kw)
+        params.extend(kw_params)
     where.append("v.create_time IS NOT NULL")
     where.append("v.create_time::date <= %s")
     params.append(range_to.isoformat())
