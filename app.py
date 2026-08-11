@@ -10111,6 +10111,27 @@ def api_tiktok_official_matrix_report_panel():
         return _api_error('tiktok_official matrix report-panel', e)
 
 
+@app.route('/api/tiktok-official/matrix-videos/cumulative-export')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_cumulative_export():
+    """累计 VV 的账号级导出（最新数据），口径同「累计 VV」看板。"""
+    try:
+        out = tiktok_official_service.build_account_vv_export(
+            filters=_matrix_filters_from_request(),
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        buf = BytesIO(out)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True,
+            download_name='tiktok_matrix_account_vv.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        return _api_error('tiktok_official matrix cumulative-export', e)
+
+
 @app.route('/api/tiktok-official/matrix-videos/unpublished-export')
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_unpublished_export():

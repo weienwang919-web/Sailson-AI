@@ -3439,6 +3439,102 @@ def matrix_report_panel(
     }
 
 
+def build_account_vv_export(
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+) -> bytes:
+    """累计 VV 的账号级导出：一行一个账号，按总 VV 从高到低。
+
+    口径跟「累计 VV」看板一致——按视频**发布日**筛选，数值取累计最新数
+    （当前态表的 video_views），不是发布日定格值。
+    """
+    filters = filters or {}
+    range_from, range_to = _matrix_date_range(date_from, date_to, days=30)
+    where, params = _matrix_account_filters_sql(filters)
+    kw, kw_params = _matrix_keyword_where(filters, video_alias="v")
+    if kw:
+        where.append(kw)
+        params.extend(kw_params)
+    where.append("v.create_time IS NOT NULL")
+    where.append(f"{_publish_day_sql('v')} BETWEEN %s AND %s")
+    params.extend([range_from, range_to])
+    where_sql = " AND ".join(where)
+
+    rows = db.query_all(
+        f"""
+        SELECT
+            COALESCE(NULLIF(a.region, ''), '未分组') AS region,
+            COALESCE(NULLIF(a.account_alias, ''), a.display_name, a.account_name, a.business_id) AS account_name,
+            a.profile_deep_link,
+            COUNT(v.item_id) AS video_count,
+            COALESCE(SUM(v.video_views), 0) AS total_vv,
+            COALESCE(SUM({_engagement_sum_sql('v')}), 0) AS total_engagement
+        FROM tiktok_official_accounts a
+        JOIN tiktok_official_video_snapshots v ON v.business_id = a.business_id
+        WHERE {where_sql}
+        GROUP BY a.business_id, a.region, a.account_alias, a.display_name, a.account_name, a.profile_deep_link
+        ORDER BY COALESCE(SUM(v.video_views), 0) DESC
+        """,
+        tuple(params),
+    ) or []
+
+    grand_total_vv = sum(int(r.get("total_vv") or 0) for r in rows)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "账号视频数量和总VV"
+    headers = [
+        "账号序号", "国家", "账号名称", "账号主页", "视频数量", "总 VV", "平均 VV",
+        "总 VV 占比", "总互动量（赞+转+评+藏）", "平均互动量", "账号互动率", "总 VV 排名",
+    ]
+    ws.append(headers)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    prev_vv = None
+    prev_rank = 0
+    for idx, r in enumerate(rows, start=1):
+        vv = int(r.get("total_vv") or 0)
+        cnt = int(r.get("video_count") or 0)
+        eng = int(r.get("total_engagement") or 0)
+        # 标准竞赛排名：总 VV 相同的并列同名次
+        if vv != prev_vv:
+            prev_rank = idx
+            prev_vv = vv
+        ws.append([
+            idx,
+            r.get("region") or "",
+            r.get("account_name") or "",
+            r.get("profile_deep_link") or "",
+            cnt,
+            vv,
+            round(vv / cnt) if cnt else 0,
+            (vv / grand_total_vv) if grand_total_vv else 0,
+            eng,
+            round(eng / cnt) if cnt else 0,
+            (eng / vv) if vv else 0,
+            prev_rank,
+        ])
+
+    # 占比和互动率按百分比显示，跟客户那份表的呈现一致
+    for col in ("H", "K"):
+        for cell in ws[col][1:]:
+            cell.number_format = "0.00%"
+    for col in ("F", "G", "I", "J"):
+        for cell in ws[col][1:]:
+            cell.number_format = "#,##0"
+
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def build_unpublished_accounts_export(
     filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
 ) -> bytes:
