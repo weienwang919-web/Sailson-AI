@@ -9944,6 +9944,16 @@ def matrix_video_dashboard_page():
     )
 
 
+@app.route('/matrix-dashboard')
+@feature_required('matrix_video_dashboard')
+def matrix_dashboard_page():
+    """合并后的新看板。旧的 /matrix-video-dashboard 暂时并存，切换与下线在阶段5 做。"""
+    return render_template(
+        'matrix_dashboard.html',
+        publish_window_hours=list(tiktok_official_service.PUBLISH_WINDOW_HOURS),
+    )
+
+
 def _matrix_csv_arg(name):
     raw = request.args.get(name) or ''
     return [v.strip() for v in raw.split(',') if v.strip()]
@@ -10353,7 +10363,12 @@ def api_mb_list_accounts():
         return blocked
     try:
         only = request.args.get('sendable') == '1'
-        accounts = mail_blaster_service.list_accounts(only_sendable=only)
+        # purpose=material / outreach 时只列该用途 + 通用的号。
+        # 两套账号是不同服务商的（素材 Outlook OAuth2，建联阿里云密码），混列很容易选错。
+        purpose = (request.args.get('purpose') or '').strip()
+        accounts = mail_blaster_service.list_accounts(
+            only_sendable=only,
+            purpose=purpose if purpose in ('material', 'outreach') else '')
         target = (request.args.get('cooldown_for') or '').strip().lower()
         if target:
             blocked_map = mail_blaster_service.cooldown_map([target]).get(target, {})
@@ -10415,6 +10430,23 @@ def api_mb_test_account(account_id):
                         'account': mail_blaster_service.test_account(account_id)})
     except Exception as e:
         logger.error(f"mail-blaster test account failed: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/accounts/<int:account_id>/test-imap', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_test_imap(account_id):
+    """测收信。和测发信分开——一个号可能能发不能收
+    （素材那批 OAuth2 号就是，scope 里只有 SMTP.Send）。"""
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        return jsonify({'status': 'success',
+                        'result': mail_blaster_service.test_imap(account_id)})
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster test imap failed: {e}")
         return _mb_fail(str(e), 500)
 
 

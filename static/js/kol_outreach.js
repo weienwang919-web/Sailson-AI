@@ -8,13 +8,14 @@ let previewIndex = 0, pollTimer = null;
 
 /* ---------- 账号池 ---------- */
 async function loadPool() {
-  try { POOL = (await api('/api/mail-blaster/accounts')).accounts; }
+  try { POOL = (await api('/api/mail-blaster/accounts?purpose=outreach')).accounts; }
   catch (e) { return toast(e.message, true); }
   const sel = document.getElementById('account');
   const keep = sel.value;
   const ok = POOL.filter(usable);
   sel.innerHTML = ok.length
-    ? ok.map(a => `<option value="${a.id}">${esc(a.email)}（今日上限 ${a.daily_limit}）</option>`).join('')
+    ? ok.map(a => `<option value="${a.id}">${esc(a.email)}（今日上限 ${a.daily_limit}${
+        a.can_receive ? '' : '，收不了回信'}）</option>`).join('')
     : '<option value="">还没有可用账号</option>';
   if (keep && ok.some(a => String(a.id) === keep)) sel.value = keep;
   onAccountChange();
@@ -32,8 +33,10 @@ function onAccountChange() {
       '并把它测试通过。</span>';
     return;
   }
-  info.textContent = `发件人显示为「${a.effective_display_name}」，落款「${a.effective_signature_name}」` +
-    (a.daily_limit === 0 ? '　⚠️ 每日上限是 0，这个账号今天发不出去' : '');
+  info.innerHTML = esc(`发件人显示为「${a.effective_display_name}」，落款「${a.effective_signature_name}」`) +
+    (a.daily_limit === 0 ? '　<span style="color:var(--err)">⚠️ 每日上限是 0，这个账号今天发不出去</span>' : '') +
+    (a.can_receive ? '' :
+      '　<span style="color:var(--err)">⚠️ 没配 IMAP 或是 OAuth2 号，收不到达人回信</span>');
 }
 
 /* ---------- 第 2 步：名单（粘贴 / Excel 两个入口，同一个结果） ---------- */
