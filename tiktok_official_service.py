@@ -1628,25 +1628,63 @@ def sync_ad_spend_for_advertiser(advertiser_id: str, start_date: date, end_date:
     return upserted
 
 
+# 瞬时网络故障的特征。TikTok 接口在并发稍高时会出现 SSL 握手中断、连接重置、读超时，
+# 退避重试一次基本就过——不重试的话该账户当天的数据会静默整块缺失，事后很难发现。
+_TRANSIENT_ERROR_MARKERS = (
+    "ssl", "eof occurred", "timed out", "timeout", "connection reset",
+    "connection aborted", "connection refused", "max retries exceeded",
+    "remote end closed", "bad gateway", "service unavailable", "temporarily",
+)
+_AD_SYNC_RETRIES = 3
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """只重试瞬时故障。鉴权失败、参数错误重试多少次都一样，不浪费时间和配额。"""
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(m in text for m in _TRANSIENT_ERROR_MARKERS)
+
+
 def sync_all_ad_spend(start_date: date, end_date: date) -> dict[str, Any]:
     """遍历全部已授权 advertiser_id：先刷新 ad→视频归因映射，再只拉命中的 ad 的消耗。
 
     单个账户失败不影响其他账户（沿用旧版账户级同步已验证过的失败隔离模式）。
+    瞬时网络错误按 2/4 秒退避重试，避免一次抖动就让该账户当天数据整块缺失。
     """
     tokens = list_advertiser_tokens(limit=1000)
     ok = 0
     failed: list[dict[str, str]] = []
+    retried = 0
     total_upserted = 0
     for row in tokens:
         advertiser_id = row["advertiser_id"]
-        try:
-            sync_ad_video_map_for_advertiser(advertiser_id)
-            total_upserted += sync_ad_spend_for_advertiser(advertiser_id, start_date, end_date)
-            ok += 1
-        except Exception as exc:
-            logger.error(f"投流消耗同步失败 advertiser_id={advertiser_id}: {exc}")
-            failed.append({"advertiser_id": advertiser_id, "error": str(exc)})
-    return {"ok": ok, "failed": failed, "total_advertisers": len(tokens), "upserted_rows": total_upserted}
+        last_exc = None
+        for attempt in range(1, _AD_SYNC_RETRIES + 1):
+            try:
+                sync_ad_video_map_for_advertiser(advertiser_id)
+                total_upserted += sync_ad_spend_for_advertiser(advertiser_id, start_date, end_date)
+                ok += 1
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= _AD_SYNC_RETRIES or not _is_transient_error(exc):
+                    break
+                retried += 1
+                wait = 2 ** attempt
+                logger.warning(
+                    f"投流消耗同步瞬时失败，{wait}s 后重试 ({attempt}/{_AD_SYNC_RETRIES - 1}) "
+                    f"advertiser_id={advertiser_id}: {str(exc)[:120]}"
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            logger.error(f"投流消耗同步失败 advertiser_id={advertiser_id}: {last_exc}")
+            failed.append({"advertiser_id": advertiser_id, "error": str(last_exc)})
+    if failed:
+        logger.warning(f"投流消耗同步：{len(failed)}/{len(tokens)} 个账户最终失败，期间重试 {retried} 次")
+    return {
+        "ok": ok, "failed": failed, "retried": retried,
+        "total_advertisers": len(tokens), "upserted_rows": total_upserted,
+    }
 
 
 def run_ad_spend_sync_task(task_id: str, params: dict[str, Any], update_task_fn) -> None:
