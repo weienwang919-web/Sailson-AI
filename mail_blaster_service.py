@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__)
 COOLDOWN_DAYS = 7
 DEFAULT_DAILY_LIMIT = 10
 SMTP_TIMEOUT = 25
+LOCAL_SMTP_HOST = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_HOST", "127.0.0.1")
+LOCAL_SMTP_PORT = int(os.environ.get("MAIL_BLASTER_LOCAL_SMTP_PORT", "1025"))
+LOCAL_SMTP_USE_TLS = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_USE_TLS", "false").lower() == "true"
+LOCAL_SMTP_USE_SSL = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_USE_SSL", "false").lower() == "true"
 
 MAX_IMAGE_BYTES = 1_500_000
 MAX_IMAGE_EDGE = 1600
@@ -769,6 +773,72 @@ def image_html(src: str, alt: str) -> str:
     return (f'<div style="margin:16px 0"><img src="{escape(src, quote=True)}" '
             f'alt="{escape(alt or "", quote=True)}" '
             'style="max-width:600px;width:100%;height:auto;display:block;border:0"></div>')
+
+
+def _open_local_smtp():
+    """打开本地直投 SMTP，不做账号登录。适合 Mailpit / Mailhog / 本机 Postfix 测试。"""
+    client = (_SMTP_SSL(LOCAL_SMTP_HOST, LOCAL_SMTP_PORT, timeout=SMTP_TIMEOUT)
+              if LOCAL_SMTP_USE_SSL else _SMTP(LOCAL_SMTP_HOST, LOCAL_SMTP_PORT,
+                                               timeout=SMTP_TIMEOUT))
+    try:
+        client.ehlo()
+        if LOCAL_SMTP_USE_TLS and not LOCAL_SMTP_USE_SSL:
+            client.starttls()
+            client.ehlo()
+    except Exception:
+        try:
+            client.close()
+        except Exception:
+            pass
+        raise
+    return client
+
+
+def send_local_test_email(*, sender_name: str, sender_email: str, to_email: str,
+                          subject: str, body_html: str,
+                          replacement_domain: str = "") -> dict:
+    """给本机 SMTP / Mailpit 发一封测试邮件，不走账号池。"""
+    sender_email = (sender_email or "").strip().lower()
+    if "@" not in sender_email:
+        raise ValueError("发件人邮箱格式不对")
+    replacement_domain = normalize_replacement_domain(replacement_domain)
+    header_sender_email = replace_sender_domain(sender_email, replacement_domain)
+    body_html = rewrite_body_domains(body_html or "", replacement_domain)
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject or ""
+    msg["From"] = formataddr((sender_name or "", header_sender_email))
+    msg["To"] = to_email
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=header_sender_email.rsplit("@", 1)[-1])
+    plain = MIMEText(html_to_text(body_html), "plain", "utf-8")
+    html_part = MIMEText(body_html, "html", "utf-8")
+    msg.attach(plain)
+    msg.attach(html_part)
+
+    client = _open_local_smtp()
+    try:
+        client.sendmail(header_sender_email, [to_email], msg.as_string())
+        answer = getattr(client, "last_data_response", None)
+        if answer:
+            code, text = answer
+            smtp_response = f"{code} {text.decode('utf-8', 'replace').strip()}"
+        else:
+            smtp_response = ""
+    finally:
+        try:
+            client.quit()
+        except Exception:
+            pass
+    return {
+        "subject": msg["Subject"],
+        "body_html": body_html,
+        "sender_email": header_sender_email,
+        "smtp_response": smtp_response,
+        "message_id": msg["Message-ID"],
+        "smtp_host": LOCAL_SMTP_HOST,
+        "smtp_port": LOCAL_SMTP_PORT,
+    }
 
 
 def compose(*, subject_tpl, body_tpl, signature_tpl, sender_name, sender_email,
