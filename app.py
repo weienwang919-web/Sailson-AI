@@ -342,6 +342,19 @@ def run_scheduled_tiktok_official_ad_spend_sync():
         logger.error(f"❌ 创建 TikTok 投流消耗每日同步任务失败: {e}")
 
 
+def run_scheduled_mail_blaster_reply_poll():
+    """由 worker 自检触发：拉 KOL 建联的回信并跑 AI 分析。
+
+    只负责入队，真正的 IMAP 循环和 LLM 调用在 worker 里跑
+    ——web 这边 gunicorn 线程有限，收信+分析一轮可能要几分钟。
+    """
+    task_id = f"mbr_{uuid.uuid4().hex[:16]}"
+    create_task(task_id, None, f"mail_blaster_replies_{uuid.uuid4().hex[:8]}",
+                function_type='mail_blaster_poll_replies', lane='scheduled')
+    set_task_params(task_id, {'source': 'worker_selfcheck'})
+    return task_id
+
+
 def run_scheduled_topic_monitor_daily():
     """APScheduler 可序列化入口：全平台话题监控每日发现+抓取，按话题逐条入队。"""
     try:
@@ -9993,6 +10006,8 @@ def _matrix_filters_from_request(full=False):
         'region': request.args.get('region') or '',
         'account_type': request.args.get('account_type') or '',
         'account_ids': _matrix_account_ids_arg(),
+        # 顶部筛选面板的关键词作用于全部看板，按视频文案 caption 匹配
+        'keyword': request.args.get('keyword') or '',
     }
     if full:
         filters.update({
@@ -10000,11 +10015,12 @@ def _matrix_filters_from_request(full=False):
             'date_from': request.args.get('date_from') or '',
             'date_to': request.args.get('date_to') or '',
             'creator': request.args.get('creator') or '',
-            'keyword': request.args.get('keyword') or '',
             'only_boosted': request.args.get('only_boosted') == '1',
             'only_unboosted': request.args.get('only_unboosted') == '1',
             'engagement_filter': request.args.get('engagement_filter') or '',
             'views_filter': request.args.get('views_filter') or '',
+            'boost_status': request.args.get('boost_status') or '',
+            'paid_ratio_min': request.args.get('paid_ratio_min') or '',
         })
     return filters
 

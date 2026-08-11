@@ -27,6 +27,8 @@
     <div class="filter-bar-body" id="filter-bar-body" style="display:none;">
       <div class="account-search-row">
         <input type="text" id="account-search" placeholder="搜索达人别名 / 账号ID" oninput="renderAccountPicker()">
+        <input type="text" id="global-keyword" placeholder="关键词（搜视频文案 caption，作用于全部看板）"
+               style="flex:1;min-width:260px;" oninput="debouncedGlobalKeyword()">
         <div class="pill-row" id="type-quick-pills"></div>
       </div>
       <div class="account-groups" id="account-groups"></div>
@@ -82,6 +84,10 @@
         <button class="btn-chip" onclick="setDeltaQuickRange(7)">最近7天</button>
         <button class="btn-chip" onclick="setDeltaQuickRange(30)">最近30天</button>
         <button class="btn-chip" onclick="clearDeltaRange()">清除</button>
+        <select id="delta-region" onchange="loadSnapshotDelta()"><option value="">全部国家/地区</option></select>
+        <select id="delta-type" onchange="loadSnapshotDelta()">
+          <option value="">全部类型</option><option value="KOL">KOL</option><option value="Campaign">Campaign</option>
+        </select>
       </div>
     </div>
     <div class="delta-range-hint muted" id="delta-range-hint" style="display:none;"></div>
@@ -234,11 +240,28 @@
           <label>最新播放量</label>
           <select id="views-filter-input" onchange="applyVideoFilters()">
             <option value="">全部</option>
-            <option value="ge1000">≥1000</option>
-            <option value="lt1000">＜1000</option>
-            <option value="ge500">≥500</option>
-            <option value="lt500">＜500</option>
-            <option value="500to1000">500-1000</option>
+            <option value="ge10w">≥10万</option>
+            <option value="ge20w">≥20万</option>
+            <option value="ge50w">≥50万</option>
+            <option value="ge100w">≥100万</option>
+            <option value="lt200">＜200</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>投流状态</label>
+          <select id="boost-status-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="marked">已标记</option>
+            <option value="delivered">已投放</option>
+            <option value="closed">已关闭</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>投流占比</label>
+          <select id="paid-ratio-input" onchange="applyVideoFilters()">
+            <option value="">全部</option>
+            <option value="0.3">≥30%</option>
+            <option value="0.5">≥50%</option>
           </select>
         </div>
       </div>
@@ -267,7 +290,8 @@
             <th>作品标题/文案</th>
             <th>话题标签</th>
             <th>Spark code</th>
-            <th>投流标记</th>
+            <th>投流状态</th>
+            <th>投流数量</th>
             <th>账号ID</th>
             <th>视频ID</th>
             <th class="sortable" data-sort="video_views">播放量（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'video_views')">▾</span><div class="sort-menu" id="sort-menu-video_views"><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'asc')">▲ 从低到高</div></div></th>
@@ -313,7 +337,7 @@ let selectedAccountIds = new Set();
 let filterBarOpen = false;
 
 let videos = [];
-let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '', engagement_filter: '', views_filter: '' };
+let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '', engagement_filter: '', views_filter: '', boost_status: '', paid_ratio_min: '' };
 let selectedRegions = new Set();
 let videoSort = { field: 'create_time', order: 'desc' };
 let limit = 50;
@@ -357,8 +381,18 @@ function accountIdsParam() {
 function withAccountIds(params) {
   const ids = accountIdsParam();
   if (ids) params.set('account_ids', ids);
+  const kw = (document.getElementById('global-keyword') || {}).value;
+  if (kw && kw.trim()) params.set('keyword', kw.trim());
   return params;
 }
+
+// 顶部关键词作用于全部看板，输入时防抖后统一刷新
+let globalKeywordTimer = null;
+function debouncedGlobalKeyword() {
+  clearTimeout(globalKeywordTimer);
+  globalKeywordTimer = setTimeout(() => refreshAll(), 450);
+}
+window.debouncedGlobalKeyword = debouncedGlobalKeyword;
 
 // PUBG MOBILE 官方品牌主账号，误加进了官号授权体系，不是矩阵切片账号，矩阵看板不展示该账号
 const MATRIX_EXCLUDED_BUSINESS_IDS = new Set(['-000UA9EpttJ5qzoWWRbZ7pT7qyGfmhW62C2']);
@@ -378,12 +412,16 @@ async function loadAccountsForPicker() {
 }
 
 function renderOverviewRegionOptions() {
-  const sel = document.getElementById('ov-region');
-  if (!sel) return;
-  const prev = sel.value;
+  // 总览和每日快照各有一个地区下拉，选项都来自账号配置的 region，一起填
   const regions = Array.from(new Set(accountsList.map(a => a.region).filter(Boolean))).sort((a, b) => a.localeCompare(b));
-  sel.innerHTML = '<option value="">全部国家/地区</option>' + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
-  if (regions.includes(prev)) sel.value = prev;
+  ['ov-region', 'delta-region'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">全部国家/地区</option>'
+      + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    if (regions.includes(prev)) sel.value = prev;
+  });
 }
 
 function allKnownRegions() {
@@ -816,6 +854,10 @@ function clearDeltaRange() {
 async function loadSnapshotDelta() {
   try {
     const params = withAccountIds(new URLSearchParams());
+    const dr = document.getElementById('delta-region').value;
+    const dty = document.getElementById('delta-type').value;
+    if (dr) params.set('region', dr);
+    if (dty) params.set('account_type', dty);
     const df = document.getElementById('delta-date-from').value;
     const dt = document.getElementById('delta-date-to').value;
     if (df) params.set('date_from', df);
@@ -832,11 +874,14 @@ async function loadSnapshotDelta() {
 function renderSnapshotDelta(d) {
   document.getElementById('delta-new-videos').textContent = fmt(d.new_video_count || 0);
   document.getElementById('delta-views').innerHTML = fmtDelta(d.views_delta);
+  // 红=本期新发布内容带来的增量，灰=存量老内容的自然增长
   document.getElementById('delta-views-breakdown').innerHTML =
-    `<div>今日新发布视频播放量：${fmt(d.new_video_views || 0)}</div><div>往日发布视频新增播放量：${fmtDelta(d.existing_video_views_delta)}</div>`;
+    `<div class="stat-up">新内容增量：${fmt(d.new_video_views || 0)}</div>`
+    + `<div class="muted">老内容增量：${fmt(d.existing_video_views_delta || 0)}</div>`;
   document.getElementById('delta-engagement').innerHTML = fmtDelta(d.engagement_delta);
   document.getElementById('delta-engagement-breakdown').innerHTML =
-    `<div>今日新发布视频互动量：${fmt(d.new_video_engagement || 0)}</div><div>往日发布视频新增互动量：${fmtDelta(d.existing_video_engagement_delta)}</div>`;
+    `<div class="stat-up">新内容增量：${fmt(d.new_video_engagement || 0)}</div>`
+    + `<div class="muted">老内容增量：${fmt(d.existing_video_engagement_delta || 0)}</div>`;
   document.getElementById('delta-rate-change').textContent = pct(d.engagement_rate_end);
   document.getElementById('delta-paid').textContent = fmt(d.paid_views_delta || 0);
   document.getElementById('delta-paid-breakdown').innerHTML =
@@ -980,6 +1025,8 @@ function applyVideoFilters() {
   videoFilters.only_unboosted = boostedFilter === 'unboosted' ? '1' : '';
   videoFilters.engagement_filter = document.getElementById('engagement-filter-input').value;
   videoFilters.views_filter = document.getElementById('views-filter-input').value;
+  videoFilters.boost_status = document.getElementById('boost-status-input').value;
+  videoFilters.paid_ratio_min = document.getElementById('paid-ratio-input').value;
   offset = 0;
   loadVideos();
 }
@@ -1116,7 +1163,16 @@ function renderVideos() {
         <td class="caption-cell" title="${esc(caption)}">${esc(caption)}</td>
         <td><div class="hashtags">${hashtags || '<span class="muted">-</span>'}</div></td>
         <td>${sparkCell}</td>
-        <td style="text-align:center;"><input type="checkbox" ${v.is_boosted ? 'checked' : ''} onchange="toggleBoosted('${esc(v.business_id)}', '${esc(v.item_id)}', this)"></td>
+        <td>
+          <select class="tag-input" style="width:96px"
+                  onchange="setBoostStatus('${esc(v.business_id)}', '${esc(v.item_id)}', this)">
+            <option value=""${!v.boost_status ? ' selected' : ''}>—</option>
+            <option value="marked"${v.boost_status === 'marked' ? ' selected' : ''}>已标记</option>
+            <option value="delivered"${v.boost_status === 'delivered' ? ' selected' : ''}>已投放</option>
+            <option value="closed"${v.boost_status === 'closed' ? ' selected' : ''}>已关闭</option>
+          </select>
+        </td>
+        <td>${adCell(v)}</td>
         <td>${esc(fmt(v.business_id))}</td>
         <td>${esc(fmt(v.item_id))}</td>
         <td>${fmt(v.video_views)}</td>
@@ -1177,6 +1233,33 @@ async function saveTags(businessId, itemId, taskInput, kolInput) {
   }
 }
 window.saveTags = saveTags;
+
+// 投流数量：消耗 + 付费播放 + 占该视频累计播放的比例
+function adCell(v) {
+  const paid = Number(v.ad_paid_views || 0);
+  if (!paid && !Number(v.ad_spend || 0)) return '<span class="muted">-</span>';
+  const ratio = v.ad_paid_ratio == null ? '' : ` <span class="muted">(${pct(v.ad_paid_ratio)})</span>`;
+  return `<div>${fmt(paid)}${ratio}</div>`
+    + `<div class="muted" style="font-size:11px;">消耗 ${Number(v.ad_spend || 0).toFixed(2)}</div>`;
+}
+
+async function setBoostStatus(businessId, itemId, sel) {
+  const prev = sel.dataset.prev || '';
+  try {
+    await fetchJson(`/api/tiktok-official/matrix-videos/${encodeURIComponent(businessId)}/${encodeURIComponent(itemId)}/boosted`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boost_status: sel.value }),
+    });
+    const video = videos.find(x => x.business_id === businessId && x.item_id === itemId);
+    if (video) video.boost_status = sel.value;
+    sel.dataset.prev = sel.value;
+  } catch (e) {
+    sel.value = prev;
+    alert('保存投流状态失败：' + e.message);
+  }
+}
+window.setBoostStatus = setBoostStatus;
 
 async function toggleBoosted(businessId, itemId, checkbox) {
   const video = videos.find(v => v.business_id === businessId && v.item_id === itemId);
