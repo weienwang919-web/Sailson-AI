@@ -14,6 +14,7 @@
   <h1>矩阵号视频监控看板</h1>
   <div class="subtitle">PUBG Mobile 矩阵号切片视频数据汇总，用于客户回报及优秀视频复刻激励。</div>
   <a class="back-link" href="/">← 返回首页</a>
+  <button class="btn btn-secondary btn-sm" style="margin-left:14px;" onclick="openOpsModal()">账号运维</button>
 </div>
 
 <div class="container">
@@ -182,139 +183,6 @@
     <div class="status" id="rp-status"></div>
   </div>
 
-  <div class="board" id="board-ops">
-    <div class="filter-bar-header" onclick="toggleOpsPanel()">
-      <div class="filter-bar-title">账号运维</div>
-      <div class="filter-bar-summary">刷新同步 · 矩阵授权 · Spark · 账号配置 · 主页趋势</div>
-      <div class="filter-bar-chevron" id="ops-chevron">▾</div>
-    </div>
-    <div id="ops-body" style="display:none; margin-top:22px;">
-  <div class="card">
-    <h2>刷新与导出</h2>
-    <div class="toolbar">
-      <div>
-        <label>账号</label>
-        <select id="account-select"><option value="">全部账号</option></select>
-      </div>
-      <div>
-        <label>主页趋势天数</label>
-        <input id="profile-days" type="number" min="1" max="60" value="30">
-      </div>
-      <div>
-        <label>视频页数（每页最多20）</label>
-        <input id="max-pages" type="number" min="1" max="50" value="5">
-      </div>
-      <button class="btn btn-primary" id="refresh-btn" onclick="refreshOfficial()">刷新官方数据</button>
-      <button class="btn btn-secondary" onclick="openBusinessAuth()">广告主授权</button>
-      <button class="btn btn-secondary" onclick="loadAll()">重新加载</button>
-    </div>
-    <div class="status" id="refresh-status"></div>
-  </div>
-
-  <div class="card">
-    <h2>账号矩阵授权</h2>
-    <div class="toolbar">
-      <div>
-        <label>账号别名</label>
-        <input id="invite-alias" type="text" placeholder="例如 TH-Brand-01" style="min-width:220px;">
-      </div>
-      <div>
-        <label>有效期</label>
-        <select id="invite-ttl">
-          <option value="3600">1 小时</option>
-          <option value="86400" selected>24 小时</option>
-          <option value="259200">3 天</option>
-          <option value="604800">7 天</option>
-          <option value="never">永不过期</option>
-        </select>
-      </div>
-      <button class="btn btn-primary" onclick="generateInviteLink()">生成授权邀请链接</button>
-      <button class="btn btn-secondary" onclick="generateSparkInviteLink()" title="用另一个已申请到 biz.spark.auth 权限的新 App 单独授权，只在这个账号需要投流时用一次，不影响主授权">生成 Spark 授权链接</button>
-      <button class="btn btn-secondary" onclick="exportSparkInviteBatch()" title="导出所有账号的 Spark 授权链接（已授权的只标记状态，不重复生成）">批量导出 Spark 授权链接表格</button>
-    </div>
-    <div class="status" id="invite-status"></div>
-    <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
-    <div class="status" id="spark-invite-status"></div>
-    <textarea id="spark-invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
-
-    <div style="margin-top:16px;border-top:1px solid #eee;padding-top:14px;">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">批量生成（每行一个账号别名）</div>
-      <textarea id="batch-invite-aliases" placeholder="TH-Brand-01&#10;TH-Brand-02&#10;..." style="width:100%;height:80px;font-size:12px;"></textarea>
-      <div class="toolbar" style="margin-top:8px;">
-        <button class="btn btn-primary" onclick="generateInviteLinksBatch()">批量生成邀请链接</button>
-      </div>
-      <div class="status" id="batch-invite-status"></div>
-      <textarea id="batch-invite-links" readonly style="display:none;width:100%;margin-top:8px;height:160px;font-size:12px;"></textarea>
-    </div>
-
-    <div style="margin-top:14px;">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">邀请记录</div>
-      <div class="table-wrap" style="max-height:220px;">
-        <table>
-          <thead>
-            <tr><th>别名</th><th>状态</th><th>创建时间</th><th>过期时间</th><th>授权人</th><th>链接</th></tr>
-          </thead>
-          <tbody id="invites-body"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div style="margin-top:14px;">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">已完成 Spark 授权的账号</div>
-      <div class="table-wrap" style="max-height:200px;">
-        <table>
-          <thead>
-            <tr><th>别名</th><th>scope</th><th>授权人</th><th>更新时间</th></tr>
-          </thead>
-          <tbody id="spark-tokens-body"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>官号总览<span id="accounts-count" style="font-weight:400;font-size:12px;color:#666;"></span></h2>
-    <div class="toolbar" style="margin-bottom:12px;">
-      <div>
-        <label>查找</label>
-        <input id="account-search" type="text" placeholder="用户名/账号名/别名" oninput="renderAccounts()" style="min-width:220px;">
-      </div>
-      <div>
-        <label>粉丝数筛选</label>
-        <select id="followers-filter" onchange="renderAccounts()">
-          <option value="">全部</option>
-          <option value="900to1000">900-1000（补粉候选）</option>
-          <option value="needs_boost">已标记需补粉</option>
-        </select>
-      </div>
-      <div>
-        <label>国家筛选</label>
-        <select id="region-filter" onchange="renderAccounts()">
-          <option value="">全部</option>
-        </select>
-      </div>
-      <button class="btn btn-secondary" onclick="exportNeedsBoostLinks()">导出需补粉主页链接</button>
-    </div>
-    <div class="grid" id="accounts"></div>
-  </div>
-
-  <div class="card">
-    <h2>主页每日趋势</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>日期</th><th>账号</th><th>粉丝数</th><th>播放</th><th>触达</th><th>主页访问</th><th>点赞</th><th>评论</th><th>分享</th><th>新增粉</th><th>掉粉</th>
-          </tr>
-        </thead>
-        <tbody id="metrics-body"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="card">
-    </div>
-  </div>
 
   <div class="board" id="board-videos">
     <div class="board-head"><h2>视频明细</h2></div>
@@ -446,6 +314,138 @@
     </div>
   </div>
 
+</div>
+
+<div class="modal-overlay" id="ops-modal">
+  <div class="modal-panel" style="max-width:1100px;">
+    <div class="modal-panel-header">
+      <h3>账号运维</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeOpsModal()">关闭</button>
+    </div>
+  <div class="card">
+    <h2>刷新与导出</h2>
+    <div class="toolbar">
+      <div>
+        <label>账号</label>
+        <select id="account-select"><option value="">全部账号</option></select>
+      </div>
+      <div>
+        <label>主页趋势天数</label>
+        <input id="profile-days" type="number" min="1" max="60" value="30">
+      </div>
+      <div>
+        <label>视频页数（每页最多20）</label>
+        <input id="max-pages" type="number" min="1" max="50" value="5">
+      </div>
+      <button class="btn btn-primary" id="refresh-btn" onclick="refreshOfficial()">刷新官方数据</button>
+      <button class="btn btn-secondary" onclick="openBusinessAuth()">广告主授权</button>
+      <button class="btn btn-secondary" onclick="loadAll()">重新加载</button>
+    </div>
+    <div class="status" id="refresh-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>账号矩阵授权</h2>
+    <div class="toolbar">
+      <div>
+        <label>账号别名</label>
+        <input id="invite-alias" type="text" placeholder="例如 TH-Brand-01" style="min-width:220px;">
+      </div>
+      <div>
+        <label>有效期</label>
+        <select id="invite-ttl">
+          <option value="3600">1 小时</option>
+          <option value="86400" selected>24 小时</option>
+          <option value="259200">3 天</option>
+          <option value="604800">7 天</option>
+          <option value="never">永不过期</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="generateInviteLink()">生成授权邀请链接</button>
+      <button class="btn btn-secondary" onclick="generateSparkInviteLink()" title="用另一个已申请到 biz.spark.auth 权限的新 App 单独授权，只在这个账号需要投流时用一次，不影响主授权">生成 Spark 授权链接</button>
+      <button class="btn btn-secondary" onclick="exportSparkInviteBatch()" title="导出所有账号的 Spark 授权链接（已授权的只标记状态，不重复生成）">批量导出 Spark 授权链接表格</button>
+    </div>
+    <div class="status" id="invite-status"></div>
+    <textarea id="invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
+    <div class="status" id="spark-invite-status"></div>
+    <textarea id="spark-invite-link" readonly style="display:none;width:100%;margin-top:8px;height:60px;font-size:12px;"></textarea>
+
+    <div style="margin-top:16px;border-top:1px solid #eee;padding-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">批量生成（每行一个账号别名）</div>
+      <textarea id="batch-invite-aliases" placeholder="TH-Brand-01&#10;TH-Brand-02&#10;..." style="width:100%;height:80px;font-size:12px;"></textarea>
+      <div class="toolbar" style="margin-top:8px;">
+        <button class="btn btn-primary" onclick="generateInviteLinksBatch()">批量生成邀请链接</button>
+      </div>
+      <div class="status" id="batch-invite-status"></div>
+      <textarea id="batch-invite-links" readonly style="display:none;width:100%;margin-top:8px;height:160px;font-size:12px;"></textarea>
+    </div>
+
+    <div style="margin-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">邀请记录</div>
+      <div class="table-wrap" style="max-height:220px;">
+        <table>
+          <thead>
+            <tr><th>别名</th><th>状态</th><th>创建时间</th><th>过期时间</th><th>授权人</th><th>链接</th></tr>
+          </thead>
+          <tbody id="invites-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">已完成 Spark 授权的账号</div>
+      <div class="table-wrap" style="max-height:200px;">
+        <table>
+          <thead>
+            <tr><th>别名</th><th>scope</th><th>授权人</th><th>更新时间</th></tr>
+          </thead>
+          <tbody id="spark-tokens-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>官号总览<span id="accounts-count" style="font-weight:400;font-size:12px;color:#666;"></span></h2>
+    <div class="toolbar" style="margin-bottom:12px;">
+      <div>
+        <label>查找</label>
+        <input id="account-search" type="text" placeholder="用户名/账号名/别名" oninput="renderAccounts()" style="min-width:220px;">
+      </div>
+      <div>
+        <label>粉丝数筛选</label>
+        <select id="followers-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+          <option value="900to1000">900-1000（补粉候选）</option>
+          <option value="needs_boost">已标记需补粉</option>
+        </select>
+      </div>
+      <div>
+        <label>国家筛选</label>
+        <select id="region-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary" onclick="exportNeedsBoostLinks()">导出需补粉主页链接</button>
+    </div>
+    <div class="grid" id="accounts"></div>
+  </div>
+
+  <div class="card">
+    <h2>主页每日趋势</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>日期</th><th>账号</th><th>粉丝数</th><th>播放</th><th>触达</th><th>主页访问</th><th>点赞</th><th>评论</th><th>分享</th><th>新增粉</th><th>掉粉</th>
+          </tr>
+        </thead>
+        <tbody id="metrics-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  </div>
 </div>
 
 <div class="modal-overlay" id="publish-windows-modal">
@@ -1540,15 +1540,17 @@ window.openPublishWindowsModal = openPublishWindowsModal;
    旧页的视频导出勾选逻辑一并去掉了（依赖那张不再存在的表）。 */
 let opsLoaded = false;
 
-function toggleOpsPanel() {
-  const body = document.getElementById('ops-body');
-  const open = body.style.display === 'none';
-  body.style.display = open ? 'block' : 'none';
-  document.getElementById('ops-chevron').classList.toggle('open', open);
-  // 运维数据只在首次展开时拉，不拖慢看板首屏
-  if (open && !opsLoaded) { opsLoaded = true; loadOpsAll(); }
+function openOpsModal() {
+  document.getElementById('ops-modal').classList.add('open');
+  // 运维数据只在首次打开时拉，不拖慢看板首屏
+  if (!opsLoaded) { opsLoaded = true; loadOpsAll(); }
 }
-window.toggleOpsPanel = toggleOpsPanel;
+window.openOpsModal = openOpsModal;
+
+function closeOpsModal() {
+  document.getElementById('ops-modal').classList.remove('open');
+}
+window.closeOpsModal = closeOpsModal;
 
 async function loadOpsAll() {
   await loadAccounts();

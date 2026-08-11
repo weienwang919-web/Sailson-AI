@@ -219,3 +219,23 @@ tbody tr:hover { background: rgba(15,23,42,.025); }
 /* ---- 数据覆盖率提示 ---- */
 .coverage-note { font-size: 11.5px; color: var(--text-tertiary); margin-top: 10px; line-height: 1.6; }
 .coverage-note strong { color: var(--text-secondary); font-weight: 600; }
+#ops-modal .card {background: #fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.06);}
+#ops-modal .card h2 {font-size: 15px; font-weight: 700; margin-bottom: 12px; border-left: 4px solid #111827; padding-left: 10px;}
+#ops-modal .hint {font-size: 12px; color: #666; line-height: 1.55; margin-bottom: 12px; background: #f8f9fa; padding: 10px 12px; border-radius: 8px;}
+#ops-modal .toolbar {display: flex; flex-wrap: wrap; gap: 10px; align-items: end;}
+#ops-modal .status {margin-top: 10px; font-size: 12px; color: #666; min-height: 18px; word-break: break-all;}
+#ops-modal .status.err {color: #c0392b;}
+#ops-modal .status.ok {color: #2d7a2d;}
+#ops-modal .grid {display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px;}
+#ops-modal .account {border: 1px solid #eef0f3; border-radius: 12px; padding: 12px; background: #fbfbfc;}
+#ops-modal .account-title {font-weight: 700; font-size: 14px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px;}
+#ops-modal .metric-line {color: #555; font-size: 12px; line-height: 1.8;}
+#ops-modal .pill {display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; background: #e5e7eb; color: #374151;}
+#ops-modal .pill-ok {background: #dcfce7; color: #166534;}
+#ops-modal .pill-pending {background: #fef3c7; color: #92400e;}
+#ops-modal .pill-err {background: #fee2e2; color: #991b1b;}
+#ops-modal .copy-btn {border: none; background: #eef2ff; color: #3730a3; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer;}
+#ops-modal .copy-btn:hover {background: #e0e7ff;}
+#ops-modal .table-wrap {overflow: auto; max-height: 540px; border: 1px solid #eee; border-radius: 10px;}
+#ops-modal .muted {color: #777;}
+#ops-modal .link {color: #1a7fd4; text-decoration: none;}
