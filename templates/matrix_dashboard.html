@@ -52,17 +52,85 @@
       <div class="stat-card"><div class="stat-label">投流占比</div><div class="stat-value" id="ov-paid-ratio">-</div></div>
     </div>
     <div class="coverage-note" id="ov-coverage"></div>
-    <div class="chart-pies">
+    <div class="chart-row">
       <div>
-        <div class="chart-col-title">各国播放量占比</div>
-        <div class="chart-wrap"><canvas id="viewsPie"></canvas></div>
+        <div class="chart-col-title">按发布日的定格数据（播放量 / 互动 / 投流）</div>
+        <div class="chart-wrap"><canvas id="ovChart"></canvas></div>
       </div>
-      <div>
-        <div class="chart-col-title">各国投流消耗占比</div>
-        <div class="chart-wrap"><canvas id="spendPie"></canvas></div>
+      <div class="chart-pies">
+        <div>
+          <div class="chart-col-title">各国播放量占比</div>
+          <div class="chart-wrap"><canvas id="viewsPie"></canvas></div>
+        </div>
+        <div>
+          <div class="chart-col-title">各国投流消耗占比</div>
+          <div class="chart-wrap"><canvas id="spendPie"></canvas></div>
+        </div>
       </div>
     </div>
   </div>
+
+
+
+  <div class="board" id="board-delta">
+    <div class="board-head">
+      <h2>每日快照增量</h2>
+      <div class="date-range-controls">
+        <input type="date" id="delta-date-from" onchange="loadSnapshotDelta()">
+        <span class="date-sep">→</span>
+        <input type="date" id="delta-date-to" onchange="loadSnapshotDelta()">
+        <button class="btn-chip" onclick="setDeltaQuickRange(7)">最近7天</button>
+        <button class="btn-chip" onclick="setDeltaQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="clearDeltaRange()">清除</button>
+      </div>
+    </div>
+    <div class="delta-range-hint muted" id="delta-range-hint" style="display:none;"></div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">新增视频数</div><div class="stat-value" id="delta-new-videos">-</div></div>
+      <div class="stat-card">
+        <div class="stat-label">本期总新增播放量</div>
+        <div class="stat-value" id="delta-views">-</div>
+        <div class="stat-breakdown" id="delta-views-breakdown"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">本期总新增互动量（赞+转+评+藏）</div>
+        <div class="stat-value" id="delta-engagement">-</div>
+        <div class="stat-breakdown" id="delta-engagement-breakdown"></div>
+      </div>
+      <div class="stat-card"><div class="stat-label">互动率</div><div class="stat-value" id="delta-rate-change">-</div></div>
+      <div class="stat-card">
+        <div class="stat-label">新增投流量</div>
+        <div class="stat-value" id="delta-paid">-</div>
+        <div class="stat-breakdown" id="delta-paid-breakdown"></div>
+      </div>
+    </div>
+    <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
+  </div>
+
+  <div class="board" id="board-cumulative">
+    <div class="board-head">
+      <h2>累计 VV</h2>
+      <div class="date-range-controls">
+        <input type="date" id="cum-date-from" onchange="loadCumulative()">
+        <span class="date-sep">→</span>
+        <input type="date" id="cum-date-to" onchange="loadCumulative()">
+        <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
+        <button class="btn-chip" onclick="clearCumulativeRange()">清除</button>
+      </div>
+    </div>
+    <div class="board-note" style="display:block;">
+      日期筛选的是<strong>视频发布日期</strong>，不是统计日期；数值是每日更新的累计最新数（如 6.3 查 6.1 发布的视频，看到的是 6.3 的最新值）。
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">视频条数</div><div class="stat-value" id="cum-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">播放量</div><div class="stat-value" id="cum-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">互动数（赞+评+转+藏）</div><div class="stat-value" id="cum-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="cum-rate">-</div></div>
+    </div>
+    <div class="chart-wrap" id="cum-chart-wrap" style="display:none;"><canvas id="cumChart"></canvas></div>
+  </div>
+
 
   <div class="board" id="board-report">
     <div class="board-head">
@@ -104,73 +172,6 @@
     <div class="board-head" style="margin:22px 0 12px;"><h2 style="font-size:13px;">播放量分档条数（累计最新数）</h2></div>
     <div class="tier-list" id="rp-tiers"></div>
     <div class="status" id="rp-status"></div>
-  </div>
-
-
-  <div class="board" id="board-publish">
-    <div class="board-head">
-      <h2>按发布时间筛选</h2>
-      <div class="date-range-controls">
-        <input type="date" id="pub-date-from" onchange="loadPublishRange()">
-        <span class="date-sep">→</span>
-        <input type="date" id="pub-date-to" onchange="loadPublishRange()">
-        <button class="btn-chip" onclick="setPublishQuickRange(7)">最近7天</button>
-        <button class="btn-chip" onclick="setPublishQuickRange(30)">最近30天</button>
-        <button class="btn-chip" onclick="clearPublishRange()">清除</button>
-      </div>
-    </div>
-    <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">视频条数</div><div class="stat-value" id="pub-videos">-</div></div>
-      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="pub-views">-</div></div>
-      <div class="stat-card"><div class="stat-label">总互动量（赞+评+转+藏）</div><div class="stat-value" id="pub-engagement">-</div></div>
-      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="pub-rate">-</div></div>
-    </div>
-    <div class="chart-wrap" id="pub-chart-wrap" style="display:none;"><canvas id="pubChart"></canvas></div>
-  </div>
-
-  <div class="board" id="board-delta">
-    <div class="board-head">
-      <h2>每日快照增量</h2>
-      <div class="date-range-controls">
-        <input type="date" id="delta-date-from" onchange="loadSnapshotDelta()">
-        <span class="date-sep">→</span>
-        <input type="date" id="delta-date-to" onchange="loadSnapshotDelta()">
-        <button class="btn-chip" onclick="setDeltaQuickRange(7)">最近7天</button>
-        <button class="btn-chip" onclick="setDeltaQuickRange(30)">最近30天</button>
-        <button class="btn-chip" onclick="clearDeltaRange()">清除</button>
-      </div>
-    </div>
-    <div class="delta-range-hint muted" id="delta-range-hint" style="display:none;"></div>
-    <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">新增视频数</div><div class="stat-value" id="delta-new-videos">-</div></div>
-      <div class="stat-card">
-        <div class="stat-label">本期总新增播放量</div>
-        <div class="stat-value" id="delta-views">-</div>
-        <div class="stat-breakdown" id="delta-views-breakdown"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">本期总新增互动量（赞+转+评+藏）</div>
-        <div class="stat-value" id="delta-engagement">-</div>
-        <div class="stat-breakdown" id="delta-engagement-breakdown"></div>
-      </div>
-      <div class="stat-card"><div class="stat-label">互动率</div><div class="stat-value" id="delta-rate-change">-</div></div>
-    </div>
-    <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
-  </div>
-
-  <div class="board" id="board-cumulative">
-    <div class="board-head">
-      <h2>累计总播放量</h2>
-      <div class="date-range-controls">
-        <input type="date" id="cum-date-from" onchange="loadCumulativeViews()">
-        <span class="date-sep">→</span>
-        <input type="date" id="cum-date-to" onchange="loadCumulativeViews()">
-        <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
-        <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
-        <button class="btn-chip" onclick="clearCumulativeRange()">清除</button>
-      </div>
-    </div>
-    <div class="chart-wrap" id="cum-chart-wrap" style="display:none;"><canvas id="cumChart"></canvas></div>
   </div>
 
   <div class="board" id="board-videos">
@@ -320,7 +321,7 @@ let offset = 0;
 let total = 0;
 let debounceTimer = null;
 
-let pubChartInstance = null;
+
 let deltaChartInstance = null;
 let cumChartInstance = null;
 
@@ -548,12 +549,10 @@ async function refreshAll() {
   // 总览是全量口径，必须在“按发布时间筛选”读完之后再读，
   // 这样即使后台同步在两次请求之间插入新数据，总览也只会更大不会更小，
   // 保证“筛选结果 <= 总览”恒成立。
-  await loadPublishRange();
   loadOverview();
   loadSnapshotDelta();
-  loadCumulativeViews();
+  loadCumulative();
   loadReportPanel();
-  loadAdSpendPies();
   loadVideos();
 }
 
@@ -577,6 +576,8 @@ function renderOverview(d) {
   document.getElementById('ov-views').textContent = fmt(d.total_views || 0);
   document.getElementById('ov-engagement').textContent = fmt(d.total_engagement || 0);
   document.getElementById('ov-rate').textContent = pct(d.engagement_rate || 0);
+  document.getElementById('ov-paid-views').textContent = fmt(d.total_paid_views || 0);
+  document.getElementById('ov-paid-ratio').textContent = pct(d.paid_view_ratio || 0);
 
   // 定格口径的覆盖率要显式说明，否则「视频条数」比实际少会被当成 bug
   const note = document.getElementById('ov-coverage');
@@ -590,6 +591,7 @@ function renderOverview(d) {
   } else {
     note.textContent = '';
   }
+  renderOverviewCharts(d);
 }
 
 /* ---------------- 总览：投流指标与饼图 ---------------- */
@@ -628,32 +630,37 @@ function renderPie(canvasId, existing, labels, values, unitFmt) {
   });
 }
 
-async function loadAdSpendPies() {
-  // 各国播放量占比：用视频明细的汇总按地区聚合拿不到，直接读账号列表里的地区分布口径，
-  // 这里复用发布区间接口的地区维度需要后端支持，暂时用投流按国家 + 总览做双饼。
-  try {
-    const p = new URLSearchParams();
-    const [byCountry, ratio] = await Promise.all([
-      fetchJson('/api/tiktok-official/ad-spend/by-country?' + p.toString()).catch(() => ({ rows: [] })),
-      fetchJson('/api/tiktok-official/ad-spend/paid-ratio?' + p.toString()).catch(() => ({})),
-    ]);
-    document.getElementById('ov-paid-views').textContent = fmt(ratio.paid_views || 0);
-    document.getElementById('ov-paid-ratio').textContent = pct(ratio.paid_ratio || 0);
+/* 总览的图表全部由 overview 接口一次返回的数据驱动：
+   折线 = 按发布日的定格值；两个饼 = 按**账号配置的地区**聚合（不是广告报表的 country_code） */
+let ovChartInstance = null;
 
-    const rows = (byCountry.rows || []).filter(r => Number(r.spend || 0) > 0).slice(0, 8);
-    spendPieChart = renderPie('spendPie', spendPieChart,
-      rows.map(r => r.country_code || '未归类'),
-      rows.map(r => Number(r.spend || 0)),
-      v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-
-    const vrows = (byCountry.rows || []).filter(r => Number(r.impressions || 0) > 0).slice(0, 8);
-    viewsPieChart = renderPie('viewsPie', viewsPieChart,
-      vrows.map(r => r.country_code || '未归类'),
-      vrows.map(r => Number(r.impressions || 0)), fmtShort);
-  } catch (e) {
-    document.getElementById('ov-paid-views').textContent = '-';
-    document.getElementById('ov-paid-ratio').textContent = '-';
+function renderOverviewCharts(d) {
+  const daily = d.daily || [];
+  if (ovChartInstance) ovChartInstance.destroy();
+  if (daily.length >= 2) {
+    ovChartInstance = new Chart(document.getElementById('ovChart').getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: daily.map(x => x.date),
+        datasets: [
+          { label: '播放量（发布当天）', data: daily.map(x => Number(x.views || 0)), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
+          { label: '互动量', data: daily.map(x => Number(x.engagement || 0)), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
+        ],
+      },
+      options: chartOptions(false),
+    });
+  } else {
+    ovChartInstance = null;
   }
+
+  const regions = (d.by_region || []).filter(r => Number(r.views || 0) > 0);
+  viewsPieChart = renderPie('viewsPie', viewsPieChart,
+    regions.map(r => r.region), regions.map(r => Number(r.views || 0)), fmtShort);
+
+  const spend = (d.spend_by_region || []).filter(r => Number(r.spend || 0) > 0);
+  spendPieChart = renderPie('spendPie', spendPieChart,
+    spend.map(r => r.region), spend.map(r => Number(r.spend || 0)),
+    v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 }
 
 /* ---------------- 汇报面板 ---------------- */
@@ -737,66 +744,57 @@ window.exportUnpublished = exportUnpublished;
 
 /* ---------------- 看板二：按发布时间筛选 ---------------- */
 
-function setPublishQuickRange(days) {
+/* ---------------- 看板：累计 VV（按发布日筛选，取累计最新值） ----------------
+   原先的「按发布时间筛选」和「累计总播放量」是两块板，口径其实是一回事——
+   都按视频发布日筛，都看累计最新数——按 demo 合并成一块。
+   KPI 来自 publish-range（四个数），曲线来自 cumulative-views-range。 */
+
+function setCumulativeQuickRange(days) {
   const to = new Date();
   const from = new Date();
   from.setDate(from.getDate() - (days - 1));
-  document.getElementById('pub-date-from').value = from.toISOString().slice(0, 10);
-  document.getElementById('pub-date-to').value = to.toISOString().slice(0, 10);
-  loadPublishRange();
+  document.getElementById('cum-date-from').value = from.toISOString().slice(0, 10);
+  document.getElementById('cum-date-to').value = to.toISOString().slice(0, 10);
+  loadCumulative();
+}
+window.setCumulativeQuickRange = setCumulativeQuickRange;
+
+function clearCumulativeRange() {
+  document.getElementById('cum-date-from').value = '';
+  document.getElementById('cum-date-to').value = '';
+  loadCumulative();
+}
+window.clearCumulativeRange = clearCumulativeRange;
+
+function cumParams() {
+  const params = withAccountIds(new URLSearchParams());
+  const df = document.getElementById('cum-date-from').value;
+  const dt = document.getElementById('cum-date-to').value;
+  if (df) params.set('date_from', df);
+  if (dt) params.set('date_to', dt);
+  return params;
 }
 
-function clearPublishRange() {
-  document.getElementById('pub-date-from').value = '';
-  document.getElementById('pub-date-to').value = '';
-  loadPublishRange();
-}
-
-async function loadPublishRange() {
+async function loadCumulative() {
+  const params = cumParams();
   try {
-    const params = withAccountIds(new URLSearchParams());
-    const df = document.getElementById('pub-date-from').value;
-    const dt = document.getElementById('pub-date-to').value;
-    if (df) params.set('date_from', df);
-    if (dt) params.set('date_to', dt);
     const data = await fetchJson('/api/tiktok-official/matrix-videos/publish-range?' + params.toString());
-    document.getElementById('pub-date-from').value = data.date_from || '';
-    document.getElementById('pub-date-to').value = data.date_to || '';
-    renderPublishRange(data);
+    if (!document.getElementById('cum-date-from').value) document.getElementById('cum-date-from').value = data.date_from || '';
+    if (!document.getElementById('cum-date-to').value) document.getElementById('cum-date-to').value = data.date_to || '';
+    const s = data.summary || {};
+    document.getElementById('cum-videos').textContent = fmt(s.video_count || 0);
+    document.getElementById('cum-views').textContent = fmt(s.total_views || 0);
+    document.getElementById('cum-engagement').textContent = fmt(s.total_engagement || 0);
+    document.getElementById('cum-rate').textContent = pct(s.engagement_rate || 0);
   } catch (e) {
-    renderPublishRange({ summary: {}, daily: [] });
+    ['cum-videos', 'cum-views', 'cum-engagement', 'cum-rate'].forEach(id => {
+      document.getElementById(id).textContent = '-';
+    });
   }
+  loadCumulativeViews();
 }
+window.loadCumulative = loadCumulative;
 
-function renderPublishRange(data) {
-  const s = data.summary || {};
-  document.getElementById('pub-videos').textContent = fmt(s.video_count || 0);
-  document.getElementById('pub-views').textContent = fmt(s.total_views || 0);
-  document.getElementById('pub-engagement').textContent = fmt(s.total_engagement || 0);
-  document.getElementById('pub-rate').textContent = pct(s.engagement_rate || 0);
-
-  const daily = data.daily || [];
-  const wrap = document.getElementById('pub-chart-wrap');
-  if (data.date_from === data.date_to || daily.length < 2) {
-    wrap.style.display = 'none';
-    if (pubChartInstance) { pubChartInstance.destroy(); pubChartInstance = null; }
-    return;
-  }
-  wrap.style.display = 'block';
-  const ctx = document.getElementById('pubChart').getContext('2d');
-  if (pubChartInstance) pubChartInstance.destroy();
-  pubChartInstance = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: daily.map(d => d.date),
-      datasets: [
-        { label: '播放量', data: daily.map(d => d.views), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y' },
-        { label: '互动量', data: daily.map(d => d.engagement), borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.10)', tension: .4, fill: true, pointRadius: 2, yAxisID: 'y1' },
-      ],
-    },
-    options: chartOptions(false),
-  });
-}
 
 /* ---------------- 看板三：每日快照增量 ---------------- */
 
@@ -840,6 +838,9 @@ function renderSnapshotDelta(d) {
   document.getElementById('delta-engagement-breakdown').innerHTML =
     `<div>今日新发布视频互动量：${fmt(d.new_video_engagement || 0)}</div><div>往日发布视频新增互动量：${fmtDelta(d.existing_video_engagement_delta)}</div>`;
   document.getElementById('delta-rate-change').textContent = pct(d.engagement_rate_end);
+  document.getElementById('delta-paid').textContent = fmt(d.paid_views_delta || 0);
+  document.getElementById('delta-paid-breakdown').innerHTML =
+    `消耗 ${(d.spend_delta || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const hintEl = document.getElementById('delta-range-hint');
   if (d.date_from_actual && (d.date_from_actual !== d.date_from || d.date_to_actual !== d.date_to)) {
