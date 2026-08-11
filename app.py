@@ -10241,6 +10241,12 @@ def kol_outreach_page():
         gap_min=int(mb.OUTREACH_MIN_GAP_SECONDS),
         gap_max=int(mb.OUTREACH_MAX_GAP_SECONDS),
         unsubscribe_text=mb.DEFAULT_UNSUBSCRIBE_TEXT,
+        # 回信管理页签需要的
+        statuses=(mail_inbox_service.THREAD_STATUS_TEXT if MAIL_INBOX_AVAILABLE else {}),
+        default_target=float(os.environ.get('MAIL_BLASTER_TARGET_PRICE') or 500),
+        default_ceiling=float(os.environ.get('MAIL_BLASTER_CEILING_PRICE') or 800),
+        default_currency=os.environ.get('MAIL_BLASTER_CURRENCY') or 'USD',
+        poll_minutes=int(os.environ.get('MAIL_BLASTER_REPLY_POLL_MINUTES') or 15),
     )
 
 
@@ -10646,16 +10652,8 @@ def _mi_guard():
 @app.route('/kol-inbox')
 @feature_required('mail_blaster')
 def kol_inbox_page():
-    if not MAIL_INBOX_AVAILABLE:
-        return "回信管理模块未就绪，请查看服务端日志", 503
-    return render_template(
-        'kol_inbox.html',
-        statuses=mail_inbox_service.THREAD_STATUS_TEXT,
-        default_target=float(os.environ.get('MAIL_BLASTER_TARGET_PRICE') or 500),
-        default_ceiling=float(os.environ.get('MAIL_BLASTER_CEILING_PRICE') or 800),
-        default_currency=os.environ.get('MAIL_BLASTER_CURRENCY') or 'USD',
-        poll_minutes=int(os.environ.get('MAIL_BLASTER_REPLY_POLL_MINUTES') or 15),
-    )
+    """回信管理已并进建联页的页签，这里只做重定向，保住老链接。"""
+    return redirect('/kol-outreach#inbox')
 
 
 @app.route('/api/mail-blaster/inbox/threads')

@@ -1,6 +1,19 @@
-/* KOL 回信管理页。依赖 mail_blaster_common.js（api / toast / esc）。 */
+/* KOL 回信管理。作为「回信管理」页签嵌在建联页里，
+   依赖 mail_blaster_common.js（api / toast / esc）。 */
 
 let THREADS = [], CURRENT = null, FILTER = '';
+let INBOX_LOADED = false;
+
+/* 页签切换。回信数据只在第一次点开时才拉——
+   多数时候进这个页面是来发建联的，没必要先跑一遍会话线查询。 */
+function switchTab(which) {
+  const send = which === 'send';
+  document.getElementById('pane-send').style.display = send ? '' : 'none';
+  document.getElementById('pane-inbox').style.display = send ? 'none' : '';
+  document.getElementById('tab-send').classList.toggle('on', send);
+  document.getElementById('tab-inbox').classList.toggle('on', !send);
+  if (!send && !INBOX_LOADED) { INBOX_LOADED = true; loadThreads(); }
+}
 
 const STAT_DEFS = [
   ['pending', '待回复'], ['replied', '已回复'], ['negotiating', '议价中'],
@@ -167,4 +180,8 @@ async function pollNow(btn) {
   finally { btn.disabled = false; }
 }
 
-document.addEventListener('DOMContentLoaded', loadThreads);
+/* 支持 /kol-outreach#inbox 直接落到回信页签（原 /kol-inbox 会重定向到这里）。
+   否则不主动加载——见 switchTab 的懒加载说明。 */
+document.addEventListener('DOMContentLoaded', () => {
+  if (location.hash === '#inbox') switchTab('inbox');
+});

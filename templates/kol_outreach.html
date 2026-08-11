@@ -16,6 +16,25 @@
   .mb-scope .src-row > * { flex: 1; }
   .mb-scope .src-or { flex: 0 0 auto; display: flex; align-items: center;
                       color: #86868b; font-size: 12px; }
+
+  /* ---- 回信管理页签（从原 /kol-inbox 页合并过来）---- */
+  .mb-scope .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .mb-scope .stat { background: #fff; border: 1px solid #e5e5e7; border-radius: 10px;
+  .mb-scope .stat.on { border-color: #0071e3; box-shadow: 0 0 0 3px #0071e322; }
+  .mb-scope .stat b { display: block; font-size: 20px; color: #1d1d1f; }
+  .mb-scope .stat span { font-size: 12px; color: #6e6e73; }
+  .mb-scope .split { display: grid; grid-template-columns: 420px 1fr; gap: 14px;
+  .mb-scope .tl { list-style: none; padding: 0; margin: 0; }
+  .mb-scope .tl li { border-left: 2px solid #e5e5e7; padding: 0 0 16px 14px; position: relative; }
+  .mb-scope .tl li::before { content: ''; position: absolute; left: -5px; top: 4px;
+  .mb-scope .tl .meta { font-size: 12px; color: #6e6e73; margin-bottom: 4px; }
+  .mb-scope .tl .body { white-space: pre-wrap; font-size: 13.5px; color: #1d1d1f; }
+  .mb-scope .thread-row { cursor: pointer; }
+  .mb-scope .thread-row.on { background: #f0f7ff; }
+  .mb-scope .draft { width: 100%; min-height: 160px; }
+  .mb-tabs { display:flex; gap:6px; margin-bottom:16px; }
+  .mb-tabs button { border-radius:999px; padding:7px 18px; }
+  .mb-tabs button.on { background:#0071e3; border-color:#0071e3; color:#fff; }
 </style>
 {% endblock %}
 
@@ -29,10 +48,16 @@
     <span class="spacer"></span>
     <button class="small" onclick="openAccounts()">发件账号池</button>
     <button class="small" onclick="openSuppression()">抑制名单</button>
-    <a href="/kol-inbox" class="hint" style="margin:0">回信管理 →</a>
     <a href="/mail-blaster" class="hint" style="margin:0">素材提交 →</a>
     <a href="/" class="hint" style="margin:0">← 返回首页</a>
   </div>
+
+  <div class="mb-tabs">
+    <button id="tab-send" class="on" onclick="switchTab('send')">发建联</button>
+    <button id="tab-inbox" onclick="switchTab('inbox')">回信管理</button>
+  </div>
+
+  <div id="pane-send">
 
   <div class="card">
     <h2><span class="step-no">1</span> 发件账号</h2>
@@ -129,6 +154,90 @@
     <div id="pause-box"></div>
   </div>
 
+  </div>
+
+  <div id="pane-inbox" style="display:none">
+
+
+  <div class="stats" id="stats"></div>
+
+  <div class="split">
+    <div>
+      <div class="card">
+        <div class="row" style="margin-bottom:10px">
+          <input type="text" id="q" placeholder="搜邮箱或名字" style="flex:1"
+                 onkeydown="if(event.key==='Enter')loadThreads()">
+          <button class="small" onclick="loadThreads()">搜索</button>
+        </div>
+        <table>
+          <thead><tr><th>KOL</th><th style="width:88px">状态</th>
+            <th style="width:96px">最新报价</th></tr></thead>
+          <tbody id="thread-rows"></tbody>
+        </table>
+        <div id="thread-empty" class="empty">还没有回信</div>
+      </div>
+
+      <div class="card" id="unmatched-card" style="display:none">
+        <h2>认领不了主的来信</h2>
+        <p class="hint">这些信匹配不到发出去的任何一封（对方换了地址、或服务商重写了 Message-ID）。
+          确认是哪个达人后可以手动挂到会话线上。</p>
+        <table><tbody id="unmatched-rows"></tbody></table>
+      </div>
+    </div>
+
+    <div class="card" id="detail-card">
+      <div class="empty" id="detail-empty">从左边选一条会话线</div>
+      <div id="detail" style="display:none">
+        <div class="row" style="margin-bottom:6px">
+          <h2 style="margin:0" id="d-title"></h2>
+          <span class="pill" id="d-status"></span>
+          <span class="spacer" style="margin-left:auto"></span>
+          <select id="d-set-status" style="max-width:140px" onchange="changeStatus()">
+            <option value="">改状态…</option>
+            {% for k, v in statuses.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+          </select>
+        </div>
+        <p class="hint" id="d-meta"></p>
+        <div class="banner" id="d-next" style="display:none"></div>
+
+        <h2 style="margin-top:18px">往来</h2>
+        <ul class="tl" id="d-timeline"></ul>
+
+        <h2>报价历史</h2>
+        <table>
+          <thead><tr><th style="width:60px">版本</th><th style="width:100px">谁</th>
+            <th style="width:120px">金额</th><th>说明</th><th style="width:130px">时间</th></tr></thead>
+          <tbody id="d-quotes"></tbody>
+        </table>
+        <div id="d-quotes-empty" class="empty">还没有报价</div>
+
+        <h2 style="margin-top:18px">议价</h2>
+        <div class="grid grid-3">
+          <div class="field"><label>目标价</label>
+            <input type="number" id="d-target" value="{{ default_target }}"></div>
+          <div class="field"><label>可接受上限</label>
+            <input type="number" id="d-ceiling" value="{{ default_ceiling }}"></div>
+          <div class="field"><label>币种</label>
+            <input type="text" id="d-currency" value="{{ default_currency }}"></div>
+        </div>
+        <div class="row">
+          <button onclick="suggest(this)">算建议 + 生成草稿</button>
+          <span class="hint" id="d-plan" style="margin:0"></span>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>回复草稿（<strong>不会自动发送</strong>，确认无误后自己复制发出）</label>
+          <textarea class="draft" id="d-draft" placeholder="点上面的按钮生成"></textarea>
+        </div>
+        <p class="hint">
+          策略是纯算术：对方报价 ≤ 上限就建议接受，否则在基准和对方之间各让一半，
+          还满 3 轮仍谈不拢就转人工。数字可复现，AI 只负责把它写成一封得体的信。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  </div>
+
 </div>
 </div>
 
@@ -184,7 +293,11 @@ const GAP_MIN = {{ gap_min }}, GAP_MAX = {{ gap_max }};
 </script>
 <script src="{{ url_for('static', filename='js/mail_blaster_common.js') }}"></script>
 <script src="{{ url_for('static', filename='js/mail_blaster_accounts.js') }}"></script>
+<script>
+const POLL_MINUTES = {{ poll_minutes }};
+</script>
 <script src="{{ url_for('static', filename='js/kol_outreach.js') }}"></script>
+<script src="{{ url_for('static', filename='js/kol_inbox.js') }}"></script>
 {% if defaults.loaded_from %}
 <script>window.addEventListener('load', () => toast('已载入模板「{{ defaults.loaded_from }}」'));</script>
 {% endif %}
