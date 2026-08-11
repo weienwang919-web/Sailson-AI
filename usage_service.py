@@ -19,7 +19,21 @@ CRAWLER_USD_PER_1000 = Decimal(str(os.environ.get("CRAWLER_USD_PER_1000", "4.5")
 AI_CNY_PER_1000 = Decimal(str(os.environ.get("AI_CNY_PER_1000", "0.008")))
 
 
+def _schema_is_current() -> bool:
+    """一次查询判断 usage_events 表是否已存在，跳过建表+4个索引这 5 条 DDL。"""
+    try:
+        row = db.query_one(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'usage_events'"
+        )
+    except Exception:
+        return False
+    return row is not None
+
+
 def ensure_schema():
+    if _schema_is_current():
+        return
     try:
         db.execute(
             """

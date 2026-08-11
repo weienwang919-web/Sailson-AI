@@ -98,7 +98,56 @@ PROFILE_FIELDS = [
 ]
 
 
+_TABLES = {
+    "tiktok_official_accounts", "tiktok_official_video_snapshots",
+    "tiktok_official_profile_daily_metrics", "tiktok_official_tokens",
+    "tiktok_official_invites", "tiktok_spark_invites", "tiktok_spark_tokens",
+    "tiktok_advertiser_tokens", "tiktok_ad_spend_daily", "tiktok_ad_video_map",
+    "tiktok_official_video_daily_snapshots", "tiktok_matrix_video_exports",
+    "tiktok_official_video_publish_window_snapshots",
+}
+_LATEST_COLUMNS = {
+    ("tiktok_official_accounts", "account_alias"),
+    ("tiktok_official_accounts", "authorized_by"),
+    ("tiktok_official_accounts", "status"),
+    ("tiktok_official_accounts", "region"),
+    ("tiktok_official_accounts", "account_type"),
+    ("tiktok_official_accounts", "needs_follower_boost"),
+    ("tiktok_official_tokens", "account_alias"),
+    ("tiktok_official_tokens", "authorized_by"),
+    ("tiktok_official_tokens", "status"),
+    ("tiktok_ad_spend_daily", "ad_id"),
+    ("tiktok_ad_spend_daily", "tiktok_item_id"),
+    ("tiktok_ad_spend_daily", "video_play_actions"),
+    ("tiktok_official_video_snapshots", "task_no"),
+    ("tiktok_official_video_snapshots", "kol_campaign"),
+    ("tiktok_official_video_snapshots", "spark_code"),
+    ("tiktok_official_video_snapshots", "spark_code_start_time"),
+    ("tiktok_official_video_snapshots", "spark_code_end_time"),
+    ("tiktok_official_video_snapshots", "is_boosted"),
+    ("tiktok_official_video_snapshots", "boosted_at"),
+    ("tiktok_spark_tokens", "expires_at"),
+    ("tiktok_spark_tokens", "refresh_expires_at"),
+}
+
+
+def _schema_is_current() -> bool:
+    """一次查询判断表和列是否都齐了，省得每次启动都跑 40+ 条 DDL（Render 上每条约 1 秒）。"""
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_TABLES),))
+    except Exception:
+        return False
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _TABLES <= have_tables and _LATEST_COLUMNS <= have_columns
+
+
 def ensure_schema() -> None:
+    if _schema_is_current():
+        return
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_official_accounts (
@@ -271,6 +320,10 @@ def ensure_schema() -> None:
         )
         """
     )
+    # Spark token 原先没存过期时间，导致 access_token 到期后只能等 TikTok 接口报错才发现。
+    # 补上跟主账号 token 一样的过期时间跟踪，配合 get_spark_token_info() 里的自动刷新。
+    db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+    db.execute("ALTER TABLE tiktok_spark_tokens ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMP")
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tiktok_advertiser_tokens (
@@ -282,6 +335,58 @@ def ensure_schema() -> None:
             updated_at TIMESTAMP DEFAULT NOW()
         )
         """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_ad_spend_daily (
+            id SERIAL PRIMARY KEY,
+            advertiser_id VARCHAR(64) NOT NULL,
+            stat_date DATE NOT NULL,
+            country_code VARCHAR(8) NOT NULL DEFAULT '',
+            spend NUMERIC(14,2) DEFAULT 0,
+            impressions BIGINT DEFAULT 0,
+            clicks BIGINT DEFAULT 0,
+            conversions BIGINT DEFAULT 0,
+            cost_per_conversion NUMERIC(14,4),
+            ctr NUMERIC(8,4),
+            cpc NUMERIC(14,4),
+            cpm NUMERIC(14,4),
+            raw_json JSONB,
+            fetched_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE (advertiser_id, stat_date, country_code)
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tiktok_ad_spend_daily_stat_date ON tiktok_ad_spend_daily (stat_date)"
+    )
+
+    # 投流数据改为按 ad_id/tiktok_item_id 精确归因到矩阵视频，而不是整个广告账户的消耗
+    # （账户级汇总会把同一个 Business Center 下其他客户业务的投流也算进来，参见 plan 里的验证数据）
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiktok_ad_video_map (
+            ad_id VARCHAR(64) PRIMARY KEY,
+            advertiser_id VARCHAR(64) NOT NULL,
+            campaign_id VARCHAR(64),
+            adgroup_id VARCHAR(64),
+            tiktok_item_id VARCHAR(64) NOT NULL,
+            objective_type VARCHAR(32),
+            first_seen_at TIMESTAMP DEFAULT NOW(),
+            last_seen_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_ad_video_map_item ON tiktok_ad_video_map (tiktok_item_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_ad_video_map_advertiser ON tiktok_ad_video_map (advertiser_id)")
+    db.execute("ALTER TABLE tiktok_ad_spend_daily ADD COLUMN IF NOT EXISTS ad_id VARCHAR(64)")
+    db.execute("ALTER TABLE tiktok_ad_spend_daily ADD COLUMN IF NOT EXISTS tiktok_item_id VARCHAR(64)")
+    db.execute("ALTER TABLE tiktok_ad_spend_daily ADD COLUMN IF NOT EXISTS video_play_actions BIGINT DEFAULT 0")
+    db.execute(
+        "ALTER TABLE tiktok_ad_spend_daily DROP CONSTRAINT IF EXISTS tiktok_ad_spend_daily_advertiser_id_stat_date_country_code_key"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_ad_spend_ad_date_country ON tiktok_ad_spend_daily (ad_id, stat_date, country_code)"
     )
 
     # 矩阵号视频监控看板：账号级国家/账号类型 + 视频级人工标签/Spark授权码
@@ -1055,17 +1160,22 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
     scope = token_data.get("scope")
     if isinstance(scope, list):
         scope = ",".join(scope)
+    now = datetime.utcnow()
+    expires_at = _seconds_from_now(now, token_data.get("expires_in"))
+    refresh_expires_at = _seconds_from_now(now, token_data.get("refresh_expires_in"))
 
     db.execute(
         """
-        INSERT INTO tiktok_spark_tokens (account_alias, open_id, access_token, refresh_token, scope, authorized_by, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+        INSERT INTO tiktok_spark_tokens (account_alias, open_id, access_token, refresh_token, scope, authorized_by, expires_at, refresh_expires_at, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         ON CONFLICT (account_alias) DO UPDATE SET
             open_id = EXCLUDED.open_id,
             access_token = EXCLUDED.access_token,
             refresh_token = COALESCE(EXCLUDED.refresh_token, tiktok_spark_tokens.refresh_token),
             scope = EXCLUDED.scope,
             authorized_by = COALESCE(EXCLUDED.authorized_by, tiktok_spark_tokens.authorized_by),
+            expires_at = EXCLUDED.expires_at,
+            refresh_expires_at = COALESCE(EXCLUDED.refresh_expires_at, tiktok_spark_tokens.refresh_expires_at),
             updated_at = NOW()
         """,
         (
@@ -1075,23 +1185,79 @@ def save_spark_token(token_data: dict[str, Any], account_alias: str, authorized_
             crypto_util.encrypt(token_data.get("refresh_token")),
             scope,
             authorized_by,
+            expires_at,
+            refresh_expires_at,
         ),
     )
     return {"account_alias": account_alias, "open_id": open_id, "scope": scope}
 
 
-def get_spark_token_info(account_alias: str | None) -> dict[str, Any] | None:
+def refresh_spark_token(account_alias: str) -> str:
+    """用存量 refresh_token 换新的 Spark access_token，成功后重新加密落库，返回新的明文 access_token。"""
+    row = db.query_one(
+        "SELECT refresh_token, authorized_by FROM tiktok_spark_tokens WHERE account_alias = %s",
+        (account_alias,),
+    )
+    refresh_token = crypto_util.decrypt((row or {}).get("refresh_token"))
+    if not refresh_token:
+        raise RuntimeError(f"account_alias={account_alias} 没有可用的 refresh_token，需要重新走一遍 Spark 授权")
+
+    app_id = (os.environ.get("TIKTOK_SPARK_APP_ID") or "").strip()
+    app_secret = (os.environ.get("TIKTOK_SPARK_APP_SECRET") or "").strip()
+    if not app_id or not app_secret:
+        raise RuntimeError("TIKTOK_SPARK_APP_ID / TIKTOK_SPARK_APP_SECRET 未配置")
+
+    resp = requests.post(
+        "https://open.tiktokapis.com/v2/oauth/token/",
+        data={
+            "client_key": app_id,
+            "client_secret": app_secret,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cache-Control": "no-cache",
+        },
+        timeout=60,
+    )
+    data = _parse_token_response(resp)
+    if not data.get("access_token"):
+        wrapped = data.get("data") if isinstance(data.get("data"), dict) else {}
+        data = {**data, **wrapped}
+    if not data.get("access_token"):
+        raise RuntimeError(f"TikTok Spark refresh_token 返回缺少 access_token: {json.dumps(data, ensure_ascii=False)[:500]}")
+
+    save_spark_token(data, account_alias=account_alias, authorized_by=(row or {}).get("authorized_by"))
+    logger.info(f"TikTok Spark token 已刷新: account_alias={account_alias}")
+    return data["access_token"]
+
+
+def get_spark_token_info(account_alias: str | None, auto_refresh: bool = True) -> dict[str, Any] | None:
     """Spark token 是在另一个 App 下授权的，open_id 跟主流程的 business_id 不是同一个值。
     调用 TikTok 接口时 body 里的 business_id 必须跟 access_token 自己的身份一致，
     不能沿用主流程那个 business_id，否则 TikTok 会报 access token 不合法。"""
     if not account_alias:
         return None
     row = db.query_one(
-        "SELECT access_token, open_id FROM tiktok_spark_tokens WHERE account_alias = %s",
+        "SELECT access_token, open_id, refresh_token, expires_at FROM tiktok_spark_tokens WHERE account_alias = %s",
         (account_alias,),
     )
     if not row or not row.get("access_token"):
         return None
+
+    expires_at = row.get("expires_at")
+    now = datetime.utcnow()
+    # 历史遗留行没存过 expires_at（迁移前授权的），一律当作需要刷新处理，而不是当成永不过期。
+    needs_refresh = expires_at is None or expires_at < now + timedelta(hours=1)
+    if auto_refresh and needs_refresh and row.get("refresh_token"):
+        try:
+            return {"access_token": refresh_spark_token(account_alias), "open_id": row.get("open_id")}
+        except Exception as exc:
+            if expires_at and expires_at < now:
+                raise RuntimeError(f"Spark token 刷新失败且旧 token 已过期，需重新授权或稍后重试: {exc}") from exc
+            logger.warning(f"TikTok Spark token 刷新失败，旧 token 尚未过期，暂用旧 token 兜底: account_alias={account_alias} err={exc}")
+
     return {"access_token": crypto_util.decrypt(row["access_token"]), "open_id": row.get("open_id")}
 
 
@@ -1192,6 +1358,420 @@ def get_advertiser_token_info(advertiser_id: str | None) -> dict[str, Any] | Non
     if not row or not row.get("access_token"):
         return None
     return {"access_token": crypto_util.decrypt(row["access_token"])}
+
+
+AD_SPEND_METRICS = [
+    "spend",
+    "impressions",
+    "clicks",
+    "conversion",
+    "video_play_actions",
+]
+
+# 只有这三种 objective 的 campaign 有可能是给矩阵已发布视频加热的 Spark Ads；
+# APP_PROMOTION/WEB_CONVERSIONS/LEAD_GENERATION 用的是 App 安装/落地页素材，
+# 不会带我们视频的 tiktok_item_id（已用生产数据验证过，91 个有消耗的账户里
+# 1509 个 campaign 中 77% 是 APP_PROMOTION，抽查确认跟矩阵无关）。
+AD_VIDEO_OBJECTIVE_TYPES = {"VIDEO_VIEWS", "TRAFFIC", "ENGAGEMENT"}
+
+AD_SPEND_MAX_SPAN_DAYS = 30  # TikTok 报表接口限制：dimensions 带 stat_time_day 时单次请求时间跨度不能超过30天
+
+
+def _chunk_date_range(start_date: date, end_date: date, max_span_days: int) -> list[tuple[date, date]]:
+    chunks = []
+    cur = start_date
+    while cur <= end_date:
+        chunk_end = min(cur + timedelta(days=max_span_days - 1), end_date)
+        chunks.append((cur, chunk_end))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def _chunk_list(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def sync_ad_video_map_for_advertiser(advertiser_id: str) -> list[str]:
+    """从 campaign/ad 明细里找出哪些 ad 是在给我们自己矩阵的视频投流，upsert 进 tiktok_ad_video_map。
+
+    只扫 VIDEO_VIEWS/TRAFFIC/ENGAGEMENT 三种 objective 的 campaign（见 AD_VIDEO_OBJECTIVE_TYPES
+    注释），逐条 ad 取 tiktok_item_id，跟 tiktok_official_video_snapshots.item_id 做匹配，
+    只有真正命中我们自己视频的 ad 才会被记录。返回本次命中的 ad_id 列表。
+    """
+    info = get_advertiser_token_info(advertiser_id)
+    if not info:
+        raise RuntimeError(f"advertiser_id={advertiser_id} 没有已保存的 access_token")
+    token = info["access_token"]
+
+    campaign_ids: list[str] = []
+    objective_by_campaign: dict[str, str] = {}
+    page = 1
+    while True:
+        payload, _headers = _request(
+            token, "/campaign/get/", {"advertiser_id": advertiser_id, "page_size": 100, "page": page}
+        )
+        data = payload.get("data") or {}
+        for camp in data.get("list") or []:
+            if camp.get("objective_type") in AD_VIDEO_OBJECTIVE_TYPES:
+                campaign_ids.append(camp["campaign_id"])
+                objective_by_campaign[camp["campaign_id"]] = camp.get("objective_type")
+        page_info = data.get("page_info") or {}
+        if page >= int(page_info.get("total_page") or 1):
+            break
+        page += 1
+
+    if not campaign_ids:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for batch in _chunk_list(campaign_ids, 100):
+        page = 1
+        while True:
+            payload, _headers = _request(
+                token,
+                "/ad/get/",
+                {
+                    "advertiser_id": advertiser_id,
+                    "filtering": json.dumps({"campaign_ids": batch}, separators=(",", ":")),
+                    "page_size": 100,
+                    "page": page,
+                },
+            )
+            data = payload.get("data") or {}
+            for ad in data.get("list") or []:
+                tiktok_item_id = ad.get("tiktok_item_id")
+                if tiktok_item_id:
+                    candidates.append(
+                        {
+                            "ad_id": ad["ad_id"],
+                            "adgroup_id": ad.get("adgroup_id"),
+                            "campaign_id": ad.get("campaign_id"),
+                            "tiktok_item_id": tiktok_item_id,
+                        }
+                    )
+            page_info = data.get("page_info") or {}
+            if page >= int(page_info.get("total_page") or 1):
+                break
+            page += 1
+
+    if not candidates:
+        return []
+
+    candidate_items = list({c["tiktok_item_id"] for c in candidates})
+    our_items = {
+        r["item_id"]
+        for r in db.query_all(
+            "SELECT item_id FROM tiktok_official_video_snapshots WHERE item_id = ANY(%s)",
+            (candidate_items,),
+        )
+        or []
+    }
+
+    matched_ad_ids: list[str] = []
+    for c in candidates:
+        if c["tiktok_item_id"] not in our_items:
+            continue
+        db.execute(
+            """
+            INSERT INTO tiktok_ad_video_map
+                (ad_id, advertiser_id, campaign_id, adgroup_id, tiktok_item_id, objective_type, first_seen_at, last_seen_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (ad_id) DO UPDATE SET
+                advertiser_id = EXCLUDED.advertiser_id,
+                campaign_id = EXCLUDED.campaign_id,
+                adgroup_id = EXCLUDED.adgroup_id,
+                tiktok_item_id = EXCLUDED.tiktok_item_id,
+                objective_type = EXCLUDED.objective_type,
+                last_seen_at = NOW()
+            """,
+            (
+                c["ad_id"],
+                advertiser_id,
+                c["campaign_id"],
+                c["adgroup_id"],
+                c["tiktok_item_id"],
+                objective_by_campaign.get(c["campaign_id"]),
+            ),
+        )
+        matched_ad_ids.append(c["ad_id"])
+    return matched_ad_ids
+
+
+def sync_ad_spend_for_advertiser(advertiser_id: str, start_date: date, end_date: date) -> int:
+    """拉取单个 advertiser_id 名下已归因到矩阵视频的 ad 在 [start_date, end_date] 的消耗数据。
+
+    ad_id 集合来自 tiktok_ad_video_map 的累计记录（不只是本次新发现的），这样即使某条 ad
+    所在的 campaign 后来被暂停/归档、不再出现在 campaign/get 的当前列表里，历史消耗也能续拉。
+    没有任何命中的 ad_id 时直接返回 0，不发请求。返回 upsert 的行数。
+    """
+    mapped = db.query_all(
+        "SELECT ad_id, tiktok_item_id FROM tiktok_ad_video_map WHERE advertiser_id = %s",
+        (advertiser_id,),
+    ) or []
+    if not mapped:
+        return 0
+    item_id_by_ad = {m["ad_id"]: m["tiktok_item_id"] for m in mapped}
+    ad_ids = list(item_id_by_ad.keys())
+
+    info = get_advertiser_token_info(advertiser_id)
+    if not info:
+        raise RuntimeError(f"advertiser_id={advertiser_id} 没有已保存的 access_token")
+    token = info["access_token"]
+
+    rows: list[dict[str, Any]] = []
+    for chunk_start, chunk_end in _chunk_date_range(start_date, end_date, AD_SPEND_MAX_SPAN_DAYS):
+        for batch in _chunk_list(ad_ids, 100):
+            page = 1
+            while True:
+                params = {
+                    "advertiser_id": advertiser_id,
+                    "report_type": "BASIC",
+                    "data_level": "AUCTION_AD",
+                    "dimensions": json.dumps(["ad_id", "stat_time_day", "country_code"], separators=(",", ":")),
+                    "metrics": json.dumps(AD_SPEND_METRICS, separators=(",", ":")),
+                    "filtering": json.dumps(
+                        [{"field_name": "ad_ids", "filter_type": "IN", "filter_value": json.dumps(batch)}],
+                        separators=(",", ":"),
+                    ),
+                    "start_date": chunk_start.isoformat(),
+                    "end_date": chunk_end.isoformat(),
+                    "page_size": 1000,
+                    "page": page,
+                }
+                payload, _headers = _request(token, "/report/integrated/get/", params)
+                data = payload.get("data") or {}
+                rows.extend(data.get("list") or [])
+                page_info = data.get("page_info") or {}
+                if page >= int(page_info.get("total_page") or 1):
+                    break
+                page += 1
+
+    upserted = 0
+    for row in rows:
+        dims = row.get("dimensions") or {}
+        metrics = row.get("metrics") or {}
+        stat_date = dims.get("stat_time_day")
+        ad_id = dims.get("ad_id")
+        if not stat_date or not ad_id:
+            continue
+        stat_date = str(stat_date)[:10]
+        country_code = dims.get("country_code") or ""
+        db.execute(
+            """
+            INSERT INTO tiktok_ad_spend_daily
+                (ad_id, advertiser_id, tiktok_item_id, stat_date, country_code, spend, impressions, clicks,
+                 conversions, video_play_actions, raw_json, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (ad_id, stat_date, country_code) DO UPDATE SET
+                advertiser_id = EXCLUDED.advertiser_id,
+                tiktok_item_id = EXCLUDED.tiktok_item_id,
+                spend = EXCLUDED.spend,
+                impressions = EXCLUDED.impressions,
+                clicks = EXCLUDED.clicks,
+                conversions = EXCLUDED.conversions,
+                video_play_actions = EXCLUDED.video_play_actions,
+                raw_json = EXCLUDED.raw_json,
+                fetched_at = NOW()
+            """,
+            (
+                ad_id,
+                advertiser_id,
+                item_id_by_ad.get(ad_id),
+                stat_date,
+                country_code,
+                metrics.get("spend") or 0,
+                int(float(metrics.get("impressions") or 0)),
+                int(float(metrics.get("clicks") or 0)),
+                int(float(metrics.get("conversion") or 0)),
+                int(float(metrics.get("video_play_actions") or 0)),
+                json.dumps(row, ensure_ascii=False),
+            ),
+        )
+        upserted += 1
+    return upserted
+
+
+def sync_all_ad_spend(start_date: date, end_date: date) -> dict[str, Any]:
+    """遍历全部已授权 advertiser_id：先刷新 ad→视频归因映射，再只拉命中的 ad 的消耗。
+
+    单个账户失败不影响其他账户（沿用旧版账户级同步已验证过的失败隔离模式）。
+    """
+    tokens = list_advertiser_tokens(limit=1000)
+    ok = 0
+    failed: list[dict[str, str]] = []
+    total_upserted = 0
+    for row in tokens:
+        advertiser_id = row["advertiser_id"]
+        try:
+            sync_ad_video_map_for_advertiser(advertiser_id)
+            total_upserted += sync_ad_spend_for_advertiser(advertiser_id, start_date, end_date)
+            ok += 1
+        except Exception as exc:
+            logger.error(f"投流消耗同步失败 advertiser_id={advertiser_id}: {exc}")
+            failed.append({"advertiser_id": advertiser_id, "error": str(exc)})
+    return {"ok": ok, "failed": failed, "total_advertisers": len(tokens), "upserted_rows": total_upserted}
+
+
+def run_ad_spend_sync_task(task_id: str, params: dict[str, Any], update_task_fn) -> None:
+    """worker 每日自触发入口：默认只拉「昨天」一天，账户内部失败已由 sync_all_ad_spend 隔离。"""
+    try:
+        update_task_fn(task_id, status="processing", progress="正在同步投流消耗数据...")
+        target = date.today() - timedelta(days=1)
+        start_str = params.get("start_date") or target.isoformat()
+        end_str = params.get("end_date") or target.isoformat()
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+        result = sync_all_ad_spend(start_date, end_date)
+        progress = (
+            f"完成（{result['ok']}/{result['total_advertisers']} 个账户成功，"
+            f"upsert {result['upserted_rows']} 行，失败 {len(result['failed'])} 个）"
+        )
+        update_task_fn(task_id, status="completed", progress=progress)
+    except Exception as exc:
+        logger.error(f"❌ TikTok 投流消耗每日同步失败: {exc}")
+        update_task_fn(task_id, status="failed", error=str(exc)[:500], progress="失败")
+
+
+def enqueue_ad_spend_sync(
+    create_task_fn,
+    *,
+    update_task_params_fn,
+    after_enqueue_fn=None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[str]:
+    """投流消耗每日同步：单个任务遍历全部已授权 advertiser_id（账户级失败隔离已在 sync_all_advertiser_spend 里做了，不需要按账户分批）。"""
+    session_id = f"tiktok_ad_spend_sync_{date.today().isoformat()}"
+    task_id = pysecrets.token_hex(16)
+    create_task_fn(task_id, None, session_id, function_type="tiktok_official_ad_spend_sync")
+    params = {
+        "source": "tiktok_ad_spend_sync",
+        "trigger_type": "scheduled",
+        "session_id": session_id,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    update_task_params_fn(task_id, params)
+    if after_enqueue_fn:
+        after_enqueue_fn(task_id, params)
+    return [task_id]
+
+
+def get_ad_spend_summary(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
+    """按日汇总全部账户的消耗/曝光/点击/转化，供趋势图使用。"""
+    start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
+    rows = db.query_all(
+        """
+        SELECT stat_date,
+               SUM(spend)::float AS spend,
+               SUM(impressions)::bigint AS impressions,
+               SUM(clicks)::bigint AS clicks,
+               SUM(conversions)::bigint AS conversions
+        FROM tiktok_ad_spend_daily
+        WHERE stat_date BETWEEN %s AND %s
+        GROUP BY stat_date
+        ORDER BY stat_date
+        """,
+        (start_date, end_date),
+    ) or []
+    return {"date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "rows": rows}
+
+
+def get_ad_spend_by_country(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
+    """按国家汇总消耗/曝光/转化，country_code 为空字符串表示 TikTok 未归类到具体国家的流量。"""
+    start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
+    rows = db.query_all(
+        """
+        SELECT country_code,
+               SUM(spend)::float AS spend,
+               SUM(impressions)::bigint AS impressions,
+               SUM(clicks)::bigint AS clicks,
+               SUM(conversions)::bigint AS conversions
+        FROM tiktok_ad_spend_daily
+        WHERE stat_date BETWEEN %s AND %s
+        GROUP BY country_code
+        ORDER BY spend DESC
+        """,
+        (start_date, end_date),
+    ) or []
+    return {"date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "rows": rows}
+
+
+def get_ad_spend_by_video(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
+    """按视频归因的投流消耗明细，直接回答"哪个账号/哪条视频花了多少钱"。"""
+    start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
+    rows = db.query_all(
+        """
+        SELECT s.tiktok_item_id, v.business_id, v.caption, v.thumbnail_url,
+               SUM(s.spend)::float AS spend,
+               SUM(s.impressions)::bigint AS impressions,
+               SUM(s.video_play_actions)::bigint AS video_play_actions
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        WHERE s.stat_date BETWEEN %s AND %s
+        GROUP BY s.tiktok_item_id, v.business_id, v.caption, v.thumbnail_url
+        ORDER BY spend DESC
+        """,
+        (start_date, end_date),
+    ) or []
+    return {"date_from": start_date.isoformat(), "date_to": end_date.isoformat(), "rows": rows}
+
+
+def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
+    """投流流量占比：仅覆盖被投流命中的视频，不是全矩阵口径。
+
+    分子是这些视频在投放报表里的 video_play_actions（TikTok 报表口径的每日增量，直接
+    SUM 即可）；分母加上同一批视频在快照表里的自然播放量增量——快照表存的是"截至当天"
+    的累计播放量，不能直接 SUM 多天的值，要用区间首尾快照做差（沿用
+    matrix_snapshot_delta_range 里"取 <= 目标日期的最近一次快照再做差"的思路）。
+    """
+    start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
+    paid_row = db.query_one(
+        """
+        SELECT COALESCE(SUM(spend), 0)::float AS spend,
+               COALESCE(SUM(video_play_actions), 0) AS paid_views
+        FROM tiktok_ad_spend_daily WHERE stat_date BETWEEN %s AND %s AND tiktok_item_id IS NOT NULL
+        """,
+        (start_date, end_date),
+    ) or {}
+    organic_row = db.query_one(
+        """
+        WITH items AS (
+            SELECT DISTINCT tiktok_item_id FROM tiktok_ad_spend_daily
+            WHERE stat_date BETWEEN %(from)s AND %(to)s AND tiktok_item_id IS NOT NULL
+        ),
+        start_snap AS (
+            SELECT DISTINCT ON (d.item_id) d.item_id, d.video_views
+            FROM tiktok_official_video_daily_snapshots d
+            JOIN items i ON i.tiktok_item_id = d.item_id
+            WHERE d.snapshot_date <= %(from)s
+            ORDER BY d.item_id, d.snapshot_date DESC
+        ),
+        end_snap AS (
+            SELECT DISTINCT ON (d.item_id) d.item_id, d.video_views
+            FROM tiktok_official_video_daily_snapshots d
+            JOIN items i ON i.tiktok_item_id = d.item_id
+            WHERE d.snapshot_date <= %(to)s
+            ORDER BY d.item_id, d.snapshot_date DESC
+        )
+        SELECT COALESCE(SUM(GREATEST(e.video_views - COALESCE(s.video_views, 0), 0)), 0) AS organic_views_delta
+        FROM end_snap e
+        LEFT JOIN start_snap s ON s.item_id = e.item_id
+        """,
+        {"from": start_date, "to": end_date},
+    ) or {}
+    paid_views = int(paid_row.get("paid_views") or 0)
+    organic_views = int(organic_row.get("organic_views_delta") or 0)
+    denom = paid_views + organic_views
+    ratio = (paid_views / denom) if denom else 0.0
+    return {
+        "spend": float(paid_row.get("spend") or 0),
+        "paid_views": paid_views,
+        "organic_views": organic_views,
+        "paid_ratio": ratio,
+        "date_from": start_date.isoformat(),
+        "date_to": end_date.isoformat(),
+    }
 
 
 def exchange_account_code(code: str, redirect_uri: str, account_alias: str | None = None, authorized_by: str | None = None) -> dict[str, Any]:

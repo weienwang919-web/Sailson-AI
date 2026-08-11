@@ -178,6 +178,66 @@
   </div>
 
   <div class="card">
+    <h2>投流数据</h2>
+    <div class="hint">数据按 ad→视频精确匹配归因：只统计 TikTok 广告后台里实际给我们矩阵已发布视频投流（Spark Ads）的那些广告，不是账户全量消耗——同一个 Business Center 下授权的广告账户，绝大多数其实在跑跟矩阵无关的其他业务，属正常现象。转化数字如实展示，长期为 0 不代表同步出错。"投流流量占比"只覆盖被投流命中的这批视频，不是全矩阵口径。</div>
+    <div class="toolbar">
+      <div>
+        <label>开始日期</label>
+        <input id="ad-spend-date-from" type="date">
+      </div>
+      <div>
+        <label>结束日期</label>
+        <input id="ad-spend-date-to" type="date">
+      </div>
+      <button class="btn btn-primary" onclick="loadAdSpend()">查询</button>
+    </div>
+    <div class="status" id="ad-spend-status"></div>
+
+    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top:14px;">
+      <div class="account">
+        <div class="account-title"><span>投流流量占比（被投流视频内）</span></div>
+        <div class="metric-line" id="ad-spend-ratio-summary">-</div>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">投流视频明细</div>
+      <div class="table-wrap" style="max-height:320px;">
+        <table>
+          <thead>
+            <tr><th>视频</th><th>所属账号</th><th>消耗（USD）</th><th>曝光</th><th>播放量</th></tr>
+          </thead>
+          <tbody id="ad-spend-video-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">每日消耗趋势</div>
+      <div class="table-wrap" style="max-height:280px;">
+        <table>
+          <thead>
+            <tr><th>日期</th><th>消耗（USD）</th><th>曝光</th><th>点击</th><th>转化</th></tr>
+          </thead>
+          <tbody id="ad-spend-daily-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">国家消耗排行</div>
+      <div class="table-wrap" style="max-height:280px;">
+        <table>
+          <thead>
+            <tr><th>国家</th><th>消耗（USD）</th><th>曝光</th><th>点击</th><th>转化</th></tr>
+          </thead>
+          <tbody id="ad-spend-country-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>视频明细</h2>
     <div class="table-wrap">
       <table>
@@ -700,6 +760,64 @@ async function loadVideos() {
   updateSelectedCount();
 }
 
+async function loadAdSpend() {
+  const status = document.getElementById('ad-spend-status');
+  status.className = 'status';
+  status.textContent = '加载中...';
+  const dateFrom = document.getElementById('ad-spend-date-from').value;
+  const dateTo = document.getElementById('ad-spend-date-to').value;
+  const qs = new URLSearchParams();
+  if (dateFrom) qs.set('date_from', dateFrom);
+  if (dateTo) qs.set('date_to', dateTo);
+  try {
+    const [summary, byCountry, byVideo, ratio] = await Promise.all([
+      fetchJson('/api/tiktok-official/ad-spend/summary?' + qs.toString()),
+      fetchJson('/api/tiktok-official/ad-spend/by-country?' + qs.toString()),
+      fetchJson('/api/tiktok-official/ad-spend/by-video?' + qs.toString()),
+      fetchJson('/api/tiktok-official/ad-spend/paid-ratio?' + qs.toString()),
+    ]);
+
+    if (!dateFrom) document.getElementById('ad-spend-date-from').value = summary.date_from;
+    if (!dateTo) document.getElementById('ad-spend-date-to').value = summary.date_to;
+
+    const dailyRows = summary.rows || [];
+    document.getElementById('ad-spend-daily-body').innerHTML = dailyRows.map(r => `
+      <tr>
+        <td>${fmt(r.stat_date)}</td><td>${fmt(r.spend)}</td><td>${fmt(r.impressions)}</td>
+        <td>${fmt(r.clicks)}</td><td>${fmt(r.conversions)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" class="muted">暂无投流数据</td></tr>';
+
+    const countryRows = byCountry.rows || [];
+    document.getElementById('ad-spend-country-body').innerHTML = countryRows.map(r => `
+      <tr>
+        <td>${fmt(r.country_code) === '-' ? '（未归类）' : fmt(r.country_code)}</td><td>${fmt(r.spend)}</td>
+        <td>${fmt(r.impressions)}</td><td>${fmt(r.clicks)}</td><td>${fmt(r.conversions)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" class="muted">暂无投流数据</td></tr>';
+
+    const videoRows = byVideo.rows || [];
+    document.getElementById('ad-spend-video-body').innerHTML = videoRows.map(r => `
+      <tr>
+        <td>${fmt(r.caption).slice(0, 60)}<br><span class="muted">${fmt(r.tiktok_item_id)}</span></td>
+        <td>${fmt(r.business_id)}</td><td>${fmt(r.spend)}</td>
+        <td>${fmt(r.impressions)}</td><td>${fmt(r.video_play_actions)}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" class="muted">近期没有视频被投流命中</td></tr>';
+
+    document.getElementById('ad-spend-ratio-summary').innerHTML =
+      `${fmt(ratio.date_from)} ~ ${fmt(ratio.date_to)}<br>` +
+      `投流消耗：$${fmt(ratio.spend)} ｜ 付费播放：${fmt(ratio.paid_views)} ｜ 自然播放：${fmt(ratio.organic_views)}<br>` +
+      `占比：${pct(ratio.paid_ratio)}（仅被投流视频内，非全矩阵口径）`;
+
+    status.textContent = '已加载';
+    status.className = 'status ok';
+  } catch (e) {
+    status.textContent = String(e.message || e);
+    status.className = 'status err';
+  }
+}
+
 async function loadAll() {
   const st = document.getElementById('refresh-status');
   st.className = 'status';
@@ -711,6 +829,7 @@ async function loadAll() {
     await loadSparkTokens();
     await loadMetrics();
     await loadVideos();
+    await loadAdSpend();
     st.textContent = '已加载';
     st.className = 'status ok';
   } catch (e) {

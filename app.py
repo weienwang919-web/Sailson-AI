@@ -27,7 +27,7 @@ from openai import OpenAI
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
-from functools import wraps
+from functools import wraps, partial
 import html
 from docx import Document
 from docx.shared import Pt, Inches
@@ -244,7 +244,7 @@ def run_scheduled_tiktok_official_daily_sync():
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = tiktok_official_service.enqueue_daily_sync(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             after_enqueue_fn=_after_enqueue,
         )
@@ -267,7 +267,7 @@ def run_scheduled_tiktok_official_publish_window_capture():
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = tiktok_official_service.enqueue_publish_window_capture(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             after_enqueue_fn=_after_enqueue,
         )
@@ -290,7 +290,7 @@ def run_scheduled_tiktok_official_video_discovery():
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = tiktok_official_service.enqueue_video_discovery(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             after_enqueue_fn=_after_enqueue,
         )
@@ -298,6 +298,29 @@ def run_scheduled_tiktok_official_video_discovery():
             logger.info(f"✅ 已创建 TikTok 新视频发现任务: {task_ids}")
     except Exception as e:
         logger.error(f"❌ 创建 TikTok 新视频发现任务失败: {e}")
+
+
+def run_scheduled_tiktok_official_ad_spend_sync():
+    """由 worker 自检触发（每天一次）：同步昨天的投流消耗/转化数据，单任务遍历全部已授权 advertiser_id。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                tiktok_official_service.run_ad_spend_sync_task(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = tiktok_official_service.enqueue_ad_spend_sync(
+            partial(create_task, lane='scheduled'),
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建 TikTok 投流消耗每日同步任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建 TikTok 投流消耗每日同步任务失败: {e}")
 
 
 def run_scheduled_topic_monitor_daily():
@@ -321,7 +344,7 @@ def run_scheduled_topic_monitor_daily():
             }
             if USE_DB_WORKER:
                 task_id_str = str(uuid.uuid4())
-                create_task(task_id_str, None, session_id, function_type='topic_monitor_run')
+                create_task(task_id_str, None, session_id, function_type='topic_monitor_run', lane='scheduled')
                 set_task_params(task_id_str, params)
             else:
                 def _run(_topic_id=topic_id, _task_id=task_id):
@@ -539,6 +562,37 @@ def get_prompt(feature, project):
     return (by_feature.get(project) or '').strip()
 
 
+# app.py 自己这 6 个 ensure_*_schema() 合起来要建的表/列，用来做启动快速路径。
+# 每条 DDL 都是一次到远程库的往返（Render 上约 1 秒），6 个函数 10+ 条 DDL 就是
+# 10+ 秒；加上其他模块的 ensure_schema() 累计能拖到 2 分钟，超过 Render 健康检查
+# 的 5 秒窗口，反复触发误判重启。schema 已就绪时先用一次查询确认，直接跳过。
+_STARTUP_TABLES = {
+    "task_queue", "analysis_results", "etl_file_outputs",
+    "agent_actions", "fb_post_metrics", "thai_report_datasets", "users",
+}
+_STARTUP_LATEST_COLUMNS = {
+    ("task_queue", "function_type"), ("task_queue", "record_id"), ("task_queue", "task_params"),
+    ("task_queue", "worker_id"), ("task_queue", "started_at"), ("task_queue", "finished_at"),
+    ("task_queue", "attempts"), ("task_queue", "lane"),
+    ("analysis_results", "result_json"),
+    ("users", "permissions"),
+}
+
+
+def _startup_schema_is_current() -> bool:
+    """一次查询判断上面这些表和列是否都齐了，齐了就跳过下面全部 6 个 ensure_*_schema()。"""
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_STARTUP_TABLES),))
+    except Exception:
+        return False        # 查不了就老老实实跑一遍 DDL
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _STARTUP_TABLES <= have_tables and _STARTUP_LATEST_COLUMNS <= have_columns
+
+
 def ensure_task_queue_schema():
     """确保 task_queue 表包含 function_type 字段（向后兼容老版本数据库）
 
@@ -578,6 +632,7 @@ def ensure_task_queue_schema():
         ("started_at", "TIMESTAMP"),
         ("finished_at", "TIMESTAMP"),
         ("attempts", "INTEGER DEFAULT 0"),
+        ("lane", "VARCHAR(16) NOT NULL DEFAULT 'interactive'"),
     ):
         try:
             db.execute(f"ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS {column_name} {ddl}")
@@ -756,13 +811,14 @@ def ensure_users_permissions_schema():
         logger.warning(f"⚠️ 无法为 users 表添加 permissions 列: {e}")
 
 
-# 启动时尽早检查相关表结构
-ensure_task_queue_schema()
-ensure_analysis_results_schema()
-ensure_etl_file_outputs_schema()
-ensure_agent_actions_schema()
-ensure_fb_post_metrics_schema()
-ensure_users_permissions_schema()
+# 启动时尽早检查相关表结构；已就绪时一次查询即可跳过下面全部 6 个函数
+if not _startup_schema_is_current():
+    ensure_task_queue_schema()
+    ensure_analysis_results_schema()
+    ensure_etl_file_outputs_schema()
+    ensure_agent_actions_schema()
+    ensure_fb_post_metrics_schema()
+    ensure_users_permissions_schema()
 profile_video_scheduler.ensure_schema()
 tiktok_official_service.ensure_schema()
 usage_service.ensure_schema()
@@ -927,8 +983,11 @@ def handle_fetch_exception(error):
 # 核心工具函数
 # ============================================
 
-def create_task(task_id, user_id, session_id, function_type=None):
+def create_task(task_id, user_id, session_id, function_type=None, lane='interactive'):
     """创建任务记录
+
+    lane: 'interactive'（默认，用户即时触发）或 'scheduled'（定时/自检批量触发）。
+    worker.py 按 lane 分开领取、预留独立并发槽位，避免定时批量任务把即时任务饿死。
 
     为兼容旧库：
     - 优先尝试写入 function_type 字段
@@ -939,9 +998,9 @@ def create_task(task_id, user_id, session_id, function_type=None):
     try:
         if TASK_QUEUE_HAS_FUNCTION_TYPE:
             db.execute("""
-                INSERT INTO task_queue (task_id, user_id, session_id, function_type, status, progress)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (task_id, user_id, session_id, function_type, 'pending', '任务已创建，等待 worker 领取'))
+                INSERT INTO task_queue (task_id, user_id, session_id, function_type, lane, status, progress)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (task_id, user_id, session_id, function_type, lane, 'pending', '任务已创建，等待 worker 领取'))
         else:
             db.execute("""
                 INSERT INTO task_queue (task_id, user_id, session_id, status, progress)
@@ -1029,7 +1088,7 @@ def enqueue_due_profile_video_sync(hour=None):
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = profile_video_scheduler.enqueue_due_profile_video_sync(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             hour=hour if hour is not None else datetime.datetime.now().hour,
             after_enqueue_fn=_after_enqueue,
@@ -1053,7 +1112,7 @@ def enqueue_due_feishu_profile_video_sync(hour=None):
             threading.Thread(target=_run, daemon=True).start()
 
         task_ids = profile_video_scheduler.enqueue_due_feishu_profile_video_sync(
-            create_task,
+            partial(create_task, lane='scheduled'),
             update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
             hour=hour if hour is not None else datetime.datetime.now().hour,
             after_enqueue_fn=_after_enqueue,
@@ -9678,6 +9737,66 @@ def api_tiktok_official_spark_invite_batch():
         )
     except Exception as e:
         logger.error(f"tiktok_official spark invite batch failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/summary')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_summary():
+    """按日汇总全部广告账户的消耗/曝光/点击/转化，供投流数据看板趋势图使用。"""
+    try:
+        result = tiktok_official_service.get_ad_spend_summary(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend summary failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/by-country')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_by_country():
+    """按国家汇总投流消耗/曝光/转化。"""
+    try:
+        result = tiktok_official_service.get_ad_spend_by_country(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend by-country failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/by-video')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_by_video():
+    """按视频归因的投流消耗明细：哪个账号/哪条视频花了多少钱。"""
+    try:
+        result = tiktok_official_service.get_ad_spend_by_video(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend by-video failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/paid-ratio')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_paid_ratio():
+    """投流流量占比：仅覆盖被投流命中的视频，不是全矩阵口径。"""
+    try:
+        result = tiktok_official_service.get_paid_traffic_ratio(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend paid-ratio failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

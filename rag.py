@@ -23,8 +23,35 @@ EMBEDDING_DIM = 1024
 # 建表（启动时调用）
 # ============================================
 
+_TABLES = {
+    "corpus_documents", "corpus_chunks", "chat_sessions", "chat_messages",
+    "fb_comments", "tiktok_hotspots", "fb_monitor_config", "scrape_tasks",
+    "topic_monitors", "topic_monitor_posts",
+}
+_LATEST_COLUMNS = {
+    ("fb_comments", "brief_analysis"),
+    ("fb_comments", "platform"),
+}
+
+
+def _schema_is_current() -> bool:
+    """一次查询判断表和列是否都齐了，跳过 10 张建表 + 2 条 ALTER。"""
+    try:
+        rows = db.query_all(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (sorted(_TABLES),))
+    except Exception:
+        return False
+    have_tables = {r["table_name"] for r in rows}
+    have_columns = {(r["table_name"], r["column_name"]) for r in rows}
+    return _TABLES <= have_tables and _LATEST_COLUMNS <= have_columns
+
+
 def ensure_tables():
     """创建 RAG 相关表（幂等）"""
+    if _schema_is_current():
+        return
     sqls = [
         """
         CREATE TABLE IF NOT EXISTS corpus_documents (
