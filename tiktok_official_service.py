@@ -2934,6 +2934,11 @@ def _frozen_video_cte(where_sql: str) -> str:
     """
 
 
+def resolve_matrix_date_range(date_from: str | None, date_to: str | None, days: int = 30):
+    """对外暴露区间解析结果，让路由能拿到导出实际覆盖的日期（用于文件名）。"""
+    return _matrix_date_range(date_from, date_to, days=days)
+
+
 def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, Any]:
     """总览：全部按「发布日定格值」——数字一旦定格就不再随时间变化。
 
