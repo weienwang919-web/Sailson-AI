@@ -122,7 +122,8 @@
         <input type="date" id="cum-date-to" onchange="loadCumulative()">
         <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
         <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
-        <button class="btn-chip" onclick="clearCumulativeRange()">清除</button>
+        <button class="btn-chip" onclick="setCumulativeAll()">全部历史</button>
+        <button class="btn-chip" onclick="clearCumulativeRange()">重置</button>
         <button class="btn btn-secondary btn-sm" onclick="exportAccountVV()">导出（账号级最新数据）</button>
       </div>
     </div>
@@ -797,6 +798,15 @@ function clearCumulativeRange() {
   loadCumulative();
 }
 window.clearCumulativeRange = clearCumulativeRange;
+
+// 「重置」只是清空输入框，后端会回退到最近30天——不等于全量。
+// 真要全部历史得显式给一个足够早的起始日期。
+function setCumulativeAll() {
+  document.getElementById('cum-date-from').value = '2020-01-01';
+  document.getElementById('cum-date-to').value = new Date().toISOString().slice(0, 10);
+  loadCumulative();
+}
+window.setCumulativeAll = setCumulativeAll;
 
 function cumParams() {
   const params = withAccountIds(new URLSearchParams());

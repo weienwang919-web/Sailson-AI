@@ -10121,11 +10121,15 @@ def api_tiktok_official_matrix_cumulative_export():
             date_from=request.args.get('date_from') or '',
             date_to=request.args.get('date_to') or '',
         )
+        rf, rt = tiktok_official_service.resolve_matrix_date_range(
+            request.args.get('date_from') or '', request.args.get('date_to') or '', days=30)
         buf = BytesIO(out)
         buf.seek(0)
         return send_file(
             buf, as_attachment=True,
-            download_name='tiktok_matrix_account_vv.xlsx',
+            # 文件名带上实际覆盖的区间——清空日期时后端会回退到最近30天而不是全量，
+            # 不写进文件名的话下载下来根本分不清是哪段时间的数据
+            download_name=f'账号VV汇总_{rf.isoformat()}_{rt.isoformat()}.xlsx',
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
     except Exception as e:
