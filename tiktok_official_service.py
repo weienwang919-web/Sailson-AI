@@ -1679,6 +1679,31 @@ def sync_ad_spend_for_advertiser(advertiser_id: str, start_date: date, end_date:
     return upserted
 
 
+# 投流同步只针对真正用来给矩阵号视频加热的广告主账户。
+# 授权体系里有 600+ 个 advertiser token，但实际投矩阵号的只有一个
+# （PUBGGM-sailson-260604-01 / 7647367737321111570）——遍历全部账户既慢
+# （每个都要拉 campaign+ad 列表）又白白放大网络故障和限流的暴露面。
+# 需要加账户时改 app_global_configs 里的配置，不用动代码；配成 "*" 表示遍历全部。
+CONFIG_MATRIX_AD_ADVERTISERS = "matrix_ad_advertiser_ids"
+_DEFAULT_MATRIX_AD_ADVERTISERS = ("7647367737321111570",)
+
+
+def get_matrix_ad_advertiser_ids() -> list[str] | None:
+    """返回要同步的 advertiser_id 列表；None 表示不限制（遍历全部授权账户）。"""
+    try:
+        raw = get_global_config(CONFIG_MATRIX_AD_ADVERTISERS)
+    except Exception as exc:
+        logger.warning("读取投流广告主白名单失败，回退默认值：%s", exc)
+        raw = None
+    if raw is None:
+        return list(_DEFAULT_MATRIX_AD_ADVERTISERS)
+    raw = raw.strip()
+    if raw == "*":
+        return None
+    ids = [x.strip() for x in raw.split(",") if x.strip()]
+    return ids or list(_DEFAULT_MATRIX_AD_ADVERTISERS)
+
+
 # 瞬时网络故障的特征。TikTok 接口在并发稍高时会出现 SSL 握手中断、连接重置、读超时，
 # 退避重试一次基本就过——不重试的话该账户当天的数据会静默整块缺失，事后很难发现。
 _TRANSIENT_ERROR_MARKERS = (
@@ -1702,6 +1727,13 @@ def sync_all_ad_spend(start_date: date, end_date: date) -> dict[str, Any]:
     瞬时网络错误按 2/4 秒退避重试，避免一次抖动就让该账户当天数据整块缺失。
     """
     tokens = list_advertiser_tokens(limit=1000)
+    allow = get_matrix_ad_advertiser_ids()
+    if allow is not None:
+        allow_set = set(allow)
+        skipped = len(tokens)
+        tokens = [t for t in tokens if t["advertiser_id"] in allow_set]
+        skipped -= len(tokens)
+        logger.info(f"投流消耗同步：按白名单同步 {len(tokens)} 个广告主，跳过 {skipped} 个无关账户")
     ok = 0
     failed: list[dict[str, str]] = []
     retried = 0
