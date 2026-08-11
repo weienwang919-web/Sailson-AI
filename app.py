@@ -54,6 +54,14 @@ except Exception as _mb_import_exc:  # noqa: BLE001
     mail_blaster_service = None
     MAIL_BLASTER_AVAILABLE = False
     print(f"[warn] mail-blaster 模块加载失败，该功能不可用: {_mb_import_exc}")
+# 收信侧（KOL 建联的回信管理）。同样软失败，且它挂了不该影响发信。
+try:
+    import mail_inbox_service
+    MAIL_INBOX_AVAILABLE = MAIL_BLASTER_AVAILABLE
+except Exception as _mi_import_exc:  # noqa: BLE001
+    mail_inbox_service = None
+    MAIL_INBOX_AVAILABLE = False
+    print(f"[warn] mail-inbox 模块加载失败，回信管理不可用: {_mi_import_exc}")
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -298,6 +306,19 @@ def run_scheduled_tiktok_official_video_discovery():
             logger.info(f"✅ 已创建 TikTok 新视频发现任务: {task_ids}")
     except Exception as e:
         logger.error(f"❌ 创建 TikTok 新视频发现任务失败: {e}")
+
+
+def run_scheduled_mail_blaster_reply_poll():
+    """由 worker 自检触发：拉 KOL 建联的回信并跑 AI 分析。
+
+    只负责入队，真正的 IMAP 循环和 LLM 调用在 worker 里跑
+    ——web 这边 gunicorn 线程有限，收信+分析一轮可能要几分钟。
+    """
+    task_id = f"mbr_{uuid.uuid4().hex[:16]}"
+    create_task(task_id, None, f"mail_blaster_replies_{uuid.uuid4().hex[:8]}",
+                function_type='mail_blaster_poll_replies', lane='scheduled')
+    set_task_params(task_id, {'source': 'worker_selfcheck'})
+    return task_id
 
 
 def run_scheduled_topic_monitor_daily():
@@ -10612,6 +10633,125 @@ def api_mb_create_outreach_job():
         import traceback
         traceback.print_exc()
         return _mb_fail(str(e), 500)
+
+
+# ---- KOL 建联：回信管理与议价 ----
+
+def _mi_guard():
+    if not MAIL_INBOX_AVAILABLE:
+        return jsonify({'status': 'error', 'message': '回信管理模块未就绪，请查看服务端日志'}), 503
+    return None
+
+
+@app.route('/kol-inbox')
+@feature_required('mail_blaster')
+def kol_inbox_page():
+    if not MAIL_INBOX_AVAILABLE:
+        return "回信管理模块未就绪，请查看服务端日志", 503
+    return render_template(
+        'kol_inbox.html',
+        statuses=mail_inbox_service.THREAD_STATUS_TEXT,
+        default_target=float(os.environ.get('MAIL_BLASTER_TARGET_PRICE') or 500),
+        default_ceiling=float(os.environ.get('MAIL_BLASTER_CEILING_PRICE') or 800),
+        default_currency=os.environ.get('MAIL_BLASTER_CURRENCY') or 'USD',
+        poll_minutes=int(os.environ.get('MAIL_BLASTER_REPLY_POLL_MINUTES') or 15),
+    )
+
+
+@app.route('/api/mail-blaster/inbox/threads')
+@feature_required('mail_blaster')
+def api_mb_threads():
+    if (blocked := _mi_guard()):
+        return blocked
+    return jsonify({'status': 'success',
+                    'stats': mail_inbox_service.inbox_stats(),
+                    'threads': _json_safe_rows(mail_inbox_service.list_threads(
+                        status=request.args.get('status') or '',
+                        keyword=request.args.get('q') or '')),
+                    'unmatched': _json_safe_rows(mail_inbox_service.unmatched_messages())})
+
+
+@app.route('/api/mail-blaster/inbox/threads/<int:thread_id>')
+@feature_required('mail_blaster')
+def api_mb_thread_detail(thread_id):
+    if (blocked := _mi_guard()):
+        return blocked
+    try:
+        return jsonify({'status': 'success',
+                        **_json_safe(mail_inbox_service.thread_detail(thread_id))})
+    except ValueError as e:
+        return _mb_fail(str(e), 404)
+
+
+@app.route('/api/mail-blaster/inbox/threads/<int:thread_id>/status', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_thread_status(thread_id):
+    if (blocked := _mi_guard()):
+        return blocked
+    try:
+        mail_inbox_service.set_thread_status(thread_id, (request.json or {}).get('status') or '')
+        return jsonify({'status': 'success'})
+    except ValueError as e:
+        return _mb_fail(str(e))
+
+
+@app.route('/api/mail-blaster/inbox/threads/<int:thread_id>/suggest', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_thread_suggest(thread_id):
+    """算还价数字 + 生成话术草稿。**只生成，不发送**——
+    冷启动外联下 AI 误判会直接发给真实达人，且撤不回来。"""
+    if (blocked := _mi_guard()):
+        return blocked
+    d = request.json or {}
+    try:
+        return jsonify({'status': 'success', **_json_safe(mail_inbox_service.suggest_reply(
+            thread_id,
+            target=float(d.get('target') or 500),
+            ceiling=float(d.get('ceiling') or 800),
+            currency=(d.get('currency') or 'USD').strip().upper(),
+            ai_call=lambda p, timeout=90: call_gemini(
+                p, timeout=timeout, model=mail_inbox_service.AI_MODEL, temperature=0),
+            user_id=session.get('user_id')))})
+    except ValueError as e:
+        return _mb_fail(str(e), 404)
+    except Exception as e:
+        logger.error(f"mail-blaster 议价建议失败: {e}")
+        return _mb_fail(str(e), 500)
+
+
+@app.route('/api/mail-blaster/inbox/messages/<int:inbox_id>/handled', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_mark_handled(inbox_id):
+    if (blocked := _mi_guard()):
+        return blocked
+    mail_inbox_service.mark_handled(inbox_id, bool((request.json or {}).get('handled', True)))
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/mail-blaster/inbox/messages/<int:inbox_id>/claim', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_claim_message(inbox_id):
+    if (blocked := _mi_guard()):
+        return blocked
+    try:
+        tid = mail_inbox_service.claim_message(
+            inbox_id, (request.json or {}).get('kol_email') or '')
+        return jsonify({'status': 'success', 'thread_id': tid})
+    except ValueError as e:
+        return _mb_fail(str(e))
+
+
+@app.route('/api/mail-blaster/inbox/poll', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_poll_now():
+    """手动催一次收信。真正的拉取在 worker 里跑，这里只入队。"""
+    if (blocked := _mi_guard()):
+        return blocked
+    task_id = f"mbr_{uuid.uuid4().hex[:16]}"
+    create_task(task_id, session.get('user_id'), f"mail_blaster_replies_manual_{task_id[-6:]}",
+                function_type='mail_blaster_poll_replies', lane='interactive')
+    set_task_params(task_id, {'source': 'manual'})
+    return jsonify({'status': 'success', 'task_id': task_id})
 
 
 # ---- 抑制名单（建联专用） ----
