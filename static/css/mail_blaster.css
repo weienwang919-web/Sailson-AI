@@ -82,6 +82,16 @@ textarea { resize: vertical; min-height: 90px; font-family: ui-monospace, SFMono
 .grid-2 { grid-template-columns: 1fr 1fr; }
 .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+/* base.html 引了 Bootstrap，它也有 .row，并且带一条 `.row > * { width: 100% }`。
+   类名撞车的结果是：flex 容器生效了，但每个子元素被强制拉成整行宽——
+   按钮和输入框会各占一行。这里把它顶回来，只在本功能的容器内生效。 */
+.mb-scope .row > * {
+  width: auto; max-width: none; flex-shrink: 1;
+  padding-right: 0; padding-left: 0; margin-top: 0;
+}
+.mb-scope .row > input[type=text], .mb-scope .row > input[type=email],
+.mb-scope .row > input[type=number], .mb-scope .row > input[type=password],
+.mb-scope .row > select, .mb-scope .row > textarea { flex: 1 1 auto; min-width: 0; }
 .checkline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
 .checkline input { width: auto; }
 

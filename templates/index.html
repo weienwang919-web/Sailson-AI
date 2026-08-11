@@ -426,6 +426,15 @@
                     <div class="card-arrow">→</div>
                 </a>
             </div>
+            <div class="col-md-4">
+                <a href="/kol-outreach" class="feature-card">
+                    <span class="card-badge" style="background:#FCE7F3;color:#BE185D;">新</span>
+                    <div class="card-icon">📨</div>
+                    <h3 class="card-title">KOL 建联</h3>
+                    <p class="card-desc">粘贴或上传达人名单，按每行变量逐封个性化群发建联邮件，自带退订出口、抑制名单、每日配额和发送窗口四道护栏。</p>
+                    <div class="card-arrow">→</div>
+                </a>
+            </div>
             {% endif %}
             {% if user.role == 'admin' or 'matrix_video_dashboard' in (user.permissions or '').split(',') %}
             <div class="col-md-4">

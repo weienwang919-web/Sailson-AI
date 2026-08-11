@@ -10280,6 +10280,25 @@ def mail_blaster_page():
     )
 
 
+@app.route('/kol-outreach')
+@feature_required('mail_blaster')
+def kol_outreach_page():
+    if not MAIL_BLASTER_AVAILABLE:
+        return "mail-blaster 模块未就绪，请查看服务端日志", 503
+    mb = mail_blaster_service
+    return render_template(
+        'kol_outreach.html',
+        placeholders=mb.OUTREACH_PLACEHOLDERS,
+        providers=mb.PROVIDERS,
+        defaults=mb.defaults_for_page('outreach'),
+        # 护栏参数从服务端注入，免得页面文案和 env 配置对不上
+        send_window=mb.SEND_WINDOW,
+        gap_min=int(mb.OUTREACH_MIN_GAP_SECONDS),
+        gap_max=int(mb.OUTREACH_MAX_GAP_SECONDS),
+        unsubscribe_text=mb.DEFAULT_UNSUBSCRIBE_TEXT,
+    )
+
+
 # ---- 发件账号池 ----
 
 @app.route('/api/mail-blaster/accounts', methods=['GET'])
@@ -10449,13 +10468,29 @@ def api_mb_send(job_id):
     if (blocked := _mb_guard()):
         return blocked
     try:
+        state = mail_blaster_service.load_job(job_id)
+        is_outreach = state['job'].get('mode') == 'outreach'
+        # 建联页只编辑模板，不回传 items —— sync_job 会把 items 里没带
+        # sender_account_id 的行置空，整批账号会被抹掉
         mail_blaster_service.sync_job(job_id, request.json or {})
         state = mail_blaster_service.load_job(job_id)
-        has_recipient = any(i['recipient'] for i in state['items']) or state['job']['recipient']
-        if not has_recipient:
-            return _mb_fail('请先填写收件邮箱，或用带「收件邮箱」列的 Excel 导入')
-        if not any(i['sender_account_id'] for i in state['items']):
-            return _mb_fail('没有任何一行选了发件账号')
+
+        if is_outreach:
+            if not state['job'].get('sender_account_id'):
+                return _mb_fail('这个建联批次没有发件账号，请重新建批次')
+            if not any(i['recipient'] for i in state['items']):
+                return _mb_fail('名单是空的')
+            # 窗口预检放在这里：让人当场看到中文拒绝，
+            # 而不是任务入队后在 worker 里自己暂停、要去任务中心才看得到
+            blocked_reason = mail_blaster_service.outside_send_window()
+            if blocked_reason:
+                return _mb_fail(blocked_reason)
+        else:
+            has_recipient = any(i['recipient'] for i in state['items']) or state['job']['recipient']
+            if not has_recipient:
+                return _mb_fail('请先填写收件邮箱，或用带「收件邮箱」列的 Excel 导入')
+            if not any(i['sender_account_id'] for i in state['items']):
+                return _mb_fail('没有任何一行选了发件账号')
 
         task_id = f"mb_{uuid.uuid4().hex[:16]}"
         create_task(task_id, session.get('user_id'),
@@ -10499,13 +10534,21 @@ def api_mb_resend(item_id):
 
 # ---- 模板库 / 历史 / 号码映射 ----
 
+def _mb_mode(source=None):
+    """模板库和发信记录按 mode 分成两套。认不出的一律当素材提交，
+    免得前端传错就把建联模板写进素材库。"""
+    raw = (source or {}).get('mode') if source is not None else request.args.get('mode')
+    return 'outreach' if (raw or '').strip() == 'outreach' else 'material'
+
+
 @app.route('/api/mail-blaster/templates', methods=['GET'])
 @feature_required('mail_blaster')
 def api_mb_list_templates():
     if (blocked := _mb_guard()):
         return blocked
     return jsonify({'status': 'success',
-                    'templates': _json_safe_rows(mail_blaster_service.list_templates())})
+                    'templates': _json_safe_rows(
+                        mail_blaster_service.list_templates(_mb_mode()))})
 
 
 @app.route('/api/mail-blaster/templates', methods=['POST'])
@@ -10516,7 +10559,8 @@ def api_mb_save_template():
     d = request.json or {}
     try:
         rows = mail_blaster_service.save_template(
-            d.get('name'), d.get('subject'), d.get('body'), d.get('signature'))
+            d.get('name'), d.get('subject'), d.get('body'), d.get('signature'),
+            mode=_mb_mode(d))
         return jsonify({'status': 'success', 'templates': _json_safe_rows(rows)})
     except ValueError as e:
         return _mb_fail(str(e))
@@ -10528,7 +10572,8 @@ def api_mb_delete_template(template_id):
     if (blocked := _mb_guard()):
         return blocked
     return jsonify({'status': 'success',
-                    'templates': _json_safe_rows(mail_blaster_service.delete_template(template_id))})
+                    'templates': _json_safe_rows(
+                        mail_blaster_service.delete_template(template_id, _mb_mode()))})
 
 
 @app.route('/api/mail-blaster/history')
@@ -10538,7 +10583,8 @@ def api_mb_history():
         return blocked
     rows = mail_blaster_service.list_history(
         limit=int(request.args.get('limit') or 500),
-        keyword=request.args.get('q') or '')
+        keyword=request.args.get('q') or '',
+        mode=request.args.get('mode') or '')
     return jsonify({'status': 'success', 'items': _json_safe_rows(rows)})
 
 
@@ -10549,6 +10595,111 @@ def api_mb_phones():
         return blocked
     return jsonify({'status': 'success',
                     'items': _json_safe_rows(mail_blaster_service.list_phone_assignments())})
+
+
+# ---- KOL 建联 ----
+
+@app.route('/api/mail-blaster/outreach/list-template.xlsx')
+@feature_required('mail_blaster')
+def api_mb_kol_template():
+    if (blocked := _mb_guard()):
+        return blocked
+    buf = io.BytesIO(mail_blaster_service.build_kol_template_xlsx())
+    buf.seek(0)
+    return send_file(
+        buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name='KOL建联名单模板.xlsx')
+
+
+@app.route('/api/mail-blaster/outreach/parse-list', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_parse_kol_list():
+    """粘贴和 Excel 上传共用一条路由，返回同一个结构。
+
+    前端因此在解析之后完全无分支——第 3/4/5 步不需要知道名单是怎么进来的。
+    """
+    if (blocked := _mb_guard()):
+        return blocked
+    upload = request.files.get('file')
+    try:
+        if upload is not None and upload.filename:
+            if not upload.filename.lower().endswith('.xlsx'):
+                return _mb_fail('只支持 .xlsx，请先另存为 .xlsx 再上传')
+            result = mail_blaster_service.parse_kol_xlsx(upload.read())
+            result['source'] = 'excel'
+        else:
+            text = (request.form.get('text')
+                    if request.form else None) or (request.json or {}).get('text') or ''
+            result = mail_blaster_service.parse_kol_list(text)
+            result['source'] = 'paste'
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster 名单解析失败: {e}")
+        return _mb_fail(str(e), 500)
+
+    # 抑制名单里的直接剔掉，并单独列出来让人看见
+    hits = mail_blaster_service.filter_suppressed([r['email'] for r in result['rows']])
+    result['suppressed'] = sorted(hits)
+    result['rows'] = [r for r in result['rows'] if r['email'] not in hits]
+    return jsonify({'status': 'success', **result})
+
+
+@app.route('/api/mail-blaster/outreach/jobs', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_create_outreach_job():
+    if (blocked := _mb_guard()):
+        return blocked
+    d = request.json or {}
+    try:
+        return jsonify({'status': 'success', **mail_blaster_service.create_outreach_job(
+            sender_account_id=d.get('sender_account_id'),
+            rows=d.get('rows') or [],
+            subject_tpl=d.get('subject_tpl') or '',
+            body_tpl=d.get('body_tpl') or '',
+            signature_tpl=d.get('signature_tpl') or '',
+            user_id=session.get('user_id'))})
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster 建联批次创建失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return _mb_fail(str(e), 500)
+
+
+# ---- 抑制名单（建联专用） ----
+@app.route('/api/mail-blaster/suppression', methods=['GET'])
+@feature_required('mail_blaster')
+def api_mb_list_suppression():
+    if (blocked := _mb_guard()):
+        return blocked
+    return jsonify({'status': 'success',
+                    'items': _json_safe_rows(mail_blaster_service.list_suppressed())})
+
+
+@app.route('/api/mail-blaster/suppression', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_add_suppression():
+    if (blocked := _mb_guard()):
+        return blocked
+    d = request.json or {}
+    try:
+        mail_blaster_service.suppress(d.get('email') or '', d.get('reason') or '手动添加')
+        return jsonify({'status': 'success',
+                        'items': _json_safe_rows(mail_blaster_service.list_suppressed())})
+    except ValueError as e:
+        return _mb_fail(str(e))
+
+
+@app.route('/api/mail-blaster/suppression/<path:email>', methods=['DELETE'])
+@feature_required('mail_blaster')
+def api_mb_remove_suppression(email):
+    if (blocked := _mb_guard()):
+        return blocked
+    mail_blaster_service.unsuppress(email)
+    return jsonify({'status': 'success',
+                    'items': _json_safe_rows(mail_blaster_service.list_suppressed())})
 
 
 

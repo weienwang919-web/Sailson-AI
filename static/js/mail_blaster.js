@@ -1,81 +1,11 @@
 /* mail-blaster 素材提交页。
-   注意：本站 API 的约定是 {status:'success'|'error', message:...}，
-   跟 mail-blaster 独立版的 {ok:true} 不同，api() 已按本站约定改写。 */
+
+   通用小工具（toast / api / esc / openModal / patchRows / usable / STATUS_TEXT）
+   在 mail_blaster_common.js，发件账号池在 mail_blaster_accounts.js，
+   两个都由模板先于本文件加载，KOL 建联页共用同一份。 */
 
 let JOB = null, POOL = [], TEMPLATES = [], PREVIEWS = [], COOLDOWNS = {};
 let COOLDOWN_DAYS = 7, previewIndex = 0, pollTimer = null;
-
-const STATUS_TEXT = { pending: '待发送', queued: '已入队', sending: '发送中…',
-                      sent: '已发送', failed: '失败', skipped: '已跳过' };
-
-/* ---------- 通用小工具 ---------- */
-function toast(msg, isError) {
-  let el = document.getElementById('mb-toast');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'mb-toast'; el.className = 'toast';
-    document.body.appendChild(el);
-  }
-  el.textContent = msg;
-  el.classList.toggle('err', !!isError);
-  el.classList.add('show');
-  clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.remove('show'), isError ? 6000 : 2600);
-}
-
-async function api(url, options = {}) {
-  const opts = { ...options };
-  if (opts.body && !(opts.body instanceof FormData)) {
-    opts.headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-    opts.body = JSON.stringify(opts.body);
-  }
-  const res = await fetch(url, opts);
-  if (res.status === 401 || res.status === 403) {
-    throw new Error('没有权限或登录已过期，请刷新页面重新登录');
-  }
-  let data;
-  try { data = await res.json(); }
-  catch (e) { throw new Error(`服务器返回了非 JSON 内容（HTTP ${res.status}）`); }
-  if (!res.ok || data.status === 'error') {
-    throw new Error(data.message || data.error || `HTTP ${res.status}`);
-  }
-  return data;
-}
-
-function esc(t) {
-  return String(t == null ? '' : t)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-function openModal(id) { document.getElementById(id).classList.add('show'); }
-function closeModal(id) { document.getElementById(id).classList.remove('show'); }
-document.addEventListener('click', e => {
-  if (e.target.classList && e.target.classList.contains('modal')) e.target.classList.remove('show');
-});
-
-function insertAtCursor(ta, text) {
-  const s = ta.selectionStart ?? ta.value.length, e = ta.selectionEnd ?? ta.value.length;
-  ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
-  ta.focus(); ta.selectionStart = ta.selectionEnd = s + text.length;
-}
-
-/* 只重画变化的格子。整表重建会吞掉用户还没提交的输入，也会让 select 丢焦点。 */
-function patchRows(tbody, rows, cells) {
-  for (const row of rows) {
-    const tr = tbody.querySelector(`tr[data-id="${row.id}"]`);
-    if (!tr) continue;
-    for (const [sel, render] of Object.entries(cells)) {
-      const td = tr.querySelector(sel);
-      if (!td) continue;
-      const next = render(row);
-      if (td.innerHTML !== next) td.innerHTML = next;
-    }
-  }
-}
-
-// 密码模式要有密码，OAuth 模式要有 refresh_token
-const usable = a => a.enabled && a.status === 'ready' &&
-  (a.auth_mode === 'xoauth2' ? (a.has_client_id && a.has_refresh_token) : a.has_password);
 
 /* ---------- 账号池 ---------- */
 async function loadPool() {
@@ -86,76 +16,6 @@ async function loadPool() {
       '<span style="color:var(--err)">账号池里还没有「已启用 + 测试通过」的发件账号，' +
       '先点右上角「发件账号池」加几个。</span>';
   }
-}
-
-async function openAccounts() { openModal('accounts-modal'); await renderAccounts(); }
-
-async function renderAccounts() {
-  await loadPool();
-  document.getElementById('acc-empty').style.display = POOL.length ? 'none' : '';
-  document.getElementById('acc-rows').innerHTML = POOL.map(a => `
-    <tr>
-      <td><input type="checkbox" ${a.enabled ? 'checked' : ''}
-                 onchange="toggleAccount(${a.id}, this.checked)"></td>
-      <td class="mono">${esc(a.email)}${
-        a.auth_mode === 'xoauth2' ? ' <span class="pill pill-oauth">OAuth2</span>' : ''}</td>
-      <td>${esc(a.effective_display_name)}</td>
-      <td class="mono">${esc(a.smtp_host)}:${a.smtp_port}</td>
-      <td><span class="pill pill-${a.status}">${
-        {ready:'可用', failed:'失败', draft:'未测试'}[a.status] || a.status}</span>
-        ${a.last_error ? `<div class="errbox">${esc(a.last_error)}</div>` : ''}</td>
-      <td>
-        <button class="small" onclick="testAccount(${a.id}, this)">测试</button>
-        <button class="small danger" onclick="removeAccount(${a.id})">删除</button>
-      </td>
-    </tr>`).join('');
-}
-
-async function addAccount() {
-  const email = document.getElementById('acc-email').value.trim();
-  const pwd = document.getElementById('acc-pass').value;
-  if (!email || !pwd) return toast('邮箱和密码都要填', true);
-  try {
-    await api('/api/mail-blaster/accounts', { method: 'POST', body: {
-      email, app_password: pwd, provider: document.getElementById('acc-provider').value } });
-    document.getElementById('acc-email').value = '';
-    document.getElementById('acc-pass').value = '';
-    await renderAccounts();
-    toast('已添加，记得点「测试」验证一下');
-  } catch (e) { toast(e.message, true); }
-}
-
-async function bulkImport() {
-  const text = document.getElementById('acc-bulk').value;
-  if (!text.trim()) return toast('粘贴点内容', true);
-  try {
-    const r = await api('/api/mail-blaster/accounts/bulk-import', { method: 'POST', body: { text } });
-    document.getElementById('acc-bulk-result').innerHTML =
-      `<div class="smtp-resp">新增 ${r.created.length} 个` +
-      (r.skipped.length ? `，跳过已存在 ${r.skipped.length} 个` : '') + '</div>' +
-      (r.errors.length ? `<div class="errbox">${r.errors.map(esc).join('<br>')}</div>` : '');
-    document.getElementById('acc-bulk').value = '';
-    await renderAccounts();
-  } catch (e) { toast(e.message, true); }
-}
-
-async function testAccount(id, btn) {
-  btn.disabled = true; btn.textContent = '测试中…';
-  try { await api(`/api/mail-blaster/accounts/${id}/test`, { method: 'POST' }); }
-  catch (e) { toast(e.message, true); }
-  await renderAccounts();
-}
-
-async function toggleAccount(id, enabled) {
-  try { await api(`/api/mail-blaster/accounts/${id}`, { method: 'PUT', body: { enabled } }); }
-  catch (e) { toast(e.message, true); }
-  await loadPool();
-}
-
-async function removeAccount(id) {
-  if (!confirm('删除这个发件账号？已发出的记录不受影响。')) return;
-  try { await api(`/api/mail-blaster/accounts/${id}`, { method: 'DELETE' }); await renderAccounts(); }
-  catch (e) { toast(e.message, true); }
 }
 
 /* ---------- Excel 导入 ---------- */

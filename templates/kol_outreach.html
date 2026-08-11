@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}KOL 建联 · Sailson AI{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/mail_blaster.css') }}">
+<style>
+  /* 复用素材提交页那套浅色卡片风，只在本容器内生效 */
+  .mb-scope { background: #f5f5f7; margin: -24px -12px 0; padding: 24px 12px 60px; }
+  .mb-scope .wrap { max-width: 1180px; margin: 0 auto; }
+  .mb-topline { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .mb-topline h1 { font-size: 22px; font-weight: 600; margin: 0; color: #1d1d1f; }
+  .mb-topline .spacer { margin-left: auto; }
+  .mb-scope .guardrails { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+  .mb-scope .guardrails span { font-size: 12px; color: #6e6e73; }
+  .mb-scope .src-row { display: flex; gap: 14px; align-items: stretch; }
+  .mb-scope .src-row > * { flex: 1; }
+  .mb-scope .src-or { flex: 0 0 auto; display: flex; align-items: center;
+                      color: #86868b; font-size: 12px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-scope">
+<div class="wrap">
+
+  <div class="mb-topline">
+    <h1>📨 KOL 建联</h1>
+    <span class="hint" style="margin:0">一个发件账号 → 一批达人，每人一组变量</span>
+    <span class="spacer"></span>
+    <button class="small" onclick="openAccounts()">发件账号池</button>
+    <button class="small" onclick="openSuppression()">抑制名单</button>
+    <a href="/mail-blaster" class="hint" style="margin:0">素材提交 →</a>
+    <a href="/" class="hint" style="margin:0">← 返回首页</a>
+  </div>
+
+  <div class="card">
+    <h2><span class="step-no">1</span> 发件账号</h2>
+    <p class="hint">
+      <strong>整批共用一个账号</strong>——建联靠名单里的列做个性化，不靠换发件人。
+      只有「已启用 + 测试通过 + 有凭据」的账号会出现在这里。
+    </p>
+    <div class="row">
+      <select id="account" style="flex:1" onchange="onAccountChange()"></select>
+      <span class="hint" id="account-info" style="margin:0"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step-no">2</span> KOL 名单</h2>
+    <p class="hint">
+      首行当表头，<strong>除邮箱外每一列都会变成一个占位符</strong>（中文列名没问题）。
+      邮箱列可以叫 邮箱 / email / mail / 收件邮箱，位置不限。
+      重复的只留第一条，格式不对的会点名到行号，<strong>不会静默丢行</strong>。
+    </p>
+    <div class="src-row">
+      <textarea id="list-text" rows="7"
+        placeholder="从表格里直接粘贴，制表符/逗号/分号都认：&#10;邮箱&#9;达人名字&#9;平台&#9;粉丝数&#10;amy@example.com&#9;Amy&#9;TikTok&#9;125000"></textarea>
+      <div class="src-or">或</div>
+      <div>
+        <div class="drop" id="drop-xlsx" style="height:calc(100% - 42px)">
+          拖 .xlsx 到这里，或点击选择<br>
+          <small>不知道怎么填？先下载模板</small>
+        </div>
+        <button class="small" style="margin-top:8px;width:100%"
+                onclick="downloadTemplate()">⬇ 下载 Excel 模板</button>
+      </div>
+    </div>
+    <input type="file" id="xlsx-input" accept=".xlsx" style="display:none">
+    <div class="row" style="margin-top:10px">
+      <button onclick="doParse(this)">解析名单</button>
+      <span class="hint" id="parse-info" style="margin:0"></span>
+    </div>
+    <div id="parse-report"></div>
+  </div>
+
+  <div class="card" id="list-card" style="display:none">
+    <h2><span class="step-no">3</span> 收件人</h2>
+    <p class="hint" id="list-hint"></p>
+    <table>
+      <thead><tr id="list-head"></tr></thead>
+      <tbody id="list-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="card" id="tpl-card">
+    <h2><span class="step-no">4</span> 邮件模板</h2>
+    <p class="hint">点占位符插入到光标处。正文可直接写 HTML。</p>
+    <div class="field">
+      <label>主题</label>
+      <input type="text" id="subject" value="{{ defaults.subject }}">
+    </div>
+    <div class="field">
+      <label>正文</label>
+      <textarea id="body" rows="9">{{ defaults.body }}</textarea>
+    </div>
+    <div class="field">
+      <label>落款</label>
+      <textarea id="signature" rows="3">{{ defaults.signature }}</textarea>
+    </div>
+    <div class="ph-list">
+      {% for token, desc in placeholders %}
+      <span class="ph" title="{{ desc }}" onclick="insertPh('{{ token }}')">{{ token }}</span>
+      {% endfor %}
+      <span id="dynamic-ph"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="tpl-name" placeholder="模板名，存下来下次直接用" style="max-width:240px">
+      <button class="small" onclick="saveTpl()">保存模板</button>
+      <select id="tpl-list" style="max-width:240px" onchange="loadTpl()"></select>
+      <button class="small danger" onclick="delTpl()">删除</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step-no">5</span> 预览并发送</h2>
+    <div class="guardrails" style="margin-bottom:10px">
+      <span>🛡 退订出口：每封自动带 List-Unsubscribe 和退订说明</span>
+      <span>🛡 抑制名单：解析时剔除，发送前再拦一次</span>
+      <span>🛡 每日配额：按发件账号，用满整批暂停</span>
+      <span>🛡 发送窗口：{{ send_window }}（{{ gap_min }}–{{ gap_max }} 秒一封）</span>
+    </div>
+    <div class="row">
+      <button class="small" onclick="doPreview(this)">预览全部</button>
+      <button class="primary" onclick="doSend(this)">开始发送</button>
+      <span class="hint" id="send-info" style="margin:0"></span>
+    </div>
+    <div class="progress" id="progress" style="display:none"><div></div></div>
+    <div id="pause-box"></div>
+  </div>
+
+</div>
+</div>
+
+<div class="modal" id="preview-modal">
+  <div class="modal-box wide">
+    <div class="modal-head"><h3>预览</h3>
+      <button class="small" onclick="closeModal('preview-modal')">关闭</button></div>
+    <div class="modal-body">
+      <div class="row" style="margin-bottom:10px">
+        <button class="small" onclick="stepPreview(-1)">← 上一封</button>
+        <span class="hint" id="preview-idx" style="margin:0"></span>
+        <button class="small" onclick="stepPreview(1)">下一封 →</button>
+      </div>
+      <div class="mail-preview">
+        <div class="mail-head" id="preview-head"></div>
+        <div class="mail-body" id="preview-body"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="suppression-modal">
+  <div class="modal-box">
+    <div class="modal-head"><h3>抑制名单</h3>
+      <button class="small" onclick="closeModal('suppression-modal')">关闭</button></div>
+    <div class="modal-body">
+      <p class="hint">
+        这里的地址<strong>永远不会收到建联邮件</strong>。退订请求、硬退信、手动拉黑都放这儿。
+        解析名单时会先剔一遍，真正发送前还会再拦一次。
+      </p>
+      <div class="row">
+        <input type="email" id="sup-email" placeholder="邮箱" style="flex:1">
+        <input type="text" id="sup-reason" placeholder="原因（选填）" style="flex:1">
+        <button onclick="addSuppression()">加入</button>
+      </div>
+      <table style="margin-top:12px">
+        <thead><tr><th>邮箱</th><th style="width:180px">原因</th>
+          <th style="width:90px">来源</th><th style="width:70px">操作</th></tr></thead>
+        <tbody id="sup-rows"></tbody>
+      </table>
+      <div id="sup-empty" class="empty">名单是空的</div>
+    </div>
+  </div>
+</div>
+
+{% include '_mb_accounts_modal.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SEND_WINDOW = {{ send_window | tojson }};
+const GAP_MIN = {{ gap_min }}, GAP_MAX = {{ gap_max }};
+</script>
+<script src="{{ url_for('static', filename='js/mail_blaster_common.js') }}"></script>
+<script src="{{ url_for('static', filename='js/mail_blaster_accounts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/kol_outreach.js') }}"></script>
+{% if defaults.loaded_from %}
+<script>window.addEventListener('load', () => toast('已载入模板「{{ defaults.loaded_from }}」'));</script>
+{% endif %}
+{% endblock %}

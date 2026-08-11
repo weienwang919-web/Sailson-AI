@@ -156,40 +156,8 @@
   </div>
 </div>
 
-<!-- 账号池 -->
-<div class="modal" id="accounts-modal">
-  <div class="modal-box wide">
-    <div class="modal-head"><h3>发件账号池</h3>
-      <button class="small" onclick="closeModal('accounts-modal')">关闭</button></div>
-    <div class="modal-body">
-      <p class="hint">
-        只有<strong>已启用 + 测试通过</strong>的账号会参与自动配对。密码加密存库，页面上不回显。
-      </p>
-      <div class="row">
-        <input type="email" id="acc-email" placeholder="邮箱" style="flex:1">
-        <input type="password" id="acc-pass" placeholder="密码 / 授权码" style="flex:1">
-        <select id="acc-provider" style="max-width:190px">
-          {% for p in providers %}<option value="{{ p.key }}">{{ p.label }}</option>{% endfor %}
-        </select>
-        <button onclick="addAccount()">新增</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <textarea id="acc-bulk" rows="3" style="flex:1"
-          placeholder="批量粘贴，一行一个：&#10;  邮箱----密码                              （密码直连）&#10;  邮箱----密码----clientid----refreshtoken  （自动走 OAuth2）"></textarea>
-        <button class="small" onclick="bulkImport()">批量导入</button>
-      </div>
-      <div id="acc-bulk-result"></div>
-      <table style="margin-top:12px">
-        <thead><tr>
-          <th style="width:52px">启用</th><th>邮箱</th><th style="width:150px">显示名</th>
-          <th style="width:180px">SMTP</th><th style="width:130px">状态</th><th style="width:150px">操作</th>
-        </tr></thead>
-        <tbody id="acc-rows"></tbody>
-      </table>
-      <div id="acc-empty" class="empty">账号池是空的</div>
-    </div>
-  </div>
-</div>
+<!-- 账号池 + 完整配置表单（两个页面共用） -->
+{% include '_mb_accounts_modal.html' %}
 
 <!-- 发信记录 -->
 <div class="modal" id="history-modal">
@@ -223,6 +191,8 @@
 <script>
 const ITEM_FIELDS = {{ item_fields | tojson }};
 </script>
+<script src="{{ url_for('static', filename='js/mail_blaster_common.js') }}"></script>
+<script src="{{ url_for('static', filename='js/mail_blaster_accounts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/mail_blaster.js') }}"></script>
 {% if defaults.loaded_from %}
 <script>window.addEventListener('load', () => toast('已载入模板「{{ defaults.loaded_from }}」'));</script>

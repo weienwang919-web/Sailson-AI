@@ -1,0 +1,147 @@
+{# 发件账号池 + 完整配置表单。素材提交页和 KOL 建联页共用。
+   宿主页面需要提供 providers 变量，并加载 mail_blaster_common.js + mail_blaster_accounts.js。 #}
+
+<div class="modal" id="accounts-modal">
+  <div class="modal-box wide">
+    <div class="modal-head"><h3>发件账号池</h3>
+      <button class="small" onclick="closeModal('accounts-modal')">关闭</button></div>
+    <div class="modal-body">
+      <p class="hint">
+        只有<strong>已启用 + 测试通过</strong>的账号会参与自动配对。密码加密存库，页面上不回显。
+      </p>
+
+      <div class="row">
+        <input type="email" id="acc-email" placeholder="邮箱" style="flex:1">
+        <input type="password" id="acc-pass" placeholder="密码 / 授权码" style="flex:1">
+        <select id="acc-provider" style="max-width:190px">
+          {% for p in providers %}<option value="{{ p.key }}">{{ p.label }}</option>{% endfor %}
+        </select>
+        <button onclick="addAccount()">快速新增</button>
+        <button class="small" onclick="newAccount()">完整配置…</button>
+      </div>
+
+      <div class="row" style="margin-top:8px">
+        <textarea id="acc-bulk" rows="3" style="flex:1"
+          placeholder="批量粘贴，一行一个：&#10;  邮箱----密码                              （密码直连）&#10;  邮箱----密码----clientid----refreshtoken  （自动走 OAuth2）"></textarea>
+        <button class="small" onclick="bulkImport()">批量导入</button>
+      </div>
+      <div id="acc-bulk-result"></div>
+
+      <table style="margin-top:12px">
+        <thead><tr>
+          <th style="width:52px">启用</th><th>邮箱</th><th style="width:130px">显示名</th>
+          <th style="width:200px">SMTP</th><th style="width:90px">每日上限</th>
+          <th style="width:120px">状态</th><th style="width:190px">操作</th>
+        </tr></thead>
+        <tbody id="acc-rows"></tbody>
+      </table>
+      <div id="acc-empty" class="empty">账号池是空的</div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="account-form-modal">
+  <div class="modal-box wide">
+    <div class="modal-head"><h3 id="f-title">新增发件账号</h3>
+      <button class="small" onclick="closeModal('account-form-modal')">关闭</button></div>
+    <div class="modal-body">
+
+      <div class="grid grid-2">
+        <div class="field">
+          <label>邮箱地址 *</label>
+          <input type="email" id="f-email" placeholder="amy.chen@outlook.com">
+        </div>
+        <div class="field">
+          <label>服务商</label>
+          <select id="f-provider" onchange="applyProvider()">
+            {% for p in providers %}
+            <option value="{{ p.key }}"
+                    data-host="{{ p.smtp_host }}" data-port="{{ p.smtp_port }}"
+                    data-ssl="{{ 1 if p.use_ssl else 0 }}" data-tls="{{ 1 if p.use_tls else 0 }}"
+                    data-note="{{ p.note }}">{{ p.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <p class="hint" id="f-provider-note"></p>
+
+      <div class="grid grid-2">
+        <div class="field">
+          <label>认证方式</label>
+          <select id="f-auth-mode" onchange="onAuthModeChange()">
+            <option value="password">密码 / 授权码</option>
+            <option value="xoauth2">OAuth2（XOAUTH2）</option>
+          </select>
+        </div>
+        <div class="field" id="f-password-field">
+          <label>密码 / 授权码</label>
+          <input type="password" id="f-password" placeholder="留空表示不修改">
+        </div>
+      </div>
+
+      <div class="grid grid-2" id="f-oauth-fields">
+        <div class="field">
+          <label>OAuth2 client_id</label>
+          <input type="password" id="f-client-id" placeholder="选填">
+        </div>
+        <div class="field">
+          <label>OAuth2 refresh_token</label>
+          <input type="password" id="f-refresh-token" placeholder="选填">
+        </div>
+      </div>
+      <p class="hint" id="f-secret-hint"></p>
+
+      <div class="grid grid-3">
+        <div class="field">
+          <label>SMTP 服务器</label>
+          <input type="text" id="f-host" placeholder="smtp.example.com">
+        </div>
+        <div class="field">
+          <label>端口</label>
+          <input type="number" id="f-port" placeholder="587">
+        </div>
+        <div class="field">
+          <label>SMTP 用户名</label>
+          <input type="text" id="f-username" placeholder="留空 = 邮箱地址">
+        </div>
+      </div>
+
+      <div class="checkline">
+        <label><input type="checkbox" id="f-ssl"> SSL（一般 465）</label>
+        <label><input type="checkbox" id="f-tls"> STARTTLS（一般 587）</label>
+        <label><input type="checkbox" id="f-enabled" checked> 启用</label>
+      </div>
+
+      <div class="grid grid-3">
+        <div class="field">
+          <label>发件人显示名</label>
+          <input type="text" id="f-display" placeholder="留空自动推导，如 Amy Chen">
+        </div>
+        <div class="field">
+          <label>正文落款名</label>
+          <input type="text" id="f-signature" placeholder="留空跟随发件人显示名">
+        </div>
+        <div class="field">
+          <label>排序</label>
+          <input type="number" id="f-sort-order" value="0">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>每日发信上限</label>
+        <input type="number" id="f-daily-limit" min="0" value="10">
+        <p class="hint">
+          这是<strong>每个账号每天的硬上限</strong>：建联批次发到上限就会整批暂停，第二天再点发送继续。
+          填 <strong>0</strong> 表示今天完全停发这个账号。
+          注意<strong>素材提交的发信也计入同一个额度</strong>——早上跑过一批素材，建联可用量会相应减少。
+          新域名建议从小往上加，信誉建立起来再调高。
+        </p>
+      </div>
+
+    </div>
+    <div class="modal-foot">
+      <button class="small" onclick="closeModal('account-form-modal')">取消</button>
+      <button class="primary" onclick="saveAccount(this)">保存</button>
+    </div>
+  </div>
+</div>
