@@ -105,6 +105,36 @@ _last_daily_sync_check_key = None
 
 _BACKLOG_LIMIT = 60
 
+# 任务卡死检测。线程池里的任务如果阻塞在系统调用上（比如 DNS 解析——requests 的
+# timeout 不覆盖它），future 永远不会完成，那个并发槽位就永久丢失，而且日志上
+# 一声不响，表现只是"任务一直 processing"。
+# Python 杀不掉阻塞在系统调用里的线程，所以这里不做"回收"，只做**告警**：
+# 超过阈值就每轮打一条 ERROR，让它在日志里显形，而不是静默烂掉。
+_TASK_STUCK_SECONDS = int(os.environ.get('WORKER_TASK_STUCK_SECONDS', '1800'))
+_stuck_warned: set = set()
+
+
+def _check_stuck_futures(future_meta):
+    """对超时未完成的任务打告警。future_meta: {future: (task_id, func_type, 提交时刻)}"""
+    now = time.time()
+    for future, (task_id, func_type, started) in list(future_meta.items()):
+        if future.done():
+            continue
+        elapsed = now - started
+        if elapsed < _TASK_STUCK_SECONDS:
+            continue
+        # 每个任务每 10 分钟最多提醒一次，别把日志刷爆
+        bucket = int(elapsed // 600)
+        key = (task_id, bucket)
+        if key in _stuck_warned:
+            continue
+        _stuck_warned.add(key)
+        logger.error(
+            f"🚨 任务疑似卡死：task_id={task_id} type={func_type} 已运行 {int(elapsed / 60)} 分钟"
+            f"（阈值 {_TASK_STUCK_SECONDS // 60} 分钟）。线程无法强制中断，该并发槽位已丢失，"
+            f"需要重启 worker 回收。常见原因：外部 API 阻塞在 DNS 解析或 TLS 握手上。"
+        )
+
 
 def _already_enqueued_since(function_type: str, since) -> bool:
     """本轮时间桶内是否已经入过队。查库，所以重启也不会重复。"""
@@ -1021,16 +1051,23 @@ def main():
     idle_count = 0
     futures_interactive = set()
     futures_scheduled = set()
+    future_meta = {}          # future -> (task_id, function_type, 提交时刻)，用于卡死检测
     with ThreadPoolExecutor(max_workers=WORKER_CONCURRENCY, thread_name_prefix='task-worker') as executor:
         while not _shutdown:
             for futures in (futures_interactive, futures_scheduled):
                 done = {future for future in futures if future.done()}
                 for future in done:
                     futures.discard(future)
+                    future_meta.pop(future, None)
                     try:
                         future.result()
                     except Exception as exc:
                         logger.error(f"❌ 并发任务 Future 异常: {exc}")
+
+            try:
+                _check_stuck_futures(future_meta)
+            except Exception as exc:
+                logger.warning(f"⚠️ 卡死检测异常: {exc}")
 
             try:
                 _maybe_trigger_tiktok_daily_sync()
@@ -1063,13 +1100,17 @@ def main():
                 if not task_row:
                     break
                 claimed_any = True
-                futures_interactive.add(executor.submit(dispatch_task, task_row))
+                fut = executor.submit(dispatch_task, task_row)
+                future_meta[fut] = (task_row.get('task_id'), task_row.get('function_type'), time.time())
+                futures_interactive.add(fut)
             while len(futures_scheduled) < WORKER_CONCURRENCY_SCHEDULED:
                 task_row = claim_task('scheduled')
                 if not task_row:
                     break
                 claimed_any = True
-                futures_scheduled.add(executor.submit(dispatch_task, task_row))
+                fut = executor.submit(dispatch_task, task_row)
+                future_meta[fut] = (task_row.get('task_id'), task_row.get('function_type'), time.time())
+                futures_scheduled.add(fut)
 
             all_futures = futures_interactive | futures_scheduled
             if claimed_any:

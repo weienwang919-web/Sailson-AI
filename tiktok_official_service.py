@@ -1217,7 +1217,7 @@ def exchange_spark_code(code: str, redirect_uri: str, business_id: str, account_
             "Content-Type": "application/x-www-form-urlencoded",
             "Cache-Control": "no-cache",
         },
-        timeout=60,
+        timeout=(10, 60),
     )
     data = _parse_token_response(resp)
     if not data.get("access_token") or not data.get("open_id"):
@@ -1303,7 +1303,7 @@ def refresh_spark_token(business_id: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
             "Cache-Control": "no-cache",
         },
-        timeout=60,
+        timeout=(10, 60),
     )
     data = _parse_token_response(resp)
     if not data.get("access_token"):
@@ -1384,7 +1384,7 @@ def exchange_business_code(code: str, authorized_by: str | None = None) -> dict[
             "auth_code": unquote(code),
         },
         headers={"Content-Type": "application/json"},
-        timeout=60,
+        timeout=(10, 60),
     )
     try:
         payload = resp.json()
@@ -1987,7 +1987,7 @@ def exchange_account_code(code: str, redirect_uri: str, account_alias: str | Non
             "Content-Type": "application/x-www-form-urlencoded",
             "Cache-Control": "no-cache",
         },
-        timeout=60,
+        timeout=(10, 60),
     )
     data = _parse_token_response(resp)
     if not data.get("access_token") or not data.get("open_id"):
@@ -2099,7 +2099,7 @@ def refresh_account_token(open_id: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
             "Cache-Control": "no-cache",
         },
-        timeout=60,
+        timeout=(10, 60),
     )
     data = _parse_token_response(resp)
     if not data.get("access_token"):
@@ -2184,7 +2184,7 @@ def _request(token: str, path: str, params: dict[str, Any], max_retries: int = 3
             f"{API_BASE}{path}",
             params=params,
             headers={"Access-Token": token},
-            timeout=60,
+            timeout=(10, 60),
         )
         if resp.status_code == 429 or resp.status_code >= 500:
             last_exc = RuntimeError(f"TikTok API 限流/服务端错误: HTTP {resp.status_code} {resp.text[:200]}")
@@ -2632,7 +2632,7 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
             "is_ad_promotable": True,
             "authorization_days": authorization_days,
         },
-        timeout=60,
+        timeout=(10, 60),
     )
     try:
         payload = resp.json()
