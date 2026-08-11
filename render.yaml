@@ -3,9 +3,10 @@ services:
   - type: web
     name: flaskproject
     env: python
-    plan: free
+    plan: standard
     buildCommand: "pip install -r requirements.txt"
     startCommand: "bash start_render.sh"
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: "5000"
@@ -98,8 +99,10 @@ services:
         value: "false"
       - key: WORKER_POLL_INTERVAL
         value: "3"
-      - key: WORKER_CONCURRENCY
-        value: "8"
+      - key: WORKER_CONCURRENCY_INTERACTIVE
+        value: "6"
+      - key: WORKER_CONCURRENCY_SCHEDULED
+        value: "2"
       - key: KOL_APIFY_REFRESH_ENABLED
         value: "true"
       - key: DASHSCOPE_API_KEY
