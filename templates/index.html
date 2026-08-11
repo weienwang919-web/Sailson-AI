@@ -405,17 +405,6 @@
                     <div class="card-arrow">→</div>
                 </a>
             </div>
-            {% if user.role == 'admin' or 'tiktok_official' in (user.permissions or '').split(',') %}
-            <div class="col-md-4">
-                <a href="/tiktok-official" class="feature-card">
-                    <span class="card-badge" style="background:#FCE7F3;color:#BE185D;">新</span>
-                    <div class="card-icon">🎵</div>
-                    <h3 class="card-title">TikTok 官号监控</h3>
-                    <p class="card-desc">通过官方 API 监控已授权官号的视频表现、主页趋势和粉丝画像。</p>
-                    <div class="card-arrow">→</div>
-                </a>
-            </div>
-            {% endif %}
             {% if user.role == 'admin' or 'mail_blaster' in (user.permissions or '').split(',') %}
             <div class="col-md-4">
                 <a href="/mail-blaster" class="feature-card">
@@ -448,19 +437,10 @@
             {% if user.role == 'admin' or 'matrix_video_dashboard' in (user.permissions or '').split(',') %}
             <div class="col-md-4">
                 <a href="/matrix-dashboard" class="feature-card">
-                    <span class="card-badge" style="background:#DCFCE7;color:#15803D;">新版</span>
+                    <span class="card-badge" style="background:#FCE7F3;color:#BE185D;">新</span>
                     <div class="card-icon">📊</div>
-                    <h3 class="card-title">矩阵号看板（新版）</h3>
-                    <p class="card-desc">总览／每日快照／累计VV／汇报面板／视频明细五大区块，含投流数据与各国占比图。</p>
-                    <div class="card-arrow">→</div>
-                </a>
-            </div>
-            <div class="col-md-4">
-                <a href="/matrix-video-dashboard" class="feature-card">
-                    <span class="card-badge" style="background:#F3F4F6;color:#6B7280;">旧版</span>
-                    <div class="card-icon">🎬</div>
-                    <h3 class="card-title">矩阵号视频监控看板</h3>
-                    <p class="card-desc">旧版看板，新版稳定后下线。PUBGM 矩阵号切片视频数据汇总，支持每日报表下载。</p>
+                    <h3 class="card-title">矩阵号看板</h3>
+                    <p class="card-desc">总览／每日快照／累计VV／汇报面板／视频明细，含投流数据与账号运维（授权、Spark、刷新同步）。</p>
                     <div class="card-arrow">→</div>
                 </a>
             </div>

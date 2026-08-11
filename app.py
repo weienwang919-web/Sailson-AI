@@ -827,7 +827,15 @@ def ensure_users_permissions_schema():
     """确保 users 表有 permissions 列（按功能开关的逗号分隔字符串），老部署自动补齐。"""
     try:
         db.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT ''")
-        logger.info("✅ 已确认 users.permissions 列存在")
+        # tiktok_official 与 matrix_video_dashboard 两个功能键已合并为后者
+        # （官号页并入矩阵号看板）。只有旧键的用户补上新键，否则合并后会进不去。
+        # 幂等，重复执行安全。
+        migrated = db.execute(
+            "UPDATE users SET permissions = permissions || ',matrix_video_dashboard' "
+            "WHERE ','||permissions||',' LIKE '%%,tiktok_official,%%' "
+            "AND ','||permissions||',' NOT LIKE '%%,matrix_video_dashboard,%%'"
+        )
+        logger.info("✅ 已确认 users.permissions 列存在（功能键合并迁移已执行）")
     except Exception as e:
         logger.warning(f"⚠️ 无法为 users 表添加 permissions 列: {e}")
 
@@ -946,8 +954,9 @@ def admin_required(f):
 
 # 按功能开关的权限位（逗号分隔存在 users.permissions 里），管理员始终视为全部拥有
 FEATURE_KEYS = {
-    'tiktok_official': 'TikTok 官号监控',
-    'matrix_video_dashboard': '矩阵号视频监控看板',
+    # 原 tiktok_official（官号监控）已并入矩阵号看板，不再单独授权。
+    # 保存权限时会按 FEATURE_KEYS 过滤，所以旧键会在下次编辑用户时自动清理掉。
+    'matrix_video_dashboard': '矩阵号看板（含账号运维）',
     'mail_blaster': '邮件素材提交',
 }
 
@@ -9555,13 +9564,14 @@ def etl_download(output_id):
 # ============================================
 
 @app.route('/tiktok-official')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def tiktok_official_page():
-    return render_template('tiktok_official.html')
+    """旧的官号监控页已并入矩阵号看板，保留路由做重定向，避免旧书签/收藏失效。"""
+    return redirect(url_for('matrix_dashboard_page'))
 
 
 @app.route('/api/tiktok-official/accounts')
-@feature_required('tiktok_official', 'matrix_video_dashboard')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_accounts():
     try:
         accounts = tiktok_official_service.sync_configured_accounts()
@@ -9571,7 +9581,7 @@ def api_tiktok_official_accounts():
 
 
 @app.route('/api/tiktok-official/auth-urls')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_auth_urls():
     """广告主授权入口（Business Portal）。投流相关权限（Ads Management/Reporting等）挂在
     Spark App 下，所以这里用 TIKTOK_SPARK_APP_ID，跟账号矩阵的一次性邀请链接是两套不同的授权体系，保留不变。
@@ -9597,7 +9607,7 @@ def api_tiktok_official_auth_urls():
 
 
 @app.route('/api/tiktok-official/invite', methods=['POST'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_invite():
     """管理员生成一次性签名授权邀请链接，发给代运营人员用于授权某个账号别名。"""
     data = request.get_json(silent=True) or {}
@@ -9629,7 +9639,7 @@ def api_tiktok_official_invite():
 
 
 @app.route('/api/tiktok-official/invites/batch', methods=['POST'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_invite_batch():
     """批量生成一次性签名授权邀请链接，用于一次性给多个账号别名补发链接（例如之前链接被烧掉但从未真正授权成功的账号）。"""
     data = request.get_json(silent=True) or {}
@@ -9666,7 +9676,7 @@ def api_tiktok_official_invite_batch():
 
 
 @app.route('/api/tiktok-official/invites')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_invites():
     """返回最近的授权邀请记录，供管理端查看哪些链接还待使用/已过期。"""
     try:
@@ -9678,7 +9688,7 @@ def api_tiktok_official_invites():
 
 
 @app.route('/api/tiktok-official/spark/invite', methods=['POST'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_spark_invite():
     """管理员生成一次性 Spark 授权邀请链接（独立新 App，仅补齐 biz.spark.auth 权限，不影响主账号表）。"""
     data = request.get_json(silent=True) or {}
@@ -9710,7 +9720,7 @@ def api_tiktok_official_spark_invite():
 
 
 @app.route('/api/tiktok-official/spark/invites')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_spark_invites():
     """返回最近的 Spark 授权邀请记录。"""
     try:
@@ -9722,7 +9732,7 @@ def api_tiktok_official_spark_invites():
 
 
 @app.route('/api/tiktok-official/spark/tokens')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_spark_tokens():
     """返回已完成 Spark 授权的账号别名列表，供管理端确认哪些账号已经能正常生成 Spark 授权码。"""
     try:
@@ -9733,7 +9743,7 @@ def api_tiktok_official_spark_tokens():
 
 
 @app.route('/api/tiktok-official/spark/invite-batch')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_spark_invite_batch():
     """批量导出所有账号的 Spark 授权链接（未授权的生成永不过期链接，已授权的只标记状态，不重复生成）。"""
     try:
@@ -9755,7 +9765,7 @@ def api_tiktok_official_spark_invite_batch():
 
 
 @app.route('/api/tiktok-official/ad-spend/summary')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_ad_spend_summary():
     """按日汇总全部广告账户的消耗/曝光/点击/转化，供投流数据看板趋势图使用。"""
     try:
@@ -9769,7 +9779,7 @@ def api_tiktok_official_ad_spend_summary():
 
 
 @app.route('/api/tiktok-official/ad-spend/by-country')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_ad_spend_by_country():
     """按国家汇总投流消耗/曝光/转化。"""
     try:
@@ -9783,7 +9793,7 @@ def api_tiktok_official_ad_spend_by_country():
 
 
 @app.route('/api/tiktok-official/ad-spend/by-video')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_ad_spend_by_video():
     """按视频归因的投流消耗明细：哪个账号/哪条视频花了多少钱。"""
     try:
@@ -9797,7 +9807,7 @@ def api_tiktok_official_ad_spend_by_video():
 
 
 @app.route('/api/tiktok-official/ad-spend/paid-ratio')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_ad_spend_paid_ratio():
     """投流流量占比：仅覆盖被投流命中的视频，不是全矩阵口径。"""
     try:
@@ -9811,7 +9821,7 @@ def api_tiktok_official_ad_spend_paid_ratio():
 
 
 @app.route('/api/tiktok-official/refresh', methods=['POST'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_refresh():
     try:
         data = request.get_json(silent=True) or {}
@@ -9853,13 +9863,13 @@ def api_tiktok_official_refresh():
 
 
 @app.route('/api/tiktok-official/refresh-status/<task_id>')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_refresh_status(task_id):
     return api_etl_task_status(task_id)
 
 
 @app.route('/api/tiktok-official/videos')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_videos():
     try:
         business_id = (request.args.get('business_id') or '').strip() or None
@@ -9874,7 +9884,7 @@ def api_tiktok_official_videos():
 
 
 @app.route('/api/tiktok-official/videos/<item_id>')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_video_detail(item_id):
     try:
         business_id = (request.args.get('business_id') or '').strip() or None
@@ -9887,7 +9897,7 @@ def api_tiktok_official_video_detail(item_id):
 
 
 @app.route('/api/tiktok-official/profile-metrics')
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_profile_metrics():
     try:
         business_id = (request.args.get('business_id') or '').strip() or None
@@ -9899,7 +9909,7 @@ def api_tiktok_official_profile_metrics():
 
 
 @app.route('/api/tiktok-official/export', methods=['POST'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_export():
     try:
         data = request.get_json(silent=True) or {}
@@ -9920,7 +9930,7 @@ def api_tiktok_official_export():
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/meta', methods=['PATCH'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_account_meta(business_id):
     try:
         data = request.get_json(silent=True) or {}
@@ -9933,7 +9943,7 @@ def api_tiktok_official_account_meta(business_id):
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/needs-boost', methods=['PATCH'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_account_needs_boost(business_id):
     try:
         data = request.get_json(silent=True) or {}
@@ -9945,7 +9955,7 @@ def api_tiktok_official_account_needs_boost(business_id):
 
 
 @app.route('/api/tiktok-official/accounts/<business_id>/enabled', methods=['PATCH'])
-@feature_required('tiktok_official')
+@feature_required('matrix_video_dashboard')
 def api_tiktok_official_account_enabled(business_id):
     try:
         data = request.get_json(silent=True) or {}
