@@ -2836,35 +2836,27 @@ def _matrix_date_range(date_from: str | None, date_to: str | None, days: int = 7
     return today - timedelta(days=days - 1), today
 
 
-def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, Any]:
-    """总览：按「发布日定格值」统计——数字一旦定格就不再随时间变化。
+def _frozen_video_cte(where_sql: str) -> str:
+    """发布日定格值的公共 CTE：每条视频一行，带账号地区和北京发布日。
 
-    取值优先用 window_hours=0 的发布日定格快照（发布日次日北京 03:30 采集）。
-    该行只在 upsert_video() 里为新发布的视频生成，历史视频没有，回退到日快照表里
-    snapshot_date = 北京发布日 的那一行。两者时点是对齐的：北京 D 发布的视频，其
-    发布日结束后的首次全量同步跑在北京 D+1 03:30 = UTC D 19:30，而历史 snapshot_date
-    用的是 UTC 日期，正好等于 D——所以那一行就是历史视频的发布日定格值。
-
-    video_count 只数「拿得到定格值」的视频，video_total 是筛选命中的全部视频，
-    两者的差就是暂时没有定格数据的部分（比如今天刚发、还没到次日凌晨）。
+    取值优先 window_hours=0 的发布日定格快照（发布日次日北京 03:30 采集）；
+    历史视频没有这行，回退到日快照表 snapshot_date = 北京发布日 的那一行——
+    北京 D 发的视频，发布日结束后首次全量同步在北京 D+1 03:30 = UTC D 19:30，
+    而历史 snapshot_date 用的是 UTC 日期，正好等于 D。
     """
-    filters = filters or {}
-    where, params = _matrix_account_filters_sql(filters)
-    where_sql = " AND ".join(where)
-    frozen_views = "COALESCE(w.video_views, d.video_views)"
-
-    row = db.query_one(
-        f"""
+    return f"""
         SELECT
-            COUNT(DISTINCT a.business_id) AS account_count,
-            COUNT(v.item_id) AS video_total,
-            COUNT({frozen_views}) AS video_count,
-            COALESCE(SUM({frozen_views}), 0) AS total_views,
-            COALESCE(SUM(CASE
+            a.business_id,
+            a.region,
+            v.item_id,
+            (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date AS publish_day,
+            COALESCE(w.video_views, d.video_views) AS views,
+            v.video_views AS cum_views,
+            CASE
                 WHEN w.video_views IS NOT NULL THEN {_engagement_sum_sql('w')}
                 WHEN d.video_views IS NOT NULL THEN {_engagement_sum_sql('d')}
                 ELSE NULL
-            END), 0) AS total_engagement
+            END AS engagement
         FROM tiktok_official_accounts a
         LEFT JOIN tiktok_official_video_snapshots v
                ON v.business_id = a.business_id AND v.create_time IS NOT NULL
@@ -2875,20 +2867,101 @@ def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, 
                ON d.business_id = v.business_id AND d.item_id = v.item_id
               AND d.snapshot_date = (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
         WHERE {where_sql}
+    """
+
+
+def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    """总览：全部按「发布日定格值」——数字一旦定格就不再随时间变化。
+
+    返回三部分，一次查询取回：
+      summary   KPI 卡
+      daily     按**发布日**的时间序列（折线图：播放量 / 互动 / 投流）
+      by_region 按**账号配置的地区**聚合（饼图：各国播放占比 / 各国投流占比）
+
+    video_count 只数「拿得到定格值」的视频，video_total 是筛选命中的全部视频。
+    """
+    filters = filters or {}
+    where, params = _matrix_account_filters_sql(filters)
+    where_sql = " AND ".join(where)
+    frozen = _frozen_video_cte(where_sql)
+
+    row = db.query_one(
+        f"""
+        WITH frozen AS ({frozen})
+        SELECT
+            (SELECT json_build_object(
+                'account_count', COUNT(DISTINCT business_id),
+                'video_total',   COUNT(item_id),
+                'video_count',   COUNT(views),
+                'total_views',   COALESCE(SUM(views), 0),
+                'cumulative_views', COALESCE(SUM(cum_views), 0),
+                'total_engagement', COALESCE(SUM(engagement), 0)
+             ) FROM frozen) AS summary,
+            (SELECT COALESCE(json_agg(t ORDER BY t.date), '[]'::json) FROM (
+                SELECT publish_day AS date,
+                       COUNT(item_id) AS video_count,
+                       COALESCE(SUM(views), 0) AS views,
+                       COALESCE(SUM(engagement), 0) AS engagement
+                FROM frozen WHERE views IS NOT NULL
+                GROUP BY publish_day
+             ) t) AS daily,
+            (SELECT COALESCE(json_agg(t ORDER BY t.views DESC), '[]'::json) FROM (
+                SELECT COALESCE(NULLIF(region, ''), '未分组') AS region,
+                       COALESCE(SUM(views), 0) AS views,
+                       COALESCE(SUM(engagement), 0) AS engagement
+                FROM frozen WHERE views IS NOT NULL
+                GROUP BY 1
+             ) t) AS by_region
         """,
         tuple(params),
     ) or {}
 
-    total_views = int(row.get("total_views") or 0)
-    total_engagement = int(row.get("total_engagement") or 0)
+    summary = row.get("summary") or {}
+    if isinstance(summary, str):
+        summary = json.loads(summary)
+    total_views = int(summary.get("total_views") or 0)
+    total_engagement = int(summary.get("total_engagement") or 0)
+    cumulative_views = int(summary.get("cumulative_views") or 0)
+
+    def _load(key):
+        v = row.get(key) or []
+        return json.loads(v) if isinstance(v, str) else v
+
+    # 投流：按账号配置的地区聚合（不是广告报表里的 country_code），跟播放量饼图同口径
+    spend_rows = db.query_all(
+        f"""
+        SELECT COALESCE(NULLIF(a.region, ''), '未分组') AS region,
+               COALESCE(SUM(s.spend), 0)::float AS spend,
+               COALESCE(SUM(s.video_play_actions), 0) AS paid_views
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql} AND s.tiktok_item_id IS NOT NULL
+        GROUP BY 1 ORDER BY 2 DESC
+        """,
+        tuple(params),
+    ) or []
+    total_spend = sum(float(r.get("spend") or 0) for r in spend_rows)
+    total_paid_views = sum(int(r.get("paid_views") or 0) for r in spend_rows)
+
     return {
-        "account_count": int(row.get("account_count") or 0),
-        "video_count": int(row.get("video_count") or 0),
-        "video_total": int(row.get("video_total") or 0),
+        "account_count": int(summary.get("account_count") or 0),
+        "video_count": int(summary.get("video_count") or 0),
+        "video_total": int(summary.get("video_total") or 0),
         "total_views": total_views,
         "total_engagement": total_engagement,
         "engagement_rate": (total_engagement / total_views) if total_views else 0.0,
+        "total_spend": total_spend,
+        "total_paid_views": total_paid_views,
+        # 投流占比必须跟付费播放同口径。付费播放是全周期累计，所以分母用**累计**总播放，
+        # 不能用定格播放（只算发布当天）——那样两个时间窗不可比，实测会算出 1000%+。
+        "cumulative_views": cumulative_views,
+        "paid_view_ratio": (total_paid_views / cumulative_views) if cumulative_views else 0.0,
+        "daily": _load("daily"),
+        "by_region": _load("by_region"),
+        "spend_by_region": spend_rows,
     }
+
 
 
 def matrix_publish_range_summary(
@@ -3087,6 +3160,23 @@ def matrix_snapshot_delta_range(
         tuple(params + [date_from_actual, date_to_actual, date_from_actual]),
     ) or []
 
+    # 本期新增投流量：投放报表本身就是按天的增量，区间内直接 SUM 即可，
+    # 不像播放量那样需要首尾快照做差。
+    spend_row = db.query_one(
+        f"""
+        SELECT COALESCE(SUM(s.spend), 0)::float AS spend,
+               COALESCE(SUM(s.video_play_actions), 0) AS paid_views
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql} AND s.tiktok_item_id IS NOT NULL
+          AND s.stat_date BETWEEN %s AND %s
+        """,
+        tuple(params + [date_from_actual, date_to_actual]),
+    ) or {}
+    spend_delta = float(spend_row.get("spend") or 0)
+    paid_views_delta = int(spend_row.get("paid_views") or 0)
+
     daily = []
     for row in daily_rows:
         cur_views_total = int(row.get("cur_views_total") or 0)
@@ -3115,6 +3205,8 @@ def matrix_snapshot_delta_range(
         "engagement_rate_start": rate_start,
         "engagement_rate_end": rate_end,
         "engagement_rate_change_pct": rate_change_pct,
+        "spend_delta": spend_delta,
+        "paid_views_delta": paid_views_delta,
         "daily": daily,
     }
 
