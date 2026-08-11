@@ -77,6 +77,7 @@ from app import (
     run_scheduled_tiktok_official_publish_window_capture,
     run_scheduled_tiktok_official_video_discovery,
     run_scheduled_tiktok_official_ad_spend_sync,
+    run_scheduled_mail_blaster_reply_poll,
 )
 logger.info("✅ app 模块加载完成")
 
@@ -278,6 +279,34 @@ def _maybe_trigger_video_discovery():
     except Exception as e:
         logger.error(f"❌ Worker 触发 TikTok 新视频发现失败: {e}")
 
+
+# KOL 建联收回信。放 worker 不放 APScheduler：web 会休眠，定时点会静默错过。
+_last_reply_poll_check_key = None
+_REPLY_POLL_INTERVAL_MINUTES = int(os.environ.get('MAIL_BLASTER_REPLY_POLL_MINUTES') or 15)
+
+
+def _maybe_trigger_reply_poll():
+    global _last_reply_poll_check_key
+    interval = max(1, _REPLY_POLL_INTERVAL_MINUTES)
+    now = datetime.utcnow()
+    bucket = now.replace(minute=(now.minute // interval) * interval,
+                         second=0, microsecond=0)
+    check_key = bucket.strftime('%Y-%m-%d %H:%M')
+    if check_key == _last_reply_poll_check_key:
+        return
+    _last_reply_poll_check_key = check_key
+    # 内存那道只挡同一进程内的重复；跨重启要靠查库，否则一重启就重新入队整批
+    if _already_enqueued_since('mail_blaster_poll_replies', bucket):
+        return
+    if _backlog_too_deep('mail_blaster_poll_replies'):
+        return
+    try:
+        run_scheduled_mail_blaster_reply_poll()
+        logger.info("⏰ Worker 触发 KOL 建联收回信")
+    except Exception as e:
+        logger.error(f"❌ Worker 触发收回信失败: {e}")
+
+
 # ============================================
 # 优雅退出
 # ============================================
@@ -410,9 +439,45 @@ def _handle_mail_blaster_send(task_id, params):
         update_task(task_id, status='failed', error=f'发送失败: {str(e)[:500]}')
 
 
+def _handle_mail_blaster_poll_replies(task_id, params):
+    """KOL 建联收回信：拉 IMAP → 匹配 → AI 分类/抽报价。
+
+    AI 走 app 的 call_gemini 注入进去——mail_inbox_service 不能 import app（会循环），
+    这和 sentiment_insight 的既有写法一致。
+    """
+    try:
+        import mail_inbox_service as inbox
+    except Exception as e:
+        logger.error(f"mail-inbox 模块不可用: {e}")
+        update_task(task_id, status='failed', error=f'mail-inbox 模块不可用: {e}')
+        return
+
+    def _progress(text):
+        update_task(task_id, status='processing', progress=text)
+
+    def _ai(prompt, timeout=90):
+        from app import call_gemini
+        return call_gemini(prompt, timeout=timeout,
+                           model=os.environ.get('MAIL_BLASTER_AI_MODEL') or inbox.AI_MODEL,
+                           temperature=0)
+
+    try:
+        fetched = inbox.fetch_all(progress=_progress)
+        analyzed = inbox.analyze_pending(ai_call=_ai, progress=_progress)
+        summary = {**fetched, 'analyzed': analyzed}
+        note = f"收到 {fetched['new']} 封　已分析 {analyzed['done']}"
+        if fetched['errors']:
+            note += f"　{len(fetched['errors'])} 个账号收信出错"
+        update_task(task_id, status='completed', progress=note,
+                    result=json.dumps(summary, ensure_ascii=False))
+    except Exception as e:
+        logger.error(f"mail-blaster 收回信任务失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=f'收回信失败: {str(e)[:500]}')
+
+
 def _handle_mail_blaster_ocr(task_id, params):
-    """营业执照识别。放在 worker 是因为一张图 3–8 秒，
-    web 那边 gunicorn workers=1/threads=1，20 行就能把整个工作台堵两分钟。"""
     try:
         import mail_blaster_service as mb
     except Exception as e:
@@ -493,6 +558,8 @@ def dispatch_task(task_row):
             _handle_mail_blaster_send(task_id, params)
         elif func_type == 'mail_blaster_ocr':
             _handle_mail_blaster_ocr(task_id, params)
+        elif func_type == 'mail_blaster_poll_replies':
+            _handle_mail_blaster_poll_replies(task_id, params)
         else:
             logger.warning(f"⚠️ 未知任务类型: {func_type}，标记为失败")
             update_task(task_id, status='failed', error=f'未知任务类型: {func_type}')
@@ -984,6 +1051,11 @@ def main():
                 _maybe_trigger_video_discovery()
             except Exception as exc:
                 logger.error(f"❌ TikTok 新视频发现自检异常: {exc}")
+
+            try:
+                _maybe_trigger_reply_poll()
+            except Exception as exc:
+                logger.error(f"❌ KOL 建联收回信自检异常: {exc}")
 
             claimed_any = False
             while len(futures_interactive) < WORKER_CONCURRENCY_INTERACTIVE:

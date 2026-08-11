@@ -81,6 +81,9 @@ _TABLES = {
     "mb_sender_accounts", "mb_images", "mb_jobs", "mb_items", "mb_templates",
     "mb_history", "mb_entity_phones", "mb_phone_pool", "mb_license_ocr",
     "mb_suppression",
+    # 收信 / 会话线 / 报价账本
+    "mb_imap_cursors", "mb_inbox_messages", "mb_inbox_extractions",
+    "mb_threads", "mb_quotes",
 }
 # 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL。
 # 新增列务必登记到这里，否则线上库走快速路径直接 return，DDL 一条都不跑，
@@ -229,6 +232,103 @@ def ensure_schema() -> None:
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # IMAP 增量拉取游标。uidvalidity 变了说明服务端重建了 UID 空间，要从头回填。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_imap_cursors (
+            account_id INTEGER NOT NULL REFERENCES mb_sender_accounts(id) ON DELETE CASCADE,
+            folder VARCHAR(64) NOT NULL DEFAULT 'INBOX',
+            uidvalidity BIGINT,
+            last_uid BIGINT NOT NULL DEFAULT 0,
+            last_sync_at TIMESTAMP,
+            last_error TEXT,
+            PRIMARY KEY (account_id, folder)
+        )
+    """)
+    # 收到的信。dedupe_key 唯一：同一封被重复拉取时靠它幂等
+    # （有 Message-ID 就用它，没有则退回 账号:folder:uid）。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_inbox_messages (
+            id SERIAL PRIMARY KEY,
+            account_id INTEGER REFERENCES mb_sender_accounts(id) ON DELETE SET NULL,
+            folder VARCHAR(64) NOT NULL DEFAULT 'INBOX',
+            uid BIGINT,
+            dedupe_key VARCHAR(512) UNIQUE NOT NULL,
+            message_id TEXT,
+            in_reply_to TEXT,
+            refs TEXT,
+            from_email VARCHAR(255) NOT NULL DEFAULT '',
+            from_name VARCHAR(255) NOT NULL DEFAULT '',
+            to_email VARCHAR(255) NOT NULL DEFAULT '',
+            subject TEXT NOT NULL DEFAULT '',
+            body_text TEXT NOT NULL DEFAULT '',
+            body_html TEXT NOT NULL DEFAULT '',
+            received_at TIMESTAMP,
+            matched_item_id INTEGER REFERENCES mb_items(id) ON DELETE SET NULL,
+            thread_id INTEGER,
+            match_method VARCHAR(20),
+            match_confidence REAL NOT NULL DEFAULT 0,
+            kind VARCHAR(20) NOT NULL DEFAULT 'reply',
+            handled BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    # AI 抽取结果：既拆列（筛选排序）又留 raw_json（改 schema 时能重放）
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_inbox_extractions (
+            id SERIAL PRIMARY KEY,
+            inbox_id INTEGER NOT NULL UNIQUE
+                REFERENCES mb_inbox_messages(id) ON DELETE CASCADE,
+            intent VARCHAR(24),
+            quote_amount NUMERIC(14,2),
+            quote_currency VARCHAR(8),
+            contacts_json TEXT,
+            needs_human BOOLEAN NOT NULL DEFAULT FALSE,
+            needs_human_reason TEXT,
+            summary TEXT,
+            reply_draft TEXT,
+            raw_json TEXT,
+            model VARCHAR(64),
+            status VARCHAR(16) NOT NULL DEFAULT 'pending',
+            error TEXT,
+            tokens INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    # 每个 KOL 一条会话线。状态机：pending → replied → negotiating → won / lost
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_threads (
+            id SERIAL PRIMARY KEY,
+            kol_email VARCHAR(255) UNIQUE NOT NULL,
+            kol_name VARCHAR(255) NOT NULL DEFAULT '',
+            account_id INTEGER REFERENCES mb_sender_accounts(id) ON DELETE SET NULL,
+            job_id INTEGER REFERENCES mb_jobs(id) ON DELETE SET NULL,
+            item_id INTEGER REFERENCES mb_items(id) ON DELETE SET NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            last_intent VARCHAR(24),
+            next_action TEXT,
+            vars_json TEXT,
+            first_sent_at TIMESTAMP,
+            last_reply_at TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    # 报价账本：append-only，改价是追加新版本而不是改历史。
+    # 议价轮次由 status='countered' 的行数推导，不单独存字段——存了就会漂。
+    # source_inbox_id 让每个价格都能追溯到具体是哪封回信说的。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_quotes (
+            id SERIAL PRIMARY KEY,
+            thread_id INTEGER NOT NULL REFERENCES mb_threads(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'proposed',
+            amount NUMERIC(14,2),
+            currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+            source_inbox_id INTEGER REFERENCES mb_inbox_messages(id) ON DELETE SET NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE (thread_id, version)
+        )
+    """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_entity_phones (
             entity_key VARCHAR(255) PRIMARY KEY,
@@ -307,6 +407,13 @@ def ensure_schema() -> None:
         # quota_state 每封信查一次，条件是 (sender_account_id, sent_at)。
         # idx_mb_history_sender 首列是 recipient，服务不了这个查询。
         "CREATE INDEX IF NOT EXISTS idx_mb_history_quota ON mb_history(sender_account_id, sent_at)",
+        # 回信匹配靠 In-Reply-To → mb_items.message_id，这是唯一强信号
+        "CREATE INDEX IF NOT EXISTS idx_mb_items_msgid ON mb_items(message_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mb_inbox_thread ON mb_inbox_messages(thread_id, received_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mb_inbox_unhandled "
+        "ON mb_inbox_messages(handled, received_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_mb_quotes_thread ON mb_quotes(thread_id, version)",
+        "CREATE INDEX IF NOT EXISTS idx_mb_threads_status ON mb_threads(status, updated_at DESC)",
     ):
         db.execute(stmt)
 
@@ -1517,7 +1624,10 @@ COLUMN_ALIASES = {
 }
 _SPECIAL = {"image", "recipient", "status"}
 DATA_FIELDS = [f for f in COLUMN_ALIASES if f not in _SPECIAL]
-_EMAIL_RE = re.compile(r"[^@\s,;、]+@[^@\s,;、]+\.[^@\s,;、]+")
+# 一格里可能塞了多个邮箱，逐个抠出来。排除集里要带上全角标点——
+# 中文输入法下分隔符常常是 ，；、 而不是半角，漏了会把 'a@x.com；b@y.com'
+# 当成一个地址，发信必然失败。
+_EMAIL_RE = re.compile(r"[^@\s,;、，；]+@[^@\s,;、，；]+\.[^@\s,;、，；]+")
 MAX_SCAN_ROWS = 10
 
 
@@ -1674,7 +1784,7 @@ def parse_material_xlsx(data: bytes) -> dict:
 # 锚定匹配，判断「整格就是一个邮箱」。
 # 刻意不叫 _EMAIL_RE：那个名字上面已经占用了，是非锚定的 findall 版本，
 # 供 parse_material_xlsx 从一格里抠出多个邮箱用。同名会静默覆盖并搞坏素材提交。
-_EMAIL_EXACT_RE = re.compile(r"^[^@\s,;、]+@[^@\s,;、]+\.[^@\s,;、]+$")
+_EMAIL_EXACT_RE = re.compile(r"^[^@\s,;、，；]+@[^@\s,;、，；]+\.[^@\s,;、，；]+$")
 
 _KOL_DELIMS = ("\t", ",", ";", "|")
 
@@ -2847,7 +2957,32 @@ def _request_access_token(flavor: str, client_id: str, refresh_token: str) -> tu
     token = payload.get("access_token")
     if not token:
         raise OAuthError(f"令牌端点没有返回 access_token：{json.dumps(payload)[:300]}")
-    return token, time.time() + float(payload.get("expires_in") or 3600)
+    # 微软 v2 端点在 refresh 成功时可能返回一个**新的** refresh_token 并让旧的失效。
+    # 不写回库的话，下一次换令牌就会拿一个已作废的去换，账号直接掉线。
+    # 之前一直没暴露只是因为 SMTP.Send 这个 scope 的令牌通常不轮换。
+    return token, time.time() + float(payload.get("expires_in") or 3600), \
+        (payload.get("refresh_token") or "").strip()
+
+
+def _rotate_refresh_token(old_token: str, new_token: str) -> None:
+    """令牌轮换后写回库。找不到对应行就算了——缓存里那份这一轮仍然可用，
+    但下一轮会拿作废的令牌去换，所以这里失败要留日志。"""
+    if not new_token or new_token == old_token:
+        return
+    try:
+        rows = db.query_all(
+            "SELECT id, encrypted_refresh_token FROM mb_sender_accounts "
+            "WHERE encrypted_refresh_token IS NOT NULL AND auth_mode = 'xoauth2'")
+        hit = [r["id"] for r in rows
+               if crypto_util.decrypt(r["encrypted_refresh_token"]) == old_token]
+        if not hit:
+            logger.warning("mail-blaster: 令牌轮换了但库里找不到对应账号，下次换令牌可能失败")
+            return
+        db.execute("UPDATE mb_sender_accounts SET encrypted_refresh_token = %s "
+                   "WHERE id = ANY(%s)", (crypto_util.encrypt(new_token), hit))
+        logger.info("mail-blaster: refresh_token 已轮换并写回账号 %s", hit)
+    except Exception:
+        logger.exception("mail-blaster: refresh_token 轮换写回失败")
 
 
 def get_access_token(*, provider: str | None, client_id: str, refresh_token: str) -> str:
@@ -2863,9 +2998,14 @@ def get_access_token(*, provider: str | None, client_id: str, refresh_token: str
         cached = _token_cache.get(key)
         if cached and cached[1] - TOKEN_EXPIRY_MARGIN > now:
             return cached[0]
-    token, expires_at = _request_access_token(_oauth_flavor(provider), client_id, refresh_token)
+    token, expires_at, rotated = _request_access_token(
+        _oauth_flavor(provider), client_id, refresh_token)
     with _token_lock:
         _token_cache[key] = (token, expires_at)
+        if rotated and rotated != refresh_token:
+            # 新令牌也进缓存，这样下游拿新令牌来问时不用再跑一趟网络
+            _token_cache[(client_id, rotated)] = (token, expires_at)
+    _rotate_refresh_token(refresh_token, rotated)
     return token
 
 
