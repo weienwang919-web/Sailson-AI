@@ -2698,12 +2698,12 @@ def list_matrix_videos(
 
     date_from = (filters.get("date_from") or "").strip()
     if date_from:
-        where.append("v.create_time >= %s")
+        where.append("(v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date >= %s")
         params.append(date_from)
 
     date_to = (filters.get("date_to") or "").strip()
     if date_to:
-        where.append("v.create_time < (%s::date + INTERVAL '1 day')")
+        where.append("(v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date <= %s")
         params.append(date_to)
 
     creator = (filters.get("creator") or "").strip()
@@ -3047,8 +3047,8 @@ def matrix_publish_range_summary(
     if kw:
         where.append(kw)
         params.extend(kw_params)
-    where.append("v.create_time >= %s")
-    where.append("v.create_time < (%s::date + INTERVAL '1 day')")
+    # 发布日按北京自然日，跟总览/汇报面板同口径（用 UTC 边界会在跨日界处差一条）
+    where.append("(v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date BETWEEN %s AND %s")
     params.extend([range_from.isoformat(), range_to.isoformat()])
     where_sql = " AND ".join(where)
 
@@ -3070,15 +3070,15 @@ def matrix_publish_range_summary(
     daily_rows = db.query_all(
         f"""
         SELECT
-            v.create_time::date AS date,
+            (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date AS date,
             COUNT(*) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS views,
             COALESCE(SUM({_engagement_sum_sql('v')}), 0) AS engagement
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE {where_sql}
-        GROUP BY v.create_time::date
-        ORDER BY v.create_time::date
+        GROUP BY (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
+        ORDER BY (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
         """,
         tuple(params),
     ) or []
@@ -3312,18 +3312,18 @@ def matrix_cumulative_views_range(
         where.append(kw)
         params.extend(kw_params)
     where.append("v.create_time IS NOT NULL")
-    where.append("v.create_time::date <= %s")
+    where.append("(v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date <= %s")
     params.append(range_to.isoformat())
     where_sql = " AND ".join(where)
 
     rows = db.query_all(
         f"""
         WITH daily AS (
-            SELECT v.create_time::date AS date, COALESCE(SUM(v.video_views), 0) AS views
+            SELECT (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date AS date, COALESCE(SUM(v.video_views), 0) AS views
             FROM tiktok_official_video_snapshots v
             LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
             WHERE {where_sql}
-            GROUP BY v.create_time::date
+            GROUP BY (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
         )
         SELECT date, SUM(views) OVER (ORDER BY date) AS cumulative_views
         FROM daily
@@ -3632,7 +3632,7 @@ def build_matrix_export(export_date) -> bytes:
             a.account_alias, a.account_name, a.display_name, a.region, a.account_type, a.profile_deep_link
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
-        WHERE v.create_time::date = %s
+        WHERE (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date = %s
           AND v.business_id != ALL(%s)
         ORDER BY COALESCE(a.account_alias, a.account_name, a.display_name, v.business_id), v.create_time DESC NULLS LAST
         """,
@@ -3649,7 +3649,7 @@ def build_matrix_export(export_date) -> bytes:
             LEFT JOIN tiktok_official_video_daily_snapshots d
                 ON d.business_id = v.business_id
                 AND d.item_id = v.item_id
-                AND d.snapshot_date = (v.create_time::date + INTERVAL '1 day')::date
+                AND d.snapshot_date = ((v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date + INTERVAL '1 day')::date
             WHERE (v.business_id, v.item_id) IN %s
             """,
             (tuple(pairs),),
@@ -3732,12 +3732,12 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
 
     date_from = (filters.get("date_from") or "").strip()
     if date_from:
-        where.append("v.create_time >= %s")
+        where.append("(v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date >= %s")
         params.append(date_from)
 
     date_to = (filters.get("date_to") or "").strip()
     if date_to:
-        where.append("v.create_time < (%s::date + INTERVAL '1 day')")
+        where.append("(v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date <= %s")
         params.append(date_to)
 
     creator = (filters.get("creator") or "").strip()
