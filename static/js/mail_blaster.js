@@ -9,7 +9,7 @@ let COOLDOWN_DAYS = 7, previewIndex = 0, pollTimer = null;
 
 /* ---------- 账号池 ---------- */
 async function loadPool() {
-  try { POOL = (await api('/api/mail-blaster/accounts')).accounts; }
+  try { POOL = (await api('/api/mail-blaster/accounts?purpose=material')).accounts; }
   catch (e) { return toast(e.message, true); }
   if (!POOL.some(usable)) {
     document.getElementById('upload-info').innerHTML =

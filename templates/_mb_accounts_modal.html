@@ -8,6 +8,8 @@
     <div class="modal-body">
       <p class="hint">
         只有<strong>已启用 + 测试通过</strong>的账号会参与自动配对。密码加密存库，页面上不回显。
+        <br><strong>用途</strong>决定这个号出现在哪个页面：素材提交和 KOL 建联用的是两套不同的邮箱，
+        选错会让建联信从收不了回信的号发出去。
       </p>
 
       <div class="row">
@@ -29,9 +31,10 @@
 
       <table style="margin-top:12px">
         <thead><tr>
-          <th style="width:52px">启用</th><th>邮箱</th><th style="width:130px">显示名</th>
-          <th style="width:200px">SMTP</th><th style="width:90px">每日上限</th>
-          <th style="width:120px">状态</th><th style="width:190px">操作</th>
+          <th style="width:52px">启用</th><th>邮箱</th><th style="width:90px">用途</th>
+          <th style="width:180px">SMTP</th><th style="width:150px">收信</th>
+          <th style="width:80px">上限</th>
+          <th style="width:110px">状态</th><th style="width:240px">操作</th>
         </tr></thead>
         <tbody id="acc-rows"></tbody>
       </table>
@@ -58,12 +61,27 @@
             <option value="{{ p.key }}"
                     data-host="{{ p.smtp_host }}" data-port="{{ p.smtp_port }}"
                     data-ssl="{{ 1 if p.use_ssl else 0 }}" data-tls="{{ 1 if p.use_tls else 0 }}"
+                    data-imap-host="{{ p.imap_host }}" data-imap-port="{{ p.imap_port }}"
+                    data-imap-ssl="{{ 1 if p.imap_ssl else 0 }}"
                     data-note="{{ p.note }}">{{ p.label }}</option>
             {% endfor %}
           </select>
         </div>
       </div>
       <p class="hint" id="f-provider-note"></p>
+
+      <div class="field">
+        <label>用途</label>
+        <select id="f-purpose">
+          <option value="both">通用（两个页面都能选）</option>
+          <option value="material">只用于素材提交</option>
+          <option value="outreach">只用于 KOL 建联</option>
+        </select>
+        <p class="hint">
+          素材提交和 KOL 建联用的是两套不同的邮箱。标好用途后，各自页面只会列出对应的号，
+          避免建联信从收不了回信的账号发出去。
+        </p>
+      </div>
 
       <div class="grid grid-2">
         <div class="field">
@@ -114,6 +132,27 @@
 
       <div class="grid grid-3">
         <div class="field">
+          <label>IMAP 服务器（收信）</label>
+          <input type="text" id="f-imap-host" placeholder="留空 = 这个号只发不收">
+        </div>
+        <div class="field">
+          <label>IMAP 端口</label>
+          <input type="number" id="f-imap-port" placeholder="993">
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <div class="checkline" style="height:38px">
+            <label><input type="checkbox" id="f-imap-ssl" checked> IMAP SSL（993）</label>
+          </div>
+        </div>
+      </div>
+      <p class="hint">
+        KOL 建联要靠这条链路收达人回信。<strong>OAuth2 账号收不了信</strong>——
+        现有授权只申请了 SMTP.Send，没有 IMAP 权限。填完点账号表里的「测收信」验证。
+      </p>
+
+      <div class="grid grid-3">
+        <div class="field">
           <label>发件人显示名</label>
           <input type="text" id="f-display" placeholder="留空自动推导，如 Amy Chen">
         </div>
@@ -133,8 +172,8 @@
         <p class="hint">
           这是<strong>每个账号每天的硬上限</strong>：建联批次发到上限就会整批暂停，第二天再点发送继续。
           填 <strong>0</strong> 表示今天完全停发这个账号。
-          注意<strong>素材提交的发信也计入同一个额度</strong>——早上跑过一批素材，建联可用量会相应减少。
-          新域名建议从小往上加，信誉建立起来再调高。
+          额度按<strong>账号</strong>算，不按用途分——如果某个号用途是「通用」、两个功能都在用，
+          它们会共享同一个额度。新域名建议从小往上加，信誉建立起来再调高。
         </p>
       </div>
 

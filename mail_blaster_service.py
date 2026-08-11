@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 COOLDOWN_DAYS = 7
 DEFAULT_DAILY_LIMIT = 10
 SMTP_TIMEOUT = 25
+IMAP_TIMEOUT = 30
 LOCAL_SMTP_HOST = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_HOST", "127.0.0.1")
 LOCAL_SMTP_PORT = int(os.environ.get("MAIL_BLASTER_LOCAL_SMTP_PORT", "1025"))
 LOCAL_SMTP_USE_TLS = os.environ.get("MAIL_BLASTER_LOCAL_SMTP_USE_TLS", "false").lower() == "true"
@@ -89,6 +90,7 @@ _LATEST_COLUMNS = {
     ("mb_jobs", "replacement_domain"), ("mb_sender_accounts", "auth_mode"),
     ("mb_jobs", "mode"), ("mb_jobs", "sender_account_id"),
     ("mb_templates", "mode"), ("mb_history", "mode"),
+    ("mb_sender_accounts", "purpose"), ("mb_sender_accounts", "imap_host"),
 }
 
 
@@ -284,6 +286,16 @@ def ensure_schema() -> None:
         # 不换的话建联存一个叫「默认」的模板会顶掉素材提交的同名模板。
         "ALTER TABLE mb_templates DROP CONSTRAINT IF EXISTS mb_templates_name_key",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_mb_templates_mode_name ON mb_templates(mode, name)",
+        # 账号用途：素材提交和 KOL 建联用的是两套完全不同的邮箱
+        # （素材是 Outlook OAuth2，建联是阿里云企业邮箱），混在一个下拉里很容易选错，
+        # 而且选错的后果是建联信从收不了回信的号发出去。默认 both 保持老账号行为不变。
+        "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS "
+        "purpose VARCHAR(16) NOT NULL DEFAULT 'both'",
+        # 收信（建联要靠它收回信）。空 imap_host 表示这个号只发不收。
+        "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS imap_host VARCHAR(255)",
+        "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS imap_port INTEGER",
+        "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS "
+        "imap_ssl BOOLEAN NOT NULL DEFAULT TRUE",
     ):
         db.execute(stmt)
 
@@ -306,30 +318,41 @@ def ensure_schema() -> None:
 PROVIDERS = [
     {"key": "aliyun_qiye", "label": "阿里云企业邮箱", "smtp_host": "smtp.qiye.aliyun.com",
      "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": [],
-     "note": "在邮箱设置里开启 SMTP 服务。企业版可能需要管理员先放开客户端登录。"},
+     "imap_host": "imap.qiye.aliyun.com", "imap_port": 993, "imap_ssl": True,
+     "note": "企业自有域名，无法按域名自动识别，需手动选。密码填邮箱登录密码；"
+             "开了安全设置就填客户端专用密码。收信要在管理后台确认 IMAP 服务已开启。"},
     {"key": "tencent_exmail", "label": "腾讯企业邮箱", "smtp_host": "smtp.exmail.qq.com",
      "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": [],
+     "imap_host": "imap.exmail.qq.com", "imap_port": 993, "imap_ssl": True,
      "note": "需要在「安全设置」里开启客户端专用密码，密码填那个而不是登录密码。"},
     {"key": "feishu", "label": "飞书邮箱", "smtp_host": "smtp.feishu.cn",
      "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": [],
+     "imap_host": "imap.feishu.cn", "imap_port": 993, "imap_ssl": True,
      "note": "在飞书邮箱设置里生成客户端专用密码。"},
     {"key": "outlook", "label": "Outlook / Hotmail", "smtp_host": "smtp-mail.outlook.com",
      "smtp_port": 587, "use_ssl": False, "use_tls": True,
      "domains": ["outlook.com", "hotmail.com", "live.com", "msn.com"],
-     "note": "微软正在收紧密码直连。报 535 5.7.139 说明该账号已被禁用密码登录，只能改走 OAuth2。"},
+     "imap_host": "outlook.office365.com", "imap_port": 993, "imap_ssl": True,
+     "note": "微软正在收紧密码直连。报 535 5.7.139 说明该账号已被禁用密码登录，只能改走 OAuth2。"
+             "注意 OAuth2 账号收信需要 IMAP.AccessAsUser.All 权限，"
+             "现有授权只申请了 SMTP.Send，收不了信。"},
     {"key": "gmail", "label": "Gmail", "smtp_host": "smtp.gmail.com",
      "smtp_port": 587, "use_ssl": False, "use_tls": True,
      "domains": ["gmail.com", "googlemail.com"],
+     "imap_host": "imap.gmail.com", "imap_port": 993, "imap_ssl": True,
      "note": "Google 已永久关闭「登录密码直连 SMTP」，报 535 5.7.8 就是这个原因。"
              "必须先开两步验证，再去 myaccount.google.com/apppasswords 生成 16 位应用专用密码（填的时候去掉空格）。"},
     {"key": "qq", "label": "QQ 邮箱", "smtp_host": "smtp.qq.com",
      "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": ["qq.com", "foxmail.com"],
+     "imap_host": "imap.qq.com", "imap_port": 993, "imap_ssl": True,
      "note": "在设置-账户里开启 SMTP 并生成授权码，密码填授权码而不是 QQ 密码。"},
     {"key": "163", "label": "网易 163", "smtp_host": "smtp.163.com",
      "smtp_port": 465, "use_ssl": True, "use_tls": False, "domains": ["163.com"],
+     "imap_host": "imap.163.com", "imap_port": 993, "imap_ssl": True,
      "note": "在网页版设置里开启 SMTP 服务并获取授权码，密码填授权码。"},
     {"key": "custom", "label": "自定义", "smtp_host": "", "smtp_port": 587,
      "use_ssl": False, "use_tls": True, "domains": [],
+     "imap_host": "", "imap_port": 993, "imap_ssl": True,
      "note": "自己填 SMTP 服务器和端口。465 一般配 SSL，587 一般配 STARTTLS。"},
 ]
 _BY_KEY = {p["key"]: p for p in PROVIDERS}
@@ -381,6 +404,13 @@ def serialize_account(row: dict) -> dict:
         "daily_limit": (DEFAULT_DAILY_LIMIT if row.get("daily_limit") is None
                         else int(row["daily_limit"])),
         "auth_mode": row.get("auth_mode") or "password",
+        "purpose": row.get("purpose") or "both",
+        "imap_host": row.get("imap_host") or "",
+        "imap_port": row.get("imap_port"),
+        "imap_ssl": bool(row.get("imap_ssl", True)),
+        # 能不能收信：要有 IMAP 地址，且不是只申请了 SMTP.Send 的 OAuth2 号
+        "can_receive": bool(row.get("imap_host"))
+                       and (row.get("auth_mode") or "password") == "password",
         "has_client_id": bool(row.get("encrypted_client_id")),
         "has_refresh_token": bool(row.get("encrypted_refresh_token")),
         "status": row.get("status") or "draft",
@@ -400,14 +430,19 @@ def usable_account(acc: dict) -> bool:
     return bool(acc.get("has_password"))
 
 
-def list_accounts(only_sendable: bool = False) -> list[dict]:
-    sql = "SELECT * FROM mb_sender_accounts"
+def list_accounts(only_sendable: bool = False, purpose: str = "") -> list[dict]:
+    sql = "SELECT * FROM mb_sender_accounts WHERE 1=1"
+    args: list = []
     if only_sendable:
         # 密码模式要有密码，OAuth 模式要有 refresh_token
-        sql += (" WHERE enabled = TRUE AND status = 'ready'"
+        sql += (" AND enabled = TRUE AND status = 'ready'"
                 " AND (encrypted_password IS NOT NULL OR encrypted_refresh_token IS NOT NULL)")
+    if purpose in ("material", "outreach"):
+        # both 是通用号，两边都列
+        sql += " AND purpose IN (%s, 'both')"
+        args.append(purpose)
     sql += " ORDER BY sort_order ASC, id ASC"
-    return [serialize_account(dict(r)) for r in db.query_all(sql)]
+    return [serialize_account(dict(r)) for r in db.query_all(sql, tuple(args))]
 
 
 def get_account(account_id: int) -> dict | None:
@@ -451,13 +486,32 @@ def _normalize_account(payload: dict) -> dict:
     if daily_limit < 0:
         raise ValueError(f"{email}：每日上限不能是负数")
 
+    purpose = (payload.get("purpose") or "").strip()
+    if purpose not in ("material", "outreach", "both"):
+        purpose = "both"
+
+    # 收信配置。imap_host 留空表示这个号只发不收。
+    imap_host = (payload.get("imap_host") or "").strip()
+    if "imap_host" not in payload and preset.get("imap_host"):
+        imap_host = preset["imap_host"]
+    if imap_host:
+        try:
+            imap_port = int(payload.get("imap_port") or preset.get("imap_port") or 993)
+        except (TypeError, ValueError):
+            raise ValueError(f"{email}：IMAP 端口不是数字") from None
+        imap_ssl = (bool(payload["imap_ssl"]) if "imap_ssl" in payload
+                    else bool(preset.get("imap_ssl", True)))
+    else:
+        imap_port, imap_ssl = None, True
+
     return {
         "email": email, "provider": key, "smtp_host": host, "smtp_port": port,
-        "auth_mode": auth_mode,
+        "auth_mode": auth_mode, "purpose": purpose,
         "display_name": (payload.get("display_name") or "").strip() or None,
         "signature_name": (payload.get("signature_name") or "").strip() or None,
         "smtp_username": (payload.get("smtp_username") or "").strip() or None,
         "use_ssl": use_ssl, "use_tls": use_tls,
+        "imap_host": imap_host or None, "imap_port": imap_port, "imap_ssl": imap_ssl,
         "enabled": bool(payload.get("enabled", True)),
         "sort_order": sort_order,
         "daily_limit": daily_limit,
@@ -480,10 +534,13 @@ def create_account(payload: dict) -> dict:
         INSERT INTO mb_sender_accounts
             (email, display_name, signature_name, provider, smtp_host, smtp_port,
              smtp_username, use_ssl, use_tls, enabled, sort_order, daily_limit, auth_mode,
+             purpose, imap_host, imap_port, imap_ssl,
              encrypted_password, encrypted_client_id, encrypted_refresh_token)
         VALUES (%(email)s, %(display_name)s, %(signature_name)s, %(provider)s, %(smtp_host)s,
                 %(smtp_port)s, %(smtp_username)s, %(use_ssl)s, %(use_tls)s, %(enabled)s,
-                %(sort_order)s, %(daily_limit)s, %(auth_mode)s, %(pwd)s, %(cid)s, %(rtok)s)
+                %(sort_order)s, %(daily_limit)s, %(auth_mode)s,
+                %(purpose)s, %(imap_host)s, %(imap_port)s, %(imap_ssl)s,
+                %(pwd)s, %(cid)s, %(rtok)s)
         RETURNING id
     """, {**data, **secrets})
     return serialize_account(get_account(new_id))
@@ -646,6 +703,85 @@ def test_account(account_id: int) -> dict:
         "UPDATE mb_sender_accounts SET status = %s, last_error = %s, last_test_at = NOW() WHERE id = %s",
         (status, error, account_id))
     return serialize_account(get_account(account_id))
+
+
+# --------------------------------------------------------------------------- #
+# 收信（IMAP）
+# --------------------------------------------------------------------------- #
+# 建联要靠这条链路收回信。素材提交那批 Outlook 号走的是 OAuth2，
+# 而当初申请的 scope 只有 SMTP.Send，收不了信——见 MICROSOFT_SCOPE。
+# 建联用的阿里云企业邮箱是密码认证，不受这个限制。
+
+def friendly_imap_error(exc: Exception) -> str:
+    text = str(exc)
+    low = text.lower()
+    if "authentication" in low or ("login" in low and "fail" in low) or "auth" in low:
+        return (f"IMAP 认证被拒：{text}\n\n"
+                "阿里云企业邮箱：确认管理后台已开启 IMAP 服务；"
+                "开了安全设置的话密码要填客户端专用密码而不是登录密码。")
+    if "timed out" in low or "timeout" in low:
+        return f"连接 IMAP 服务器超时：{text}"
+    if "name or service not known" in low or "nodename nor servname" in low:
+        return f"IMAP 服务器地址解析不了，检查填的是不是对的：{text}"
+    if "ssl" in low or "certificate" in low:
+        return f"TLS/SSL 握手失败，检查端口和 SSL 开关是否匹配（993 配 SSL）：{text}"
+    return text
+
+
+def open_imap(account: dict):
+    """连上收件箱并登录。异常往外抛，由调用方决定怎么记。"""
+    import imaplib
+
+    host = (account.get("imap_host") or "").strip()
+    if not host:
+        raise ValueError(f"{account['email']}：没有配 IMAP 服务器，这个号只能发不能收")
+    if (account.get("auth_mode") or "password") != "password":
+        raise ValueError(
+            f"{account['email']} 是 OAuth2 账号，收信需要 IMAP.AccessAsUser.All 权限，"
+            "而现有 refresh_token 只申请了 SMTP.Send（见 MICROSOFT_SCOPE）。"
+            "要用这个号收信得重新走一次授权。")
+    port = int(account.get("imap_port") or 993)
+    password = crypto_util.decrypt(account.get("encrypted_password")) or ""
+    if not password:
+        raise ValueError(f"{account['email']}：没有密码，没法登录 IMAP")
+    username = (account.get("smtp_username") or account["email"]).strip()
+
+    client = (imaplib.IMAP4_SSL(host, port, timeout=IMAP_TIMEOUT)
+              if account.get("imap_ssl", True)
+              else imaplib.IMAP4(host, port, timeout=IMAP_TIMEOUT))
+    try:
+        client.login(username, password)
+    except Exception:
+        try:
+            client.logout()
+        except Exception:
+            pass
+        raise
+    return client
+
+
+def test_imap(account_id: int) -> dict:
+    """测试收信。和 test_account（测发信）分开：一个号可能能发不能收。"""
+    account = get_account(account_id)
+    if account is None:
+        raise ValueError(f"账号 {account_id} 不存在")
+    try:
+        client = open_imap(account)
+    except Exception as exc:
+        return {"ok": False, "error": friendly_imap_error(exc)}
+    try:
+        typ, data = client.select("INBOX", readonly=True)
+        if typ != "OK":
+            return {"ok": False, "error": f"打不开收件箱：{data}"}
+        count = int(data[0]) if data and data[0] else 0
+        return {"ok": True, "info": f"收件箱里有 {count} 封邮件"}
+    except Exception as exc:
+        return {"ok": False, "error": friendly_imap_error(exc)}
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -2461,7 +2597,7 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
     if replace_domain_enabled and not replacement_domain:
         raise ValueError("已勾选替换域名，请填写目标域名")
 
-    pool = list_accounts(only_sendable=True)
+    pool = list_accounts(only_sendable=True, purpose="material")
     job_id = db.execute_and_fetch_id("""
         INSERT INTO mb_jobs (user_id, recipient, subject_tpl, body_tpl, signature_tpl,
             ocr_status, replace_domain_enabled, replacement_domain)
