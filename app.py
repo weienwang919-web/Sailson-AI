@@ -9982,28 +9982,39 @@ def api_tiktok_official_account_enabled(business_id):
 @app.route('/matrix-video-dashboard')
 @feature_required('matrix_video_dashboard')
 def matrix_video_dashboard_page():
-    return render_template('matrix_video_dashboard.html')
+    return render_template(
+        'matrix_video_dashboard.html',
+        publish_window_hours=list(tiktok_official_service.PUBLISH_WINDOW_HOURS),
+    )
+
+
+def _matrix_csv_arg(name):
+    raw = request.args.get(name) or ''
+    return [v.strip() for v in raw.split(',') if v.strip()]
 
 
 def _matrix_account_ids_arg():
-    raw = request.args.get('account_ids') or ''
-    return [v.strip() for v in raw.split(',') if v.strip()]
+    return _matrix_csv_arg('account_ids')
 
 
 def _matrix_regions_arg():
-    raw = request.args.get('regions') or ''
-    return [v.strip() for v in raw.split(',') if v.strip()]
+    return _matrix_csv_arg('regions')
 
 
-@app.route('/api/tiktok-official/matrix-videos')
-@feature_required('matrix_video_dashboard')
-def api_tiktok_official_matrix_videos():
-    try:
-        filters = {
-            'region': request.args.get('region') or '',
+def _matrix_filters_from_request(full=False):
+    """看板各区块共用的筛选解析。
+
+    默认只取账号维度的三个字段（总览/发布区间/快照增量/累计VV 四个统计看板用）；
+    full=True 追加视频明细和导出用的日期、关键词、投流、互动率、播放量等筛选。
+    """
+    filters = {
+        'region': request.args.get('region') or '',
+        'account_type': request.args.get('account_type') or '',
+        'account_ids': _matrix_account_ids_arg(),
+    }
+    if full:
+        filters.update({
             'regions': _matrix_regions_arg(),
-            'account_type': request.args.get('account_type') or '',
-            'account_ids': _matrix_account_ids_arg(),
             'date_from': request.args.get('date_from') or '',
             'date_to': request.args.get('date_to') or '',
             'creator': request.args.get('creator') or '',
@@ -10012,7 +10023,15 @@ def api_tiktok_official_matrix_videos():
             'only_unboosted': request.args.get('only_unboosted') == '1',
             'engagement_filter': request.args.get('engagement_filter') or '',
             'views_filter': request.args.get('views_filter') or '',
-        }
+        })
+    return filters
+
+
+@app.route('/api/tiktok-official/matrix-videos')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_matrix_videos():
+    try:
+        filters = _matrix_filters_from_request(full=True)
         limit = int(request.args.get('limit') or 50)
         offset = int(request.args.get('offset') or 0)
         limit = max(1, min(limit, 500))
@@ -10037,11 +10056,7 @@ def api_tiktok_official_matrix_videos():
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_overview():
     try:
-        filters = {
-            'region': request.args.get('region') or '',
-            'account_type': request.args.get('account_type') or '',
-            'account_ids': _matrix_account_ids_arg(),
-        }
+        filters = _matrix_filters_from_request()
         result = tiktok_official_service.matrix_overview_summary(filters=filters)
         return jsonify({'status': 'success', **_json_safe(result)})
     except Exception as e:
@@ -10053,11 +10068,7 @@ def api_tiktok_official_matrix_overview():
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_publish_range():
     try:
-        filters = {
-            'region': request.args.get('region') or '',
-            'account_type': request.args.get('account_type') or '',
-            'account_ids': _matrix_account_ids_arg(),
-        }
+        filters = _matrix_filters_from_request()
         result = tiktok_official_service.matrix_publish_range_summary(
             filters=filters,
             date_from=request.args.get('date_from') or '',
@@ -10073,11 +10084,7 @@ def api_tiktok_official_matrix_publish_range():
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_snapshot_delta_range():
     try:
-        filters = {
-            'region': request.args.get('region') or '',
-            'account_type': request.args.get('account_type') or '',
-            'account_ids': _matrix_account_ids_arg(),
-        }
+        filters = _matrix_filters_from_request()
         result = tiktok_official_service.matrix_snapshot_delta_range(
             filters=filters,
             date_from=request.args.get('date_from') or '',
@@ -10093,11 +10100,7 @@ def api_tiktok_official_matrix_snapshot_delta_range():
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_cumulative_views_range():
     try:
-        filters = {
-            'region': request.args.get('region') or '',
-            'account_type': request.args.get('account_type') or '',
-            'account_ids': _matrix_account_ids_arg(),
-        }
+        filters = _matrix_filters_from_request()
         result = tiktok_official_service.matrix_cumulative_views_range(
             filters=filters,
             date_from=request.args.get('date_from') or '',
@@ -10128,9 +10131,19 @@ def api_tiktok_official_matrix_video_tags(business_id, item_id):
 def api_tiktok_official_matrix_video_boosted(business_id, item_id):
     try:
         data = request.get_json(silent=True) or {}
-        is_boosted = bool(data.get('is_boosted'))
-        tiktok_official_service.set_video_boosted(business_id, item_id, is_boosted)
+        # 新前端传 boost_status（marked/delivered/closed，空串=清除）；
+        # 老前端只传 is_boosted 布尔，继续兼容。
+        if 'boost_status' in data:
+            tiktok_official_service.set_video_boost_status(
+                business_id, item_id, data.get('boost_status')
+            )
+        else:
+            tiktok_official_service.set_video_boosted(
+                business_id, item_id, bool(data.get('is_boosted'))
+            )
         return jsonify({'status': 'success'})
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
         logger.error(f"tiktok_official matrix video boosted update failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -10195,20 +10208,7 @@ def api_tiktok_official_matrix_export():
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_matrix_export_query():
     try:
-        filters = {
-            'region': request.args.get('region') or '',
-            'regions': _matrix_regions_arg(),
-            'account_type': request.args.get('account_type') or '',
-            'account_ids': _matrix_account_ids_arg(),
-            'date_from': request.args.get('date_from') or '',
-            'date_to': request.args.get('date_to') or '',
-            'creator': request.args.get('creator') or '',
-            'keyword': request.args.get('keyword') or '',
-            'only_boosted': request.args.get('only_boosted') == '1',
-            'only_unboosted': request.args.get('only_unboosted') == '1',
-            'engagement_filter': request.args.get('engagement_filter') or '',
-            'views_filter': request.args.get('views_filter') or '',
-        }
+        filters = _matrix_filters_from_request(full=True)
         file_bytes = tiktok_official_service.build_matrix_query_export(filters=filters)
         buf = BytesIO(file_bytes)
         buf.seek(0)
@@ -10234,7 +10234,7 @@ def api_tiktok_official_matrix_video_publish_windows(business_id, item_id):
                    reach, total_time_watched, average_time_watched, full_video_watched_rate,
                    engagement_rate, followers_count_snapshot, distribution_rate
             FROM tiktok_official_video_publish_window_snapshots
-            WHERE business_id = %s AND item_id = %s
+            WHERE business_id = %s AND item_id = %s AND window_hours > 0
             ORDER BY window_hours
             """,
             (business_id, item_id),

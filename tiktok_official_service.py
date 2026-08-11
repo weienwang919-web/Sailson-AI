@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://business-api.tiktok.com/open_api/v1.3"
 INVITE_SALT = "tiktok-official-invite"
 
+# 业务口径时区：快照日期、发布日、报表区间这类「自然日」一律按北京时间归属。
+# 不能用 DB 的 CURRENT_DATE 或服务器本地时间——线上跑在 UTC，北京 03:30 的每日同步
+# 落在 UTC 的前一天，直接用 CURRENT_DATE 会让快照日期整体错位一天。
+# 注意：库里的时间戳列存的都是 naive UTC（见 _epoch_to_dt），转换前先当 UTC 处理。
+BUSINESS_TZ = timezone(timedelta(hours=8))
+
+
+def _business_date(value: datetime | None = None) -> date:
+    """把 naive-UTC 时间戳归到北京自然日；不传参数则取「今天」。"""
+    if value is None:
+        return datetime.now(tz=BUSINESS_TZ).date()
+    return value.replace(tzinfo=timezone.utc).astimezone(BUSINESS_TZ).date()
+
 VIDEO_FIELDS = [
     "item_id",
     "media_type",
@@ -126,6 +139,7 @@ _LATEST_COLUMNS = {
     ("tiktok_official_video_snapshots", "spark_code_end_time"),
     ("tiktok_official_video_snapshots", "is_boosted"),
     ("tiktok_official_video_snapshots", "boosted_at"),
+    ("tiktok_official_video_snapshots", "boost_status"),
     ("tiktok_spark_tokens", "expires_at"),
     ("tiktok_spark_tokens", "refresh_expires_at"),
     ("tiktok_spark_tokens", "business_id"),
@@ -438,6 +452,15 @@ def ensure_schema() -> None:
     # 投流标记：人工标记该视频已投流，永久保留，供看板筛选
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS is_boosted BOOLEAN DEFAULT FALSE")
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS boosted_at TIMESTAMP")
+    # 投流三态（已标记/已投放/已关闭），取代原先的布尔开关，仍然是人工维护、不由投放数据推导。
+    # is_boosted 保留不动：老的筛选/导出仍在用，且作为三态的兜底回退，写入时同步维护。
+    db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS boost_status VARCHAR(16)")
+    # 一次性回填：老数据只有布尔值，字面含义是"已标记"，统一落到最保守的 marked 态。
+    # 只填 NULL，重复执行安全。
+    db.execute(
+        "UPDATE tiktok_official_video_snapshots SET boost_status = 'marked' "
+        "WHERE is_boosted = TRUE AND boost_status IS NULL"
+    )
 
     db.execute(
         """
@@ -693,7 +716,7 @@ def enqueue_daily_sync(
         logger.info("TikTok 官号矩阵每日同步：无启用中的账号，跳过")
         return []
 
-    session_id = f"tiktok_official_daily_sync_{date.today().isoformat()}"
+    session_id = f"tiktok_official_daily_sync_{_business_date().isoformat()}"
     task_ids = []
     for batch in _chunks(accounts, max(1, batch_size)):
         task_id = pysecrets.token_hex(16)
@@ -721,7 +744,7 @@ def enqueue_publish_window_capture(
     after_enqueue_fn=None,
     max_items: int = 200,
 ) -> list[str]:
-    """扫描发布后3/24/48/72小时到期未采集的占位行，按账号分组建 task_queue 任务交给 worker 消费。"""
+    """扫描到期未采集的时间点占位行（发布后3/24/48/72小时 + 发布日定格），按账号分组建 task_queue 任务交给 worker 消费。"""
     due_rows = db.query_all(
         """
         SELECT business_id, item_id, window_hours
@@ -820,7 +843,7 @@ def fetch_videos(token: str, business_id: str, max_pages: int = 5) -> tuple[list
 
 def fetch_profile(token: str, business_id: str, days: int = 30) -> tuple[dict[str, Any], dict[str, str]]:
     days = max(1, min(int(days or 30), 60))
-    end = date.today() - timedelta(days=1)
+    end = _business_date() - timedelta(days=1)
     start = end - timedelta(days=days - 1)
     params = {
         "business_id": business_id,
@@ -1667,7 +1690,7 @@ def run_ad_spend_sync_task(task_id: str, params: dict[str, Any], update_task_fn)
     """worker 每日自触发入口：默认只拉「昨天」一天，账户内部失败已由 sync_all_ad_spend 隔离。"""
     try:
         update_task_fn(task_id, status="processing", progress="正在同步投流消耗数据...")
-        target = date.today() - timedelta(days=1)
+        target = _business_date() - timedelta(days=1)
         start_str = params.get("start_date") or target.isoformat()
         end_str = params.get("end_date") or target.isoformat()
         start_date = date.fromisoformat(start_str)
@@ -1692,7 +1715,7 @@ def enqueue_ad_spend_sync(
     end_date: str | None = None,
 ) -> list[str]:
     """投流消耗每日同步：单个任务遍历全部已授权 advertiser_id（账户级失败隔离已在 sync_all_advertiser_spend 里做了，不需要按账户分批）。"""
-    session_id = f"tiktok_ad_spend_sync_{date.today().isoformat()}"
+    session_id = f"tiktok_ad_spend_sync_{_business_date().isoformat()}"
     task_id = pysecrets.token_hex(16)
     create_task_fn(task_id, None, session_id, function_type="tiktok_official_ad_spend_sync")
     params = {
@@ -1771,10 +1794,16 @@ def get_ad_spend_by_video(date_from: str | None = None, date_to: str | None = No
 def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
     """投流流量占比：仅覆盖被投流命中的视频，不是全矩阵口径。
 
-    分子是这些视频在投放报表里的 video_play_actions（TikTok 报表口径的每日增量，直接
-    SUM 即可）；分母加上同一批视频在快照表里的自然播放量增量——快照表存的是"截至当天"
-    的累计播放量，不能直接 SUM 多天的值，要用区间首尾快照做差（沿用
-    matrix_snapshot_delta_range 里"取 <= 目标日期的最近一次快照再做差"的思路）。
+    分子是这些视频在投放报表里的 video_play_actions（TikTok 报表口径的每日增量，直接 SUM 即可）。
+    分母是同一批视频在区间内的**总播放增量**——注意 TikTok 的 video_views 本身已经包含了
+    广告带来的播放，所以分母不能再写成「付费播放 + video_views 增量」，那样等于把付费播放
+    算了两遍，占比会被系统性压低（实测 24.4% vs 修正后 32.3%）。
+    真实自然播放 = 总播放增量 - 付费播放。
+
+    快照表存的是「截至当天」的累计播放量，不能直接 SUM 多天，要用区间首尾快照做差。
+    起点取 snapshot_date < date_from 的最近一次快照（不是 <=），这样增量覆盖的是
+    [date_from, date_to] 闭区间，跟分子的 stat_date BETWEEN 对齐；用 <= 会让分母少算
+    date_from 当天的自然增长，而分子却算了当天的投放。
     """
     start_date, end_date = _matrix_date_range(date_from, date_to, days=7)
     paid_row = db.query_one(
@@ -1785,7 +1814,7 @@ def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = N
         """,
         (start_date, end_date),
     ) or {}
-    organic_row = db.query_one(
+    delta_row = db.query_one(
         """
         WITH items AS (
             SELECT DISTINCT tiktok_item_id FROM tiktok_ad_spend_daily
@@ -1795,7 +1824,7 @@ def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = N
             SELECT DISTINCT ON (d.item_id) d.item_id, d.video_views
             FROM tiktok_official_video_daily_snapshots d
             JOIN items i ON i.tiktok_item_id = d.item_id
-            WHERE d.snapshot_date <= %(from)s
+            WHERE d.snapshot_date < %(from)s
             ORDER BY d.item_id, d.snapshot_date DESC
         ),
         end_snap AS (
@@ -1805,20 +1834,22 @@ def get_paid_traffic_ratio(date_from: str | None = None, date_to: str | None = N
             WHERE d.snapshot_date <= %(to)s
             ORDER BY d.item_id, d.snapshot_date DESC
         )
-        SELECT COALESCE(SUM(GREATEST(e.video_views - COALESCE(s.video_views, 0), 0)), 0) AS organic_views_delta
+        SELECT COALESCE(SUM(GREATEST(e.video_views - COALESCE(s.video_views, 0), 0)), 0) AS total_views_delta
         FROM end_snap e
         LEFT JOIN start_snap s ON s.item_id = e.item_id
         """,
         {"from": start_date, "to": end_date},
     ) or {}
     paid_views = int(paid_row.get("paid_views") or 0)
-    organic_views = int(organic_row.get("organic_views_delta") or 0)
-    denom = paid_views + organic_views
-    ratio = (paid_views / denom) if denom else 0.0
+    total_views_delta = int(delta_row.get("total_views_delta") or 0)
+    # 自然播放是推导量：总增量里扣掉付费部分。数据不一致时（付费 > 总增量）兜底为 0。
+    organic_views = max(total_views_delta - paid_views, 0)
+    ratio = (paid_views / total_views_delta) if total_views_delta else 0.0
     return {
         "spend": float(paid_row.get("spend") or 0),
         "paid_views": paid_views,
         "organic_views": organic_views,
+        "total_views_delta": total_views_delta,
         "paid_ratio": ratio,
         "date_from": start_date.isoformat(),
         "date_to": end_date.isoformat(),
@@ -2155,7 +2186,28 @@ def upsert_profile(business_id: str, data: dict[str, Any], meta: dict[str, str])
         )
 
 
-_PUBLISH_WINDOW_HOURS = (3, 24, 48, 72)
+# 发布后时间点窗口的唯一真相源：前端不再自己写死这组数字，
+# 由 /matrix-video-dashboard 路由注入模板（见 app.py 的 matrix_video_dashboard_page）。
+PUBLISH_WINDOW_HOURS = (3, 24, 48, 72)
+
+# 「发布日定格」哨兵：跟 3/24/48/72h 共用同一张表和同一套到期回填机制
+# （enqueue_publish_window_capture / run_publish_window_capture 都不关心具体 window 值）。
+# 口径 = 发布日次日 03:30 北京时间那次同步的值，也就是发布日完整结束后的定格数据，
+# 之后不再变化。总览看板用它，避免每日快照表被当天多次同步反复覆盖的问题。
+_PUBLISH_DAY_WINDOW = 0
+# 定格采集时刻：发布日次日的北京 03:30，跟每日全量同步对齐。
+_PUBLISH_DAY_CAPTURE_HOUR = 3
+_PUBLISH_DAY_CAPTURE_MINUTE = 30
+
+
+def _publish_day_due_at(create_time: datetime) -> datetime:
+    """发布日定格行的到期时刻，返回 naive UTC（库里时间戳统一是 naive UTC）。"""
+    publish_day = _business_date(create_time)
+    # 先按北京墙钟拼出「次日 03:30」，再减 8 小时转回 UTC 存库
+    due_bj = datetime(publish_day.year, publish_day.month, publish_day.day) + timedelta(
+        days=1, hours=_PUBLISH_DAY_CAPTURE_HOUR, minutes=_PUBLISH_DAY_CAPTURE_MINUTE
+    )
+    return due_bj - timedelta(hours=8)
 
 
 def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) -> None:
@@ -2265,7 +2317,7 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
         """
         INSERT INTO tiktok_official_video_daily_snapshots (
             business_id, item_id, snapshot_date, video_views, likes, comments, shares, favorites, fetched_at
-        ) VALUES (%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, NOW())
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (business_id, item_id, snapshot_date) DO UPDATE SET
             video_views = EXCLUDED.video_views,
             likes = COALESCE(EXCLUDED.likes, tiktok_official_video_daily_snapshots.likes),
@@ -2277,6 +2329,7 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
         (
             business_id,
             item_id,
+            _business_date(),
             _to_int(video.get("video_views")),
             _to_int(video.get("likes")),
             _to_int(video.get("comments")),
@@ -2286,11 +2339,11 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
     )
 
     create_time = _epoch_to_dt(video.get("create_time"))
-    # 只对"真的是最近发布"的视频建 3/24/48/72h 占位行——避免新授权账号首次同步时，
+    # 只对"真的是最近发布"的视频建时间点占位行——避免新授权账号首次同步时，
     # 把整个历史视频库都当成"刚发布"，生成一堆 due_at 早已过期、一入库就被立刻
     # 抓取的假时间点数据（实际抓到的是老视频的当前状态，却被贴上"3h"之类的标签）。
     if is_new_video and create_time and create_time >= datetime.utcnow() - timedelta(hours=24):
-        for window_hours in _PUBLISH_WINDOW_HOURS:
+        for window_hours in PUBLISH_WINDOW_HOURS:
             db.execute(
                 """
                 INSERT INTO tiktok_official_video_publish_window_snapshots (
@@ -2300,6 +2353,16 @@ def upsert_video(business_id: str, video: dict[str, Any], meta: dict[str, str]) 
                 """,
                 (business_id, item_id, window_hours, create_time, window_hours),
             )
+        # 发布日定格行：due_at 不是「发布时间 + N 小时」，而是发布日次日的北京 03:30
+        db.execute(
+            """
+            INSERT INTO tiktok_official_video_publish_window_snapshots (
+                business_id, item_id, window_hours, due_at
+            ) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (business_id, item_id, window_hours) DO NOTHING
+            """,
+            (business_id, item_id, _PUBLISH_DAY_WINDOW, _publish_day_due_at(create_time)),
+        )
 
 
 def update_video_tags(
@@ -2320,17 +2383,37 @@ def update_video_tags(
     )
 
 
-def set_video_boosted(business_id: str, item_id: str, is_boosted: bool) -> None:
+BOOST_STATUS_LABELS = {"marked": "已标记", "delivered": "已投放", "closed": "已关闭"}
+BOOST_STATUSES = tuple(BOOST_STATUS_LABELS)
+
+
+def set_video_boost_status(business_id: str, item_id: str, status: str | None) -> None:
+    """设置投流三态（marked/delivered/closed），传空则清除标记。
+
+    人工维护，不由投放消耗数据推导——消耗表只覆盖 VIDEO_VIEWS/TRAFFIC/ENGAGEMENT
+    三种 objective 且依赖广告主已授权，拿它当"是否投过"并不可靠。
+    is_boosted 同步维护：有任何状态即为 TRUE，供老的筛选和导出继续使用。
+    """
+    status = (status or "").strip().lower() or None
+    if status is not None and status not in BOOST_STATUSES:
+        raise ValueError(f"未知的投流状态：{status}（可选 {'/'.join(BOOST_STATUSES)}）")
+    is_boosted = status is not None
     db.execute(
         """
         UPDATE tiktok_official_video_snapshots SET
+            boost_status = %s,
             is_boosted = %s,
             boosted_at = CASE WHEN %s THEN COALESCE(boosted_at, NOW()) ELSE boosted_at END,
             updated_at = NOW()
         WHERE business_id = %s AND item_id = %s
         """,
-        (is_boosted, is_boosted, business_id, item_id),
+        (status, is_boosted, is_boosted, business_id, item_id),
     )
+
+
+def set_video_boosted(business_id: str, item_id: str, is_boosted: bool) -> None:
+    """旧的布尔接口，保留兼容：勾上落到 marked 态，取消则清空。"""
+    set_video_boost_status(business_id, item_id, "marked" if is_boosted else None)
 
 
 _DEFAULT_FLAT_DAYS = 5
@@ -2494,7 +2577,18 @@ def _extract_hashtags(caption: str | None) -> list[str]:
     return _HASHTAG_RE.findall(caption)
 
 
-_ENGAGEMENT_RATE_SQL = "(CASE WHEN v.video_views > 0 THEN (COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0))::numeric / v.video_views ELSE NULL END)"
+def _engagement_sum_sql(alias: str = "v") -> str:
+    """互动量口径的唯一定义：赞 + 评 + 转 + 藏。各聚合查询一律引用这里，不要再手抄一遍。"""
+    return (
+        f"COALESCE({alias}.likes,0) + COALESCE({alias}.comments,0) "
+        f"+ COALESCE({alias}.shares,0) + COALESCE({alias}.favorites,0)"
+    )
+
+
+_ENGAGEMENT_RATE_SQL = (
+    f"(CASE WHEN v.video_views > 0 "
+    f"THEN ({_engagement_sum_sql('v')})::numeric / v.video_views ELSE NULL END)"
+)
 
 _MATRIX_VIDEO_SORT_FIELDS = {
     "create_time": "v.create_time",
@@ -2587,20 +2681,19 @@ def list_matrix_videos(
     """
     base_sql = f"{joins_sql} WHERE {where_sql}"
 
-    total_row = db.query_one(f"SELECT COUNT(*) AS count {base_sql}", tuple(params))
-    total = int((total_row or {}).get("count") or 0)
-
+    # 汇总里的 COUNT(*) 就是分页用的 total（同一个 FROM/WHERE），不再单独跑一条 COUNT 查询。
     summary_row = db.query_one(
         f"""
         SELECT
             COALESCE(SUM(v.video_views), 0) AS total_views,
-            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS total_engagement,
+            COALESCE(SUM({_engagement_sum_sql('v')}), 0) AS total_engagement,
             COUNT(DISTINCT v.business_id) AS account_count,
             COUNT(*) AS video_count
         {base_sql}
         """,
         tuple(params),
     ) or {}
+    total = int(summary_row.get("video_count") or 0)
     total_views = int(summary_row.get("total_views") or 0)
     total_engagement = int(summary_row.get("total_engagement") or 0)
     overall_engagement_rate = (total_engagement / total_views) if total_views else 0.0
@@ -2621,6 +2714,7 @@ def list_matrix_videos(
                    engagement_rate AS pw_engagement_rate, distribution_rate
             FROM tiktok_official_video_publish_window_snapshots w
             WHERE w.business_id = v.business_id AND w.item_id = v.item_id AND w.captured_at IS NOT NULL
+              AND w.window_hours > 0
             ORDER BY w.window_hours DESC
             LIMIT 1
         ) lw ON true
@@ -2646,7 +2740,7 @@ def list_matrix_videos(
             SELECT business_id, item_id, window_hours, captured_at, video_views,
                    average_time_watched, full_video_watched_rate, engagement_rate, distribution_rate
             FROM tiktok_official_video_publish_window_snapshots
-            WHERE (business_id, item_id) IN %s
+            WHERE (business_id, item_id) IN %s AND window_hours > 0
             ORDER BY business_id, item_id, window_hours
             """,
             (pairs,),
@@ -2707,7 +2801,7 @@ def _matrix_account_filters_sql(filters: dict[str, Any]) -> tuple[list[str], lis
 
 def _matrix_date_range(date_from: str | None, date_to: str | None, days: int = 7) -> tuple[date, date]:
     """解析看板二/三的日期范围输入，缺省时回退到最近 N 天（含首尾两天）。"""
-    today = datetime.now().date()
+    today = _business_date()
 
     def _parse(value):
         if not value:
@@ -2729,19 +2823,43 @@ def _matrix_date_range(date_from: str | None, date_to: str | None, days: int = 7
 
 
 def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    """总览：按「发布日定格值」统计——数字一旦定格就不再随时间变化。
+
+    取值优先用 window_hours=0 的发布日定格快照（发布日次日北京 03:30 采集）。
+    该行只在 upsert_video() 里为新发布的视频生成，历史视频没有，回退到日快照表里
+    snapshot_date = 北京发布日 的那一行。两者时点是对齐的：北京 D 发布的视频，其
+    发布日结束后的首次全量同步跑在北京 D+1 03:30 = UTC D 19:30，而历史 snapshot_date
+    用的是 UTC 日期，正好等于 D——所以那一行就是历史视频的发布日定格值。
+
+    video_count 只数「拿得到定格值」的视频，video_total 是筛选命中的全部视频，
+    两者的差就是暂时没有定格数据的部分（比如今天刚发、还没到次日凌晨）。
+    """
     filters = filters or {}
     where, params = _matrix_account_filters_sql(filters)
     where_sql = " AND ".join(where)
+    frozen_views = "COALESCE(w.video_views, d.video_views)"
 
     row = db.query_one(
         f"""
         SELECT
             COUNT(DISTINCT a.business_id) AS account_count,
-            COUNT(v.item_id) AS video_count,
-            COALESCE(SUM(v.video_views), 0) AS total_views,
-            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS total_engagement
+            COUNT(v.item_id) AS video_total,
+            COUNT({frozen_views}) AS video_count,
+            COALESCE(SUM({frozen_views}), 0) AS total_views,
+            COALESCE(SUM(CASE
+                WHEN w.video_views IS NOT NULL THEN {_engagement_sum_sql('w')}
+                WHEN d.video_views IS NOT NULL THEN {_engagement_sum_sql('d')}
+                ELSE NULL
+            END), 0) AS total_engagement
         FROM tiktok_official_accounts a
-        LEFT JOIN tiktok_official_video_snapshots v ON v.business_id = a.business_id
+        LEFT JOIN tiktok_official_video_snapshots v
+               ON v.business_id = a.business_id AND v.create_time IS NOT NULL
+        LEFT JOIN tiktok_official_video_publish_window_snapshots w
+               ON w.business_id = v.business_id AND w.item_id = v.item_id
+              AND w.window_hours = {_PUBLISH_DAY_WINDOW} AND w.captured_at IS NOT NULL
+        LEFT JOIN tiktok_official_video_daily_snapshots d
+               ON d.business_id = v.business_id AND d.item_id = v.item_id
+              AND d.snapshot_date = (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
         WHERE {where_sql}
         """,
         tuple(params),
@@ -2752,6 +2870,7 @@ def matrix_overview_summary(filters: dict[str, Any] | None = None) -> dict[str, 
     return {
         "account_count": int(row.get("account_count") or 0),
         "video_count": int(row.get("video_count") or 0),
+        "video_total": int(row.get("video_total") or 0),
         "total_views": total_views,
         "total_engagement": total_engagement,
         "engagement_rate": (total_engagement / total_views) if total_views else 0.0,
@@ -2774,7 +2893,7 @@ def matrix_publish_range_summary(
         SELECT
             COUNT(*) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS total_views,
-            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS total_engagement
+            COALESCE(SUM({_engagement_sum_sql('v')}), 0) AS total_engagement
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE {where_sql}
@@ -2790,7 +2909,7 @@ def matrix_publish_range_summary(
             v.create_time::date AS date,
             COUNT(*) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS views,
-            COALESCE(SUM(COALESCE(v.likes,0) + COALESCE(v.comments,0) + COALESCE(v.shares,0) + COALESCE(v.favorites,0)), 0) AS engagement
+            COALESCE(SUM({_engagement_sum_sql('v')}), 0) AS engagement
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
         WHERE {where_sql}
@@ -2862,85 +2981,109 @@ def matrix_snapshot_delta_range(
     candidates_before_from = [d for d in available_dates if d <= range_from]
     date_from_actual = max(candidates_before_from) if candidates_before_from else min(available_dates)
 
-    def _totals(snapshot_date):
-        row = db.query_one(
-            f"""
-            SELECT
-                COALESCE(SUM(d.video_views), 0) AS views,
-                COALESCE(SUM(COALESCE(d.likes,0) + COALESCE(d.comments,0) + COALESCE(d.shares,0) + COALESCE(d.favorites,0)), 0) AS engagement
+    # 区间两端（date_from_actual / date_to_actual）的总量与增量拆分，一条查询搞定。
+    # 按 (business_id, item_id) 透视成每条视频一行，start 侧为 NULL 即区间内新发布的视频。
+    engagement_expr = _engagement_sum_sql("d")
+    bounds = db.query_one(
+        f"""
+        WITH pv AS (
+            SELECT d.business_id, d.item_id,
+                   MAX(d.video_views) FILTER (WHERE d.snapshot_date = %s) AS v_start,
+                   MAX({engagement_expr}) FILTER (WHERE d.snapshot_date = %s) AS e_start,
+                   MAX(d.video_views) FILTER (WHERE d.snapshot_date = %s) AS v_end,
+                   MAX({engagement_expr}) FILTER (WHERE d.snapshot_date = %s) AS e_end
             FROM tiktok_official_video_daily_snapshots d
             LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
-            WHERE {where_sql} AND d.snapshot_date = %s
-            """,
-            tuple(params + [snapshot_date]),
-        ) or {}
-        return int(row.get("views") or 0), int(row.get("engagement") or 0)
+            WHERE {where_sql} AND d.snapshot_date IN (%s, %s)
+            GROUP BY d.business_id, d.item_id
+        )
+        SELECT
+            COALESCE(SUM(v_start), 0) AS views_start,
+            COALESCE(SUM(e_start), 0) AS engagement_start,
+            COALESCE(SUM(v_end), 0) AS views_end,
+            COALESCE(SUM(e_end), 0) AS engagement_end,
+            COUNT(*) FILTER (WHERE v_start IS NULL AND v_end IS NOT NULL) AS new_video_count,
+            COALESCE(SUM(v_end) FILTER (WHERE v_start IS NULL), 0) AS new_video_views,
+            COALESCE(SUM(e_end) FILTER (WHERE v_start IS NULL), 0) AS new_video_engagement,
+            COALESCE(SUM(v_end - v_start) FILTER (WHERE v_start IS NOT NULL AND v_end IS NOT NULL), 0)
+                AS existing_video_views_delta,
+            COALESCE(SUM(e_end - e_start) FILTER (WHERE v_start IS NOT NULL AND v_end IS NOT NULL), 0)
+                AS existing_video_engagement_delta
+        FROM pv
+        """,
+        tuple(
+            [date_from_actual, date_from_actual, date_to_actual, date_to_actual]
+            + params
+            + [date_from_actual, date_to_actual]
+        ),
+    ) or {}
 
-    def _video_metrics(snapshot_date):
-        rows = db.query_all(
-            f"""
-            SELECT d.business_id, d.item_id, d.video_views AS views,
-                   (COALESCE(d.likes,0) + COALESCE(d.comments,0) + COALESCE(d.shares,0) + COALESCE(d.favorites,0)) AS engagement
-            FROM tiktok_official_video_daily_snapshots d
-            LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
-            WHERE {where_sql} AND d.snapshot_date = %s
-            """,
-            tuple(params + [snapshot_date]),
-        ) or []
-        return {(r["business_id"], r["item_id"]): (int(r["views"] or 0), int(r["engagement"] or 0)) for r in rows}
+    views_start = int(bounds.get("views_start") or 0)
+    engagement_start = int(bounds.get("engagement_start") or 0)
+    views_end = int(bounds.get("views_end") or 0)
+    engagement_end = int(bounds.get("engagement_end") or 0)
 
-    def _deltas(prev_date, cur_date):
-        # 当天快照同步未跑完时，部分视频会暂时不在当天快照里（不是真的下降）。
-        # 增量只按两天都有数据的视频交集比较，避免把"还没同步到"误判成"播放量归零"。
-        prev_map = _video_metrics(prev_date)
-        cur_map = _video_metrics(cur_date)
-        new_keys = cur_map.keys() - prev_map.keys()
-        existing_keys = cur_map.keys() & prev_map.keys()
-        cur_views_total = sum(v for v, _ in cur_map.values())
-        cur_engagement_total = sum(e for _, e in cur_map.values())
-        new_video_views = sum(cur_map[k][0] for k in new_keys)
-        new_video_engagement = sum(cur_map[k][1] for k in new_keys)
-        existing_video_views_delta = sum(cur_map[k][0] - prev_map[k][0] for k in existing_keys)
-        existing_video_engagement_delta = sum(cur_map[k][1] - prev_map[k][1] for k in existing_keys)
-        return {
-            "new_video_count": len(new_keys),
-            "new_video_views": new_video_views,
-            "new_video_engagement": new_video_engagement,
-            "existing_video_views_delta": existing_video_views_delta,
-            "existing_video_engagement_delta": existing_video_engagement_delta,
-            "views_delta": new_video_views + existing_video_views_delta,
-            "engagement_delta": new_video_engagement + existing_video_engagement_delta,
-            "cur_views_total": cur_views_total,
-            "cur_engagement_total": cur_engagement_total,
-        }
-
-    views_start, engagement_start = _totals(date_from_actual)
-    views_end, engagement_end = _totals(date_to_actual)
-    range_delta = (
-        _deltas(date_from_actual, date_to_actual)
-        if date_from_actual != date_to_actual
-        else {
-            "new_video_count": 0, "views_delta": 0, "engagement_delta": 0,
-            "new_video_views": 0, "existing_video_views_delta": 0,
-            "new_video_engagement": 0, "existing_video_engagement_delta": 0,
-        }
-    )
+    if date_from_actual != date_to_actual:
+        new_video_count = int(bounds.get("new_video_count") or 0)
+        new_video_views = int(bounds.get("new_video_views") or 0)
+        new_video_engagement = int(bounds.get("new_video_engagement") or 0)
+        existing_views_delta = int(bounds.get("existing_video_views_delta") or 0)
+        existing_engagement_delta = int(bounds.get("existing_video_engagement_delta") or 0)
+    else:
+        new_video_count = new_video_views = new_video_engagement = 0
+        existing_views_delta = existing_engagement_delta = 0
 
     rate_start = (engagement_start / views_start) if views_start else 0.0
     rate_end = (engagement_end / views_end) if views_end else 0.0
     rate_change_pct = ((rate_end - rate_start) / rate_start * 100) if rate_start else None
 
-    range_dates = [d for d in available_dates if date_from_actual <= d <= date_to_actual]
+    # 逐日增量：一条 LAG() 窗口查询取代原先「按相邻日期对逐次全表扫描」的 2N 次查询。
+    # 语义差异（有意为之）：某视频在 D 日缺失但 D-1/D+1 都有时，LAG 会把 D+1 连回 D-1
+    # 算成存量增量；旧实现按相邻两日 key 交集比较，会把它误判成 D+1 新发布的视频。
+    daily_rows = db.query_all(
+        f"""
+        WITH filtered AS (
+            SELECT d.business_id, d.item_id, d.snapshot_date,
+                   COALESCE(d.video_views, 0) AS views,
+                   ({engagement_expr}) AS engagement
+            FROM tiktok_official_video_daily_snapshots d
+            LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
+            WHERE {where_sql} AND d.snapshot_date BETWEEN %s AND %s
+        ), lagged AS (
+            SELECT f.*,
+                   LAG(views) OVER w AS prev_views,
+                   LAG(engagement) OVER w AS prev_engagement
+            FROM filtered f
+            WINDOW w AS (PARTITION BY business_id, item_id ORDER BY snapshot_date)
+        )
+        SELECT snapshot_date,
+               COUNT(*) FILTER (WHERE prev_views IS NULL) AS new_video_count,
+               COALESCE(SUM(views) FILTER (WHERE prev_views IS NULL), 0) AS new_video_views,
+               COALESCE(SUM(engagement) FILTER (WHERE prev_views IS NULL), 0) AS new_video_engagement,
+               COALESCE(SUM(views - prev_views) FILTER (WHERE prev_views IS NOT NULL), 0) AS existing_views_delta,
+               COALESCE(SUM(engagement - prev_engagement) FILTER (WHERE prev_views IS NOT NULL), 0)
+                   AS existing_engagement_delta,
+               COALESCE(SUM(views), 0) AS cur_views_total,
+               COALESCE(SUM(engagement), 0) AS cur_engagement_total
+        FROM lagged
+        WHERE snapshot_date > %s
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date
+        """,
+        tuple(params + [date_from_actual, date_to_actual, date_from_actual]),
+    ) or []
+
     daily = []
-    for i in range(1, len(range_dates)):
-        prev_date, cur_date = range_dates[i - 1], range_dates[i]
-        d = _deltas(prev_date, cur_date)
+    for row in daily_rows:
+        cur_views_total = int(row.get("cur_views_total") or 0)
+        cur_engagement_total = int(row.get("cur_engagement_total") or 0)
+        d_date = row.get("snapshot_date")
         daily.append({
-            "date": cur_date.isoformat() if hasattr(cur_date, "isoformat") else cur_date,
-            "new_video_count": d["new_video_count"],
-            "views_delta": d["views_delta"],
-            "engagement_delta": d["engagement_delta"],
-            "engagement_rate": (d["cur_engagement_total"] / d["cur_views_total"]) if d["cur_views_total"] else 0.0,
+            "date": d_date.isoformat() if hasattr(d_date, "isoformat") else d_date,
+            "new_video_count": int(row.get("new_video_count") or 0),
+            "views_delta": int(row.get("new_video_views") or 0) + int(row.get("existing_views_delta") or 0),
+            "engagement_delta": int(row.get("new_video_engagement") or 0) + int(row.get("existing_engagement_delta") or 0),
+            "engagement_rate": (cur_engagement_total / cur_views_total) if cur_views_total else 0.0,
         })
 
     return {
@@ -2948,13 +3091,13 @@ def matrix_snapshot_delta_range(
         "date_to": range_to.isoformat(),
         "date_from_actual": date_from_actual.isoformat() if hasattr(date_from_actual, "isoformat") else date_from_actual,
         "date_to_actual": date_to_actual.isoformat() if hasattr(date_to_actual, "isoformat") else date_to_actual,
-        "new_video_count": range_delta["new_video_count"],
-        "views_delta": range_delta["views_delta"],
-        "engagement_delta": range_delta["engagement_delta"],
-        "new_video_views": range_delta["new_video_views"],
-        "existing_video_views_delta": range_delta["existing_video_views_delta"],
-        "new_video_engagement": range_delta["new_video_engagement"],
-        "existing_video_engagement_delta": range_delta["existing_video_engagement_delta"],
+        "new_video_count": new_video_count,
+        "views_delta": new_video_views + existing_views_delta,
+        "engagement_delta": new_video_engagement + existing_engagement_delta,
+        "new_video_views": new_video_views,
+        "existing_video_views_delta": existing_views_delta,
+        "new_video_engagement": new_video_engagement,
+        "existing_video_engagement_delta": existing_engagement_delta,
         "engagement_rate_start": rate_start,
         "engagement_rate_end": rate_end,
         "engagement_rate_change_pct": rate_change_pct,
@@ -3175,7 +3318,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                    shares, favorites, reach, total_time_watched, average_time_watched,
                    full_video_watched_rate, engagement_rate, followers_count_snapshot, distribution_rate
             FROM tiktok_official_video_publish_window_snapshots
-            WHERE (business_id, item_id) IN %s
+            WHERE (business_id, item_id) IN %s AND window_hours > 0
             ORDER BY business_id, item_id, window_hours
             """,
             (tuple(pairs),),
@@ -3252,7 +3395,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
                 latest_window.get("average_time_watched") if latest_window else None,
                 latest_window.get("engagement_rate") if latest_window else None,
                 latest_window.get("distribution_rate") if latest_window else None,
-                "是" if row.get("is_boosted") else "否",
+                BOOST_STATUS_LABELS.get(row.get("boost_status") or "", "是" if row.get("is_boosted") else "否"),
             ]
         )
     ws.freeze_panes = "A2"
@@ -3392,7 +3535,7 @@ def get_video(item_id: str, business_id: str | None = None) -> dict[str, Any] | 
 
 def list_profile_metrics(business_id: str | None = None, days: int = 30) -> list[dict[str, Any]]:
     days = max(1, min(int(days or 30), 60))
-    params: list[Any] = [date.today() - timedelta(days=days)]
+    params: list[Any] = [_business_date() - timedelta(days=days)]
     where = "WHERE metric_date >= %s"
     if business_id:
         where += " AND business_id = %s"
@@ -3650,7 +3793,7 @@ def run_refresh_task(task_id: str, params: dict[str, Any], update_task_fn) -> No
 
 
 def run_publish_window_capture(task_id: str, params: dict[str, Any], update_task_fn) -> None:
-    """采集某账号下到期的发布后3/24/48/72小时时间点数据。
+    """采集某账号下到期的时间点数据（发布后3/24/48/72小时，以及 window_hours=0 的发布日定格）。
 
     TikTok `/business/video/list/` 不支持按 item_id 过滤，只能拉该账号视频列表全量再本地匹配。
     """
