@@ -319,6 +319,27 @@ def run_scheduled_mail_blaster_reply_poll():
                 function_type='mail_blaster_poll_replies', lane='scheduled')
     set_task_params(task_id, {'source': 'worker_selfcheck'})
     return task_id
+def run_scheduled_tiktok_official_ad_spend_sync():
+    """由 worker 自检触发（每天一次）：同步昨天的投流消耗/转化数据，单任务遍历全部已授权 advertiser_id。"""
+    try:
+        def _after_enqueue(task_id, params):
+            if USE_DB_WORKER:
+                return
+
+            def _run():
+                tiktok_official_service.run_ad_spend_sync_task(task_id, params, update_task)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        task_ids = tiktok_official_service.enqueue_ad_spend_sync(
+            partial(create_task, lane='scheduled'),
+            update_task_params_fn=set_task_params if USE_DB_WORKER else (lambda _task_id, _params: None),
+            after_enqueue_fn=_after_enqueue,
+        )
+        if task_ids:
+            logger.info(f"✅ 已创建 TikTok 投流消耗每日同步任务: {task_ids}")
+    except Exception as e:
+        logger.error(f"❌ 创建 TikTok 投流消耗每日同步任务失败: {e}")
 
 
 def run_scheduled_topic_monitor_daily():
@@ -9742,6 +9763,66 @@ def api_tiktok_official_spark_invite_batch():
         )
     except Exception as e:
         logger.error(f"tiktok_official spark invite batch failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/summary')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_summary():
+    """按日汇总全部广告账户的消耗/曝光/点击/转化，供投流数据看板趋势图使用。"""
+    try:
+        result = tiktok_official_service.get_ad_spend_summary(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend summary failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/by-country')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_by_country():
+    """按国家汇总投流消耗/曝光/转化。"""
+    try:
+        result = tiktok_official_service.get_ad_spend_by_country(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend by-country failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/by-video')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_by_video():
+    """按视频归因的投流消耗明细：哪个账号/哪条视频花了多少钱。"""
+    try:
+        result = tiktok_official_service.get_ad_spend_by_video(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend by-video failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/tiktok-official/ad-spend/paid-ratio')
+@feature_required('tiktok_official')
+def api_tiktok_official_ad_spend_paid_ratio():
+    """投流流量占比：仅覆盖被投流命中的视频，不是全矩阵口径。"""
+    try:
+        result = tiktok_official_service.get_paid_traffic_ratio(
+            date_from=request.args.get('date_from') or '',
+            date_to=request.args.get('date_to') or '',
+        )
+        return jsonify({'status': 'success', **_json_safe(result)})
+    except Exception as e:
+        logger.error(f"tiktok_official ad-spend paid-ratio failed: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

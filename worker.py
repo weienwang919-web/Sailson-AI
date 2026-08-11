@@ -77,6 +77,7 @@ from app import (
     run_scheduled_tiktok_official_publish_window_capture,
     run_scheduled_tiktok_official_video_discovery,
     run_scheduled_mail_blaster_reply_poll,
+    run_scheduled_tiktok_official_ad_spend_sync,
 )
 logger.info("✅ app 模块加载完成")
 
@@ -163,6 +164,43 @@ def _maybe_trigger_tiktok_daily_sync():
         run_scheduled_tiktok_official_daily_sync()
     except Exception as e:
         logger.error(f"❌ Worker 触发 TikTok 官号矩阵每日同步失败: {e}")
+
+# ============================================
+# TikTok 投流消耗每日同步：自检触发
+# 紧跟在官号矩阵每日同步（3:30）之后，让视频/主页数据先同步完。
+# 拉的是"昨天"一天的消耗/转化数据，广告平台数据本身有结算延迟，
+# 不追求当天数据当天准确。
+# ============================================
+_last_ad_spend_sync_check_key = None
+
+
+def _maybe_trigger_tiktok_ad_spend_sync():
+    global _last_ad_spend_sync_check_key
+    now_bj = datetime.utcnow() + timedelta(hours=8)
+    if now_bj.hour != 4 or now_bj.minute < 30:
+        _last_ad_spend_sync_check_key = None
+        return
+    check_key = now_bj.strftime('%Y-%m-%d %H:%M')
+    if check_key == _last_ad_spend_sync_check_key:
+        return
+    _last_ad_spend_sync_check_key = check_key
+    session_id = f"tiktok_ad_spend_sync_{date.today().isoformat()}"
+    try:
+        row = db.query_one(
+            "SELECT 1 FROM task_queue WHERE function_type = 'tiktok_official_ad_spend_sync' "
+            "AND task_params::json->>'session_id' = %s LIMIT 1",
+            (session_id,),
+        )
+        if row:
+            return
+    except Exception as e:
+        logger.warning(f"⚠️ 检查 TikTok 投流消耗每日同步是否已触发失败: {e}")
+        return
+    logger.info(f"⏰ Worker 触发 TikTok 投流消耗每日同步: session_id={session_id}")
+    try:
+        run_scheduled_tiktok_official_ad_spend_sync()
+    except Exception as e:
+        logger.error(f"❌ Worker 触发 TikTok 投流消耗每日同步失败: {e}")
 
 # ============================================
 # TikTok 发布后3/24/48/72小时时间点快照：自检触发
@@ -514,6 +552,8 @@ def dispatch_task(task_row):
             _handle_tiktok_official_publish_window_capture(task_id, params)
         elif func_type == 'tiktok_official_video_discovery':
             _handle_tiktok_official_video_discovery(task_id, params)
+        elif func_type == 'tiktok_official_ad_spend_sync':
+            _handle_tiktok_official_ad_spend_sync(task_id, params)
         elif func_type == 'mail_blaster_send':
             _handle_mail_blaster_send(task_id, params)
         elif func_type == 'mail_blaster_ocr':
@@ -926,6 +966,18 @@ def _handle_tiktok_official_video_discovery(task_id, params):
         update_task(task_id, status='failed', error=str(e)[:500])
 
 
+def _handle_tiktok_official_ad_spend_sync(task_id, params):
+    """TikTok 投流消耗每日同步。"""
+    import tiktok_official_service
+    try:
+        tiktok_official_service.run_ad_spend_sync_task(task_id, params, update_task)
+    except Exception as e:
+        logger.error(f"❌ tiktok_official_ad_spend_sync 失败: {e}")
+        import traceback
+        traceback.print_exc()
+        update_task(task_id, status='failed', error=str(e)[:500])
+
+
 # ============================================
 # 主循环
 # ============================================
@@ -984,6 +1036,11 @@ def main():
                 _maybe_trigger_tiktok_daily_sync()
             except Exception as exc:
                 logger.error(f"❌ TikTok 官号每日同步自检异常: {exc}")
+
+            try:
+                _maybe_trigger_tiktok_ad_spend_sync()
+            except Exception as exc:
+                logger.error(f"❌ TikTok 投流消耗每日同步自检异常: {exc}")
 
             try:
                 _maybe_trigger_publish_window_capture()
