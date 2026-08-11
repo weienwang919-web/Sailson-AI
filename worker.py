@@ -146,7 +146,7 @@ def _maybe_trigger_tiktok_daily_sync():
     if check_key == _last_daily_sync_check_key:
         return
     _last_daily_sync_check_key = check_key
-    session_id = f"tiktok_official_daily_sync_{date.today().isoformat()}"
+    session_id = f"tiktok_official_daily_sync_{now_bj.date().isoformat()}"
     try:
         row = db.query_one(
             "SELECT 1 FROM task_queue WHERE function_type = 'tiktok_official_refresh' "
@@ -183,7 +183,7 @@ def _maybe_trigger_tiktok_ad_spend_sync():
     if check_key == _last_ad_spend_sync_check_key:
         return
     _last_ad_spend_sync_check_key = check_key
-    session_id = f"tiktok_ad_spend_sync_{date.today().isoformat()}"
+    session_id = f"tiktok_ad_spend_sync_{now_bj.date().isoformat()}"
     try:
         row = db.query_one(
             "SELECT 1 FROM task_queue WHERE function_type = 'tiktok_official_ad_spend_sync' "

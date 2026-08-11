@@ -1154,7 +1154,8 @@ function renderVideos() {
   }).join('');
 }
 
-const PUBLISH_WINDOW_HOURS = [3, 24, 48, 72];
+// 由后端注入，唯一真相源是 tiktok_official_service.PUBLISH_WINDOW_HOURS
+const PUBLISH_WINDOW_HOURS = {{ publish_window_hours | tojson }};
 
 function pwViewsCell(v) {
   const windows = v.publish_windows || [];
@@ -1247,8 +1248,6 @@ function downloadQueryExport() {
   window.open('/api/tiktok-official/matrix-videos/export-query?' + params.toString(), '_blank');
 }
 
-const PUBLISH_WINDOW_LABELS = { 3: '3小时', 24: '24小时', 48: '48小时', 72: '72小时' };
-
 function closePublishWindowsModal() {
   document.getElementById('publish-windows-modal').classList.remove('open');
 }
@@ -1267,7 +1266,7 @@ async function openPublishWindowsModal(businessId, itemId) {
     const windows = windowData.windows || [];
     const windowsHtml = windows.length ? (() => {
       const rows = windows.map(w => {
-        const label = PUBLISH_WINDOW_LABELS[w.window_hours] || `${w.window_hours}小时`;
+        const label = `${w.window_hours}小时`;
         if (!w.captured_at) {
           return `<tr><td>${esc(label)}</td><td colspan="9" class="muted">未到期/未采集</td></tr>`;
         }
