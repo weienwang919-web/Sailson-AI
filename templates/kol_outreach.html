@@ -20,13 +20,16 @@
   /* ---- 回信管理页签（从原 /kol-inbox 页合并过来）---- */
   .mb-scope .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .mb-scope .stat { background: #fff; border: 1px solid #e5e5e7; border-radius: 10px;
+                    padding: 10px 16px; cursor: pointer; }
   .mb-scope .stat.on { border-color: #0071e3; box-shadow: 0 0 0 3px #0071e322; }
   .mb-scope .stat b { display: block; font-size: 20px; color: #1d1d1f; }
   .mb-scope .stat span { font-size: 12px; color: #6e6e73; }
   .mb-scope .split { display: grid; grid-template-columns: 420px 1fr; gap: 14px;
+                     align-items: start; }
   .mb-scope .tl { list-style: none; padding: 0; margin: 0; }
   .mb-scope .tl li { border-left: 2px solid #e5e5e7; padding: 0 0 16px 14px; position: relative; }
   .mb-scope .tl li::before { content: ''; position: absolute; left: -5px; top: 4px;
+                             width: 8px; height: 8px; border-radius: 50%; background: #0071e3; }
   .mb-scope .tl .meta { font-size: 12px; color: #6e6e73; margin-bottom: 4px; }
   .mb-scope .tl .body { white-space: pre-wrap; font-size: 13.5px; color: #1d1d1f; }
   .mb-scope .thread-row { cursor: pointer; }
