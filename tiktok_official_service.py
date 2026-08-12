@@ -3705,6 +3705,103 @@ def build_account_vv_export(
     return buf.read()
 
 
+def list_spark_reauth_accounts() -> list[dict[str, Any]]:
+    """启用中的矩阵账号里，哪些当前无法生成 Spark 码，以及卡在哪一步。
+
+    判定一律按 business_id——account_alias 在主表里不唯一，按别名判断会张冠李戴。
+    """
+    return db.query_all(
+        """
+        WITH acc AS (
+          SELECT a.business_id, a.account_alias, a.region, a.account_type,
+                 COALESCE(NULLIF(a.account_alias,''), a.display_name, a.account_name, a.business_id) AS label
+          FROM tiktok_official_accounts a
+          WHERE a.enabled = TRUE AND a.business_id != ALL(%s)
+        ),
+        tok AS (
+          SELECT DISTINCT ON (business_id) business_id, expires_at, refresh_expires_at
+          FROM tiktok_spark_tokens WHERE business_id IS NOT NULL
+          ORDER BY business_id, updated_at DESC
+        ),
+        orphan AS (
+          SELECT DISTINCT account_alias FROM tiktok_spark_tokens
+          WHERE business_id IS NULL AND account_alias IS NOT NULL
+        ),
+        dup AS (
+          SELECT account_alias FROM tiktok_official_accounts
+          WHERE account_alias IS NOT NULL AND account_alias <> ''
+          GROUP BY account_alias HAVING COUNT(DISTINCT business_id) > 1
+        )
+        SELECT acc.*,
+          CASE
+            WHEN t.business_id IS NULL AND o.account_alias IS NULL THEN '从未做过 Spark 授权'
+            WHEN t.business_id IS NULL AND d.account_alias IS NOT NULL THEN '老记录未回填且别名撞名，无法归属'
+            WHEN t.business_id IS NULL THEN '老记录 business_id 未回填'
+            WHEN t.refresh_expires_at IS NOT NULL AND t.refresh_expires_at < NOW() THEN 'refresh_token 已过期'
+            WHEN t.expires_at IS NOT NULL AND t.expires_at < NOW() THEN 'access 已过期（可能自动刷新恢复）'
+            ELSE '正常'
+          END AS reason
+        FROM acc
+        LEFT JOIN tok t ON t.business_id = acc.business_id
+        LEFT JOIN orphan o ON o.account_alias = acc.account_alias
+        LEFT JOIN dup d ON d.account_alias = acc.account_alias
+        ORDER BY reason, acc.region NULLS LAST, acc.label
+        """,
+        (_MATRIX_EXCLUDED_BUSINESS_IDS,),
+    ) or []
+
+
+def build_spark_reauth_export(public_base: str, authorized_by: str | None = None) -> bytes:
+    """导出「需要重新授权 Spark 的账号」名单，每个账号附一条一次性授权链接。
+
+    只给真正需要的账号生成链接（正常的、以及只是 access 过期能自动刷新的都不生成），
+    避免白白往 tiktok_spark_invites 里灌一堆用不上的 nonce。
+    链接统一永不过期——批量发出去不知道对方什么时候点。
+    """
+    rows = list_spark_reauth_accounts()
+    need_link = {'从未做过 Spark 授权', '老记录未回填且别名撞名，无法归属', '老记录 business_id 未回填',
+                 'refresh_token 已过期'}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "待重新授权账号"
+    headers = ["账号别名", "账号名称", "国家/地区", "账号类型", "无法生成 Spark 码的原因", "Spark 授权链接"]
+    ws.append(headers)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    for r in rows:
+        if r["reason"] == "正常":
+            continue
+        url = ""
+        if r["reason"] in need_link and r.get("account_alias"):
+            try:
+                invite = build_spark_invite_link(
+                    r["business_id"], r["account_alias"], public_base,
+                    authorized_by=authorized_by, ttl_seconds=None,
+                )
+                url = invite.get("url") or ""
+            except Exception as exc:
+                url = f"生成失败：{exc}"
+        ws.append([
+            r.get("account_alias") or "",
+            r.get("label") or "",
+            r.get("region") or "",
+            r.get("account_type") or "",
+            r.get("reason"),
+            url,
+        ])
+    ws.freeze_panes = "A2"
+    _autosize_columns(ws)
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def build_unpublished_accounts_export(
     filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
 ) -> bytes:

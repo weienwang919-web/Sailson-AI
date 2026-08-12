@@ -9760,6 +9760,26 @@ def api_tiktok_official_spark_tokens():
         return _api_error('tiktok_official spark tokens list', e)
 
 
+@app.route('/api/tiktok-official/spark/reauth-export')
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_spark_reauth_export():
+    """导出「当前无法生成 Spark 码的账号」名单，附一次性授权链接。"""
+    try:
+        out = tiktok_official_service.build_spark_reauth_export(
+            _tiktok_public_base_url(),
+            authorized_by=session.get('username') or session.get('user_id'),
+        )
+        buf = BytesIO(out)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True,
+            download_name='spark_待重新授权账号.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        return _api_error('tiktok_official spark reauth export', e)
+
+
 @app.route('/api/tiktok-official/spark/invite-batch')
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_spark_invite_batch():
