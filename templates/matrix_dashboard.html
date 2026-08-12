@@ -413,7 +413,7 @@
     <div class="toolbar" style="margin-bottom:12px;">
       <div>
         <label>查找</label>
-        <input id="account-search" type="text" placeholder="用户名/账号名/别名" oninput="renderAccounts()" style="min-width:220px;">
+        <input id="ops-account-search" type="text" placeholder="用户名/账号名/别名" oninput="renderAccounts()" style="min-width:220px;">
       </div>
       <div>
         <label>粉丝数筛选</label>
@@ -673,7 +673,7 @@ function renderTypePills() {
 }
 
 function renderAccountPicker() {
-  const query = (document.getElementById('account-search').value || '').trim().toLowerCase();
+  const query = (document.getElementById('ops-account-search').value || '').trim().toLowerCase();
   const grouped = {};
   accountsList.forEach(a => {
     const region = a.region || '未分组';
@@ -1545,6 +1545,9 @@ window.openPublishWindowsModal = openPublishWindowsModal;
    投流数据和视频明细没有搬——新看板已有更完整的版本。
    旧页的视频导出勾选逻辑一并去掉了（依赖那张不再存在的表）。 */
 let opsLoaded = false;
+// renderAccounts 会读它判断"Spark已授权"徽章，但赋值发生在 loadSparkTokens 里。
+// 不预置的话首次渲染时 undefined.has() 直接抛错，账号卡片一张都出不来。
+window._sparkAliases = window._sparkAliases || new Set();
 
 function openOpsModal() {
   document.getElementById('ops-modal').classList.add('open');
@@ -1559,10 +1562,12 @@ function closeOpsModal() {
 window.closeOpsModal = closeOpsModal;
 
 async function loadOpsAll() {
+  // 顺序执行：loadSparkTokens 会设置 _sparkAliases 并重渲染账号卡片，
+  // 放在 loadAccounts 之后能让"Spark已授权"徽章正确出现。
   await loadAccounts();
-  loadInvites();
-  loadSparkTokens();
-  loadMetrics();
+  await loadInvites();
+  await loadSparkTokens();
+  await loadMetrics();
 }
 window.loadOpsAll = loadOpsAll;
 
@@ -1612,7 +1617,7 @@ function renderAccounts() {
   }
   const followersFilter = document.getElementById('followers-filter').value;
   const regionFilter = document.getElementById('region-filter').value;
-  const searchTerm = document.getElementById('account-search').value.trim().toLowerCase();
+  const searchTerm = document.getElementById('ops-account-search').value.trim().toLowerCase();
   const filtered = accounts.filter(a => {
     if (searchTerm) {
       const haystack = [a.username, a.account_name, a.display_name, a.account_alias]
