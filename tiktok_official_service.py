@@ -2618,10 +2618,15 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
         # 否则 TikTok 会认为 token 跟 business_id 不匹配，报 access token 不合法。
         call_business_id = spark_info.get("open_id") or business_id
     else:
-        token = get_access_token(business_id)
-        call_business_id = business_id
-    if not token:
-        raise RuntimeError(f"business_id={business_id} 缺少 access_token，请先完成 TikTok 账号授权")
+        # 没有 Spark token 时不要静默退回主账号 token：主账号 token 基本都没有
+        # biz.spark.auth 权限，调过去只会被 TikTok 拒掉，前端看到的是一句没头没尾的
+        # 「服务异常」，根本不知道该去重新授权。这里直接说清楚。
+        # （历史数据里有一批 tiktok_spark_tokens 的 business_id 为 NULL——早期按
+        #  account_alias 存储，改按 business_id 之后没回填，这些账号都会走到这里。）
+        raise ValueError(
+            "该账号尚未完成 Spark 授权（或早期授权记录缺少 business_id），"
+            "无法生成 Spark 码。请在「账号运维 → 账号矩阵授权」里给该账号重新生成一次 Spark 授权链接并完成授权。"
+        )
 
     resp = requests.post(
         f"{API_BASE}/business/post/authorize/setting/",
@@ -2654,6 +2659,11 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
             spark_code = %s,
             spark_code_start_time = %s,
             spark_code_end_time = %s,
+            -- 生成 Spark 码即视为已标记投流。只在还没有状态时填，不覆盖人工already
+            -- 设成「已投放」「已关闭」的判断。
+            boost_status = COALESCE(boost_status, 'marked'),
+            is_boosted = TRUE,
+            boosted_at = COALESCE(boosted_at, NOW()),
             updated_at = NOW()
         WHERE business_id = %s AND item_id = %s
         """,
@@ -2663,6 +2673,7 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
         "spark_code": auth_code,
         "spark_code_start_time": start_time,
         "spark_code_end_time": end_time,
+        "boost_status": "marked",
     }
 
 
@@ -2697,6 +2708,20 @@ _ENGAGEMENT_RATE_SQL = (
     f"THEN ({_engagement_sum_sql('v')})::numeric / v.video_views ELSE NULL END)"
 )
 
+# 每条视频的投流汇总，供视频明细的「投流数量」列和「投流占比」筛选使用
+_AD_PER_VIDEO_SQL = """
+    LEFT JOIN (
+        SELECT tiktok_item_id,
+               COALESCE(SUM(spend), 0)::float AS ad_spend,
+               COALESCE(SUM(video_play_actions), 0) AS ad_paid_views
+        FROM tiktok_ad_spend_daily
+        WHERE tiktok_item_id IS NOT NULL
+        GROUP BY tiktok_item_id
+    ) ads ON ads.tiktok_item_id = v.item_id
+"""
+# 单条视频的投流播放占比：付费播放 / 累计总播放
+_AD_PAID_RATIO_SQL = "(COALESCE(ads.ad_paid_views, 0)::numeric / NULLIF(v.video_views, 0))"
+
 _MATRIX_VIDEO_SORT_FIELDS = {
     "create_time": "v.create_time",
     "video_views": "v.video_views",
@@ -2709,6 +2734,8 @@ _MATRIX_VIDEO_SORT_FIELDS = {
     "average_time_watched": "lw.average_time_watched",
     "pw_engagement_rate": "lw.pw_engagement_rate",
     "distribution_rate": "lw.distribution_rate",
+    "ad_paid_ratio": _AD_PAID_RATIO_SQL,
+    "ad_paid_views": "COALESCE(ads.ad_paid_views, 0)",
 }
 
 
@@ -2724,14 +2751,13 @@ def _matrix_engagement_filter_sql(filters: dict[str, Any]) -> str | None:
 def _matrix_views_filter_sql(filters: dict[str, Any]) -> str | None:
     views_filter = (filters.get("views_filter") or "").strip()
     # 汇报口径的播放量分档（跟汇报面板的 _REPORT_VIEW_TIERS 对应）
-    tiers = {"ge10w": 100_000, "ge20w": 200_000, "ge50w": 500_000, "ge100w": 1_000_000}
+    tiers = {"ge1000": 1_000, "ge10w": 100_000, "ge20w": 200_000,
+             "ge50w": 500_000, "ge100w": 1_000_000}
     if views_filter in tiers:
         return f"v.video_views >= {tiers[views_filter]}"
     if views_filter == "lt200":
         return "(v.video_views IS NULL OR v.video_views < 200)"
     # 以下为旧口径，保留兼容已有链接
-    if views_filter == "ge1000":
-        return "v.video_views >= 1000"
     if views_filter == "lt1000":
         return "(v.video_views IS NULL OR v.video_views < 1000)"
     if views_filter == "ge500":
@@ -2764,19 +2790,6 @@ def _matrix_keyword_where(filters: dict[str, Any], video_alias: str | None = Non
     ), [like]
 
 
-# 每条视频的投流汇总，供视频明细的「投流数量」列和「投流占比」筛选使用
-_AD_PER_VIDEO_SQL = """
-    LEFT JOIN (
-        SELECT tiktok_item_id,
-               COALESCE(SUM(spend), 0)::float AS ad_spend,
-               COALESCE(SUM(video_play_actions), 0) AS ad_paid_views
-        FROM tiktok_ad_spend_daily
-        WHERE tiktok_item_id IS NOT NULL
-        GROUP BY tiktok_item_id
-    ) ads ON ads.tiktok_item_id = v.item_id
-"""
-# 单条视频的投流播放占比：付费播放 / 累计总播放
-_AD_PAID_RATIO_SQL = "(COALESCE(ads.ad_paid_views, 0)::numeric / NULLIF(v.video_views, 0))"
 
 
 def list_matrix_videos(
@@ -2835,6 +2848,15 @@ def list_matrix_videos(
         try:
             where.append(f"{_AD_PAID_RATIO_SQL} >= %s")
             params.append(float(paid_ratio_min))
+        except (TypeError, ValueError):
+            pass
+    # 上限档（如 ＜30%）。没有投流的视频占比算 0，也应落在「＜30%」里，
+    # 所以用 COALESCE 把 NULL 当 0，否则这些视频会被整个筛掉。
+    paid_ratio_max = filters.get("paid_ratio_max")
+    if paid_ratio_max not in (None, ""):
+        try:
+            where.append(f"COALESCE({_AD_PAID_RATIO_SQL}, 0) < %s")
+            params.append(float(paid_ratio_max))
         except (TypeError, ValueError):
             pass
 

@@ -21,7 +21,7 @@
 
   <div class="board" id="filter-bar">
     <div class="filter-bar-header" onclick="toggleFilterBar()">
-      <div class="filter-bar-title">达人筛选</div>
+      <div class="filter-bar-title">筛选面板</div>
       <div class="filter-bar-summary" id="filter-bar-summary">全部达人</div>
       <div class="filter-bar-chevron" id="filter-bar-chevron">▾</div>
     </div>
@@ -145,9 +145,9 @@
     <div class="board-head">
       <h2>汇报面板</h2>
       <div class="date-range-controls">
-        <input type="date" id="rp-date-from">
+        <input type="date" id="rp-date-from" onchange="loadReportPanel()">
         <span class="date-sep">—</span>
-        <input type="date" id="rp-date-to">
+        <input type="date" id="rp-date-to" onchange="loadReportPanel()">
         <button class="btn-chip" onclick="setReportRange(1)">昨天</button>
         <button class="btn-chip" onclick="setReportRange(7)">最近7天</button>
         <button class="btn btn-secondary btn-sm" onclick="exportUnpublished()">导出未发账号</button>
@@ -236,6 +236,7 @@
           <label>最新播放量</label>
           <select id="views-filter-input" onchange="applyVideoFilters()">
             <option value="">全部</option>
+            <option value="ge1000">≥1000</option>
             <option value="ge10w">≥10万</option>
             <option value="ge20w">≥20万</option>
             <option value="ge50w">≥50万</option>
@@ -258,6 +259,7 @@
             <option value="">全部</option>
             <option value="0.3">≥30%</option>
             <option value="0.5">≥50%</option>
+            <option value="lt0.3">＜30%</option>
           </select>
         </div>
       </div>
@@ -290,8 +292,8 @@
             <th>账号ID</th>
             <th>视频ID</th>
             <th class="sortable" data-sort="video_views">播放量（最新）<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'video_views')">▾</span><div class="sort-menu" id="sort-menu-video_views"><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'video_views', 'asc')">▲ 从低到高</div></div></th>
-            <th>投流占比</th>
-            <th>投流播放量</th>
+            <th class="sortable" data-sort="ad_paid_ratio">投流占比<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'ad_paid_ratio')">▾</span><div class="sort-menu" id="sort-menu-ad_paid_ratio"><div class="sort-menu-item" onclick="applySortOption(event, 'ad_paid_ratio', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'ad_paid_ratio', 'asc')">▲ 从低到高</div></div></th>
+            <th class="sortable" data-sort="ad_paid_views">投流播放量<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'ad_paid_views')">▾</span><div class="sort-menu" id="sort-menu-ad_paid_views"><div class="sort-menu-item" onclick="applySortOption(event, 'ad_paid_views', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'ad_paid_views', 'asc')">▲ 从低到高</div></div></th>
             <th class="sortable" data-sort="likes">点赞<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'likes')">▾</span><div class="sort-menu" id="sort-menu-likes"><div class="sort-menu-item" onclick="applySortOption(event, 'likes', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'likes', 'asc')">▲ 从低到高</div></div></th>
             <th class="sortable" data-sort="comments">评论<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'comments')">▾</span><div class="sort-menu" id="sort-menu-comments"><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'comments', 'asc')">▲ 从低到高</div></div></th>
             <th class="sortable" data-sort="shares">转发<span class="sort-indicator"></span><span class="sort-toggle" onclick="toggleSortMenu(event, 'shares')">▾</span><div class="sort-menu" id="sort-menu-shares"><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'desc')">▼ 从高到低</div><div class="sort-menu-item" onclick="applySortOption(event, 'shares', 'asc')">▲ 从低到高</div></div></th>
@@ -466,7 +468,7 @@ let selectedAccountIds = new Set();
 let filterBarOpen = false;
 
 let videos = [];
-let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '', engagement_filter: '', views_filter: '', boost_status: '', paid_ratio_min: '' };
+let videoFilters = { date_from: '', date_to: '', creator: '', keyword: '', only_boosted: '', only_unboosted: '', engagement_filter: '', views_filter: '', boost_status: '', paid_ratio_min: '', paid_ratio_max: '' };
 let selectedRegions = new Set();
 let videoSort = { field: 'create_time', order: 'desc' };
 let limit = 50;
@@ -1167,7 +1169,10 @@ function applyVideoFilters() {
   videoFilters.engagement_filter = document.getElementById('engagement-filter-input').value;
   videoFilters.views_filter = document.getElementById('views-filter-input').value;
   videoFilters.boost_status = document.getElementById('boost-status-input').value;
-  videoFilters.paid_ratio_min = document.getElementById('paid-ratio-input').value;
+  const pr = document.getElementById('paid-ratio-input').value;
+  // lt 前缀表示上限档（＜30%），其余是下限档
+  videoFilters.paid_ratio_min = pr.startsWith('lt') ? '' : pr;
+  videoFilters.paid_ratio_max = pr.startsWith('lt') ? pr.slice(2) : '';
   offset = 0;
   loadVideos();
 }

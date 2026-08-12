@@ -10042,6 +10042,7 @@ def _matrix_filters_from_request(full=False):
             'views_filter': request.args.get('views_filter') or '',
             'boost_status': request.args.get('boost_status') or '',
             'paid_ratio_min': request.args.get('paid_ratio_min') or '',
+            'paid_ratio_max': request.args.get('paid_ratio_max') or '',
         })
     return filters
 
@@ -10258,6 +10259,9 @@ def api_tiktok_official_matrix_video_spark_code(business_id, item_id):
         authorization_days = int(data.get('authorization_days') or 30)
         result = tiktok_official_service.authorize_video_for_ads(business_id, item_id, authorization_days=authorization_days)
         return jsonify({'status': 'success', **_json_safe(result)})
+    except ValueError as e:
+        # 用户可自行处理的情况（比如账号没做过 Spark 授权），原样告诉他该怎么做
+        return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
         return _api_error('tiktok_official matrix video spark-code', e)
 
@@ -10429,6 +10433,9 @@ def kol_outreach_page():
         gap_min=int(mb.OUTREACH_MIN_GAP_SECONDS),
         gap_max=int(mb.OUTREACH_MAX_GAP_SECONDS),
         unsubscribe_text=mb.DEFAULT_UNSUBSCRIBE_TEXT,
+        attach_max_count=mb.MAX_ATTACHMENT_COUNT,
+        attach_max_mb=mb.MAX_ATTACHMENT_BYTES // 1048576,
+        attach_total_mb=mb.MAX_ATTACHMENT_TOTAL_BYTES // 1048576,
         # 回信管理页签需要的
         statuses=(mail_inbox_service.THREAD_STATUS_TEXT if MAIL_INBOX_AVAILABLE else {}),
         default_target=float(os.environ.get('MAIL_BLASTER_TARGET_PRICE') or 500),
@@ -10559,6 +10566,54 @@ def api_mb_image(image_id):
         return _mb_fail('图片不存在', 404)
     blob, mime = loaded
     return send_file(io.BytesIO(blob), mimetype=mime)
+
+
+# ---- 附件（同样存 BYTEA；整批共用一组）----
+
+@app.route('/api/mail-blaster/attachments', methods=['POST'])
+@feature_required('mail_blaster')
+def api_mb_upload_attachments():
+    """一次可以传多个。只入库返回 id，挂到哪个批次是建批次那一步的事。"""
+    if (blocked := _mb_guard()):
+        return blocked
+    # 整个请求的体积先挡一道。单文件大小 store_attachment 还会再判，但那要先
+    # read() 进内存，而 Flask 这边没有设 MAX_CONTENT_LENGTH ——
+    # 一个误拖进来的几百 MB 视频会直接把 web 进程撑爆。
+    cap = mail_blaster_service.MAX_ATTACHMENT_TOTAL_BYTES + 2 * 1024 * 1024
+    if (request.content_length or 0) > cap:
+        return _mb_fail('这一次选的文件合计超过 '
+                        f'{mail_blaster_service.MAX_ATTACHMENT_TOTAL_BYTES // 1048576}MB，'
+                        '请分开传或先压缩')
+    uploads = [f for f in request.files.getlist('files') if f and f.filename]
+    if not uploads:
+        return _mb_fail('没有收到文件')
+    if len(uploads) > mail_blaster_service.MAX_ATTACHMENT_COUNT:
+        return _mb_fail(f'一次最多传 {mail_blaster_service.MAX_ATTACHMENT_COUNT} 个附件')
+    saved = []
+    try:
+        for up in uploads:
+            saved.append(mail_blaster_service.store_attachment(up.read(), up.filename))
+    except ValueError as e:
+        return _mb_fail(str(e))
+    except Exception as e:
+        logger.error(f"mail-blaster 附件上传失败: {e}")
+        return _mb_fail(str(e), 500)
+    return jsonify({'status': 'success', 'attachments': saved})
+
+
+@app.route('/api/mail-blaster/attachments/<int:attachment_id>')
+@feature_required('mail_blaster')
+def api_mb_attachment(attachment_id):
+    """下载回来核对：发出去的就是这个字节流。"""
+    if (blocked := _mb_guard()):
+        return blocked
+    loaded = mail_blaster_service.load_attachment(attachment_id)
+    if loaded is None:
+        return _mb_fail('附件不存在', 404)
+    blob, mime = loaded
+    name = (request.args.get('name') or f'attachment-{attachment_id}').strip()
+    return send_file(io.BytesIO(blob), mimetype=mime,
+                     as_attachment=True, download_name=name)
 
 
 # ---- 批次 ----
@@ -10819,6 +10874,7 @@ def api_mb_create_outreach_job():
             subject_tpl=d.get('subject_tpl') or '',
             body_tpl=d.get('body_tpl') or '',
             signature_tpl=d.get('signature_tpl') or '',
+            attachments=d.get('attachments') or [],
             user_id=session.get('user_id'))})
     except ValueError as e:
         return _mb_fail(str(e))
