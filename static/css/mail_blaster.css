@@ -154,6 +154,23 @@ td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size
   border: 1px solid var(--line); background: #fafafa; display: block;
 }
 
+/* ---------- 附件（KOL 建联，整批共用一组） ---------- */
+.attach-drop { padding: 18px; }
+.attach-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.attach-item {
+  display: flex; align-items: center; gap: 10px; font-size: 13px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: #fcfcfd;
+}
+.attach-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-item .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.attach-item a { color: var(--muted); text-decoration: none; font-size: 12px; }
+.attach-item a:hover { color: var(--accent); }
+.attach-item .rm {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 0 2px;
+}
+.attach-item .rm:hover { color: var(--err); }
+
 /* ---------- 占位符说明 ---------- */
 .ph-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .ph {

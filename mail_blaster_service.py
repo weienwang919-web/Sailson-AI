@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import logging
+import mimetypes
 import os
 import re
 import smtplib
@@ -27,6 +28,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -71,6 +74,19 @@ MAX_IMAGE_BYTES = 1_500_000
 MAX_IMAGE_EDGE = 1600
 JPEG_QUALITY = 85
 
+# 附件：整批共用一组，每封信原样带上（正文里的图不走这里，那是 mb_images 的内联图）。
+# 限额按「编码前」算，但门槛是照编码后定的 —— MIME 的 base64 会把体积撑大 1/3，
+# 15MB 的原始附件到收件方那边是 20MB 出头，刚好压在多数邮箱 25MB 的收信上限内。
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+MAX_ATTACHMENT_TOTAL_BYTES = 15 * 1024 * 1024
+MAX_ATTACHMENT_COUNT = 5
+# 这些后缀绝大多数邮件网关直接拒信（整封退回，不是只丢附件），
+# 与其让整批信在 SMTP 那步失败，不如在上传时就说清楚。
+BLOCKED_ATTACHMENT_EXTS = {
+    "exe", "com", "bat", "cmd", "scr", "pif", "msi", "msp", "cpl", "jar",
+    "js", "jse", "vbs", "vbe", "wsf", "wsh", "ps1", "reg", "lnk", "hta", "dll",
+}
+
 
 # --------------------------------------------------------------------------- #
 # 建表
@@ -84,6 +100,8 @@ _TABLES = {
     # 收信 / 会话线 / 报价账本
     "mb_imap_cursors", "mb_inbox_messages", "mb_inbox_extractions",
     "mb_threads", "mb_quotes",
+    # 附件（整批共用）
+    "mb_attachments", "mb_job_attachments",
 }
 # 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL。
 # 新增列务必登记到这里，否则线上库走快速路径直接 return，DDL 一条都不跑，
@@ -165,6 +183,18 @@ def ensure_schema() -> None:
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # 附件同理存库不存盘。文件名不进这张表：同一份 PDF 换个名字上传两次
+    # 仍然只该占一份空间，名字是「这一批怎么叫它」，挂在 mb_job_attachments 上。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_attachments (
+            id SERIAL PRIMARY KEY,
+            sha256 CHAR(64) UNIQUE NOT NULL,
+            content BYTEA NOT NULL,
+            mime VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream',
+            byte_size INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_jobs (
             id SERIAL PRIMARY KEY,
@@ -201,6 +231,20 @@ def ensure_schema() -> None:
             sent_at TIMESTAMP
         )
     """)
+    # 附件挂在批次上，整批共用一组：建联是「同一份物料群发给一串达人」，
+    # 按行挂会逼着名单 Excel 多一列文件名，而粘贴名单那条入口根本带不了文件。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_job_attachments (
+            id SERIAL PRIMARY KEY,
+            job_id INTEGER NOT NULL REFERENCES mb_jobs(id) ON DELETE CASCADE,
+            attachment_id INTEGER NOT NULL REFERENCES mb_attachments(id) ON DELETE CASCADE,
+            filename VARCHAR(255) NOT NULL DEFAULT 'attachment',
+            seq INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_mb_job_attachments_job "
+               "ON mb_job_attachments (job_id, seq)")
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_templates (
             id SERIAL PRIMARY KEY,
@@ -939,6 +983,125 @@ def load_image(image_id: int) -> tuple[bytes, str] | None:
     return bytes(row["content"]), row["mime"]
 
 
+# --------------------------------------------------------------------------- #
+# 附件（整批共用一组，与正文内联图无关）
+# --------------------------------------------------------------------------- #
+
+def _clean_filename(name: str) -> str:
+    """只留文件名本身。浏览器一般不会带路径，但 IE 系和某些客户端会传完整路径，
+    而这个名字会原样进 Content-Disposition。"""
+    name = (name or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    name = re.sub(r"[\r\n\t]", "", name)
+    return name[:200] or "attachment"
+
+
+def check_attachment(filename: str, blob: bytes) -> None:
+    """单个附件的准入检查。不合格抛 ValueError，消息直接给用户看。"""
+    name = _clean_filename(filename)
+    if not blob:
+        raise ValueError(f"{name} 是空文件")
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext in BLOCKED_ATTACHMENT_EXTS:
+        raise ValueError(f".{ext} 类型的附件会被邮件网关整封退回，请压成 .zip 再传")
+    if len(blob) > MAX_ATTACHMENT_BYTES:
+        raise ValueError(f"{name} 有 {len(blob) / 1048576:.1f}MB，"
+                         f"单个附件最大 {MAX_ATTACHMENT_BYTES // 1048576}MB")
+
+
+def store_attachment(blob: bytes, filename: str) -> dict:
+    """存附件返回 {id, filename, mime, byte_size}。同样的字节只存一份。"""
+    filename = _clean_filename(filename)
+    check_attachment(filename, blob)
+    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    digest = hashlib.sha256(blob).hexdigest()
+    row = db.query_one("SELECT id FROM mb_attachments WHERE sha256 = %s", (digest,))
+    if row:
+        attachment_id = row["id"]
+    else:
+        attachment_id = db.execute_and_fetch_id(
+            "INSERT INTO mb_attachments (sha256, content, mime, byte_size) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (sha256) DO UPDATE SET sha256 = EXCLUDED.sha256 RETURNING id",
+            (digest, psycopg2.Binary(blob), mime, len(blob)))
+    return {"id": attachment_id, "filename": filename, "mime": mime, "byte_size": len(blob)}
+
+
+def load_attachment(attachment_id: int) -> tuple[bytes, str] | None:
+    row = db.query_one("SELECT content, mime FROM mb_attachments WHERE id = %s",
+                       (attachment_id,))
+    if not row:
+        return None
+    return bytes(row["content"]), row["mime"]
+
+
+def set_job_attachments(job_id: int, specs: list[dict]) -> list[dict]:
+    """把一批附件挂到批次上（整组覆盖）。specs 是 [{id, filename?}, ...]。"""
+    db.execute("DELETE FROM mb_job_attachments WHERE job_id = %s", (job_id,))
+    if not specs:
+        return []
+    if len(specs) > MAX_ATTACHMENT_COUNT:
+        raise ValueError(f"最多带 {MAX_ATTACHMENT_COUNT} 个附件，现在选了 {len(specs)} 个")
+
+    rows, total = [], 0
+    for seq, spec in enumerate(specs):
+        try:
+            attachment_id = int(spec.get("id"))
+        except (TypeError, ValueError):
+            raise ValueError("附件 id 不对，请重新上传")
+        meta = db.query_one(
+            "SELECT id, mime, byte_size FROM mb_attachments WHERE id = %s", (attachment_id,))
+        if meta is None:
+            raise ValueError(f"附件 {attachment_id} 已经不在了，请重新上传")
+        total += meta["byte_size"] or 0
+        rows.append((job_id, attachment_id,
+                     _clean_filename(spec.get("filename") or f"attachment-{seq + 1}"), seq))
+    if total > MAX_ATTACHMENT_TOTAL_BYTES:
+        raise ValueError(f"附件合计 {total / 1048576:.1f}MB，超过单封上限 "
+                         f"{MAX_ATTACHMENT_TOTAL_BYTES // 1048576}MB（编码后还会再大三成）")
+
+    with db.get_db_cursor(commit=True) as cur:
+        execute_values(cur, "INSERT INTO mb_job_attachments "
+                            "(job_id, attachment_id, filename, seq) VALUES %s", rows)
+    return list_job_attachments(job_id)
+
+
+def list_job_attachments(job_id: int) -> list[dict]:
+    """批次的附件清单（不含内容），给页面和预览用。"""
+    rows = db.query_all("""
+        SELECT ja.attachment_id AS id, ja.filename, a.mime, a.byte_size
+        FROM mb_job_attachments ja JOIN mb_attachments a ON a.id = ja.attachment_id
+        WHERE ja.job_id = %s ORDER BY ja.seq ASC
+    """, (job_id,))
+    return [dict(r) for r in rows]
+
+
+def load_job_attachments(job_id: int) -> list[dict]:
+    """带内容的附件清单，发信时用。"""
+    rows = db.query_all("""
+        SELECT ja.filename, a.mime, a.content
+        FROM mb_job_attachments ja JOIN mb_attachments a ON a.id = ja.attachment_id
+        WHERE ja.job_id = %s ORDER BY ja.seq ASC
+    """, (job_id,))
+    return [{"filename": r["filename"], "mime": r["mime"], "content": bytes(r["content"])}
+            for r in rows]
+
+
+def build_attachment_part(att: dict) -> MIMEBase:
+    maintype, _, subtype = (att.get("mime") or "application/octet-stream").partition("/")
+    part = MIMEBase(maintype or "application", subtype or "octet-stream")
+    part.set_payload(att["content"])
+    encoders.encode_base64(part)
+    name = att.get("filename") or "attachment"
+    try:
+        name.encode("ascii")
+        part.add_header("Content-Disposition", "attachment", filename=name)
+    except UnicodeEncodeError:
+        # 中文文件名走 RFC 2231。直接塞进 filename="…" 的话，
+        # 收件端看到的是乱码或者被截断成 "attachment"。
+        part.add_header("Content-Disposition", "attachment", filename=("utf-8", "", name))
+    return part
+
+
 def prepare_image(blob: bytes) -> tuple[bytes, str]:
     """太大就压缩，避免被服务商拒信。返回 (二进制, MIME 子类型)。"""
     try:
@@ -1301,7 +1464,8 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
                    signature_tpl: str, from_display: str, signature_name: str,
                    image_bytes: bytes | None, image_name: str, index: int, total: int,
                    extra_vars: dict | None = None, replacement_domain: str = "",
-                   unsubscribe_text: str = "") -> dict:
+                   unsubscribe_text: str = "",
+                   attachments: list[dict] | None = None) -> dict:
     """真正发一封。异常往外抛，由调用方决定怎么记。"""
     replacement_domain = normalize_replacement_domain(replacement_domain)
     header_sender_email = replace_sender_domain(account["email"], replacement_domain)
@@ -1317,7 +1481,36 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
         unsubscribe_text=unsubscribe_text)
     html = rewrite_body_domains(html, replacement_domain)
 
-    root = MIMEMultipart("related") if has_image else MIMEMultipart("alternative")
+    # 先把「正文」这一坨拼好（内联图算正文的一部分），
+    # 有附件时再拿 mixed 把它整个包起来。
+    plain = MIMEText(html_to_text(html), "plain", "utf-8")
+    html_part = MIMEText(html, "html", "utf-8")
+    if has_image:
+        content = MIMEMultipart("related")
+        alt = MIMEMultipart("alternative")
+        alt.attach(plain)
+        alt.attach(html_part)
+        content.attach(alt)
+        data, subtype = prepare_image(image_bytes)
+        img = MIMEImage(data, _subtype=subtype)
+        img.add_header("Content-ID", f"<{cid}>")
+        img.add_header("Content-Disposition", "inline", filename=image_name or f"image.{subtype}")
+        content.attach(img)
+    else:
+        content = MIMEMultipart("alternative")
+        content.attach(plain)
+        content.attach(html_part)
+
+    if attachments:
+        # 有附件时最外层必须是 mixed。related/alternative 是「同一份正文的多种表示」
+        # 的容器，把 PDF 挂进去，部分客户端会把它当成正文的候选版本而不显示成附件。
+        root = MIMEMultipart("mixed")
+        root.attach(content)
+        for att in attachments:
+            root.attach(build_attachment_part(att))
+    else:
+        root = content
+
     root["Subject"] = subject
     root["From"] = formataddr((from_display, header_sender_email))
     root["To"] = to_email
@@ -1331,22 +1524,6 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
         # 刻意不加 List-Unsubscribe-Post：RFC 8058 的一键退订要求有一个
         # 无需确认就处理的 URL 端点，我们没有。声明了不兑现比不声明更糟。
         root["List-Unsubscribe"] = f"<mailto:{envelope_sender_email}?subject=unsubscribe>"
-
-    plain = MIMEText(html_to_text(html), "plain", "utf-8")
-    html_part = MIMEText(html, "html", "utf-8")
-    if has_image:
-        alt = MIMEMultipart("alternative")
-        alt.attach(plain)
-        alt.attach(html_part)
-        root.attach(alt)
-        data, subtype = prepare_image(image_bytes)
-        img = MIMEImage(data, _subtype=subtype)
-        img.add_header("Content-ID", f"<{cid}>")
-        img.add_header("Content-Disposition", "inline", filename=image_name or f"image.{subtype}")
-        root.attach(img)
-    else:
-        root.attach(plain)
-        root.attach(html_part)
 
     client = _open_smtp_recording(account)
     try:
@@ -2341,6 +2518,7 @@ def load_job(job_id: int) -> dict:
                 "signature_tpl": job["signature_tpl"]},
         "items": [_serialize_item(dict(r)) for r in items],
         "counts": counts,
+        "attachments": list_job_attachments(job_id),
     }
 
 
@@ -2408,8 +2586,11 @@ def _mark_sent(item_id: int, result: dict) -> None:
           result.get("message_id") or "", item_id))
 
 
-def send_item(job_id: int, item_id: int) -> str:
+def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) -> str:
     """发一封。返回结果状态字符串，异常都记进该行不往外抛。
+
+    attachments 传 None 就自己去库里取（单封重发走这条）；整批发送时由 run_job
+    取一次传进来 —— 15MB 的附件乘 500 个收件人，逐封重取就是 7GB 的库往返。
 
     投递与记账刻意分成两段：SMTP 一旦收下这封信，它就已经在对方队列里、不可撤回，
     此后任何写库失败都不能把这行标成 failed —— 用户看到红色会去点重发，
@@ -2466,7 +2647,10 @@ def send_item(job_id: int, item_id: int) -> str:
             image_bytes=blob, image_name=item["image_name"] or "",
             index=item["seq"] + 1, total=total, extra_vars=extra_vars,
             replacement_domain=replacement_domain,
-            unsubscribe_text=DEFAULT_UNSUBSCRIBE_TEXT if is_outreach else "")
+            unsubscribe_text=DEFAULT_UNSUBSCRIBE_TEXT if is_outreach else "",
+            # 附件挂在批次上，整批每封都带同一组
+            attachments=(load_job_attachments(job_id) if attachments is None
+                         else attachments))
     except Exception as exc:
         _mark_failed(item_id, friendly_smtp_error(exc))
         return "failed"
@@ -2541,6 +2725,8 @@ def run_job(job_id: int, progress=None) -> dict:
 
     sent = failed = skipped = 0
     paused = ""
+    # 整批共用同一组附件，取一次带着走
+    attachments = load_job_attachments(job_id)
     for i, item_id in enumerate(pending):
         # 窗口和配额每轮都查。20–45 秒间隔下 200 封要跑两小时，
         # 只在开头查一次会直接冲过 22:00；配额也要重查，
@@ -2562,7 +2748,7 @@ def run_job(job_id: int, progress=None) -> dict:
                                f"（{q['used']}/{q['limit']}），未发送")
                     break
 
-        outcome = send_item(job_id, item_id)
+        outcome = send_item(job_id, item_id, attachments=attachments)
         if outcome == "sent":
             sent += 1
         elif outcome == "failed":
@@ -2624,7 +2810,10 @@ def build_previews(job_id: int) -> list[dict]:
             extra_vars=item["vars"] or None, unsubscribe_text=unsubscribe_text)
         html = rewrite_body_domains(html, replacement_domain)
         previews.append({**item, "from_line": f"{display} <{sender_email}>",
-                         "to_line": recipient, "subject": subject, "html": html})
+                         "to_line": recipient, "subject": subject, "html": html,
+                         # 整批共用，但每封预览都带上：预览是「这封信长什么样」，
+                         # 附件漏在预览外面，人就是要等发出去才发现忘了传
+                         "attachments": state["attachments"]})
     return previews
 
 
@@ -2763,7 +2952,7 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
 
 def create_outreach_job(*, sender_account_id: int, rows: list[dict],
                         subject_tpl: str = "", body_tpl: str = "", signature_tpl: str = "",
-                        user_id=None) -> dict:
+                        attachments: list[dict] | None = None, user_id=None) -> dict:
     """从解析好的名单建一个建联批次。
 
     和素材提交的轴反过来：整批共用一个发件账号，每一行是一个收件人 + 一组变量。
@@ -2805,6 +2994,11 @@ def create_outreach_job(*, sender_account_id: int, rows: list[dict],
                json.dumps(r.get("vars") or {}, ensure_ascii=False),
                acc["effective_display_name"], acc["effective_signature_name"])
               for seq, r in enumerate(usable)])
+
+    # 附件要有 job_id 才挂得上，所以只能放在建批次之后。这里抛错会留下一个
+    # 没挂上附件的 draft 批次 —— 它不会被发送（发送要另外点一次），
+    # 而前端每次预览/发送都重建批次，所以下一次点会得到一个干净的新批次。
+    set_job_attachments(job_id, attachments or [])
 
     payload = load_job(job_id)
     payload["quota"] = quota_state(account["id"], acc["daily_limit"])

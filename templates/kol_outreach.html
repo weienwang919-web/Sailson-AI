@@ -123,6 +123,16 @@
       <label>落款</label>
       <textarea id="signature" rows="3">{{ defaults.signature }}</textarea>
     </div>
+    <div class="field">
+      <label>附件</label>
+      <div class="drop attach-drop" id="drop-attach">
+        拖文件到这里，或点击选择<br>
+        <small>整批共用，每个达人收到的都是这几个文件。最多 {{ attach_max_count }} 个，
+          单个 ≤ {{ attach_max_mb }}MB，合计 ≤ {{ attach_total_mb }}MB</small>
+      </div>
+      <input type="file" id="attach-input" multiple style="display:none">
+      <div id="attach-list" class="attach-list"></div>
+    </div>
     <div class="ph-list">
       {% for token, desc in placeholders %}
       <span class="ph" title="{{ desc }}" onclick="insertPh('{{ token }}')">{{ token }}</span>
@@ -290,6 +300,8 @@
 <script>
 const SEND_WINDOW = {{ send_window | tojson }};
 const GAP_MIN = {{ gap_min }}, GAP_MAX = {{ gap_max }};
+const ATTACH_MAX_COUNT = {{ attach_max_count }},
+      ATTACH_TOTAL_BYTES = {{ attach_total_mb }} * 1048576;
 </script>
 <script src="{{ url_for('static', filename='js/mail_blaster_common.js') }}"></script>
 <script src="{{ url_for('static', filename='js/mail_blaster_accounts.js') }}"></script>

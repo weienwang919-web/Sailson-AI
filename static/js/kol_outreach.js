@@ -3,7 +3,7 @@
    通用小工具在 mail_blaster_common.js，发件账号池在 mail_blaster_accounts.js，
    两个都由模板先于本文件加载。 */
 
-let POOL = [], PARSED = null, JOB = null, PREVIEWS = [], TEMPLATES = [];
+let POOL = [], PARSED = null, JOB = null, PREVIEWS = [], TEMPLATES = [], ATTACHMENTS = [];
 let previewIndex = 0, pollTimer = null;
 
 /* ---------- 账号池 ---------- */
@@ -114,6 +114,58 @@ function insertPh(token) {
   insertAtCursor(target, token);
 }
 
+/* ---------- 第 4 步：附件（整批共用一组） ---------- */
+function fmtSize(n) {
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
+}
+
+async function uploadAttachments(files) {
+  const picked = Array.from(files || []);
+  if (!picked.length) return;
+  // 服务端在建批次那步还会再判一次（这里的两条是「多次分开传」也要拦得住），
+  // 但拦在上传前，用户不用等一次白跑的往返
+  const kept = ATTACHMENTS.filter(a => !picked.some(f => f.name === a.filename));
+  if (kept.length + picked.length > ATTACH_MAX_COUNT) {
+    return toast(`最多带 ${ATTACH_MAX_COUNT} 个附件`, true);
+  }
+  const total = kept.reduce((s, a) => s + a.byte_size, 0) +
+                picked.reduce((s, f) => s + f.size, 0);
+  if (total > ATTACH_TOTAL_BYTES) {
+    return toast(`附件合计 ${fmtSize(total)}，超过单封上限 ${fmtSize(ATTACH_TOTAL_BYTES)}`, true);
+  }
+  const form = new FormData();
+  picked.forEach(f => form.append('files', f));
+  try {
+    const res = await api('/api/mail-blaster/attachments', { method: 'POST', body: form });
+    // 同名的算重传，替换掉旧的那条，避免一封信里出现两个同名附件
+    res.attachments.forEach(a => {
+      const i = ATTACHMENTS.findIndex(x => x.filename === a.filename);
+      if (i >= 0) ATTACHMENTS[i] = a; else ATTACHMENTS.push(a);
+    });
+    renderAttachments();
+    toast(`已添加 ${res.attachments.length} 个附件`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function removeAttachment(id) {
+  ATTACHMENTS = ATTACHMENTS.filter(a => a.id !== id);
+  renderAttachments();
+}
+
+function renderAttachments() {
+  const total = ATTACHMENTS.reduce((s, a) => s + a.byte_size, 0);
+  document.getElementById('attach-list').innerHTML = ATTACHMENTS.map(a => `
+    <div class="attach-item">
+      <span class="name">📎 ${esc(a.filename)}</span>
+      <span class="size">${fmtSize(a.byte_size)}</span>
+      <a href="/api/mail-blaster/attachments/${a.id}?name=${encodeURIComponent(a.filename)}"
+         target="_blank">下载核对</a>
+      <button class="rm" title="移除" onclick="removeAttachment(${a.id})">✕</button>
+    </div>`).join('') +
+    (ATTACHMENTS.length > 1
+      ? `<div class="hint" style="margin:2px 0 0">合计 ${fmtSize(total)}</div>` : '');
+}
+
 /* ---------- 第 4 步：模板库 ---------- */
 async function loadTemplates() {
   try { TEMPLATES = (await api('/api/mail-blaster/templates?mode=outreach')).templates; }
@@ -170,9 +222,11 @@ async function ensureJob() {
   if (!PARSED || !PARSED.rows.length) { toast('先解析名单', true); return null; }
   const account = currentAccount();
   if (!account) { toast('先选一个发件账号', true); return null; }
-  // 模板可能改过，每次都重建批次；建联批次很轻（没有图片）
+  // 模板可能改过，每次都重建批次；建联批次很轻（没有图片）。
+  // 附件只传 id，字节早在上传那一步就进库了。
   JOB = await api('/api/mail-blaster/outreach/jobs', { method: 'POST', body: {
-    sender_account_id: account.id, rows: PARSED.rows, ...templatePayload() } });
+    sender_account_id: account.id, rows: PARSED.rows, ...templatePayload(),
+    attachments: ATTACHMENTS.map(a => ({ id: a.id, filename: a.filename })) } });
   if (JOB.list.suppressed.length) {
     toast(`${JOB.list.suppressed.length} 个地址在抑制名单里，已剔除`);
   }
@@ -203,7 +257,11 @@ function showPreview() {
   document.getElementById('preview-head').innerHTML =
     `<div>发件人：${esc(p.from_line || '')}</div>` +
     `<div>收件人：${esc(p.to_line || '')}</div>` +
-    `<div>主题：${esc(p.subject || '')}</div>`;
+    `<div>主题：${esc(p.subject || '')}</div>` +
+    // 附件列的是服务端记在这个批次上的，不是页面上还没提交的那份
+    ((p.attachments || []).length
+      ? `<div>附件：${p.attachments.map(a =>
+          `📎 ${esc(a.filename)}（${fmtSize(a.byte_size)}）`).join('　')}</div>` : '');
   document.getElementById('preview-body').innerHTML = p.html || `<em>${esc(p.error || '')}</em>`;
 }
 
@@ -222,7 +280,9 @@ async function doSend(btn) {
                `发件账号：${account.email}（今日上限 ${
                  account.daily_limit === null ? '不限' : account.daily_limit}）\n` +
                `节奏：每封间隔 ${GAP_MIN}–${GAP_MAX} 秒，预计约 ${mins} 分钟\n` +
-               `发送窗口：${SEND_WINDOW}\n\n` +
+               `发送窗口：${SEND_WINDOW}\n` +
+               `附件：${ATTACHMENTS.length
+                 ? ATTACHMENTS.map(a => a.filename).join('、') : '无'}\n\n` +
                `每封都会带退订出口，抑制名单里的地址不会收到。`)) return;
   btn.disabled = true;
   try {
@@ -320,6 +380,21 @@ document.addEventListener('DOMContentLoaded', () => {
     uploadXlsx(input.files[0]);
     input.value = '';        // 同一个文件连传两次也要能触发 change
   });
+
+  const adrop = document.getElementById('drop-attach');
+  const ainput = document.getElementById('attach-input');
+  adrop.addEventListener('click', () => ainput.click());
+  adrop.addEventListener('dragover', e => { e.preventDefault(); adrop.classList.add('over'); });
+  adrop.addEventListener('dragleave', () => adrop.classList.remove('over'));
+  adrop.addEventListener('drop', e => {
+    e.preventDefault(); adrop.classList.remove('over');
+    uploadAttachments(e.dataTransfer.files);
+  });
+  ainput.addEventListener('change', () => {
+    uploadAttachments(ainput.files);
+    ainput.value = '';
+  });
+
   loadPool();
   loadTemplates();
 });
