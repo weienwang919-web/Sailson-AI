@@ -9967,6 +9967,19 @@ def api_tiktok_official_export():
         return _api_error('tiktok_official export', e)
 
 
+@app.route('/api/tiktok-official/accounts/<business_id>/alias', methods=['PATCH'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_account_alias(business_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        tiktok_official_service.set_account_alias(business_id, data.get('account_alias'))
+        return jsonify({'status': 'success'})
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return _api_error('tiktok_official account alias update', e)
+
+
 @app.route('/api/tiktok-official/accounts/<business_id>/meta', methods=['PATCH'])
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_account_meta(business_id):

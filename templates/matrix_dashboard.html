@@ -324,6 +324,7 @@
       <h3>账号运维</h3>
       <button class="btn btn-ghost btn-sm" onclick="closeOpsModal()">关闭</button>
     </div>
+    <div class="status" id="ops-status"></div>
   <div class="card">
     <h2>刷新与导出</h2>
     <div class="toolbar">
@@ -1562,12 +1563,35 @@ function closeOpsModal() {
 window.closeOpsModal = closeOpsModal;
 
 async function loadOpsAll() {
-  // 顺序执行：loadSparkTokens 会设置 _sparkAliases 并重渲染账号卡片，
-  // 放在 loadAccounts 之后能让"Spark已授权"徽章正确出现。
-  await loadAccounts();
-  await loadInvites();
-  await loadSparkTokens();
-  await loadMetrics();
+  // 每块独立加载：任何一块失败都不能连累其余的。
+  // 之前是串行 await 且没有 catch，loadInvites 一挂（比如线上缺 TIKTOK_APP_ID）
+  // 后面的 Spark 授权表、主页趋势就全不执行了，整个面板一片空白还不报错。
+  const parts = [
+    ['账号卡片', loadAccounts],
+    ['邀请记录', loadInvites],
+    ['Spark 授权账号', loadSparkTokens],
+    ['主页每日趋势', loadMetrics],
+  ];
+  const failed = [];
+  for (const [label, fn] of parts) {
+    try {
+      await fn();
+    } catch (e) {
+      failed.push(`${label}：${e.message}`);
+      console.error('[账号运维]', label, e);
+    }
+  }
+  const st = document.getElementById('ops-status');
+  if (st) {
+    st.className = failed.length ? 'status err' : 'status';
+    st.innerHTML = failed.length
+      ? '部分模块加载失败：<br>' + failed.map(esc).join('<br>')
+      : '';
+  }
+  // Spark 徽章依赖 _sparkAliases，上面拿到之后再刷一次账号卡片
+  if (typeof renderAccounts === 'function' && accounts && accounts.length) {
+    try { renderAccounts(); } catch (e) { console.error('[账号运维] 重渲染失败', e); }
+  }
 }
 window.loadOpsAll = loadOpsAll;
 
@@ -1660,7 +1684,9 @@ function renderAccounts() {
           <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
         </span>
       </div>
-      <div class="metric-line">别名：${fmt(a.account_alias)} ｜ 代运营：${fmt(a.authorized_by)}</div>
+      <div class="metric-line">别名：<input class="tag-input" style="width:150px" value="${esc(a.account_alias || '')}"
+            onblur="saveAccountAlias('${esc(a.business_id)}', this)"
+            title="改完失焦即保存。别名重复会导致 Spark 授权记录无法归属，保存时会校验"> ｜ 代运营：${fmt(a.authorized_by)}</div>
       <div class="metric-line">状态：<span class="pill ${accountHealth(a).cls}">${accountHealth(a).label}</span></div>
       <div class="metric-line">用户名：${fmt(a.username)}</div>
       <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总赞：${fmt(a.total_likes)} ｜ 视频：${fmt(a.videos_count)}</div>
@@ -1724,6 +1750,26 @@ window.toggleEnabled = toggleEnabled;
 window.renderAccounts = renderAccounts;
 
 
+
+async function saveAccountAlias(businessId, input) {
+  const next = (input.value || '').trim();
+  const prev = (input.defaultValue || '').trim();
+  if (next === prev) return;
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/alias`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account_alias: next }),
+    });
+    input.defaultValue = next;
+    const acc = accounts.find(x => x.business_id === businessId);
+    if (acc) acc.account_alias = next;
+  } catch (e) {
+    input.value = prev;          // 撞名等校验失败时回退，避免界面显示成已改
+    alert('改名失败：' + e.message);
+  }
+}
+window.saveAccountAlias = saveAccountAlias;
 
 async function saveAccountMeta(businessId, regionSelId, typeSelId, btn) {
   const regionSel = document.getElementById(regionSelId);

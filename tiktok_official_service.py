@@ -613,6 +613,35 @@ def list_accounts() -> list[dict[str, Any]]:
     ) or []
 
 
+def set_account_alias(business_id: str, alias: str) -> None:
+    """改账号别名。别名是 Spark 授权链接、报表分组、达人筛选的显示名，
+    历史上不少账号撞了同一个别名，导致老的 Spark 授权记录无法归属到具体账号
+    （见 list_spark_reauth_accounts）。这里做唯一性校验，不让新的撞名再产生。
+
+    同步更新 tiktok_official_tokens.account_alias，两张表的别名一直是镜像关系。
+    """
+    alias = (alias or "").strip()
+    if not alias:
+        raise ValueError("别名不能为空")
+    if len(alias) > 255:
+        raise ValueError("别名过长（上限 255 字符）")
+    clash = db.query_one(
+        "SELECT business_id FROM tiktok_official_accounts "
+        "WHERE account_alias = %s AND business_id <> %s LIMIT 1",
+        (alias, business_id),
+    )
+    if clash:
+        raise ValueError(f"别名「{alias}」已被其他账号占用，请换一个（别名撞名会导致 Spark 授权记录无法归属）")
+    db.execute(
+        "UPDATE tiktok_official_accounts SET account_alias = %s, updated_at = NOW() WHERE business_id = %s",
+        (alias, business_id),
+    )
+    db.execute(
+        "UPDATE tiktok_official_tokens SET account_alias = %s WHERE business_id = %s",
+        (alias, business_id),
+    )
+
+
 def set_account_meta(business_id: str, region: str | None = None, account_type: str | None = None) -> None:
     db.execute(
         """
