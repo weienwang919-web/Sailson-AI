@@ -430,6 +430,16 @@
           <option value="">全部</option>
         </select>
       </div>
+      <div>
+        <label>Spark 状态</label>
+        <select id="spark-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+          <option value="bad">仅看 Spark 不可用</option>
+          <option value="rename">需先改名</option>
+          <option value="auth">需重新授权</option>
+          <option value="wait">可能自动恢复</option>
+        </select>
+      </div>
       <button class="btn btn-secondary" onclick="exportNeedsBoostLinks()">导出需补粉主页链接</button>
     </div>
     <div class="grid" id="accounts"></div>
@@ -1641,6 +1651,7 @@ function renderAccounts() {
   }
   const followersFilter = document.getElementById('followers-filter').value;
   const regionFilter = document.getElementById('region-filter').value;
+  const sparkFilter = (document.getElementById('spark-filter') || {}).value || '';
   const searchTerm = document.getElementById('ops-account-search').value.trim().toLowerCase();
   const filtered = accounts.filter(a => {
     if (searchTerm) {
@@ -1652,6 +1663,13 @@ function renderAccounts() {
     }
     if (regionFilter && a.region !== regionFilter) {
       return false;
+    }
+    if (sparkFilter) {
+      const act = a.spark_action || '';
+      if (sparkFilter === 'bad' && !act) return false;
+      if (sparkFilter === 'rename' && !act.includes('改名')) return false;
+      if (sparkFilter === 'auth' && act !== '需要重新授权') return false;
+      if (sparkFilter === 'wait' && !act.includes('自动恢复')) return false;
     }
     if (followersFilter === '900to1000') {
       const f = Number(a.followers_count);
@@ -1679,7 +1697,9 @@ function renderAccounts() {
       <div class="account-title">
         <span>${fmt(a.display_name || a.account_name || a.username || a.business_id)}</span>
         <span style="display:flex;gap:4px;">
-          ${window._sparkAliases.has(a.account_alias) ? '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>' : ''}
+          ${a.spark_action
+            ? `<span class="pill pill-warn" style="cursor:pointer" onclick="showSparkReason('${esc(a.business_id)}')" title="点击查看原因">Spark不可用</span>`
+            : '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>'}
           ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
           <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
         </span>
@@ -1750,6 +1770,20 @@ window.toggleEnabled = toggleEnabled;
 window.renderAccounts = renderAccounts;
 
 
+
+function showSparkReason(businessId) {
+  const a = accounts.find(x => x.business_id === businessId);
+  if (!a) return;
+  const name = a.display_name || a.account_name || a.account_alias || businessId;
+  let msg = name + '\n\n无法生成 Spark 码的原因：\n' + (a.spark_reason || '未知')
+          + '\n\n下一步：' + (a.spark_action || '-');
+  if (String(a.spark_action || '').includes('改名')) {
+    msg += '\n\n（该别名与其他账号重复，历史授权记录无法判断归属。'
+         + '请先在本卡片上把别名改成唯一的，再去「账号矩阵授权」重新生成 Spark 授权链接。）';
+  }
+  alert(msg);
+}
+window.showSparkReason = showSparkReason;
 
 async function saveAccountAlias(businessId, input) {
   const next = (input.value || '').trim();

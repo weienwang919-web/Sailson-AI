@@ -239,3 +239,5 @@ tbody tr:hover { background: rgba(15,23,42,.025); }
 #ops-modal .table-wrap {overflow: auto; max-height: 540px; border: 1px solid #eee; border-radius: 10px;}
 #ops-modal .muted {color: #777;}
 #ops-modal .link {color: #1a7fd4; text-decoration: none;}
+/* Spark 不可用标记 */
+#ops-modal .pill-warn { background: rgba(225,29,72,.12); color: #be123c; }

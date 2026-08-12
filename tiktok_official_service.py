@@ -602,12 +602,48 @@ def list_accounts() -> list[dict[str, Any]]:
                     account.get("notes") or "",
                 ),
             )
+    # 顺带算出每个账号的 Spark 可用性，前端据此打标记和筛选。
+    # 判定一律按 business_id——account_alias 在主表里不唯一，按别名判断会张冠李戴。
+    # spark_action 直接告诉运营下一步该干嘛：改名 / 授权 / 等自动恢复。
     return db.query_all(
         """
+        WITH sp AS (
+          SELECT DISTINCT ON (business_id) business_id, expires_at, refresh_expires_at
+          FROM tiktok_spark_tokens WHERE business_id IS NOT NULL
+          ORDER BY business_id, updated_at DESC
+        ),
+        orphan AS (
+          SELECT DISTINCT account_alias FROM tiktok_spark_tokens
+          WHERE business_id IS NULL AND account_alias IS NOT NULL
+        ),
+        dup AS (
+          SELECT account_alias FROM tiktok_official_accounts
+          WHERE account_alias IS NOT NULL AND account_alias <> ''
+          GROUP BY account_alias HAVING COUNT(DISTINCT business_id) > 1
+        )
         SELECT a.*, t.expires_at AS token_expires_at, t.status AS token_status,
-               t.refresh_expires_at AS token_refresh_expires_at
+               t.refresh_expires_at AS token_refresh_expires_at,
+               CASE
+                 WHEN sp.business_id IS NULL AND o.account_alias IS NULL THEN '从未做过 Spark 授权'
+                 WHEN sp.business_id IS NULL AND d.account_alias IS NOT NULL THEN '别名与其他账号重复，历史授权记录无法归属'
+                 WHEN sp.business_id IS NULL THEN '历史授权记录缺少 business_id'
+                 WHEN sp.refresh_expires_at IS NOT NULL AND sp.refresh_expires_at < NOW() THEN 'Spark 刷新凭证已过期'
+                 WHEN sp.expires_at IS NOT NULL AND sp.expires_at < NOW() THEN 'Spark 凭证已过期（下次调用可能自动刷新）'
+                 ELSE NULL
+               END AS spark_reason,
+               CASE
+                 WHEN sp.business_id IS NOT NULL
+                      AND (sp.expires_at IS NULL OR sp.expires_at >= NOW()) THEN NULL
+                 WHEN sp.business_id IS NULL AND d.account_alias IS NOT NULL THEN '先改名，再重新授权'
+                 WHEN sp.business_id IS NULL THEN '需要重新授权'
+                 WHEN sp.refresh_expires_at IS NOT NULL AND sp.refresh_expires_at < NOW() THEN '需要重新授权'
+                 ELSE '可能自动恢复，先观察'
+               END AS spark_action
         FROM tiktok_official_accounts a
         LEFT JOIN tiktok_official_tokens t ON t.open_id = a.business_id
+        LEFT JOIN sp ON sp.business_id = a.business_id
+        LEFT JOIN orphan o ON o.account_alias = a.account_alias
+        LEFT JOIN dup d ON d.account_alias = a.account_alias
         ORDER BY a.enabled DESC, a.account_name, a.id
         """
     ) or []
