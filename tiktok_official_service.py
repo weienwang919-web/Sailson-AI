@@ -672,8 +672,9 @@ def set_account_alias(business_id: str, alias: str) -> None:
         "UPDATE tiktok_official_accounts SET account_alias = %s, updated_at = NOW() WHERE business_id = %s",
         (alias, business_id),
     )
+    # 这张表用 open_id 作为账号主键（= business_id 的值），没有 business_id 列
     db.execute(
-        "UPDATE tiktok_official_tokens SET account_alias = %s WHERE business_id = %s",
+        "UPDATE tiktok_official_tokens SET account_alias = %s WHERE open_id = %s",
         (alias, business_id),
     )
 
@@ -2709,7 +2710,12 @@ def authorize_video_for_ads(business_id: str, item_id: str, authorization_days: 
     except Exception as exc:
         raise RuntimeError(f"TikTok Spark 授权接口返回非 JSON: HTTP {resp.status_code} {resp.text[:300]}") from exc
     if resp.status_code >= 400 or payload.get("code") not in (0, "0", None):
-        raise RuntimeError(f"TikTok Spark 授权失败: {payload.get('message') or resp.text[:200]}")
+        # 用 ValueError 让路由以 400 原样透传：TikTok 的拒绝原因（视频不合规、
+        # 账号未开通 Spark、item 不属于该账号等）是运营能自己处理的，
+        # 吞成"服务异常"等于让人对着黑盒干瞪眼。
+        raise ValueError(
+            f"TikTok 拒绝了这次 Spark 授权：{payload.get('message') or resp.text[:200]}"
+        )
 
     data = payload.get("data") or {}
     auth_code = data.get("auth_code")

@@ -108,7 +108,6 @@
       <div class="stat-card">
         <div class="stat-label">新增投流量</div>
         <div class="stat-value" id="delta-paid">-</div>
-        <div class="stat-breakdown" id="delta-paid-breakdown"></div>
       </div>
     </div>
     <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
@@ -1042,8 +1041,7 @@ function renderSnapshotDelta(d) {
     + `<div class="muted">老内容增量：${fmt(d.existing_video_engagement_delta || 0)}</div>`;
   document.getElementById('delta-rate-change').textContent = pct(d.engagement_rate_end);
   document.getElementById('delta-paid').textContent = fmt(d.paid_views_delta || 0);
-  document.getElementById('delta-paid-breakdown').innerHTML =
-    `消耗 ${(d.spend_delta || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 
   const hintEl = document.getElementById('delta-range-hint');
   if (d.date_from_actual && (d.date_from_actual !== d.date_from || d.date_to_actual !== d.date_to)) {

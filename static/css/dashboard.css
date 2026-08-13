@@ -124,7 +124,9 @@ input::placeholder { color: var(--text-tertiary); }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 th, td { border-bottom: 1px solid var(--border-soft); padding: 12px 12px; text-align: left; vertical-align: top; white-space: nowrap; }
 th { background: var(--card-bg); color: var(--text-secondary); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; position: sticky; top: 0; z-index: 1; }
-th.sortable { position: relative; padding-right: 26px; }
+/* 不能在这里写 position: relative——会覆盖上面 th 的 sticky，导致可排序的列不跟随冻结。
+   sticky 本身也能作为绝对定位子元素（排序菜单）的包含块。 */
+th.sortable { padding-right: 26px; }
 th.sortable .sort-indicator { display: inline-block; margin-left: 3px; font-size: 10px; color: var(--accent, #4472C4); font-weight: 700; }
 th.sortable.sort-active { color: var(--text-primary); }
 th.sortable .sort-toggle { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 11px; line-height: 1; padding: 5px 6px; border-radius: 4px; opacity: .55; }
