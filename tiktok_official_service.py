@@ -372,6 +372,12 @@ def ensure_schema() -> None:
             HAVING COUNT(*) = 1
         ) a
         WHERE t.account_alias = a.account_alias AND t.business_id IS NULL
+          -- business_id 上有唯一约束：如果该 business_id 已被另一条 token 占用
+          -- （同一别名下既有已回填的行、又有未回填的行），再写一次会撞唯一键，
+          -- 整个 ensure_schema 直接抛异常、应用起不来。跳过这类行，它们本就该重新授权。
+          AND NOT EXISTS (
+            SELECT 1 FROM tiktok_spark_tokens t2 WHERE t2.business_id = a.business_id
+          )
         """
     )
     db.execute(
@@ -3786,7 +3792,10 @@ def matrix_report_panel(
         f"""
         SELECT a.business_id, a.account_alias, a.account_name, a.display_name,
                a.region, a.account_type, a.profile_deep_link,
-               COUNT(v.item_id) AS published
+               COUNT(v.item_id) AS published,
+               (SELECT MAX((v2.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date)
+                  FROM tiktok_official_video_snapshots v2
+                 WHERE v2.business_id = a.business_id AND v2.create_time IS NOT NULL) AS last_publish_date
         FROM tiktok_official_accounts a
         LEFT JOIN tiktok_official_video_snapshots v
                ON v.business_id = a.business_id
@@ -3801,16 +3810,43 @@ def matrix_report_panel(
         tuple([range_from, range_to] + params + [per_account * days]),
     ) or []
 
+    today = _business_date()
     for m in missing_rows:
         m["published"] = int(m.get("published") or 0)
         m["expected"] = per_account * days
         m["shortfall"] = m["expected"] - m["published"]
+        lp = m.get("last_publish_date")
+        m["days_since_publish"] = (today - lp).days if lp else None
+
+    # 账号维度的发布状态：今日已发布数、以及各档未发布账号数
+    pub_row = db.query_one(
+        f"""
+        WITH last_pub AS (
+          SELECT a.business_id,
+                 MAX({publish_day}) AS last_date
+          FROM tiktok_official_accounts a
+          LEFT JOIN tiktok_official_video_snapshots v
+                 ON v.business_id = a.business_id AND v.create_time IS NOT NULL
+          WHERE {where_sql}
+          GROUP BY a.business_id
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE last_date = %s) AS published_today,
+          COUNT(*) FILTER (WHERE last_date IS NULL OR %s - last_date >= 2) AS stale_2d,
+          COUNT(*) FILTER (WHERE last_date IS NULL OR %s - last_date >= 5) AS stale_5d
+        FROM last_pub
+        """,
+        tuple(params + [range_to, range_to, range_to]),
+    ) or {}
 
     return {
         "date_from": range_from.isoformat(),
         "date_to": range_to.isoformat(),
         "days": days,
         "account_count": account_count,
+        "published_today": int(pub_row.get("published_today") or 0),
+        "stale_2d": int(pub_row.get("stale_2d") or 0),
+        "stale_5d": int(pub_row.get("stale_5d") or 0),
         "expected_per_account_per_day": per_account,
         "expected_total": expected_total,
         "actual_total": actual_total,
@@ -3826,7 +3862,8 @@ def matrix_report_panel(
 
 
 def build_account_vv_export(
-    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
+    filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None,
+    columns: list[str] | None = None,
 ) -> bytes:
     """累计 VV 的账号级导出：一行一个账号，按总 VV 从高到低。
 
@@ -3849,7 +3886,9 @@ def build_account_vv_export(
         f"""
         SELECT
             COALESCE(NULLIF(a.region, ''), '未分组') AS region,
-            COALESCE(NULLIF(a.account_alias, ''), a.display_name, a.account_name, a.business_id) AS account_name,
+            COALESCE(NULLIF(a.account_alias, ''), a.business_id) AS account_alias,
+            COALESCE(a.display_name, a.account_name, a.business_id) AS account_name,
+            a.followers_count,
             a.profile_deep_link,
             COUNT(v.item_id) AS video_count,
             COALESCE(SUM(v.video_views), 0) AS total_vv,
@@ -3857,7 +3896,8 @@ def build_account_vv_export(
         FROM tiktok_official_accounts a
         JOIN tiktok_official_video_snapshots v ON v.business_id = a.business_id
         WHERE {where_sql}
-        GROUP BY a.business_id, a.region, a.account_alias, a.display_name, a.account_name, a.profile_deep_link
+        GROUP BY a.business_id, a.region, a.account_alias, a.display_name, a.account_name,
+                 a.followers_count, a.profile_deep_link
         ORDER BY COALESCE(SUM(v.video_views), 0) DESC
         """,
         tuple(params),
@@ -3868,10 +3908,26 @@ def build_account_vv_export(
     wb = Workbook()
     ws = wb.active
     ws.title = "账号视频数量和总VV"
-    headers = [
-        "账号序号", "国家", "账号名称", "账号主页", "视频数量", "总 VV", "平均 VV",
-        "总 VV 占比", "总互动量（赞+转+评+藏）", "平均互动量", "账号互动率", "总 VV 排名",
+    # (列名, 取值函数)。columns 传了就只导这几列，用于「导出时勾选表头」。
+    all_cols = [
+        ("账号序号",              lambda r, i, ctx: i),
+        ("国家",                  lambda r, i, ctx: r.get("region") or ""),
+        ("账号别名",              lambda r, i, ctx: r.get("account_alias") or ""),
+        ("账号名称",              lambda r, i, ctx: r.get("account_name") or ""),
+        ("粉丝数",                lambda r, i, ctx: int(r.get("followers_count") or 0)),
+        ("账号主页",              lambda r, i, ctx: r.get("profile_deep_link") or ""),
+        ("视频数量",              lambda r, i, ctx: ctx["cnt"]),
+        ("总 VV",                 lambda r, i, ctx: ctx["vv"]),
+        ("平均 VV",               lambda r, i, ctx: round(ctx["vv"] / ctx["cnt"]) if ctx["cnt"] else 0),
+        ("总 VV 占比",            lambda r, i, ctx: (ctx["vv"] / ctx["grand"]) if ctx["grand"] else 0),
+        ("总互动量（赞+转+评+藏）", lambda r, i, ctx: ctx["eng"]),
+        ("平均互动量",            lambda r, i, ctx: round(ctx["eng"] / ctx["cnt"]) if ctx["cnt"] else 0),
+        ("账号互动率",            lambda r, i, ctx: (ctx["eng"] / ctx["vv"]) if ctx["vv"] else 0),
+        ("总 VV 排名",            lambda r, i, ctx: ctx["rank"]),
     ]
+    wanted = [c for c in (columns or []) if c]
+    cols = [c for c in all_cols if c[0] in wanted] if wanted else all_cols
+    headers = [c[0] for c in cols]
     ws.append(headers)
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
@@ -3890,28 +3946,20 @@ def build_account_vv_export(
         if vv != prev_vv:
             prev_rank = idx
             prev_vv = vv
-        ws.append([
-            idx,
-            r.get("region") or "",
-            r.get("account_name") or "",
-            r.get("profile_deep_link") or "",
-            cnt,
-            vv,
-            round(vv / cnt) if cnt else 0,
-            (vv / grand_total_vv) if grand_total_vv else 0,
-            eng,
-            round(eng / cnt) if cnt else 0,
-            (eng / vv) if vv else 0,
-            prev_rank,
-        ])
+        ctx = {"cnt": cnt, "vv": vv, "eng": eng, "grand": grand_total_vv, "rank": prev_rank}
+        ws.append([fn(r, idx, ctx) for _, fn in cols])
 
-    # 占比和互动率按百分比显示，跟客户那份表的呈现一致
-    for col in ("H", "K"):
-        for cell in ws[col][1:]:
-            cell.number_format = "0.00%"
-    for col in ("F", "G", "I", "J"):
-        for cell in ws[col][1:]:
-            cell.number_format = "#,##0"
+    # 列位置会随勾选变化，按列名定位而不是写死字母
+    from openpyxl.utils import get_column_letter
+    pct_cols = {"总 VV 占比", "账号互动率"}
+    num_cols = {"粉丝数", "总 VV", "平均 VV", "总互动量（赞+转+评+藏）", "平均互动量"}
+    for idx0, name in enumerate(headers, start=1):
+        letter = get_column_letter(idx0)
+        fmtstr = "0.00%" if name in pct_cols else ("#,##0" if name in num_cols else None)
+        if not fmtstr:
+            continue
+        for cell in ws[letter][1:]:
+            cell.number_format = fmtstr
 
     ws.freeze_panes = "A2"
     _autosize_columns(ws)
@@ -4021,12 +4069,13 @@ def build_spark_reauth_export(public_base: str, authorized_by: str | None = None
 def build_unpublished_accounts_export(
     filters: dict[str, Any] | None = None, date_from: str | None = None, date_to: str | None = None
 ) -> bytes:
-    """导出未达标（含未发）账号名单。"""
+    """导出账号发布状态：未达标账号 + 各自上次发布视频的时间。"""
     data = matrix_report_panel(filters, date_from, date_to)
     wb = Workbook()
     ws = wb.active
     ws.title = "未发视频账号"
-    headers = ["账号别名", "账号名称", "国家/地区", "账号类型", "应发", "实发", "缺口", "主页链接"]
+    headers = ["账号别名", "账号名称", "国家/地区", "账号类型", "应发", "实发", "缺口",
+               "上次发布时间", "距今天数", "主页链接"]
     ws.append(headers)
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
@@ -4042,6 +4091,9 @@ def build_unpublished_accounts_export(
             m.get("expected"),
             m.get("published"),
             m.get("shortfall"),
+            (m.get("last_publish_date").isoformat() if hasattr(m.get("last_publish_date"), "isoformat")
+             else (m.get("last_publish_date") or "从未发布")),
+            m.get("days_since_publish") if m.get("days_since_publish") is not None else "-",
             m.get("profile_deep_link") or "",
         ])
     ws.freeze_panes = "A2"

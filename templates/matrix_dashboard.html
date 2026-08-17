@@ -47,7 +47,7 @@
         <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
         <button class="btn-chip" onclick="setCumulativeAll()">全部历史</button>
         <button class="btn-chip" onclick="clearCumulativeRange()">重置</button>
-        <button class="btn btn-secondary btn-sm" onclick="exportAccountVV()">导出（账号级最新数据）</button>
+        <button class="btn btn-secondary btn-sm" onclick="openExportColumns()">导出（账号级最新数据）</button>
       </div>
     </div>
     <div class="board-note" style="display:block;">
@@ -143,47 +143,6 @@
 
 
 
-  <div class="board" id="board-report">
-    <div class="board-head">
-      <h2>汇报面板</h2>
-      <div class="date-range-controls">
-        <input type="date" id="rp-date-from" onchange="loadReportPanel()">
-        <span class="date-sep">—</span>
-        <input type="date" id="rp-date-to" onchange="loadReportPanel()">
-        <button class="btn-chip" onclick="setReportRange(1)">昨天</button>
-        <button class="btn-chip" onclick="setReportRange(7)">最近7天</button>
-        <button class="btn btn-secondary btn-sm" onclick="exportUnpublished()">导出未发账号</button>
-      </div>
-    </div>
-    <div class="report-grid">
-      <div class="report-hero">
-        <div class="stat-label">实发 / 应发视频数</div>
-        <div class="stat-value">
-          <span class="actual" id="rp-actual">-</span>
-          <span class="slash">/</span>
-          <span class="expected" id="rp-expected">-</span>
-        </div>
-        <div class="fulfillment-bar" id="rp-bar"><span style="width:0%"></span></div>
-        <div class="stat-breakdown" id="rp-rate">-</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">未达标账号数</div>
-        <div class="stat-value" id="rp-missing">-</div>
-        <div class="stat-breakdown" id="rp-missing-note"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">每日应发（每账号）</div>
-        <div class="stat-value" id="rp-per-account">-</div>
-        <div class="stat-breakdown">
-          <input type="number" id="rp-expected-input" min="0" max="100" style="width:70px" title="仅管理员可改">
-          <button class="btn btn-ghost btn-sm" onclick="saveExpectedVideos()">保存</button>
-        </div>
-      </div>
-    </div>
-    <div class="board-head" style="margin:22px 0 12px;"><h2 style="font-size:13px;">播放量分档条数（累计最新数）</h2></div>
-    <div class="tier-list" id="rp-tiers"></div>
-    <div class="status" id="rp-status"></div>
-  </div>
 
 
   <div class="board" id="board-videos">
@@ -320,6 +279,23 @@
 
 </div>
 
+<div class="modal-overlay" id="export-cols-modal">
+  <div class="modal-panel" style="max-width:520px;">
+    <div class="modal-panel-header">
+      <h3>选择要导出的列</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeExportColumns()">关闭</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <button class="btn-chip" onclick="toggleAllExportCols(true)">全选</button>
+      <button class="btn-chip" onclick="toggleAllExportCols(false)">全不选</button>
+    </div>
+    <div id="export-cols-list" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"></div>
+    <div style="margin-top:18px;text-align:right;">
+      <button class="btn btn-primary" onclick="doExportAccountVV()">导出</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="ops-modal">
   <div class="modal-panel" style="max-width:1100px;">
     <div class="modal-panel-header">
@@ -327,6 +303,59 @@
       <button class="btn btn-ghost btn-sm" onclick="closeOpsModal()">关闭</button>
     </div>
     <div class="status" id="ops-status"></div>
+  <div class="card" id="board-report">
+    <div class="board-head">
+      <h2>汇报面板</h2>
+      <div class="date-range-controls">
+        <input type="date" id="rp-date-from" onchange="loadReportPanel()">
+        <span class="date-sep">—</span>
+        <input type="date" id="rp-date-to" onchange="loadReportPanel()">
+        <button class="btn-chip" onclick="setReportRange(1)">昨天</button>
+        <button class="btn-chip" onclick="setReportRange(7)">最近7天</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportUnpublished()">导出账号发布状态</button>
+      </div>
+    </div>
+    <div class="report-grid">
+      <div class="report-hero">
+        <div class="stat-label">实发 / 应发视频数</div>
+        <div class="stat-value">
+          <span class="actual" id="rp-actual">-</span>
+          <span class="slash">/</span>
+          <span class="expected" id="rp-expected">-</span>
+        </div>
+        <div class="fulfillment-bar" id="rp-bar"><span style="width:0%"></span></div>
+        <div class="stat-breakdown" id="rp-rate">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">今日已发布的账号数</div>
+        <div class="stat-value" id="rp-published-today">-</div>
+        <div class="stat-breakdown" id="rp-published-note"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">2日以上未发布账号数</div>
+        <div class="stat-value" id="rp-stale2">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">5日以上未发布账号数</div>
+        <div class="stat-value" id="rp-stale5">-</div>
+      </div>      <div class="stat-card">
+        <div class="stat-label">未达标账号数</div>
+        <div class="stat-value" id="rp-missing">-</div>
+        <div class="stat-breakdown" id="rp-missing-note"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">每日应发（每账号）</div>
+        <div class="stat-value" id="rp-per-account">-</div>
+        <div class="stat-breakdown">
+          <input type="number" id="rp-expected-input" min="0" max="100" style="width:70px" title="仅管理员可改">
+          <button class="btn btn-ghost btn-sm" onclick="saveExpectedVideos()">保存</button>
+        </div>
+      </div>
+    </div>
+    <div class="board-head" style="margin:22px 0 12px;"><h2 style="font-size:13px;">播放量分档条数（累计最新数）</h2></div>
+    <div class="tier-list" id="rp-tiers"></div>
+    <div class="status" id="rp-status"></div>
+  </div>
   <div class="card">
     <h2>刷新与导出</h2>
     <div class="toolbar">
@@ -398,17 +427,6 @@
       </div>
     </div>
 
-    <div style="margin-top:14px;">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">已完成 Spark 授权的账号</div>
-      <div class="table-wrap" style="max-height:200px;">
-        <table>
-          <thead>
-            <tr><th>别名</th><th>scope</th><th>授权人</th><th>更新时间</th></tr>
-          </thead>
-          <tbody id="spark-tokens-body"></tbody>
-        </table>
-      </div>
-    </div>
   </div>
 
   <div class="card">
@@ -500,6 +518,18 @@
     </div>
   </div>
 
+
+  <div class="card">
+    <h2>已完成 Spark 授权的账号</h2>
+    <div class="table-wrap" style="max-height:260px;">
+      <table>
+        <thead>
+          <tr><th>别名</th><th>scope</th><th>授权人</th><th>更新时间</th></tr>
+        </thead>
+        <tbody id="spark-tokens-body"></tbody>
+      </table>
+    </div>
+  </div>
   </div>
 </div>
 
@@ -928,6 +958,10 @@ async function loadReportPanel() {
     bar.className = 'fulfillment-bar' + (rate < 0.8 ? ' low' : '');
     bar.firstElementChild.style.width = Math.min(100, rate * 100) + '%';
 
+    document.getElementById('rp-published-today').textContent = fmt(d.published_today || 0);
+    document.getElementById('rp-published-note').textContent = `共 ${d.account_count} 个账号`;
+    document.getElementById('rp-stale2').textContent = fmt(d.stale_2d || 0);
+    document.getElementById('rp-stale5').textContent = fmt(d.stale_5d || 0);
     document.getElementById('rp-missing').textContent = fmt(d.accounts_missing_count || 0);
     document.getElementById('rp-missing-note').textContent =
       d.accounts_missing_count ? '含完全未发布的账号，可导出名单' : '全部达标';
@@ -1038,11 +1072,39 @@ async function loadCumulative() {
 }
 window.loadCumulative = loadCumulative;
 
-function exportAccountVV() {
-  const params = cumParams();
-  window.open('/api/tiktok-official/matrix-videos/cumulative-export?' + params.toString(), '_blank');
+// 导出列清单必须跟后端 build_account_vv_export 的 all_cols 名称完全一致
+const EXPORT_COLUMNS = ['账号序号','国家','账号别名','账号名称','粉丝数','账号主页','视频数量',
+  '总 VV','平均 VV','总 VV 占比','总互动量（赞+转+评+藏）','平均互动量','账号互动率','总 VV 排名'];
+
+function openExportColumns() {
+  const box = document.getElementById('export-cols-list');
+  box.innerHTML = EXPORT_COLUMNS.map((c, i) =>
+    `<label style="font-size:12.5px;display:flex;gap:6px;align-items:center;cursor:pointer;">
+       <input type="checkbox" class="export-col" value="${esc(c)}" checked> ${esc(c)}</label>`).join('');
+  document.getElementById('export-cols-modal').classList.add('open');
 }
-window.exportAccountVV = exportAccountVV;
+window.openExportColumns = openExportColumns;
+
+function closeExportColumns() {
+  document.getElementById('export-cols-modal').classList.remove('open');
+}
+window.closeExportColumns = closeExportColumns;
+
+function toggleAllExportCols(on) {
+  document.querySelectorAll('.export-col').forEach(c => { c.checked = on; });
+}
+window.toggleAllExportCols = toggleAllExportCols;
+
+function doExportAccountVV() {
+  const picked = Array.from(document.querySelectorAll('.export-col:checked')).map(c => c.value);
+  if (!picked.length) { alert('至少选择一列'); return; }
+  const params = cumParams();
+  // 全选时不传 columns，让后端走默认全量，少一层出错可能
+  if (picked.length !== EXPORT_COLUMNS.length) params.set('columns', picked.join(','));
+  window.open('/api/tiktok-official/matrix-videos/cumulative-export?' + params.toString(), '_blank');
+  closeExportColumns();
+}
+window.doExportAccountVV = doExportAccountVV;
 
 
 /* ---------------- 看板三：每日快照增量 ---------------- */
