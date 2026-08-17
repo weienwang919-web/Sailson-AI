@@ -36,29 +36,34 @@
     </div>
   </div>
 
-  <div class="board" id="board-overview">
+  <div class="board" id="board-cumulative">
     <div class="board-head">
       <h2>总览</h2>
       <div class="date-range-controls">
-        <select id="ov-region" onchange="loadOverview()">
-          <option value="">全部国家/地区</option>
-        </select>
+        <input type="date" id="cum-date-from" onchange="loadCumulative()">
+        <span class="date-sep">→</span>
+        <input type="date" id="cum-date-to" onchange="loadCumulative()">
+        <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
+        <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
+        <button class="btn-chip" onclick="setCumulativeAll()">全部历史</button>
+        <button class="btn-chip" onclick="clearCumulativeRange()">重置</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportAccountVV()">导出（账号级最新数据）</button>
       </div>
     </div>
+    <div class="board-note" style="display:block;">
+      日期筛选的是<strong>视频发布日期</strong>，不是统计日期；数值是每日更新的累计最新数（如 6.3 查 6.1 发布的视频，看到的是 6.3 的最新值）。
+    </div>
     <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">总账号数</div><div class="stat-value" id="ov-accounts">-</div></div>
-      <div class="stat-card"><div class="stat-label">总视频条数</div><div class="stat-value" id="ov-videos">-</div></div>
-      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="ov-views">-</div></div>
-      <div class="stat-card"><div class="stat-label">总互动数（赞+评+转+藏）</div><div class="stat-value" id="ov-engagement">-</div></div>
-      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="ov-rate">-</div></div>
+      <div class="stat-card"><div class="stat-label">视频条数</div><div class="stat-value" id="cum-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">播放量</div><div class="stat-value" id="cum-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">互动数（赞+评+转+藏）</div><div class="stat-value" id="cum-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="cum-rate">-</div></div>
       <div class="stat-card"><div class="stat-label">投流付费播放</div><div class="stat-value" id="ov-paid-views">-</div></div>
       <div class="stat-card"><div class="stat-label">投流占比</div><div class="stat-value" id="ov-paid-ratio">-</div></div>
     </div>
-    <div class="coverage-note" id="ov-coverage"></div>
     <div class="chart-row">
       <div>
-        <div class="chart-col-title">按发布日的定格数据（播放量 / 互动 / 投流）</div>
-        <div class="chart-wrap"><canvas id="ovChart"></canvas></div>
+        <div class="chart-wrap" id="cum-chart-wrap" style="display:none;"><canvas id="cumChart"></canvas></div>
       </div>
       <div class="chart-pies">
         <div>
@@ -71,6 +76,29 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <div class="board" id="board-overview">
+    <div class="board-head">
+      <h2>发布日表现</h2>
+      <div class="date-range-controls">
+        <select id="ov-region" onchange="loadOverview()">
+          <option value="">全部国家/地区</option>
+        </select>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">总账号数</div><div class="stat-value" id="ov-accounts">-</div></div>
+      <div class="stat-card"><div class="stat-label">总视频条数</div><div class="stat-value" id="ov-videos">-</div></div>
+      <div class="stat-card"><div class="stat-label">总播放量</div><div class="stat-value" id="ov-views">-</div></div>
+      <div class="stat-card"><div class="stat-label">总互动数（赞+评+转+藏）</div><div class="stat-value" id="ov-engagement">-</div></div>
+      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="ov-rate">-</div></div>
+    </div>
+    <div class="board-note" style="display:block;">
+      每条视频取<strong>发布当天的定格值</strong>（发布日次日凌晨采集，之后不再变化），用于横向比较不同视频的开局表现。
+    </div>
+    <div class="coverage-note" id="ov-coverage"></div>
+    <div class="chart-wrap"><canvas id="ovChart"></canvas></div>
   </div>
 
 
@@ -113,31 +141,6 @@
     <div class="chart-wrap" id="delta-chart-wrap" style="display:none;"><canvas id="deltaChart"></canvas></div>
   </div>
 
-  <div class="board" id="board-cumulative">
-    <div class="board-head">
-      <h2>累计 VV</h2>
-      <div class="date-range-controls">
-        <input type="date" id="cum-date-from" onchange="loadCumulative()">
-        <span class="date-sep">→</span>
-        <input type="date" id="cum-date-to" onchange="loadCumulative()">
-        <button class="btn-chip" onclick="setCumulativeQuickRange(30)">最近30天</button>
-        <button class="btn-chip" onclick="setCumulativeQuickRange(90)">最近90天</button>
-        <button class="btn-chip" onclick="setCumulativeAll()">全部历史</button>
-        <button class="btn-chip" onclick="clearCumulativeRange()">重置</button>
-        <button class="btn btn-secondary btn-sm" onclick="exportAccountVV()">导出（账号级最新数据）</button>
-      </div>
-    </div>
-    <div class="board-note" style="display:block;">
-      日期筛选的是<strong>视频发布日期</strong>，不是统计日期；数值是每日更新的累计最新数（如 6.3 查 6.1 发布的视频，看到的是 6.3 的最新值）。
-    </div>
-    <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">视频条数</div><div class="stat-value" id="cum-videos">-</div></div>
-      <div class="stat-card"><div class="stat-label">播放量</div><div class="stat-value" id="cum-views">-</div></div>
-      <div class="stat-card"><div class="stat-label">互动数（赞+评+转+藏）</div><div class="stat-value" id="cum-engagement">-</div></div>
-      <div class="stat-card"><div class="stat-label">平均互动率</div><div class="stat-value" id="cum-rate">-</div></div>
-    </div>
-    <div class="chart-wrap" id="cum-chart-wrap" style="display:none;"><canvas id="cumChart"></canvas></div>
-  </div>
 
 
   <div class="board" id="board-report">
@@ -756,8 +759,6 @@ function renderOverview(d) {
   document.getElementById('ov-views').textContent = fmt(d.total_views || 0);
   document.getElementById('ov-engagement').textContent = fmt(d.total_engagement || 0);
   document.getElementById('ov-rate').textContent = pct(d.engagement_rate || 0);
-  document.getElementById('ov-paid-views').textContent = fmt(d.total_paid_views || 0);
-  document.getElementById('ov-paid-ratio').textContent = pct(d.paid_view_ratio || 0);
 
   // 定格口径的覆盖率要显式说明，否则「视频条数」比实际少会被当成 bug
   const note = document.getElementById('ov-coverage');
@@ -833,10 +834,13 @@ function renderOverviewCharts(d) {
     ovChartInstance = null;
   }
 
+}
+
+// 两个饼图归「总览」板块，数据来自它自己的接口，跟它的日期筛选保持一致
+function renderRegionPies(d) {
   const regions = (d.by_region || []).filter(r => Number(r.views || 0) > 0);
   viewsPieChart = renderPie('viewsPie', viewsPieChart,
     regions.map(r => r.region), regions.map(r => Number(r.views || 0)), fmtShort);
-
   // 各国投流看的是投流带来的播放量（VV）占比，不是消耗金额
   const paid = (d.spend_by_region || []).filter(r => Number(r.paid_views || 0) > 0);
   spendPieChart = renderPie('spendPie', spendPieChart,
@@ -975,6 +979,9 @@ async function loadCumulative() {
     document.getElementById('cum-views').textContent = fmt(s.total_views || 0);
     document.getElementById('cum-engagement').textContent = fmt(s.total_engagement || 0);
     document.getElementById('cum-rate').textContent = pct(s.engagement_rate || 0);
+    document.getElementById('ov-paid-views').textContent = fmt(s.total_paid_views || 0);
+    document.getElementById('ov-paid-ratio').textContent = pct(s.paid_view_ratio || 0);
+    renderRegionPies(data);
   } catch (e) {
     ['cum-videos', 'cum-views', 'cum-engagement', 'cum-rate'].forEach(id => {
       document.getElementById(id).textContent = '-';

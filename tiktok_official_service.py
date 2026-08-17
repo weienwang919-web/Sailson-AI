@@ -3282,6 +3282,36 @@ def matrix_publish_range_summary(
             "engagement_rate": (d_engagement / d_views) if d_views else 0.0,
         })
 
+    # 各国播放量占比：按**账号配置的地区**聚合，同一区间口径
+    region_rows = db.query_all(
+        f"""
+        SELECT COALESCE(NULLIF(a.region, ''), '未分组') AS region,
+               COALESCE(SUM(v.video_views), 0) AS views
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql}
+        GROUP BY 1 ORDER BY 2 DESC
+        """,
+        tuple(params),
+    ) or []
+
+    # 投流：只算区间内**发布**的那批视频，跟上面 KPI 同一批视频，
+    # 不能直接用全周期的投流汇总——否则同一个板块里有的数字听日期筛选、有的不听。
+    paid_rows = db.query_all(
+        f"""
+        SELECT COALESCE(NULLIF(a.region, ''), '未分组') AS region,
+               COALESCE(SUM(s.spend), 0)::float AS spend,
+               COALESCE(SUM(s.video_play_actions), 0) AS paid_views
+        FROM tiktok_ad_spend_daily s
+        JOIN tiktok_official_video_snapshots v ON v.item_id = s.tiktok_item_id
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {where_sql} AND s.tiktok_item_id IS NOT NULL
+        GROUP BY 1 ORDER BY 3 DESC
+        """,
+        tuple(params),
+    ) or []
+    total_paid_views = sum(int(r.get("paid_views") or 0) for r in paid_rows)
+
     return {
         "date_from": range_from.isoformat(),
         "date_to": range_to.isoformat(),
@@ -3290,7 +3320,12 @@ def matrix_publish_range_summary(
             "total_views": total_views,
             "total_engagement": total_engagement,
             "engagement_rate": (total_engagement / total_views) if total_views else 0.0,
+            "total_paid_views": total_paid_views,
+            # 分母用同一批视频的累计播放，跟付费播放同口径
+            "paid_view_ratio": (total_paid_views / total_views) if total_views else 0.0,
         },
+        "by_region": region_rows,
+        "spend_by_region": paid_rows,
         "daily": daily,
     }
 
