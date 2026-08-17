@@ -3487,8 +3487,9 @@ def matrix_snapshot_delta_range(
     candidates_before_from = [d for d in available_dates if d <= range_from]
     date_from_actual = max(candidates_before_from) if candidates_before_from else min(available_dates)
 
-    # 区间两端（date_from_actual / date_to_actual）的总量与增量拆分，一条查询搞定。
-    # 按 (business_id, item_id) 透视成每条视频一行，start 侧为 NULL 即区间内新发布的视频。
+    # 区间两端的总量与增量拆分。新老划分**按视频发布日**——
+    # 不能用「起点快照里没有」当新发布：每日快照覆盖不全（每账号只翻 5 页视频列表），
+    # 大量老视频某天没被同步到，会被当成新发布，把新增视频数和新内容增量成倍放大。
     engagement_expr = _engagement_sum_sql("d")
     bounds = db.query_one(
         f"""
@@ -3497,31 +3498,58 @@ def matrix_snapshot_delta_range(
                    MAX(d.video_views) FILTER (WHERE d.snapshot_date = %s) AS v_start,
                    MAX({engagement_expr}) FILTER (WHERE d.snapshot_date = %s) AS e_start,
                    MAX(d.video_views) FILTER (WHERE d.snapshot_date = %s) AS v_end,
-                   MAX({engagement_expr}) FILTER (WHERE d.snapshot_date = %s) AS e_end
+                   MAX({engagement_expr}) FILTER (WHERE d.snapshot_date = %s) AS e_end,
+                   MAX((v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date)
+                     AS publish_day
             FROM tiktok_official_video_daily_snapshots d
+            JOIN tiktok_official_video_snapshots v
+              ON v.business_id = d.business_id AND v.item_id = d.item_id
             LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
             WHERE {where_sql} AND d.snapshot_date IN (%s, %s)
             GROUP BY d.business_id, d.item_id
+        ), cls AS (
+            SELECT *, (publish_day > %s) AS is_new FROM pv
         )
         SELECT
             COALESCE(SUM(v_start), 0) AS views_start,
             COALESCE(SUM(e_start), 0) AS engagement_start,
             COALESCE(SUM(v_end), 0) AS views_end,
             COALESCE(SUM(e_end), 0) AS engagement_end,
-            COUNT(*) FILTER (WHERE v_start IS NULL AND v_end IS NOT NULL) AS new_video_count,
-            COALESCE(SUM(v_end) FILTER (WHERE v_start IS NULL), 0) AS new_video_views,
-            COALESCE(SUM(e_end) FILTER (WHERE v_start IS NULL), 0) AS new_video_engagement,
-            COALESCE(SUM(v_end - v_start) FILTER (WHERE v_start IS NOT NULL AND v_end IS NOT NULL), 0)
+            COUNT(*) FILTER (WHERE is_new AND v_end IS NOT NULL) AS new_video_count,
+            COALESCE(SUM(v_end) FILTER (WHERE is_new), 0) AS new_video_views,
+            COALESCE(SUM(e_end) FILTER (WHERE is_new), 0) AS new_video_engagement,
+            COALESCE(SUM(v_end - v_start) FILTER (WHERE NOT is_new AND v_start IS NOT NULL AND v_end IS NOT NULL), 0)
                 AS existing_video_views_delta,
-            COALESCE(SUM(e_end - e_start) FILTER (WHERE v_start IS NOT NULL AND v_end IS NOT NULL), 0)
+            COALESCE(SUM(e_end - e_start) FILTER (WHERE NOT is_new AND v_start IS NOT NULL AND v_end IS NOT NULL), 0)
                 AS existing_video_engagement_delta
-        FROM pv
+        FROM cls
         """,
         tuple(
             [date_from_actual, date_from_actual, date_to_actual, date_to_actual]
             + params
-            + [date_from_actual, date_to_actual]
+            + [date_from_actual, date_to_actual, date_from_actual]
         ),
+    ) or {}
+
+    # 新增视频数直接从视频表按发布日数，不走每日快照——
+    # 快照覆盖不全（每账号只翻 5 页），区间内发布但末日快照里没有的视频会漏掉，
+    # 区间越长漏得越多（实测 7/20~8/17 少 114 条）。而且这个口径跟视频明细一致，
+    # 用户左右一对比就能核对上。
+    nv_where, nv_params = _matrix_account_filters_sql(filters)
+    nkw, nkw_params = _matrix_keyword_where(filters, video_alias="v")
+    if nkw:
+        nv_where.append(nkw)
+        nv_params.extend(nkw_params)
+    new_count_row = db.query_one(
+        f"""
+        SELECT COUNT(*) AS n
+        FROM tiktok_official_video_snapshots v
+        LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        WHERE {" AND ".join(nv_where)} AND v.create_time IS NOT NULL
+          AND (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date > %s
+          AND (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date <= %s
+        """,
+        tuple(nv_params + [date_from_actual, date_to_actual]),
     ) or {}
 
     views_start = int(bounds.get("views_start") or 0)
@@ -3530,7 +3558,7 @@ def matrix_snapshot_delta_range(
     engagement_end = int(bounds.get("engagement_end") or 0)
 
     if date_from_actual != date_to_actual:
-        new_video_count = int(bounds.get("new_video_count") or 0)
+        new_video_count = int(new_count_row.get("n") or 0)
         new_video_views = int(bounds.get("new_video_views") or 0)
         new_video_engagement = int(bounds.get("new_video_engagement") or 0)
         existing_views_delta = int(bounds.get("existing_video_views_delta") or 0)
@@ -3543,16 +3571,21 @@ def matrix_snapshot_delta_range(
     rate_end = (engagement_end / views_end) if views_end else 0.0
     rate_change_pct = ((rate_end - rate_start) / rate_start * 100) if rate_start else None
 
-    # 逐日增量：一条 LAG() 窗口查询取代原先「按相邻日期对逐次全表扫描」的 2N 次查询。
-    # 语义差异（有意为之）：某视频在 D 日缺失但 D-1/D+1 都有时，LAG 会把 D+1 连回 D-1
-    # 算成存量增量；旧实现按相邻两日 key 交集比较，会把它误判成 D+1 新发布的视频。
+    # 逐日增量。新增/存量的划分**按视频发布日**，不能按「今天快照里有、昨天没有」——
+    # 每日快照本身覆盖不全（拉视频列表每账号只翻 5 页，老视频刷不到），
+    # 每天覆盖的视频集合都在变。按快照有无判定会把大批「昨天没同步到的老视频」
+    # 误判成新发布：实测 08-16→08-17 有 1304 条被误判，而真实新发布只有 31 条，
+    # 新增视频数和「新内容增量」都会被严重放大。
     daily_rows = db.query_all(
         f"""
         WITH filtered AS (
             SELECT d.business_id, d.item_id, d.snapshot_date,
                    COALESCE(d.video_views, 0) AS views,
-                   ({engagement_expr}) AS engagement
+                   ({engagement_expr}) AS engagement,
+                   (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date AS publish_day
             FROM tiktok_official_video_daily_snapshots d
+            JOIN tiktok_official_video_snapshots v
+              ON v.business_id = d.business_id AND v.item_id = d.item_id
             LEFT JOIN tiktok_official_accounts a ON a.business_id = d.business_id
             WHERE {where_sql} AND d.snapshot_date BETWEEN %s AND %s
         ), lagged AS (
@@ -3561,17 +3594,24 @@ def matrix_snapshot_delta_range(
                    LAG(engagement) OVER w AS prev_engagement
             FROM filtered f
             WINDOW w AS (PARTITION BY business_id, item_id ORDER BY snapshot_date)
+        ), classified AS (
+            SELECT *,
+                   -- 当天发布 = 新内容；其余都算存量
+                   (publish_day = snapshot_date) AS is_new,
+                   -- 存量的增量：没有前一条快照时按 0 计，不能拿累计值当增量
+                   COALESCE(views - prev_views, 0) AS views_delta,
+                   COALESCE(engagement - prev_engagement, 0) AS engagement_delta
+            FROM lagged
         )
         SELECT snapshot_date,
-               COUNT(*) FILTER (WHERE prev_views IS NULL) AS new_video_count,
-               COALESCE(SUM(views) FILTER (WHERE prev_views IS NULL), 0) AS new_video_views,
-               COALESCE(SUM(engagement) FILTER (WHERE prev_views IS NULL), 0) AS new_video_engagement,
-               COALESCE(SUM(views - prev_views) FILTER (WHERE prev_views IS NOT NULL), 0) AS existing_views_delta,
-               COALESCE(SUM(engagement - prev_engagement) FILTER (WHERE prev_views IS NOT NULL), 0)
-                   AS existing_engagement_delta,
+               COUNT(*) FILTER (WHERE is_new) AS new_video_count,
+               COALESCE(SUM(views) FILTER (WHERE is_new), 0) AS new_video_views,
+               COALESCE(SUM(engagement) FILTER (WHERE is_new), 0) AS new_video_engagement,
+               COALESCE(SUM(views_delta) FILTER (WHERE NOT is_new), 0) AS existing_views_delta,
+               COALESCE(SUM(engagement_delta) FILTER (WHERE NOT is_new), 0) AS existing_engagement_delta,
                COALESCE(SUM(views), 0) AS cur_views_total,
                COALESCE(SUM(engagement), 0) AS cur_engagement_total
-        FROM lagged
+        FROM classified
         WHERE snapshot_date > %s
         GROUP BY snapshot_date
         ORDER BY snapshot_date
