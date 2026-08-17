@@ -422,7 +422,8 @@
         <label>粉丝数筛选</label>
         <select id="followers-filter" onchange="renderAccounts()">
           <option value="">全部</option>
-          <option value="900to1000">900-1000（补粉候选）</option>
+          <option value="0to500">0-500 粉</option>
+          <option value="800to1000">800-1000（补粉候选）</option>
           <option value="needs_boost">已标记需补粉</option>
         </select>
       </div>
@@ -430,6 +431,41 @@
         <label>国家筛选</label>
         <select id="region-filter" onchange="renderAccounts()">
           <option value="">全部</option>
+        </select>
+      </div>
+      <div>
+        <label>账号状态</label>
+        <select id="status-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+          <option value="enabled">启用</option>
+          <option value="disabled">停用</option>
+          <option value="throttled">限流</option>
+          <option value="stale">断更（&gt;5天未发）</option>
+        </select>
+      </div>
+      <div>
+        <label>更新频率</label>
+        <select id="freq-filter" onchange="renderAccounts()">
+          <option value="">全部</option>
+          <option value="today">今日已更新</option>
+          <option value="d1">1天以上未更新</option>
+          <option value="d2">2天以上未更新</option>
+          <option value="d3">3天以上未更新</option>
+          <option value="d5">5天以上未更新</option>
+        </select>
+      </div>
+      <div>
+        <label>排序</label>
+        <select id="acc-sort" onchange="renderAccounts()">
+          <option value="">默认</option>
+          <option value="followers_count">粉丝数</option>
+          <option value="video_count">发布视频数</option>
+          <option value="total_vv">总VV</option>
+          <option value="days_since_publish">未更新天数</option>
+        </select>
+        <select id="acc-order" onchange="renderAccounts()">
+          <option value="desc">降序</option>
+          <option value="asc">升序</option>
         </select>
       </div>
       <div>
@@ -442,6 +478,9 @@
           <option value="wait">可能自动恢复</option>
         </select>
       </div>
+      <button class="btn btn-secondary" onclick="bulkNeedsBoost(true)" title="对当前筛选出的账号一键标记需补粉">批量标记补粉</button>
+      <button class="btn btn-secondary" onclick="bulkNeedsBoost(false)" title="对当前筛选出的账号一键取消需补粉">批量取消补粉</button>
+      <button class="btn btn-secondary" onclick="runAutoMarks()" title="按规则重算补粉/限流标记，自动结果会覆盖人工设置">重算自动标记</button>
       <button class="btn btn-secondary" onclick="exportNeedsBoostLinks()">导出需补粉主页链接</button>
     </div>
     <div class="grid" id="accounts"></div>
@@ -567,6 +606,14 @@ function renderOverviewRegionOptions() {
       + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
     if (regions.includes(prev)) sel.value = prev;
   });
+  // 运维里的国家筛选额外提供「未设置」，方便挑出新加还没配国家的账号
+  const rf = document.getElementById('region-filter');
+  if (rf) {
+    const prev = rf.value;
+    rf.innerHTML = '<option value="">全部</option><option value="__none__">未设置</option>'
+      + REGION_OPTIONS.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    rf.value = prev;
+  }
 }
 
 function allKnownRegions() {
@@ -1666,8 +1713,25 @@ function renderAccounts() {
         return false;
       }
     }
-    if (regionFilter && a.region !== regionFilter) {
+    if (regionFilter === '__none__') {
+      if (a.region) return false;
+    } else if (regionFilter && a.region !== regionFilter) {
       return false;
+    }
+    const days = a.days_since_publish;
+    // 断更是派生值：不落库，按最后发布日实时算
+    const isStale = days != null && days > 5;
+    const statusFilter = (document.getElementById('status-filter') || {}).value || '';
+    if (statusFilter === 'enabled'   && !a.enabled) return false;
+    if (statusFilter === 'disabled'  && a.enabled) return false;
+    if (statusFilter === 'throttled' && !a.is_throttled) return false;
+    if (statusFilter === 'stale'     && !isStale) return false;
+    const freqFilter = (document.getElementById('freq-filter') || {}).value || '';
+    if (freqFilter) {
+      if (days == null) return false;
+      if (freqFilter === 'today' && days !== 0) return false;
+      const need = { d1: 1, d2: 2, d3: 3, d5: 5 }[freqFilter];
+      if (need != null && days < need) return false;
     }
     if (sparkFilter) {
       const act = a.spark_action || '';
@@ -1676,15 +1740,28 @@ function renderAccounts() {
       if (sparkFilter === 'auth' && act !== '需要重新授权') return false;
       if (sparkFilter === 'wait' && !act.includes('自动恢复')) return false;
     }
-    if (followersFilter === '900to1000') {
+    if (followersFilter === '0to500') {
       const f = Number(a.followers_count);
-      return Number.isFinite(f) && f >= 900 && f < 1000;
+      return Number.isFinite(f) && f < 500;
+    }
+    if (followersFilter === '800to1000') {
+      const f = Number(a.followers_count);
+      return Number.isFinite(f) && f >= 800 && f < 1000;
     }
     if (followersFilter === 'needs_boost') {
       return !!a.needs_follower_boost;
     }
     return true;
   });
+  const sortKey = (document.getElementById('acc-sort') || {}).value || '';
+  const sortDir = (document.getElementById('acc-order') || {}).value || 'desc';
+  if (sortKey) {
+    filtered.sort((x, y) => {
+      const a1 = Number(x[sortKey] ?? -Infinity), b1 = Number(y[sortKey] ?? -Infinity);
+      return sortDir === 'asc' ? a1 - b1 : b1 - a1;
+    });
+  }
+  lastFilteredAccounts = filtered;
   const regionOptions = REGION_OPTIONS;
   const typeOptions = ['KOL', 'Campaign'];
   wrap.innerHTML = filtered.map(a => {
@@ -1706,6 +1783,7 @@ function renderAccounts() {
             ? `<span class="pill pill-warn" style="cursor:pointer" onclick="showSparkReason('${esc(a.business_id)}')" title="点击查看原因">Spark不可用</span>`
             : '<span class="pill pill-ok" title="已完成 Spark 授权">Spark已授权</span>'}
           ${a.needs_follower_boost ? '<span class="pill pill-pending">需补粉</span>' : ''}
+          ${a.is_throttled ? `<span class="pill pill-warn" style="cursor:pointer" title="点击取消限流标记" onclick="toggleThrottled('${esc(a.business_id)}', false, this)">限流</span>` : ''}
           <span class="pill ${a.enabled ? 'pill-ok' : 'pill-err'}" style="cursor:pointer;" title="点击切换" onclick="toggleEnabled('${a.business_id}', ${a.enabled ? 'false' : 'true'}, this)">${a.enabled ? '启用' : '停用（点击重启）'}</span>
         </span>
       </div>
@@ -1714,8 +1792,11 @@ function renderAccounts() {
             title="改完失焦即保存。别名重复会导致 Spark 授权记录无法归属，保存时会校验"> ｜ 代运营：${fmt(a.authorized_by)}</div>
       <div class="metric-line">状态：<span class="pill ${accountHealth(a).cls}">${accountHealth(a).label}</span></div>
       <div class="metric-line">用户名：${fmt(a.username)}</div>
-      <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总赞：${fmt(a.total_likes)} ｜ 视频：${fmt(a.videos_count)}</div>
+      <div class="metric-line">粉丝：${fmt(a.followers_count)} ｜ 总VV：${fmt(Number(a.total_vv || 0))} ｜ 视频：${fmt(a.video_count ?? a.videos_count)}</div>
+      <div class="metric-line">未更新：${a.days_since_publish == null ? '从未发布' : a.days_since_publish + ' 天'}${a.days_since_publish != null && a.days_since_publish > 5 ? ' <span class="pill pill-err">断更</span>' : ''}</div>
       <div class="metric-line">企业号：${a.is_business_account === true ? '是' : a.is_business_account === false ? '否' : '-' } ｜ 认证：${a.is_verified === true ? '是' : a.is_verified === false ? '否' : '-'}</div>
+      <div class="metric-line">所属KOL：<input class="tag-input" style="width:130px" value="${esc(a.kol_owner || '')}"
+            placeholder="手动填写" onblur="saveKolOwner('${esc(a.business_id)}', this)"></div>
       <div class="metric-line">最近刷新：${fmt(a.last_refreshed_at)}</div>
       ${a.profile_deep_link ? `<a class="link" href="${a.profile_deep_link}" target="_blank">打开主页</a>` : ''}
       <div class="metric-line" style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
@@ -1789,6 +1870,64 @@ function showSparkReason(businessId) {
   alert(msg);
 }
 window.showSparkReason = showSparkReason;
+
+let lastFilteredAccounts = [];   // renderAccounts 每次渲染后记录，批量操作作用于它
+
+async function saveKolOwner(businessId, input) {
+  const v = (input.value || '').trim();
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/kol-owner`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kol_owner: v }),
+    });
+    const acc = accounts.find(x => x.business_id === businessId);
+    if (acc) acc.kol_owner = v;
+    input.defaultValue = v;
+  } catch (e) {
+    input.value = input.defaultValue || '';
+    alert('保存所属KOL失败：' + e.message);
+  }
+}
+window.saveKolOwner = saveKolOwner;
+
+async function toggleThrottled(businessId, throttled, el) {
+  try {
+    await fetchJson(`/api/tiktok-official/accounts/${encodeURIComponent(businessId)}/throttled`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_throttled: throttled }),
+    });
+    const acc = accounts.find(x => x.business_id === businessId);
+    if (acc) acc.is_throttled = throttled;
+    renderAccounts();
+  } catch (e) { alert('修改限流标记失败：' + e.message); }
+}
+window.toggleThrottled = toggleThrottled;
+
+async function bulkNeedsBoost(needsBoost) {
+  const ids = lastFilteredAccounts.map(a => a.business_id);
+  if (!ids.length) { alert('当前筛选结果为空'); return; }
+  if (!confirm(`将对当前筛选出的 ${ids.length} 个账号${needsBoost ? '标记' : '取消'}「需补粉」，确定？`)) return;
+  try {
+    const r = await fetchJson('/api/tiktok-official/accounts/needs-boost/bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ business_ids: ids, needs_boost: needsBoost }),
+    });
+    ids.forEach(id => { const a = accounts.find(x => x.business_id === id); if (a) a.needs_follower_boost = needsBoost; });
+    renderAccounts();
+    setStatus('ops-status', `已${needsBoost ? '标记' : '取消'} ${r.updated} 个账号`);
+  } catch (e) { alert('批量操作失败：' + e.message); }
+}
+window.bulkNeedsBoost = bulkNeedsBoost;
+
+async function runAutoMarks() {
+  if (!confirm('按规则重算补粉/限流标记？\n\n规则：粉丝<1000 标记补粉、>=1000 取消；近5天发布的视频全部≤100 播放标记限流。\n\n注意：自动结果会覆盖人工设置。')) return;
+  try {
+    const r = await fetchJson('/api/tiktok-official/accounts/auto-marks', { method: 'POST' });
+    await loadAccounts();
+    setStatus('ops-status', `重算完成：需补粉 ${r.needs_boost} 个，限流 ${r.throttled} 个`);
+  } catch (e) { alert('重算失败：' + e.message); }
+}
+window.runAutoMarks = runAutoMarks;
 
 async function saveAccountAlias(businessId, input) {
   const next = (input.value || '').trim();

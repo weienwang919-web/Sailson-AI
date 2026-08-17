@@ -141,6 +141,8 @@ _LATEST_COLUMNS = {
     ("tiktok_official_video_snapshots", "is_boosted"),
     ("tiktok_official_video_snapshots", "boosted_at"),
     ("tiktok_official_video_snapshots", "boost_status"),
+    ("tiktok_official_accounts", "kol_owner"),
+    ("tiktok_official_accounts", "is_throttled"),
     ("tiktok_spark_tokens", "expires_at"),
     ("tiktok_spark_tokens", "refresh_expires_at"),
     ("tiktok_spark_tokens", "business_id"),
@@ -443,6 +445,10 @@ def ensure_schema() -> None:
 
     # 需补粉标记：人工标记该账号需要补充粉丝，永久保留，供官号总览筛选
     db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS needs_follower_boost BOOLEAN DEFAULT FALSE")
+    # 所属 KOL：手动配置，一个 KOL 名下可能有多个矩阵切片账号
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS kol_owner VARCHAR(128)")
+    # 限流标记：由每日自动规则维护（自动结果覆盖人工），断更则是派生值不落库
+    db.execute("ALTER TABLE tiktok_official_accounts ADD COLUMN IF NOT EXISTS is_throttled BOOLEAN DEFAULT FALSE")
 
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS task_no VARCHAR(128)")
     db.execute("ALTER TABLE tiktok_official_video_snapshots ADD COLUMN IF NOT EXISTS kol_campaign VARCHAR(255)")
@@ -623,6 +629,11 @@ def list_accounts() -> list[dict[str, Any]]:
         )
         SELECT a.*, t.expires_at AS token_expires_at, t.status AS token_status,
                t.refresh_expires_at AS token_refresh_expires_at,
+               COALESCE(vs.total_vv, 0) AS total_vv,
+               COALESCE(vs.video_count, 0) AS video_count,
+               vs.last_publish_date,
+               CASE WHEN vs.last_publish_date IS NULL THEN NULL
+                    ELSE (CURRENT_DATE - vs.last_publish_date) END AS days_since_publish,
                CASE
                  WHEN sp.business_id IS NULL AND o.account_alias IS NULL THEN '从未做过 Spark 授权'
                  WHEN sp.business_id IS NULL AND d.account_alias IS NOT NULL THEN '别名与其他账号重复，历史授权记录无法归属'
@@ -641,12 +652,111 @@ def list_accounts() -> list[dict[str, Any]]:
                END AS spark_action
         FROM tiktok_official_accounts a
         LEFT JOIN tiktok_official_tokens t ON t.open_id = a.business_id
+        LEFT JOIN LATERAL (
+          -- 总VV / 视频数 / 最后发布日（按北京自然日，跟其他口径一致）
+          SELECT COALESCE(SUM(v.video_views), 0) AS total_vv,
+                 COUNT(v.item_id) AS video_count,
+                 MAX((v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date) AS last_publish_date
+          FROM tiktok_official_video_snapshots v WHERE v.business_id = a.business_id
+        ) vs ON true
         LEFT JOIN sp ON sp.business_id = a.business_id
         LEFT JOIN orphan o ON o.account_alias = a.account_alias
         LEFT JOIN dup d ON d.account_alias = a.account_alias
         ORDER BY a.enabled DESC, a.account_name, a.id
         """
     ) or []
+
+
+# 自动标记规则的阈值。用户确认：自动结果覆盖人工，所以每次跑都是全量重算。
+_AUTO_BOOST_FOLLOWER_THRESHOLD = 1000      # 低于此粉丝数自动标记需补粉，高于则自动取消
+_AUTO_THROTTLE_DAYS = 5                    # 观察窗口（天）
+_AUTO_THROTTLE_MAX_VIEWS = 100             # 窗口内新发视频的播放上限
+_AUTO_STALE_DAYS = 5                       # 超过此天数未发布视为断更（派生值，不落库）
+
+
+def run_account_auto_marks() -> dict[str, Any]:
+    """按规则重算账号标记。用户已确认：自动覆盖人工，所以这里是全量重算而非增量。
+
+    - 需补粉：粉丝数 < 1000 标记，>= 1000 取消
+    - 限流：近 5 天发布的视频**全部** <= 100 播放（近 5 天没发视频的不算限流，
+      那属于断更，由 days_since_publish 派生判断，不写库）
+    """
+    boost = db.execute(
+        """
+        UPDATE tiktok_official_accounts SET
+            needs_follower_boost = (COALESCE(followers_count, 0) < %s),
+            updated_at = NOW()
+        WHERE enabled = TRUE
+          AND needs_follower_boost IS DISTINCT FROM (COALESCE(followers_count, 0) < %s)
+        """,
+        (_AUTO_BOOST_FOLLOWER_THRESHOLD, _AUTO_BOOST_FOLLOWER_THRESHOLD),
+    )
+    throttle = db.execute(
+        f"""
+        WITH recent AS (
+          SELECT v.business_id,
+                 COUNT(*) AS n,
+                 MAX(v.video_views) AS max_views
+          FROM tiktok_official_video_snapshots v
+          WHERE v.create_time IS NOT NULL
+            AND (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
+                >= CURRENT_DATE - {_AUTO_THROTTLE_DAYS}
+          GROUP BY v.business_id
+        )
+        UPDATE tiktok_official_accounts a SET
+            is_throttled = COALESCE(
+                (r.n > 0 AND COALESCE(r.max_views, 0) <= {_AUTO_THROTTLE_MAX_VIEWS}), FALSE),
+            updated_at = NOW()
+        FROM (SELECT business_id, n, max_views FROM recent) r
+        WHERE a.business_id = r.business_id AND a.enabled = TRUE
+        """,
+    )
+    # 近 5 天完全没发视频的账号，限流标记一律清掉（它们是断更，不是限流）
+    db.execute(
+        f"""
+        UPDATE tiktok_official_accounts a SET is_throttled = FALSE, updated_at = NOW()
+        WHERE a.enabled = TRUE AND a.is_throttled = TRUE
+          AND NOT EXISTS (
+            SELECT 1 FROM tiktok_official_video_snapshots v
+            WHERE v.business_id = a.business_id AND v.create_time IS NOT NULL
+              AND (v.create_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')::date
+                  >= CURRENT_DATE - {_AUTO_THROTTLE_DAYS})
+        """
+    )
+    row = db.query_one(
+        "SELECT COUNT(*) FILTER (WHERE needs_follower_boost) boost, "
+        "COUNT(*) FILTER (WHERE is_throttled) throttled "
+        "FROM tiktok_official_accounts WHERE enabled = TRUE"
+    ) or {}
+    return {"needs_boost": int(row.get("boost") or 0), "throttled": int(row.get("throttled") or 0)}
+
+
+def set_accounts_needs_boost_bulk(business_ids: list[str], needs_boost: bool) -> int:
+    """批量标记/取消需补粉。按粉丝数筛出来一批后一次性处理，逐个点太累。"""
+    ids = [str(x).strip() for x in (business_ids or []) if str(x).strip()]
+    if not ids:
+        return 0
+    db.execute(
+        "UPDATE tiktok_official_accounts SET needs_follower_boost = %s, updated_at = NOW() "
+        "WHERE business_id = ANY(%s)",
+        (bool(needs_boost), ids),
+    )
+    return len(ids)
+
+
+def set_account_throttled(business_id: str, throttled: bool) -> None:
+    """人工标记限流。注意每日自动规则会重算并覆盖这里的设置。"""
+    db.execute(
+        "UPDATE tiktok_official_accounts SET is_throttled = %s, updated_at = NOW() WHERE business_id = %s",
+        (bool(throttled), business_id),
+    )
+
+
+def set_account_kol_owner(business_id: str, kol_owner: str | None) -> None:
+    db.execute(
+        "UPDATE tiktok_official_accounts SET kol_owner = %s, updated_at = NOW() WHERE business_id = %s",
+        ((kol_owner or "").strip() or None, business_id),
+    )
 
 
 def set_account_alias(business_id: str, alias: str) -> None:

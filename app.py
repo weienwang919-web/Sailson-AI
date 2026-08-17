@@ -9967,6 +9967,50 @@ def api_tiktok_official_export():
         return _api_error('tiktok_official export', e)
 
 
+@app.route('/api/tiktok-official/accounts/<business_id>/kol-owner', methods=['PATCH'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_account_kol_owner(business_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        tiktok_official_service.set_account_kol_owner(business_id, data.get('kol_owner'))
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return _api_error('tiktok_official account kol-owner update', e)
+
+
+@app.route('/api/tiktok-official/accounts/<business_id>/throttled', methods=['PATCH'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_account_throttled(business_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        tiktok_official_service.set_account_throttled(business_id, bool(data.get('is_throttled')))
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return _api_error('tiktok_official account throttled update', e)
+
+
+@app.route('/api/tiktok-official/accounts/needs-boost/bulk', methods=['POST'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_accounts_needs_boost_bulk():
+    try:
+        data = request.get_json(silent=True) or {}
+        n = tiktok_official_service.set_accounts_needs_boost_bulk(
+            data.get('business_ids') or [], bool(data.get('needs_boost')))
+        return jsonify({'status': 'success', 'updated': n})
+    except Exception as e:
+        return _api_error('tiktok_official accounts needs-boost bulk', e)
+
+
+@app.route('/api/tiktok-official/accounts/auto-marks', methods=['POST'])
+@feature_required('matrix_video_dashboard')
+def api_tiktok_official_accounts_auto_marks():
+    """按规则重算补粉/限流标记。自动结果会覆盖人工设置。"""
+    try:
+        return jsonify({'status': 'success', **tiktok_official_service.run_account_auto_marks()})
+    except Exception as e:
+        return _api_error('tiktok_official accounts auto-marks', e)
+
+
 @app.route('/api/tiktok-official/accounts/<business_id>/alias', methods=['PATCH'])
 @feature_required('matrix_video_dashboard')
 def api_tiktok_official_account_alias(business_id):
@@ -10228,9 +10272,6 @@ def api_tiktok_official_matrix_daily_expected():
                 'status': 'success',
                 'value': tiktok_official_service.get_daily_expected_videos(),
             })
-        # 改配置只放开给管理员，避免看板使用者误改影响全员的汇报口径
-        if session.get('role') != 'admin':
-            return jsonify({'status': 'error', 'message': '只有管理员可以修改每日应发视频数'}), 403
         data = request.get_json(silent=True) or {}
         try:
             value = int(data.get('value'))
