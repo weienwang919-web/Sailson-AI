@@ -115,10 +115,6 @@ function insertPh(token) {
 }
 
 /* ---------- 第 4 步：附件（整批共用一组） ---------- */
-function fmtSize(n) {
-  return n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
-}
-
 async function uploadAttachments(files) {
   const picked = Array.from(files || []);
   if (!picked.length) return;

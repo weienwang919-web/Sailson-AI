@@ -47,6 +47,12 @@ function esc(t) {
 }
 function openModal(id) { document.getElementById(id).classList.add('show'); }
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+/* 附件大小。素材提交（按行挂）和建联（整批共用）都要显示，两边共用这一份，
+   免得改个单位只改到一页、同一个文件在两个页面上显示成不同大小。 */
+function fmtSize(n) {
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
+}
 document.addEventListener('click', e => {
   if (e.target.classList && e.target.classList.contains('modal')) e.target.classList.remove('show');
 });

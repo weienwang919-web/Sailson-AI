@@ -100,8 +100,8 @@ _TABLES = {
     # 收信 / 会话线 / 报价账本
     "mb_imap_cursors", "mb_inbox_messages", "mb_inbox_extractions",
     "mb_threads", "mb_quotes",
-    # 附件（整批共用）
-    "mb_attachments", "mb_job_attachments",
+    # 附件（建联整批共用 / 素材按行挂）
+    "mb_attachments", "mb_job_attachments", "mb_item_attachments",
 }
 # 最后一批补上的列。表都在但列不全（老版本建的）时仍然要跑一遍 DDL。
 # 新增列务必登记到这里，否则线上库走快速路径直接 return，DDL 一条都不跑，
@@ -231,7 +231,7 @@ def ensure_schema() -> None:
             sent_at TIMESTAMP
         )
     """)
-    # 附件挂在批次上，整批共用一组：建联是「同一份物料群发给一串达人」，
+    # 建联的附件挂在批次上，整批共用一组：建联是「同一份物料群发给一串达人」，
     # 按行挂会逼着名单 Excel 多一列文件名，而粘贴名单那条入口根本带不了文件。
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_job_attachments (
@@ -245,6 +245,23 @@ def ensure_schema() -> None:
     """)
     db.execute("CREATE INDEX IF NOT EXISTS idx_mb_job_attachments_job "
                "ON mb_job_attachments (job_id, seq)")
+    # 素材提交反过来，附件按行挂：这里附件是「素材的另一种形态」——
+    # 有些素材是图（内联进正文），有些本来就是 PDF/压缩包（只能当附件走）。
+    # 一行一份素材，所以粒度必须是行，不能像建联那样整批共用。
+    # 刻意不加 UNIQUE(item_id, attachment_id)：mb_attachments 按 sha256 去重，
+    # 同样字节换个文件名会指向同一个 attachment_id，那是两条合法的附件行。
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS mb_item_attachments (
+            id SERIAL PRIMARY KEY,
+            item_id INTEGER NOT NULL REFERENCES mb_items(id) ON DELETE CASCADE,
+            attachment_id INTEGER NOT NULL REFERENCES mb_attachments(id) ON DELETE CASCADE,
+            filename VARCHAR(255) NOT NULL DEFAULT 'attachment',
+            seq INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_mb_item_attachments_item "
+               "ON mb_item_attachments (item_id, seq)")
     db.execute("""
         CREATE TABLE IF NOT EXISTS mb_templates (
             id SERIAL PRIMARY KEY,
@@ -1124,6 +1141,132 @@ def load_job_attachments(job_id: int) -> list[dict]:
             for r in rows]
 
 
+# ---- 素材提交：附件按行挂 ----
+# 建联那三个是 job 级，下面这组是 item 级。语义不同，刻意分开而不是加个参数：
+# 一个批次里两种粒度不会同时生效，混在一个函数里只会让调用点看不出用的是哪种。
+
+def list_item_attachments_map(item_ids: list[int]) -> dict[int, list[dict]]:
+    """一次查完一批行的附件清单（不含内容）。
+
+    load_job 会被 /status 每 2.5 秒轮询一次，逐行查的话 500 行的批次
+    每轮就是 500 趟往返（Render 上一趟约 1 秒）。这里固定一条 SQL。
+    """
+    out: dict[int, list[dict]] = {int(i): [] for i in item_ids}
+    if not item_ids:
+        return out
+    rows = db.query_all("""
+        SELECT ia.item_id, ia.attachment_id AS id, ia.filename, a.mime, a.byte_size
+        FROM mb_item_attachments ia JOIN mb_attachments a ON a.id = ia.attachment_id
+        WHERE ia.item_id = ANY(%s) ORDER BY ia.item_id, ia.seq ASC
+    """, (list(item_ids),))
+    for r in rows:
+        out.setdefault(r["item_id"], []).append(
+            {"id": r["id"], "filename": r["filename"],
+             "mime": r["mime"], "byte_size": r["byte_size"]})
+    return out
+
+
+def count_item_attachments(item_id: int) -> int:
+    """只问「这一行有没有附件」，不读字节。
+
+    发送前的可发性判断用这个：load_item_attachments 会把最多 15MB 拽进内存，
+    而判断只需要一个数——何况这一行很可能接着就因为没选发件账号而失败。
+    """
+    row = db.query_one("SELECT COUNT(*) AS c FROM mb_item_attachments WHERE item_id = %s",
+                       (item_id,))
+    return int((row or {}).get("c") or 0)
+
+
+def load_item_attachments(item_id: int) -> list[dict]:
+    """带内容的附件清单，发这一行时用。"""
+    rows = db.query_all("""
+        SELECT ia.filename, a.mime, a.content
+        FROM mb_item_attachments ia JOIN mb_attachments a ON a.id = ia.attachment_id
+        WHERE ia.item_id = %s ORDER BY ia.seq ASC
+    """, (item_id,))
+    return [{"filename": r["filename"], "mime": r["mime"], "content": bytes(r["content"])}
+            for r in rows]
+
+
+def sync_item_attachments(job_id: int, specs_by_item: dict[int, list[dict]]) -> None:
+    """把「哪一行带哪些附件」整体写回，只动真正变了的行。
+
+    刻意是整批签名而不是 set_item_attachments(item_id, specs)：逐行
+    delete + insert + 每个附件查一次元信息，500 行就是 1500+ 趟 Render 往返
+    （每趟约 1 秒），点一下预览要转二十分钟。整批形态能做到 5 次查询封顶，
+    而且绝大多数请求里没有一行变过，第 3 步就直接返回了。
+
+    specs 是 [{id, filename}, ...]。只信这两个字段，byte_size 一律回库里重读 ——
+    大小校验采信前端传的值，等于把上限交给调用方自己填。
+    """
+    if not specs_by_item:
+        return
+
+    # 1) 圈定归属。item_id 是前端传来的，必须限定在本批次内，
+    #    且已发出的行不能再改附件（和 sync_job 的 status <> 'sent' 一致）。
+    owned = {r["id"] for r in db.query_all(
+        "SELECT id FROM mb_items WHERE job_id = %s AND status <> 'sent'", (job_id,))}
+    item_ids = sorted(i for i in specs_by_item if i in owned)
+    if not item_ids:
+        return
+
+    # 2) 现状
+    current: dict[int, list[tuple[int, str]]] = {i: [] for i in item_ids}
+    for r in db.query_all(
+            "SELECT item_id, attachment_id, filename FROM mb_item_attachments "
+            "WHERE item_id = ANY(%s) ORDER BY item_id, seq ASC", (item_ids,)):
+        current[r["item_id"]].append((r["attachment_id"], r["filename"]))
+
+    # 3) 规整，挑出真正变了的行。顺序变化也算变 —— seq 决定附件在信里的排列。
+    wanted: dict[int, list[tuple[int, str]]] = {}
+    changed: list[int] = []
+    for item_id in item_ids:
+        specs = specs_by_item.get(item_id) or []
+        if len(specs) > MAX_ATTACHMENT_COUNT:
+            raise ValueError(f"每行最多带 {MAX_ATTACHMENT_COUNT} 个附件，"
+                             f"有一行选了 {len(specs)} 个")
+        norm = []
+        for seq, spec in enumerate(specs):
+            try:
+                attachment_id = int(spec.get("id"))
+            except (TypeError, ValueError):
+                raise ValueError("附件 id 不对，请重新上传")
+            norm.append((attachment_id,
+                         _clean_filename(spec.get("filename") or f"attachment-{seq + 1}")))
+        wanted[item_id] = norm
+        if norm != current[item_id]:
+            changed.append(item_id)
+    if not changed:
+        return
+
+    # 4) 只校验变了的行，元信息一次查完
+    need = sorted({aid for iid in changed for aid, _ in wanted[iid]})
+    sizes: dict[int, int] = {}
+    if need:
+        for r in db.query_all(
+                "SELECT id, byte_size FROM mb_attachments WHERE id = ANY(%s)", (need,)):
+            sizes[r["id"]] = r["byte_size"] or 0
+        missing = [a for a in need if a not in sizes]
+        if missing:
+            raise ValueError(f"附件 {missing[0]} 已经不在了，请重新上传")
+    for item_id in changed:
+        total = sum(sizes[aid] for aid, _ in wanted[item_id])
+        if total > MAX_ATTACHMENT_TOTAL_BYTES:
+            raise ValueError(f"有一行的附件合计 {total / 1048576:.1f}MB，超过单封上限 "
+                             f"{MAX_ATTACHMENT_TOTAL_BYTES // 1048576}MB（编码后还会再大三成）")
+
+    # 5) 一个事务里删了再插。分成两次提交的话，中间失败会把这些行原本存着的
+    #    绑定清空 —— 前端 Map 里还留着，用户要等发送时全被跳过才发现丢了。
+    rows = [(item_id, attachment_id, name, seq)
+            for item_id in changed
+            for seq, (attachment_id, name) in enumerate(wanted[item_id])]
+    with db.get_db_cursor(commit=True) as cur:
+        cur.execute("DELETE FROM mb_item_attachments WHERE item_id = ANY(%s)", (changed,))
+        if rows:
+            execute_values(cur, "INSERT INTO mb_item_attachments "
+                                "(item_id, attachment_id, filename, seq) VALUES %s", rows)
+
+
 def build_attachment_part(att: dict) -> MIMEBase:
     maintype, _, subtype = (att.get("mime") or "application/octet-stream").partition("/")
     part = MIMEBase(maintype or "application", subtype or "octet-stream")
@@ -1921,7 +2064,10 @@ def _find_header(ws):
 
 def parse_material_xlsx(data: bytes) -> dict:
     """解析素材 Excel。缺图/缺邮箱/已发过的行都会保留并注明原因，**不静默丢行**
-    ——否则用户会以为漏发是工具吞了数据。"""
+    ——否则用户会以为漏发是工具吞了数据。
+
+    缺图不是错：附件是素材的另一种形态，这类行走 notices 而不是 errors，
+    照常入队，等第 3 步挂上附件就能发。"""
     try:
         wb = load_workbook(io.BytesIO(data))
     except Exception as exc:
@@ -1947,7 +2093,7 @@ def parse_material_xlsx(data: bytes) -> dict:
         by_row.setdefault(row, []).append(blob)
 
     present = [f for f in DATA_FIELDS if f in columns]
-    rows, errors = [], []
+    rows, errors, notices = [], [], []
     if orphans:
         errors.append(f"有 {orphans} 张图没有锚定到数据行（可能浮在表头上方或悬空），已忽略")
 
@@ -1980,7 +2126,14 @@ def parse_material_xlsx(data: bytes) -> dict:
             errors.append(f"第 {row_idx} 行有 {len(emails)} 个邮箱，只用第一个（{emails[0]}）。"
                           "一行一个收件人，要发给多个人请拆成多行。")
         if not blobs:
-            errors.append(f"第 {row_idx} 行（{label}）没有图片，这一行不会发信")
+            # 不算错误：附件是素材的另一种形态，这一行照常入队，
+            # 等用户在第 3 步给它挂个 PDF 就能发。走 notices 而不是 errors ——
+            # errors 在前端是红色 errbox，一半行是附件素材时会糊一屏红。
+            # 带上行号：这里还不知道这一行会不会因为缺邮箱被丢掉，
+            # 由 create_job_from_excel 按真正入队的行筛一遍再给前端。
+            notices.append({"row": row_idx,
+                            "text": f"第 {row_idx} 行（{label}）没有图片，"
+                                    "在第 3 步点 📎 给它传一个附件就能发。"})
             rows.append({"vars": dict(variables), "recipient": (emails[0].lower() if emails else ""),
                          "image_bytes": None, "image_name": "",
                          "excel_row": row_idx, "skip_reason": ""})
@@ -2002,7 +2155,7 @@ def parse_material_xlsx(data: bytes) -> dict:
                          "image_bytes": blob, "image_name": f"{label}{suffix}.{ext}",
                          "excel_row": row_idx, "skip_reason": ""})
 
-    return {"rows": rows, "errors": errors, "header_row": header_row,
+    return {"rows": rows, "errors": errors, "notices": notices, "header_row": header_row,
             "fields": present, "has_recipient": "recipient" in columns,
             "has_status": "status" in columns, "sheet": ws.title}
 
@@ -2517,7 +2670,9 @@ def _parse_ocr_report(raw) -> dict:
     return {"total": data.get("total") or 0, "notes": data.get("notes") or []}
 
 
-def _serialize_item(row: dict) -> dict:
+def _serialize_item(row: dict, attachments: list[dict] | None = None) -> dict:
+    """attachments 由调用方一次性批量查好传进来 —— 这个函数是在列表推导里
+    逐行调的，一旦让它自己查库，500 行的批次每次 load_job 就是 500 趟往返。"""
     try:
         variables = json.loads(row["vars_json"]) if row.get("vars_json") else {}
     except (TypeError, ValueError):
@@ -2532,6 +2687,9 @@ def _serialize_item(row: dict) -> dict:
         "subject": row.get("subject"), "status": row["status"], "error": row.get("error"),
         "smtp_response": row.get("smtp_response") or "", "message_id": row.get("message_id") or "",
         "sent_at": row["sent_at"].isoformat() if row.get("sent_at") else None,
+        # 素材提交里附件是「素材的另一种形态」：有图或有附件才发得出去。
+        # 建联批次的附件挂在 job 上，这里恒为空数组。
+        "attachments": attachments or [],
     }
 
 
@@ -2540,6 +2698,10 @@ def load_job(job_id: int) -> dict:
     if job is None:
         raise ValueError(f"批次 {job_id} 不存在")
     items = db.query_all("SELECT * FROM mb_items WHERE job_id = %s ORDER BY seq ASC", (job_id,))
+    # 建联的附件挂在 job 上，mb_item_attachments 里恒无它的行 —— 别为它跑这条查询。
+    # /status 是 2 秒一轮，500 行的 ANY(%s) 白跑一趟在 Render 上就是一秒。
+    att_map = ({} if (job.get("mode") or "material") == "outreach"
+               else list_item_attachments_map([r["id"] for r in items]))
     counts = {"total": len(items), "sent": 0, "failed": 0, "pending": 0, "sending": 0, "skipped": 0}
     for it in items:
         counts[it["status"]] = counts.get(it["status"], 0) + 1
@@ -2554,8 +2716,9 @@ def load_job(job_id: int) -> dict:
                 "replacement_domain": job.get("replacement_domain") or "",
                 "subject_tpl": job["subject_tpl"], "body_tpl": job["body_tpl"],
                 "signature_tpl": job["signature_tpl"]},
-        "items": [_serialize_item(dict(r)) for r in items],
+        "items": [_serialize_item(dict(r), att_map.get(r["id"])) for r in items],
         "counts": counts,
+        # 这个是 job 级的（建联用）。素材批次恒为空，它的附件在每个 item 里。
         "attachments": list_job_attachments(job_id),
     }
 
@@ -2586,6 +2749,7 @@ def sync_job(job_id: int, data: dict) -> None:
         args["jid"] = job_id
         db.execute(f"UPDATE mb_jobs SET {', '.join(sets)} WHERE id = %(jid)s", args)
 
+    item_attachments: dict[int, list[dict]] = {}
     for item in data.get("items") or []:
         fields = ["sender_account_id = %(acc)s", "from_display = %(disp)s",
                   "signature_name = %(sig)s"]
@@ -2599,9 +2763,16 @@ def sync_job(job_id: int, data: dict) -> None:
         if "recipient" in item:
             fields.append("recipient = %(rcpt)s")
             params["rcpt"] = (item.get("recipient") or "").strip().lower()
+        # 附件跟 vars / recipient 一样「出现才写」：不带这个键的请求
+        # （建联页的 templatePayload、以及任何只改模板的调用）不能把附件清空。
+        # 这里只收集，循环外一次写完 —— 逐行写会把 sync_job 的往返次数翻三倍。
+        if "attachments" in item and item.get("id") is not None:
+            item_attachments[int(item["id"])] = item.get("attachments") or []
         db.execute(
             f"UPDATE mb_items SET {', '.join(fields)} "
             "WHERE id = %(iid)s AND job_id = %(jid)s AND status <> 'sent'", params)
+
+    sync_item_attachments(job_id, item_attachments)
 
 
 def _mark_failed(item_id: int, message: str) -> None:
@@ -2627,8 +2798,10 @@ def _mark_sent(item_id: int, result: dict) -> None:
 def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) -> str:
     """发一封。返回结果状态字符串，异常都记进该行不往外抛。
 
-    attachments 传 None 就自己去库里取（单封重发走这条）；整批发送时由 run_job
-    取一次传进来 —— 15MB 的附件乘 500 个收件人，逐封重取就是 7GB 的库往返。
+    attachments 传 None 就自己去库里取，按 mode 分叉：建联取批次级的一组，
+    素材取这一行自己的。建联整批发送时由 run_job 取一次传进来 ——
+    15MB 的附件乘 500 个收件人，逐封重取就是 7GB 的库往返；素材按行挂，
+    各是各的，只能逐行取（每行 ≤15MB，取完就丢，内存有界）。
 
     投递与记账刻意分成两段：SMTP 一旦收下这封信，它就已经在对方队列里、不可撤回，
     此后任何写库失败都不能把这行标成 failed —— 用户看到红色会去点重发，
@@ -2651,6 +2824,18 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
         reason = is_suppressed(recipient)
         if reason is not None:
             _mark_skipped(item_id, f"在抑制名单里，未发送。原因：{reason or '未填'}")
+            return "skipped"
+
+    # 素材提交的可发性闸门：附件是「素材的另一种形态」，图和附件至少要有一个。
+    # 两个都没有 = 没有可提交的内容，这是主动决定不发而不是发送失败，
+    # 所以同样走 _mark_skipped（不进失败计数、不画「重发」按钮）。
+    # 只数不读：判断用不着把最多 15MB 的附件拽进内存。
+    if not is_outreach and not item.get("image_id"):
+        has_attachment = (len(attachments) > 0 if attachments is not None
+                          else count_item_attachments(item_id) > 0)
+        if not has_attachment:
+            _mark_skipped(item_id, f"{NO_CONTENT_SKIP_MARK} 这一行既没有图片也没有附件，未发送。"
+                                   "在「逐封确认」表里点 📎 传一个文件，再点一次发送即可。")
             return "skipped"
 
     db.execute("UPDATE mb_items SET status = 'sending', error = NULL WHERE id = %s", (item_id,))
@@ -2686,9 +2871,10 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
             index=item["seq"] + 1, total=total, extra_vars=extra_vars,
             replacement_domain=replacement_domain,
             unsubscribe_text=DEFAULT_UNSUBSCRIBE_TEXT if is_outreach else "",
-            # 附件挂在批次上，整批每封都带同一组
-            attachments=(load_job_attachments(job_id) if attachments is None
-                         else attachments))
+            # 建联整批共用一组，素材按行挂，各是各的
+            attachments=(attachments if attachments is not None
+                         else (load_job_attachments(job_id) if is_outreach
+                               else load_item_attachments(item_id))))
     except Exception as exc:
         _mark_failed(item_id, friendly_smtp_error(exc))
         return "failed"
@@ -2712,6 +2898,10 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
 # 它们和「抑制名单命中」不同：那是永久决定，这只是「今天先不发」，
 # 所以重跑时要能捡回来 —— 否则暂停提示里那句「明天再点一次发送即可继续」是骗人的。
 PAUSE_SKIP_MARK = "⏸"
+
+# 素材行「既没图也没附件」时 error 里带这个前缀。同样是可恢复的跳过：
+# 用户在第 3 步补个附件再点发送就该捡回来，所以 run_job 要认得它。
+NO_CONTENT_SKIP_MARK = "📎"
 
 
 def _pause_job(job_id: int, reason: str, remaining_ids: list[int], skip_reason: str = "") -> None:
@@ -2739,18 +2929,19 @@ def run_job(job_id: int, progress=None) -> dict:
     pending = [r["id"] for r in db.query_all(
         "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
         "ORDER BY seq ASC", (job_id,))]
-    if is_outreach:
-        # 上一轮因配额/窗口暂停的行捡回来重发。
-        # 抑制名单命中的不在此列 —— 那是永久决定，没有前缀，捡不回来。
-        resume = [r["id"] for r in db.query_all(
-            "SELECT id FROM mb_items WHERE job_id = %s AND status = 'skipped' "
-            "AND error LIKE %s ORDER BY seq ASC", (job_id, f"{PAUSE_SKIP_MARK}%"))]
-        if resume:
-            db.execute("UPDATE mb_items SET status = 'pending', error = NULL "
-                       "WHERE id = ANY(%s)", (resume,))
-            pending = [r["id"] for r in db.query_all(
-                "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
-                "ORDER BY seq ASC", (job_id,))]
+    # 上一轮「暂时性」跳过的行捡回来重跑。
+    # 建联是因配额/窗口暂停的（⏸），素材是缺图缺附件的（📎，用户补完附件再点发送就该发）。
+    # 抑制名单命中的两边都捡不回来 —— 那是永久决定，没有前缀。
+    resume_mark = PAUSE_SKIP_MARK if is_outreach else NO_CONTENT_SKIP_MARK
+    resume = [r["id"] for r in db.query_all(
+        "SELECT id FROM mb_items WHERE job_id = %s AND status = 'skipped' "
+        "AND error LIKE %s ORDER BY seq ASC", (job_id, f"{resume_mark}%"))]
+    if resume:
+        db.execute("UPDATE mb_items SET status = 'pending', error = NULL "
+                   "WHERE id = ANY(%s)", (resume,))
+        pending = [r["id"] for r in db.query_all(
+            "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
+            "ORDER BY seq ASC", (job_id,))]
 
     # 建联的节奏刻意慢一个数量级：冷启动收件人互不相识，
     # 密集投递最容易触发频控和垃圾判定。
@@ -2763,8 +2954,9 @@ def run_job(job_id: int, progress=None) -> dict:
 
     sent = failed = skipped = 0
     paused = ""
-    # 整批共用同一组附件，取一次带着走
-    attachments = load_job_attachments(job_id)
+    # 建联整批共用同一组附件，取一次带着走：15MB × 500 个收件人逐封重取就是 7GB 库往返。
+    # 素材是按行挂的，各是各的，只能让 send_item 逐行取（取完就丢，内存有界）。
+    attachments = load_job_attachments(job_id) if is_outreach else None
     for i, item_id in enumerate(pending):
         # 窗口和配额每轮都查。20–45 秒间隔下 200 封要跑两小时，
         # 只在开头查一次会直接冲过 22:00；配额也要重查，
@@ -2829,6 +3021,7 @@ def build_previews(job_id: int) -> list[dict]:
     # 建联的退订块必须在预览里就看得见，否则这道护栏要等信发出去才现身
     unsubscribe_text = (DEFAULT_UNSUBSCRIBE_TEXT
                         if (job.get("mode") or "material") == "outreach" else "")
+    is_material = (job.get("mode") or "material") != "outreach"
     for idx, item in enumerate(items, 1):
         account_id = item["sender_account_id"] or job.get("sender_account_id")
         account = get_account(account_id) if account_id else None
@@ -2849,9 +3042,11 @@ def build_previews(job_id: int) -> list[dict]:
         html = rewrite_body_domains(html, replacement_domain)
         previews.append({**item, "from_line": f"{display} <{sender_email}>",
                          "to_line": recipient, "subject": subject, "html": html,
-                         # 整批共用，但每封预览都带上：预览是「这封信长什么样」，
-                         # 附件漏在预览外面，人就是要等发出去才发现忘了传
-                         "attachments": state["attachments"]})
+                         # 每封预览都带上附件清单：预览是「这封信长什么样」，
+                         # 附件漏在预览外面，人就是要等发出去才发现忘了传。
+                         # 建联整批共用一组，素材按行挂各是各的。
+                         "attachments": (item["attachments"] if is_material
+                                         else state["attachments"])})
     return previews
 
 
@@ -2908,7 +3103,10 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
                           user_id=None, run_ocr: bool = True,
                           replace_domain_enabled: bool = False,
                           replacement_domain: str = "") -> dict:
-    """从 Excel 建批次。已发过的行不入队，缺图/缺邮箱的行逐条点名。"""
+    """从 Excel 建批次。已发过的行和缺邮箱的行不入队，都逐条点名。
+
+    缺图的行**照常入队**：附件是素材的另一种形态，用户会在第 3 步给它挂文件。
+    图和附件都没有的判断留到 send_item —— 建批次这一刻还没到挂附件那一步。"""
     # 发件账号这一关先过。解析 Excel 要抽图、要走 OCR 判断，几十行就是几秒钟，
     # 跑完才告诉人「没有能用的号」是白等——何况这两个错都跟 Excel 内容无关。
     replacement_domain = normalize_replacement_domain(replacement_domain)
@@ -2942,8 +3140,8 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
             skipped.append({"row": row["excel_row"],
                             "reason": f"库里已有发送记录：{material_id} → {target}"})
             continue
-        if not row["image_bytes"]:
-            continue                                  # errors 里已经点过名了
+        # 没图的行照样入队 —— 附件是素材的另一种形态，用户会在第 3 步给它挂个 PDF。
+        # 真正发不出去的判断留给 send_item，那时才知道附件到底挂上没有。
         if not target or "@" not in target:
             skipped.append({"row": row["excel_row"], "reason": "没有收件邮箱"})
             continue
@@ -2953,7 +3151,8 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
     if not usable:
         detail = "\n".join(f"第 {s['row']} 行：{s['reason']}" for s in skipped[:6])
         raise ValueError("这个 Excel 里没有需要发送的行。\n"
-                         + (detail or "每行需要有一张嵌在单元格里的图片和一个收件邮箱。")
+                         + (detail or "每行需要一个收件邮箱。内容可以是嵌在单元格里的图片，"
+                                      "也可以在第 3 步给这一行挂附件。")
                          + ("\n" + "\n".join(parsed["errors"][:4]) if parsed["errors"] else ""))
 
     # OCR 不在这里跑。web 是 free 套餐且 gunicorn workers=1/threads=1，
@@ -2974,7 +3173,9 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
     assignments = assign_accounts(pool, [r["_target"] for r in usable])
     cooldown_notes = []
     for seq, (row, pick) in enumerate(zip(usable, assignments)):
-        image_id = store_image(row["image_bytes"])
+        # 无图行的 image_bytes 是 None，不能进 store_image（它要算 sha256）。
+        # image_id 留空，这一行等着用户在第 3 步挂附件。
+        image_id = store_image(row["image_bytes"]) if row["image_bytes"] else None
         account = pick["account"]
         if pick["note"]:
             cooldown_notes.append(f"第 {row['excel_row']} 行：{pick['note']}")
@@ -2989,12 +3190,19 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
 
     payload = load_job(job_id)
     payload["pool_size"] = len(pool)
+    imported_rows = {r["excel_row"] for r in usable}
     payload["excel"] = {
         "sheet": parsed["sheet"], "header_row": parsed["header_row"],
         "fields": parsed["fields"], "has_recipient": parsed["has_recipient"],
         "has_status": parsed["has_status"], "total_rows": len(parsed["rows"]),
         "imported": len(usable), "skipped": skipped, "cooldown": cooldown_notes,
         "cooldown_days": COOLDOWN_DAYS, "needs_ocr": needs_ocr, "errors": parsed["errors"],
+        # 缺图的行也入队了，得让页面把它们点出来 —— 不提示的话用户不会知道
+        # 这些行还等着挂附件，会直接点发送然后收获一批「已跳过」。
+        # 只留真正入队的：缺图**又**缺邮箱的行已经进 skipped 了，
+        # 再在这里说一遍「照常导入」，数字对不上，人会去表里找不存在的行。
+        "notices": [n["text"] for n in parsed["notices"] if n["row"] in imported_rows],
+        "no_image": sum(1 for r in usable if not r["image_bytes"]),
     }
     return payload
 

@@ -61,7 +61,10 @@
     <h2><span class="step-no">3</span> 逐封确认</h2>
     <p class="hint">
       发件账号已自动轮换：<strong>7 天内给同一收件人发过的账号会被避开</strong>。
-      池子不够时会用冷却期内的并标出来，可以在下拉里手动换。
+      池子不够时会用冷却期内的并标出来，可以在下拉里手动换。<br>
+      附件是素材的另一种形态：<strong>没有图片的行必须挂一个附件才发得出去</strong>。
+      每行最多 {{ attach_max_count }} 个，单个 ≤ {{ attach_max_mb }}MB，
+      一行合计 ≤ {{ attach_total_mb }}MB。
     </p>
     <table>
       <thead>
@@ -70,6 +73,7 @@
           <th style="width:190px">收件邮箱</th>
           <th style="width:215px">发件账号</th>
           <th style="width:130px">发件人显示名</th>
+          <th style="width:170px">附件</th>
           {% for key, label in item_fields %}
           <th style="width:120px">{{ label }}</th>
           {% endfor %}
@@ -78,6 +82,9 @@
       </thead>
       <tbody id="pair-rows"></tbody>
     </table>
+    {# 全页共用一个：500 行各挂一个隐藏 input 是实打实的 DOM 负担，
+       点哪一行的 📎 由 pendingAttachItemId 记着。 #}
+    <input type="file" id="row-attach-input" multiple style="display:none">
   </div>
 
   <div class="card" id="tpl-card" style="display:none">
@@ -192,6 +199,8 @@
 <script>
 const ITEM_FIELDS = {{ item_fields | tojson }};
 const DOMAIN_REPLACEMENT_PROVIDERS = {{ domain_replacement_providers | tojson }};
+const ATTACH_MAX_COUNT = {{ attach_max_count }};
+const ATTACH_TOTAL_BYTES = {{ attach_total_mb }} * 1048576;
 </script>
 <script src="{{ url_for('static', filename='js/mail_blaster_common.js') }}"></script>
 <script src="{{ url_for('static', filename='js/mail_blaster_accounts.js') }}"></script>

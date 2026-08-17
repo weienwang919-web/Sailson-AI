@@ -10491,6 +10491,10 @@ def mail_blaster_page():
         domain_replacement_providers=sorted(
             mail_blaster_service.DOMAIN_REPLACEMENT_PROVIDERS),
         defaults=mail_blaster_service.defaults_for_page(),
+        # 素材提交的附件按行挂，上限和建联共用同一组常量
+        attach_max_count=mail_blaster_service.MAX_ATTACHMENT_COUNT,
+        attach_max_mb=mail_blaster_service.MAX_ATTACHMENT_BYTES // 1048576,
+        attach_total_mb=mail_blaster_service.MAX_ATTACHMENT_TOTAL_BYTES // 1048576,
     )
 
 
@@ -10784,6 +10788,18 @@ def api_mb_send(job_id):
                 return _mb_fail('请先填写收件邮箱，或用带「收件邮箱」列的 Excel 导入')
             if not any(i['sender_account_id'] for i in state['items']):
                 return _mb_fail('没有任何一行选了发件账号')
+            # 内容预检。素材提交里图和附件至少要有一个，两个都没有的行 worker 会跳过。
+            # 一行都发不出去时当场用中文拒掉，而不是让人排队等 worker 跑完
+            # 才回来发现整批全是「已跳过」。
+            # 只看还没发出去的行：已 sent 的必然有内容，算进来的话
+            # 「发过一半再补发」这种最需要预检的场景反而恒通过。
+            # 刻意不是全有全无的闸门：200 行里 1 行空就整批拒绝是敌意的，
+            # 也和「跳过 ≠ 失败」的既有哲学冲突 —— 部分为空由前端确认框提示。
+            todo = [i for i in state['items'] if i['status'] != 'sent']
+            if todo and not any(i['sender_account_id'] and (i['image_id'] or i['attachments'])
+                                for i in todo):
+                return _mb_fail('没有任何一行可以发送：每行至少要有一张图片，'
+                                '或者在「逐封确认」表里点 📎 挂一个附件')
 
         task_id = f"mb_{uuid.uuid4().hex[:16]}"
         create_task(task_id, session.get('user_id'),
@@ -10818,6 +10834,15 @@ def api_mb_resend(item_id):
     row = db.query_one("SELECT job_id FROM mb_items WHERE id = %s", (item_id,))
     if not row:
         return _mb_fail('这一封不存在', 404)
+    # 可以带上这一行的最新状态先写回。素材提交的附件绑定在点预览/发送前
+    # 只活在前端，而「📎 缺内容」的行恰恰是发完之后才补的附件 ——
+    # 不先 sync 就重发，worker 那边照样查不到附件，按钮会永远空转。
+    body = request.get_json(silent=True) or {}
+    if body.get('items'):
+        try:
+            mail_blaster_service.sync_job(row['job_id'], {'items': body['items']})
+        except ValueError as e:
+            return _mb_fail(str(e))
     task_id = f"mb_{uuid.uuid4().hex[:16]}"
     create_task(task_id, session.get('user_id'),
                 f"mail_blaster_resend_{item_id}", function_type='mail_blaster_send')
