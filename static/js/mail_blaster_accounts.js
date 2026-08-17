@@ -63,6 +63,10 @@ async function bulkImport() {
     document.getElementById('acc-bulk-result').innerHTML =
       `<div class="smtp-resp">新增 ${r.created.length} 个` +
       (r.skipped.length ? `，跳过已存在 ${r.skipped.length} 个` : '') + '</div>' +
+      // 解析时做过判断的行要让人看见——比如「第三段按授权码用」。
+      // 猜错了得能当场发现，而不是等发信报 535 才回头查
+      ((r.notes || []).length
+        ? `<div class="smtp-resp dim">${r.notes.map(esc).join('<br>')}</div>` : '') +
       (r.errors.length ? `<div class="errbox">${r.errors.map(esc).join('<br>')}</div>` : '');
     document.getElementById('acc-bulk').value = '';
     await renderAccounts();

@@ -16,6 +16,7 @@ async function loadPool() {
       '<span style="color:var(--err)">账号池里还没有「已启用 + 测试通过」的发件账号，' +
       '先点右上角「发件账号池」加几个。</span>';
   }
+  renderDomainPoolHint();
 }
 
 /* ---------- Excel 导入 ---------- */
@@ -54,6 +55,24 @@ function toggleReplacementDomain() {
   const input = document.getElementById('replacement-domain');
   input.disabled = !enabled;
   if (enabled) input.focus();
+  renderDomainPoolHint();
+}
+
+/* 勾上之后当场说清楚这批会用哪些号发。服务端也会拦（create_job_from_excel），
+   但那要等上传完 Excel 才看得到，这里先给个数。 */
+function renderDomainPoolHint() {
+  const box = document.getElementById('replace-domain-hint');
+  if (!box) return;
+  if (!document.getElementById('replace-domain-enabled').checked) {
+    box.textContent = '';
+    return;
+  }
+  const ok = POOL.filter(a => usable(a) && DOMAIN_REPLACEMENT_PROVIDERS.includes(a.provider));
+  box.innerHTML = ok.length
+    ? `将只用这 ${ok.length} 个账号发送：${ok.map(a => esc(a.email)).join('、')}` +
+      '（其余账号的服务商会拒绝代发，已自动排除）'
+    : '<span style="color:var(--err)">账号池里没有能替换发件域名的账号。' +
+      '目前只有网易 163 的号支持，微软 / Gmail 会拒绝代发。</span>';
 }
 
 async function uploadXlsx(file) {

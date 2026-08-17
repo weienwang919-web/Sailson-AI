@@ -10446,6 +10446,8 @@ def mail_blaster_page():
         placeholders=mail_blaster_service.PLACEHOLDERS,
         item_fields=mail_blaster_service.ITEM_FIELDS,
         providers=mail_blaster_service.PROVIDERS,
+        domain_replacement_providers=sorted(
+            mail_blaster_service.DOMAIN_REPLACEMENT_PROVIDERS),
         defaults=mail_blaster_service.defaults_for_page(),
     )
 

@@ -107,6 +107,7 @@
       <p class="hint" style="margin-top:6px">
         勾选后，SMTP 登录和信封发件人仍使用账号池原账号，只替换邮件 Header From / 模板里的 sender_email / 正文链接域名。
       </p>
+      <p class="hint" id="replace-domain-hint" style="margin-top:2px"></p>
     </div>
     <div class="grid grid-2">
       <div class="field">
@@ -190,6 +191,7 @@
 {% block scripts %}
 <script>
 const ITEM_FIELDS = {{ item_fields | tojson }};
+const DOMAIN_REPLACEMENT_PROVIDERS = {{ domain_replacement_providers | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/mail_blaster_common.js') }}"></script>
 <script src="{{ url_for('static', filename='js/mail_blaster_accounts.js') }}"></script>

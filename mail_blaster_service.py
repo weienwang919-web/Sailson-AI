@@ -520,6 +520,17 @@ PROVIDERS = [
 _BY_KEY = {p["key"]: p for p in PROVIDERS}
 _BY_DOMAIN = {d: p for p in PROVIDERS for d in p["domains"]}
 
+# 允许「Header From 和认证账号不一致」的服务商，也就是能用来做域名替换的。
+# 微软/Exchange 会直接拒（5.2.252 SendAsDenied，见 friendly_smtp_error），
+# Gmail 同理；实测网易 163 放行。勾了替换域名的批次只从这里面挑号——
+# 否则是整批发出去、一封封失败之后才发现这个池子里的号根本不能替换。
+DOMAIN_REPLACEMENT_PROVIDERS = {"163"}
+
+# 批量粘贴录入时的默认每日上限（单个添加的表单里留空仍然表示不限量）。
+# 免费邮箱的日发信量只有几十封，跑满会直接触发风控封号，
+# 而批量粘贴那条路一个数字都没填，落到「不限量」上最危险。
+BULK_IMPORT_DAILY_LIMIT = {"163": 30, "qq": 30, "gmail": 50, "outlook": 50}
+
 
 def guess_provider(email: str) -> dict:
     domain = email.rsplit("@", 1)[-1].strip().lower() if "@" in email else ""
@@ -746,6 +757,10 @@ _CLIENT_ID_RE = re.compile(
     r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
     r"|[\w.\-]+\.apps\.googleusercontent\.com)$")
 
+# 「一串没有空格的字母数字混排」——授权码长这样，人名不长这样。
+# 用来认出 邮箱----登录密码----授权码 这种三段格式（网易/QQ 的号常见）。
+_AUTH_CODE_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{12,64}$")
+
 
 def parse_import_line(line: str) -> dict:
     """把一行拆成 create_account 的 payload。
@@ -755,6 +770,12 @@ def parse_import_line(line: str) -> dict:
     填了后两段的自动走 OAuth2；只填 邮箱----密码 就是密码直连。
     第五段可选，是发件人显示名。用 ---- 时按位置取值；用逗号等分隔符时，
     只有第三段长得像 client_id 才当 OAuth，否则仍按老规矩当显示名。
+
+    三段格式（网易/QQ 的号常见）：
+        邮箱----登录密码----授权码
+    这类邮箱的 SMTP 只认授权码，登录密码填进去必然 535。第三段长得像授权码
+    （无空格的字母数字混排）时就取它当密码，并在返回里标出来——原来的行为是
+    把它当发件人显示名，等于把凭据印在每封信的 From 上，还顺手用了会失败的那个。
     """
     positional = "----" in line
     if positional:
@@ -775,16 +796,22 @@ def parse_import_line(line: str) -> dict:
     if len(tail) >= 2 and (positional or _CLIENT_ID_RE.match(tail[0])):
         client_id, refresh_token, tail = tail[0], tail[1], tail[2:]
 
+    note = ""
+    if positional and not client_id and len(tail) == 1 and _AUTH_CODE_RE.match(tail[0]):
+        password, tail = tail[0], []
+        note = "第三段按授权码用，登录密码已忽略"
+
     return {
         "email": email, "app_password": password,
         "client_id": client_id, "refresh_token": refresh_token,
         "display_name": " ".join(tail),
         "provider": guess_provider(email)["key"],
+        "_note": note,
     }
 
 
 def bulk_import(text: str) -> dict:
-    created, skipped, errors = [], [], []
+    created, skipped, errors, notes = [], [], [], []
     for lineno, raw in enumerate((text or "").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -792,14 +819,21 @@ def bulk_import(text: str) -> dict:
         payload = parse_import_line(line)
         if not payload:
             continue
+        note = payload.pop("_note", "")
+        if "daily_limit" not in payload:
+            limit = BULK_IMPORT_DAILY_LIMIT.get(payload.get("provider") or "")
+            if limit is not None:
+                payload["daily_limit"] = limit
         try:
             created.append(create_account(payload))
+            if note:
+                notes.append(f"{payload['email']}：{note}")
         except ValueError as exc:
             (skipped if "已存在" in str(exc) else errors).append(
                 payload["email"] if "已存在" in str(exc) else f"第 {lineno} 行：{exc}")
         except Exception as exc:
             errors.append(f"第 {lineno} 行：{exc}")
-    return {"created": created, "skipped": skipped, "errors": errors}
+    return {"created": created, "skipped": skipped, "errors": errors, "notes": notes}
 
 
 def open_smtp(account: dict) -> smtplib.SMTP:
@@ -846,6 +880,10 @@ def friendly_smtp_error(exc: Exception) -> str:
         hint = "SMTP 服务器地址解析不了，检查有没有写错。"
     elif "550" in raw and ("spam" in low or "频率" in raw):
         hint = "触发了服务商频控，建议降低每日配额、隔日再发。"
+    elif "dt:spm" in low or ("554" in raw and "163" in low):
+        hint = ("网易反垃圾把这封判成了垃圾邮件（DT:SPM）。多半是发件账号信誉不够"
+                "——新号、境外 IP 发信、正文带链接都会加重。换一个有正常使用历史的号，"
+                "或改用企业邮箱。报错里那个 u.163.com 链接是网易的自助申诉页。")
     return f"{raw}\n\n提示：{hint}" if hint else raw
 
 
@@ -2871,6 +2909,22 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
                           replace_domain_enabled: bool = False,
                           replacement_domain: str = "") -> dict:
     """从 Excel 建批次。已发过的行不入队，缺图/缺邮箱的行逐条点名。"""
+    # 发件账号这一关先过。解析 Excel 要抽图、要走 OCR 判断，几十行就是几秒钟，
+    # 跑完才告诉人「没有能用的号」是白等——何况这两个错都跟 Excel 内容无关。
+    replacement_domain = normalize_replacement_domain(replacement_domain)
+    if replace_domain_enabled and not replacement_domain:
+        raise ValueError("已勾选替换域名，请填写目标域名")
+    pool = list_accounts(only_sendable=True, purpose="material")
+    if replace_domain_enabled:
+        # 收窄到能替换发件域名的服务商。不收窄的话，池子里的 Outlook 号会被
+        # 正常配上，然后一封封 SendAsDenied——错误要等整批跑完才看得见。
+        pool = [a for a in pool if a["provider"] in DOMAIN_REPLACEMENT_PROVIDERS]
+        if not pool:
+            raise ValueError(
+                "勾了替换域名，但账号池里没有能替换发件域名的账号。"
+                "目前只有网易 163 的号支持（微软/Gmail 会拒绝代发），"
+                "请先在发件账号池里加一个 163 账号并测试通过。")
+
     parsed = parse_material_xlsx(file_bytes)
 
     history_hits = already_sent(
@@ -2909,11 +2963,6 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
         r.get("image_bytes") and any(
             not (r["vars"].get(f) or "").strip() for f in ("name", "id", "number"))
         for r in usable)
-    replacement_domain = normalize_replacement_domain(replacement_domain)
-    if replace_domain_enabled and not replacement_domain:
-        raise ValueError("已勾选替换域名，请填写目标域名")
-
-    pool = list_accounts(only_sendable=True, purpose="material")
     job_id = db.execute_and_fetch_id("""
         INSERT INTO mb_jobs (user_id, recipient, subject_tpl, body_tpl, signature_tpl,
             ocr_status, replace_domain_enabled, replacement_domain)
