@@ -43,6 +43,7 @@ from psycopg2.extras import execute_values
 
 import crypto_util
 import database as db
+import name_utils
 
 logger = logging.getLogger(__name__)
 
@@ -561,12 +562,18 @@ def _titleize(word: str) -> str:
 
 
 def name_from_email(email: str) -> str:
-    """amy.chen01@x.com -> Amy Chen"""
+    """amy.chen01@x.com -> Amy Chen；amychen01@x.com 也认
+
+    数字当分隔符（amy01chen），连写的没有分隔符可依，交给 name_utils 靠词表猜边界；
+    猜不动就整段留着（Amychen），不硬拆。
+    """
     local = (email or "").split("@", 1)[0].strip()
     if not local:
         return email or ""
     cleaned = re.sub(r"\d+$", "", local) or local
-    parts = [p for p in re.split(r"[._\-+]+", cleaned) if p] or [cleaned]
+    parts = [p for p in re.split(r"[._\-+\d]+", cleaned) if p] or [cleaned]
+    if len(parts) == 1:
+        parts = list(name_utils.split_name_token(parts[0]))
     return " ".join(_titleize(p) for p in parts)
 
 
