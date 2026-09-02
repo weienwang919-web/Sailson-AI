@@ -38,38 +38,56 @@ def init_connection_pool():
 
 @contextmanager
 def get_db_connection():
-    """获取数据库连接（上下文管理器）"""
+    """获取数据库连接（上下文管理器）。
+
+    出错时能不能简单 rollback 复用连接，还是必须整条连接报废重开，
+    只有实际尝试 rollback 才知道——语句超时（statement_timeout）之类的
+    OperationalError 一次 rollback 就能恢复，但网络断开/服务端主动断连后
+    再 rollback 会再报一次错，这时才需要把连接标记为坏连接、整条关掉，
+    否则它会一直卡在池子里，下一个借到它的请求立刻收到
+    「connection already closed」，直到进程重启才会消失。
+    """
     if not connection_pool:
         init_connection_pool()
 
     conn = connection_pool.getconn()
+    broken = False
     try:
         yield conn
         conn.commit()
-    except Exception as e:
-        conn.rollback()
-        raise e
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            broken = True
+        raise
     finally:
-        connection_pool.putconn(conn)
+        broken = broken or conn.closed
+        connection_pool.putconn(conn, close=broken)
 
 @contextmanager
 def get_db_cursor(commit=True):
-    """获取数据库游标（上下文管理器）"""
+    """获取数据库游标（上下文管理器），坏连接判定同 get_db_connection()。"""
     if not connection_pool:
         init_connection_pool()
 
     conn = connection_pool.getconn()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    broken = False
     try:
         yield cursor
         if commit:
             conn.commit()
-    except Exception as e:
-        conn.rollback()
-        raise e
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            broken = True
+        raise
     finally:
         cursor.close()
-        connection_pool.putconn(conn)
+        broken = broken or conn.closed
+        connection_pool.putconn(conn, close=broken)
 
 def query_one(sql, params=None):
     """查询单条记录"""
