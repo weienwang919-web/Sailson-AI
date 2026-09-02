@@ -4276,6 +4276,12 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
     elif filters.get("only_unboosted"):
         where.append("(v.is_boosted = FALSE OR v.is_boosted IS NULL)")
 
+    # 投流状态三态（人工标记）
+    boost_status = (filters.get("boost_status") or "").strip().lower()
+    if boost_status in BOOST_STATUSES:
+        where.append("v.boost_status = %s")
+        params.append(boost_status)
+
     engagement_where = _matrix_engagement_filter_sql(filters)
     if engagement_where:
         where.append(engagement_where)
@@ -4283,6 +4289,24 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
     views_where = _matrix_views_filter_sql(filters)
     if views_where:
         where.append(views_where)
+
+    # 投流占比门槛（如 ≥30%）。占比是每条视频的 付费播放/累计播放。
+    paid_ratio_min = filters.get("paid_ratio_min")
+    if paid_ratio_min not in (None, ""):
+        try:
+            where.append(f"{_AD_PAID_RATIO_SQL} >= %s")
+            params.append(float(paid_ratio_min))
+        except (TypeError, ValueError):
+            pass
+    # 上限档（如 ＜30%）。没有投流的视频占比算 0，也应落在「＜30%」里，
+    # 所以用 COALESCE 把 NULL 当 0，否则这些视频会被整个筛掉。
+    paid_ratio_max = filters.get("paid_ratio_max")
+    if paid_ratio_max not in (None, ""):
+        try:
+            where.append(f"COALESCE({_AD_PAID_RATIO_SQL}, 0) < %s")
+            params.append(float(paid_ratio_max))
+        except (TypeError, ValueError):
+            pass
 
     where_sql = " AND ".join(where)
 
@@ -4293,6 +4317,7 @@ def build_matrix_query_export(filters: dict[str, Any] | None = None) -> bytes:
             a.account_alias, a.account_name, a.display_name, a.region, a.account_type, a.profile_deep_link
         FROM tiktok_official_video_snapshots v
         LEFT JOIN tiktok_official_accounts a ON a.business_id = v.business_id
+        {_AD_PER_VIDEO_SQL}
         WHERE {where_sql}
         ORDER BY v.create_time DESC NULLS LAST, v.updated_at DESC
         LIMIT %s
