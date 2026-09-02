@@ -2,6 +2,7 @@
 数据库连接和操作工具
 """
 import os
+import time
 import logging
 import psycopg2
 from psycopg2 import pool
@@ -9,6 +10,27 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+# 到 Render 数据库偶发网络抖动会在查询执行中把连接打断
+# （psycopg2.OperationalError: SSL connection has been closed unexpectedly），
+# 坏连接已经在 get_db_cursor() 里被报废不复用，这里再给只读查询加一层
+# 指数退避重试（1s/2s/4s，最多3次），跟 tiktok_official_service._request()
+# 对 TikTok API 429/5xx 的重试是同一个思路。只用于 query_*，不用于
+# execute*——写操作重试有把同一条 INSERT/UPDATE 无意中跑两次的风险。
+_READ_RETRY_DELAYS = (1, 2, 4)
+
+
+def _with_read_retry(fn, *args, **kwargs):
+    last_exc = None
+    for attempt, delay in enumerate((0,) + _READ_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            return fn(*args, **kwargs)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            last_exc = e
+            logger.warning(f"只读查询遇到连接异常，第 {attempt + 1} 次尝试失败: {e}")
+    raise last_exc
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
@@ -89,31 +111,43 @@ def get_db_cursor(commit=True):
         broken = broken or conn.closed
         connection_pool.putconn(conn, close=broken)
 
-def query_one(sql, params=None):
-    """查询单条记录"""
+def _query_one(sql, params=None):
     with get_db_cursor(commit=False) as cursor:
         cursor.execute(sql, params or ())
         return cursor.fetchone()
+
+def _query_all(sql, params=None):
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute(sql, params or ())
+        return cursor.fetchall()
+
+def _query_one_with_timeout(sql, params=None, timeout='55s'):
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute(f"SET LOCAL statement_timeout = '{timeout}'")
+        cursor.execute(sql, params or ())
+        return cursor.fetchone()
+
+def _query_all_with_timeout(sql, params=None, timeout='55s'):
+    with get_db_cursor(commit=False) as cursor:
+        cursor.execute(f"SET LOCAL statement_timeout = '{timeout}'")
+        cursor.execute(sql, params or ())
+        return cursor.fetchall()
+
+def query_one(sql, params=None):
+    """查询单条记录"""
+    return _with_read_retry(_query_one, sql, params)
 
 def query_all(sql, params=None):
     """查询多条记录"""
-    with get_db_cursor(commit=False) as cursor:
-        cursor.execute(sql, params or ())
-        return cursor.fetchall()
+    return _with_read_retry(_query_all, sql, params)
 
 def query_one_with_timeout(sql, params=None, timeout='55s'):
     """查询单条记录（带 statement_timeout，防止慢查询拖垮 Render 代理）"""
-    with get_db_cursor(commit=False) as cursor:
-        cursor.execute(f"SET LOCAL statement_timeout = '{timeout}'")
-        cursor.execute(sql, params or ())
-        return cursor.fetchone()
+    return _with_read_retry(_query_one_with_timeout, sql, params, timeout)
 
 def query_all_with_timeout(sql, params=None, timeout='55s'):
     """查询多条记录（带 statement_timeout，防止慢查询拖垮 Render 代理）"""
-    with get_db_cursor(commit=False) as cursor:
-        cursor.execute(f"SET LOCAL statement_timeout = '{timeout}'")
-        cursor.execute(sql, params or ())
-        return cursor.fetchall()
+    return _with_read_retry(_query_all_with_timeout, sql, params, timeout)
 
 def execute(sql, params=None):
     """执行 SQL（INSERT/UPDATE/DELETE）"""
