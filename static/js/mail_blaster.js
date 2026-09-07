@@ -62,11 +62,53 @@ function ensureReplacementDomain() {
 }
 
 function toggleReplacementDomain() {
+  if (JOB && ['queued', 'running', 'sending'].includes(JOB.job.status)) {
+    document.getElementById('replace-domain-enabled').checked = !!JOB.job.replace_domain_enabled;
+    return toast('批次正在发送，请先暂停后再切换账号模式', true);
+  }
   const enabled = document.getElementById('replace-domain-enabled').checked;
   const input = document.getElementById('replacement-domain');
   input.disabled = !enabled;
   if (enabled) input.focus();
   renderDomainPoolHint();
+  if (JOB) rematchMaterialAccounts();
+}
+
+function materialPool() {
+  const replace = document.getElementById('replace-domain-enabled').checked;
+  return POOL.filter(a => !a.hidden && (replace
+    ? DOMAIN_REPLACEMENT_PROVIDERS.includes(a.provider)
+    : a.email.toLowerCase().endsWith('@hotmail.com')));
+}
+
+function rematchMaterialAccounts() {
+  const edits = new Map(collect().items.map(i => [i.id, i]));
+  const pool = materialPool().filter(usable);
+  const usedByTarget = new Map();
+  const targetKey = item => (item.recipient || document.getElementById('recipient').value || '').trim().toLowerCase();
+  for (const item of JOB.items.filter(i => ['sent', 'sending'].includes(i.status))) {
+    const key = targetKey(item);
+    if (!usedByTarget.has(key)) usedByTarget.set(key, new Set());
+    usedByTarget.get(key).add(item.sender_account_id);
+  }
+  JOB.items = JOB.items.map(item => {
+    if (['sent', 'sending'].includes(item.status)) return item;
+    const edited = edits.get(item.id) || {};
+    const key = targetKey(item);
+    if (!usedByTarget.has(key)) usedByTarget.set(key, new Set());
+    const used = usedByTarget.get(key);
+    const blocked = COOLDOWNS[key] || {};
+    const remaining = pool.filter(a => !used.has(a.id));
+    const candidates = remaining.length ? remaining : pool;
+    const account = remaining.find(a => !blocked[a.id]) ||
+      [...candidates].sort((a, b) => String(blocked[a.id] || '').localeCompare(String(blocked[b.id] || '')))[0];
+    if (account) used.add(account.id);
+    return { ...item, ...edited, sender_account_id: account?.id || null,
+      from_display: account?.effective_display_name || '',
+      signature_name: account?.effective_signature_name || '' };
+  });
+  renderRows();
+  toast('已按当前模式重新分配未发送行，预览或发送时保存');
 }
 
 /* 勾上之后当场说清楚这批会用哪些号发。服务端也会拦（create_job_from_excel），
@@ -74,16 +116,13 @@ function toggleReplacementDomain() {
 function renderDomainPoolHint() {
   const box = document.getElementById('replace-domain-hint');
   if (!box) return;
-  if (!document.getElementById('replace-domain-enabled').checked) {
-    box.textContent = '';
-    return;
-  }
-  const ok = POOL.filter(a => usable(a) && DOMAIN_REPLACEMENT_PROVIDERS.includes(a.provider));
+  const replace = document.getElementById('replace-domain-enabled').checked;
+  const label = replace ? '163' : 'Hotmail';
+  const ok = materialPool().filter(usable);
   box.innerHTML = ok.length
-    ? `将只用这 ${ok.length} 个账号发送：${ok.map(a => esc(a.email)).join('、')}` +
-      '（其余账号的服务商会拒绝代发，已自动排除）'
-    : '<span style="color:var(--err)">账号池里没有能替换发件域名的账号。' +
-      '目前只有网易 163 的号支持，微软 / Gmail 会拒绝代发。</span>';
+    ? `当前自动选择 ${ok.length} 个已通过认证测试的 ${label} 账号。` +
+      (replace ? '域名代发权限和实际送达仍需单独验证。' : '')
+    : `<span style="color:var(--err)">当前模式没有已启用且测试通过的 ${label} 账号。</span>`;
 }
 
 async function uploadXlsx(file) {
@@ -188,7 +227,10 @@ function statusCell(item) {
 function renderRows() {
   document.getElementById('pair-rows').innerHTML = JOB.items.map(item => {
     const blocked = COOLDOWNS[item.recipient || ''] || {};
-    const options = ['<option value="">— 不发 —</option>'].concat(POOL.map(a => {
+    const choices = materialPool();
+    const unavailable = item.sender_account_id && !choices.some(a => a.id === item.sender_account_id)
+      ? `<option value="${item.sender_account_id}" selected disabled>原账号已隐藏或不属于当前模式，请重新选择</option>` : '';
+    const options = ['<option value="">— 不发 —</option>', unavailable].concat(choices.map(a => {
       const tag = !usable(a) ? '（未通过测试）'
                 : (blocked[a.id] ? `（${COOLDOWN_DAYS}天内给这人发过）` : '');
       return `<option value="${a.id}" ${a.id === item.sender_account_id ? 'selected' : ''}>` +
@@ -201,7 +243,7 @@ function renderRows() {
       <tr data-id="${item.id}" data-img="${item.image_url ? 1 : 0}">
         <td>${item.image_url ? `<img class="thumb" src="${item.image_url}">` : ''}</td>
         <td class="mono">${esc(item.recipient) || '<span class="dim">用兜底值</span>'}</td>
-        <td><select class="p-account" onchange="onAccountChange(${item.id}, this.value)">${options}</select></td>
+        <td><select class="p-account" ${['sent', 'sending'].includes(item.status) ? 'disabled' : ''} onchange="onAccountChange(${item.id}, this.value)">${options}</select></td>
         <td><input type="text" class="p-display" value="${esc(item.from_display)}"></td>
         <td class="c-attach" data-attach-for="${item.id}"></td>
         ${custom}

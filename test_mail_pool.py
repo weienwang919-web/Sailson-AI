@@ -1,0 +1,68 @@
+import unittest
+from unittest.mock import patch
+
+import mail_blaster_service as mb
+
+
+class MaterialPoolTests(unittest.TestCase):
+    def setUp(self):
+        self.base = dict(enabled=True, status='ready', auth_mode='password', has_password=True)
+        self.accounts = [
+            dict(self.base, id=1, email='one@hotmail.com', provider='outlook'),
+            dict(self.base, id=2, email='two@163.com', provider='163'),
+            dict(self.base, id=3, email='old@outlook.com', provider='outlook'),
+            dict(self.base, id=4, email='old@sailson.com', provider='aliyun_qiye'),
+            dict(self.base, id=5, email='hidden@hotmail.com', provider='outlook', hidden=True),
+            dict(self.base, id=6, email='draft@hotmail.com', provider='outlook', status='draft'),
+        ]
+
+    def test_default_pool_only_uses_ready_hotmail(self):
+        with patch.object(mb, 'list_accounts', return_value=self.accounts):
+            self.assertEqual([a['id'] for a in mb.material_sender_pool(False)], [1])
+
+    def test_replacement_pool_only_uses_163(self):
+        with patch.object(mb, 'list_accounts', return_value=self.accounts):
+            self.assertEqual([a['id'] for a in mb.material_sender_pool(True)], [2])
+
+    def test_hidden_accounts_are_not_usable(self):
+        self.assertFalse(mb.usable_account(self.accounts[4]))
+
+    def test_mixed_case_hotmail_is_supported(self):
+        self.assertTrue(mb.material_account_matches({'email': 'One@Hotmail.COM'}, False))
+
+    def test_list_hides_archived_accounts_unless_requested(self):
+        with patch.object(mb.db, 'query_all', return_value=[]) as query:
+            mb.list_accounts()
+            self.assertIn('hidden = FALSE', query.call_args.args[0])
+            mb.list_accounts(include_hidden=True)
+            self.assertNotIn('hidden = FALSE', query.call_args.args[0])
+            mb.list_accounts(include_hidden=True, only_sendable=True)
+            self.assertIn('hidden = FALSE', query.call_args.args[0])
+
+    def test_hidden_migration_is_in_schema_check(self):
+        self.assertIn(('mb_sender_accounts', 'hidden'), mb._LATEST_COLUMNS)
+
+    def test_no_matching_pool_fails_before_excel_parse(self):
+        with patch.object(mb, 'list_accounts', return_value=[self.accounts[2]]), \
+                patch.object(mb, 'parse_material_xlsx') as parse:
+            with self.assertRaisesRegex(ValueError, 'Hotmail'):
+                mb.create_job_from_excel(file_bytes=b'invalid')
+        parse.assert_not_called()
+
+    def test_hiding_keeps_credentials_and_enabled_state(self):
+        row = dict(id=10, email='old@outlook.com', provider='outlook', enabled=True,
+                   auth_mode='xoauth2', encrypted_client_id='encrypted',
+                   encrypted_refresh_token='encrypted', status='ready')
+        with patch.object(mb, 'get_account', return_value=row), \
+                patch.object(mb.db, 'execute') as execute, \
+                patch.object(mb, 'serialize_account', side_effect=lambda x: x):
+            mb.update_account(10, {'hidden': True})
+        sql, values = execute.call_args.args
+        self.assertTrue(values['hidden'])
+        self.assertTrue(values['enabled'])
+        self.assertNotIn('encrypted_refresh_token', sql)
+        self.assertNotIn("status = 'draft'", sql)
+
+
+if __name__ == '__main__':
+    unittest.main()

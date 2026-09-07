@@ -80,5 +80,5 @@ function patchRows(tbody, rows, cells) {
 }
 
 // 密码模式要有密码，OAuth 模式要有 refresh_token
-const usable = a => a.enabled && a.status === 'ready' &&
+const usable = a => !a.hidden && a.enabled && a.status === 'ready' &&
   (a.auth_mode === 'xoauth2' ? (a.has_client_id && a.has_refresh_token) : a.has_password);

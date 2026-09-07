@@ -10540,6 +10540,7 @@ def api_mb_list_accounts():
         purpose = (request.args.get('purpose') or '').strip()
         accounts = mail_blaster_service.list_accounts(
             only_sendable=only,
+            include_hidden=request.args.get('include_hidden') == '1',
             purpose=purpose if purpose in ('material', 'outreach') else '')
         target = (request.args.get('cooldown_for') or '').strip().lower()
         if target:

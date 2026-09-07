@@ -113,6 +113,7 @@ _LATEST_COLUMNS = {
     ("mb_jobs", "mode"), ("mb_jobs", "sender_account_id"),
     ("mb_templates", "mode"), ("mb_history", "mode"),
     ("mb_sender_accounts", "purpose"), ("mb_sender_accounts", "imap_host"),
+    ("mb_sender_accounts", "hidden"),
 }
 
 
@@ -443,6 +444,7 @@ def ensure_schema() -> None:
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS auth_mode VARCHAR(16) NOT NULL DEFAULT 'password'",
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS encrypted_client_id TEXT",
         "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS encrypted_refresh_token TEXT",
+        "ALTER TABLE mb_sender_accounts ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE",
         # KOL 建联：素材提交是「一个收件人 ← N 个发件账号」，建联是「一个发件账号 → N 个收件人」，
         # 轴反过来了。mode 区分两者，sender_account_id 存建联整批共用的那个账号。
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'material'",
@@ -597,6 +599,7 @@ def serialize_account(row: dict) -> dict:
         "smtp_username": row.get("smtp_username") or "",
         "use_ssl": bool(row["use_ssl"]), "use_tls": bool(row["use_tls"]),
         "enabled": bool(row["enabled"]), "sort_order": row.get("sort_order") or 0,
+        "hidden": bool(row.get("hidden")),
         # None = 不限量，0 = 今天停发，别用 or 把两者都吃掉
         "daily_limit": (None if row.get("daily_limit") is None else int(row["daily_limit"])),
         "auth_mode": row.get("auth_mode") or "password",
@@ -622,16 +625,19 @@ def serialize_account(row: dict) -> dict:
 def usable_account(acc: dict) -> bool:
     """能不能拿来发信。和前端 mail_blaster_common.js 里的 usable() 是同一条规则，
     改一处要同步改另一处——前端只是为了少一次往返，服务端这份才是准的。"""
-    if not acc.get("enabled") or acc.get("status") != "ready":
+    if acc.get("hidden") or not acc.get("enabled") or acc.get("status") != "ready":
         return False
     if (acc.get("auth_mode") or "password") == "xoauth2":
         return bool(acc.get("has_client_id") and acc.get("has_refresh_token"))
     return bool(acc.get("has_password"))
 
 
-def list_accounts(only_sendable: bool = False, purpose: str = "") -> list[dict]:
+def list_accounts(only_sendable: bool = False, purpose: str = "",
+                  include_hidden: bool = False) -> list[dict]:
     sql = "SELECT * FROM mb_sender_accounts WHERE 1=1"
     args: list = []
+    if not include_hidden or only_sendable:
+        sql += " AND hidden = FALSE"
     if only_sendable:
         # 密码模式要有密码，OAuth 模式要有 refresh_token
         sql += (" AND enabled = TRUE AND status = 'ready'"
@@ -642,6 +648,19 @@ def list_accounts(only_sendable: bool = False, purpose: str = "") -> list[dict]:
         args.append(purpose)
     sql += " ORDER BY sort_order ASC, id ASC"
     return [serialize_account(dict(r)) for r in db.query_all(sql, tuple(args))]
+
+
+def material_account_matches(account: dict, replace_domain_enabled: bool) -> bool:
+    if account.get("hidden"):
+        return False
+    if replace_domain_enabled:
+        return account.get("provider") in DOMAIN_REPLACEMENT_PROVIDERS
+    return (account.get("email") or "").strip().lower().endswith("@hotmail.com")
+
+
+def material_sender_pool(replace_domain_enabled: bool) -> list[dict]:
+    return [a for a in list_accounts(only_sendable=True, purpose="material")
+            if usable_account(a) and material_account_matches(a, replace_domain_enabled)]
 
 
 def get_account(account_id: int) -> dict | None:
@@ -714,6 +733,7 @@ def _normalize_account(payload: dict) -> dict:
         "use_ssl": use_ssl, "use_tls": use_tls,
         "imap_host": imap_host or None, "imap_port": imap_port, "imap_ssl": imap_ssl,
         "enabled": bool(payload.get("enabled", True)),
+        "hidden": bool(payload.get("hidden", False)),
         "sort_order": sort_order,
         "daily_limit": daily_limit,
     }
@@ -734,12 +754,12 @@ def create_account(payload: dict) -> dict:
     new_id = db.execute_and_fetch_id("""
         INSERT INTO mb_sender_accounts
             (email, display_name, signature_name, provider, smtp_host, smtp_port,
-             smtp_username, use_ssl, use_tls, enabled, sort_order, daily_limit, auth_mode,
+             smtp_username, use_ssl, use_tls, enabled, hidden, sort_order, daily_limit, auth_mode,
              purpose, imap_host, imap_port, imap_ssl,
              encrypted_password, encrypted_client_id, encrypted_refresh_token)
         VALUES (%(email)s, %(display_name)s, %(signature_name)s, %(provider)s, %(smtp_host)s,
                 %(smtp_port)s, %(smtp_username)s, %(use_ssl)s, %(use_tls)s, %(enabled)s,
-                %(sort_order)s, %(daily_limit)s, %(auth_mode)s,
+                %(hidden)s, %(sort_order)s, %(daily_limit)s, %(auth_mode)s,
                 %(purpose)s, %(imap_host)s, %(imap_port)s, %(imap_ssl)s,
                 %(pwd)s, %(cid)s, %(rtok)s)
         RETURNING id
@@ -2824,7 +2844,7 @@ def sync_job(job_id: int, data: dict) -> None:
             item_attachments[int(item["id"])] = item.get("attachments") or []
         db.execute(
             f"UPDATE mb_items SET {', '.join(fields)} "
-            "WHERE id = %(iid)s AND job_id = %(jid)s AND status <> 'sent'", params)
+            "WHERE id = %(iid)s AND job_id = %(jid)s AND status NOT IN ('sent', 'sending')", params)
 
     sync_item_attachments(job_id, item_attachments)
 
@@ -2902,6 +2922,10 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
         account = get_account(account_id) if account_id else None
         if account is None:
             raise ValueError("还没选发件账号")
+        if account.get("hidden") or not account.get("enabled"):
+            raise ValueError("该发件账号已隐藏或停用，请重新选择")
+        if not is_outreach and not material_account_matches(account, bool(job.get("replace_domain_enabled"))):
+            raise ValueError("当前模式的账号不匹配：不替换域名使用 Hotmail，替换域名使用 163")
 
         blob = None
         if item.get("image_id"):
@@ -3166,16 +3190,10 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
     replacement_domain = normalize_replacement_domain(replacement_domain)
     if replace_domain_enabled and not replacement_domain:
         raise ValueError("已勾选替换域名，请填写目标域名")
-    pool = list_accounts(only_sendable=True, purpose="material")
-    if replace_domain_enabled:
-        # 收窄到能替换发件域名的服务商。不收窄的话，池子里的 Outlook 号会被
-        # 正常配上，然后一封封 SendAsDenied——错误要等整批跑完才看得见。
-        pool = [a for a in pool if a["provider"] in DOMAIN_REPLACEMENT_PROVIDERS]
-        if not pool:
-            raise ValueError(
-                "勾了替换域名，但账号池里没有能替换发件域名的账号。"
-                "目前只有网易 163 的号支持（微软/Gmail 会拒绝代发），"
-                "请先在发件账号池里加一个 163 账号并测试通过。")
+    pool = material_sender_pool(replace_domain_enabled)
+    if not pool:
+        label = "163" if replace_domain_enabled else "Hotmail"
+        raise ValueError(f"当前模式没有已启用且测试通过的 {label} 账号，请先更新账号池状态")
 
     parsed = parse_material_xlsx(file_bytes)
 

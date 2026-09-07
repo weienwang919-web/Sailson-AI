@@ -14,7 +14,8 @@ const PURPOSE_TEXT = { material: '素材提交', outreach: 'KOL 建联', both: '
 
 async function renderAccounts() {
   await loadPool();
-  const all = (await api('/api/mail-blaster/accounts')).accounts;   // 弹窗里列全部，不按用途过滤
+  const showHidden = document.getElementById('acc-show-hidden')?.checked;
+  const all = (await api('/api/mail-blaster/accounts' + (showHidden ? '?include_hidden=1' : ''))).accounts;
   ACC_ALL = all;
   document.getElementById('acc-empty').style.display = all.length ? 'none' : '';
   document.getElementById('acc-rows').innerHTML = all.map(a => `
@@ -22,7 +23,8 @@ async function renderAccounts() {
       <td><input type="checkbox" ${a.enabled ? 'checked' : ''}
                  onchange="toggleAccount(${a.id}, this.checked)"></td>
       <td class="mono">${esc(a.email)}${
-        a.auth_mode === 'xoauth2' ? ' <span class="pill pill-oauth">OAuth2</span>' : ''}</td>
+        a.auth_mode === 'xoauth2' ? ' <span class="pill pill-oauth">OAuth2</span>' : ''}${
+        a.hidden ? ' <span class="pill">已隐藏</span>' : ''}</td>
       <td><span class="pill">${PURPOSE_TEXT[a.purpose] || a.purpose}</span></td>
       <td class="mono">${esc(a.smtp_host)}:${a.smtp_port}${
         a.use_ssl ? ' SSL' : (a.use_tls ? ' TLS' : '')}</td>
@@ -30,11 +32,13 @@ async function renderAccounts() {
       <td class="mono">${a.daily_limit === null ? '不限'
         : a.daily_limit + (a.daily_limit === 0 ? ' <span class="pill">已停发</span>' : '')}</td>
       <td><span class="pill pill-${a.status}">${ACC_STATUS_TEXT[a.status] || a.status}</span>
+        ${a.last_test_at ? `<div class="hint">认证测试：${esc(a.last_test_at.replace('T', ' '))} UTC</div>` : ''}
         ${a.last_error ? `<div class="errbox">${esc(a.last_error)}</div>` : ''}</td>
       <td>
         <button class="small" onclick="editAccount(${a.id})">编辑</button>
         <button class="small" onclick="testAccount(${a.id}, this)">测发信</button>
         <button class="small" onclick="testImap(${a.id}, this)">测收信</button>
+        <button class="small" onclick="hideAccount(${a.id}, ${!a.hidden})">${a.hidden ? '恢复显示' : '隐藏'}</button>
         <button class="small danger" onclick="removeAccount(${a.id})">删除</button>
       </td>
     </tr>`).join('');
@@ -99,6 +103,13 @@ async function toggleAccount(id, enabled) {
   try { await api(`/api/mail-blaster/accounts/${id}`, { method: 'PUT', body: { enabled } }); }
   catch (e) { toast(e.message, true); }
   await loadPool();
+}
+
+async function hideAccount(id, hidden) {
+  try {
+    await api(`/api/mail-blaster/accounts/${id}`, { method: 'PUT', body: { hidden } });
+    await renderAccounts();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function removeAccount(id) {

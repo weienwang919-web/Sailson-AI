@@ -404,7 +404,8 @@ def fetch_account(account_id: int, folder: str = "INBOX", limit: int = FETCH_BAT
 
 def receivable_accounts() -> list[dict]:
     """已配置收信的建联账号，支持密码和 OAuth2 认证。"""
-    return [a for a in mb.list_accounts(purpose="outreach") if a["can_receive"] and a["enabled"]]
+    return [a for a in mb.list_accounts(purpose="outreach", include_hidden=True)
+            if a["can_receive"] and a["enabled"]]
 
 
 def fetch_all(progress=None) -> dict:
