@@ -158,7 +158,8 @@ async function loadCooldowns(recipients) {
 
 /* ---------- 配对表 ---------- */
 function statusCell(item) {
-  let h = `<span class="pill pill-${item.status}">${STATUS_TEXT[item.status] || item.status}</span>`;
+  const label = item.status === 'sent' ? '已提交发件服务器' : (STATUS_TEXT[item.status] || item.status);
+  let h = `<span class="pill pill-${item.status}">${label}</span>`;
   if (item.status === 'failed') {
     h += `<button class="small" style="margin-top:6px" onclick="resend(${item.id})">重发这一封</button>` +
          `<div class="errbox">${esc(item.error)}</div>`;
@@ -171,9 +172,15 @@ function statusCell(item) {
       h += `<button class="small" style="margin-top:6px" onclick="resend(${item.id})">发这一封</button>`;
     }
   }
-  if (item.status === 'sent' && item.smtp_response) {
-    h += `<div class="smtp-resp" title="服务器接收时的应答。250 只代表它收下了，不代表会投递。">` +
-         `${esc(item.smtp_response)}</div>`;
+  if (item.status === 'sent') {
+    h += '<div class="smtp-resp">收件方是否收到尚未确认</div>';
+    if (item.smtp_response) {
+      h += `<div class="smtp-resp" title="发件服务器的接收回执，不代表收件方已收到。">` +
+           `${esc(item.smtp_response)}</div>`;
+    }
+    if (item.message_id) {
+      h += `<div class="smtp-resp">Message-ID：${esc(item.message_id)}</div>`;
+    }
   }
   return h;
 }
@@ -451,15 +458,19 @@ async function refresh() {
   document.getElementById('progress').firstElementChild.style.width =
     `${c.total ? (done / c.total * 100) : 0}%`;
   document.getElementById('send-summary').textContent =
-    `${done} / ${c.total} 已处理 · 成功 ${c.sent || 0} · 失败 ${c.failed || 0}` +
-    (c.skipped ? ` · 跳过 ${c.skipped}` : '');
+    `${done} / ${c.total} 已处理 · 发件服务器已接收 ${c.sent || 0} · 失败 ${c.failed || 0}` +
+    (c.skipped ? ` · 跳过 ${c.skipped}` : '') +
+    (done < c.total ? ` · 待确认 ${c.total - done}` : '');
 
   if (data.job.status === 'done') {
     clearInterval(pollTimer); pollTimer = null;
     document.getElementById('send-btn').disabled = false;
     document.getElementById('pause-box').innerHTML = data.job.paused_reason
       ? `<div class="errbox">${esc(data.job.paused_reason)}</div>` : '';
-    toast(c.failed ? `发送结束，有 ${c.failed} 封失败` : '全部发送成功', !!c.failed);
+    const incomplete = c.failed || c.skipped || done < c.total || data.job.paused_reason;
+    toast(`本轮处理结束：发件服务器已接收 ${c.sent || 0} 封，失败 ${c.failed || 0} 封，跳过 ${c.skipped || 0} 封` +
+          (done < c.total ? `，待确认 ${c.total - done} 封` : '') +
+          '。收件方是否收到尚未确认。', !!incomplete);
   }
 }
 

@@ -62,6 +62,7 @@ async function bulkImport() {
     const r = await api('/api/mail-blaster/accounts/bulk-import', { method: 'POST', body: { text } });
     document.getElementById('acc-bulk-result').innerHTML =
       `<div class="smtp-resp">新增 ${r.created.length} 个` +
+      ((r.updated || []).length ? `，升级 OAuth2 ${r.updated.length} 个` : '') +
       (r.skipped.length ? `，跳过已存在 ${r.skipped.length} 个` : '') + '</div>' +
       // 解析时做过判断的行要让人看见——比如「第三段按授权码用」。
       // 猜错了得能当场发现，而不是等发信报 535 才回头查
@@ -82,7 +83,7 @@ async function testAccount(id, btn) {
   await renderAccounts();
 }
 
-/* 收信单独测：一个号可能能发不能收（素材那批 OAuth2 号的 scope 里只有 SMTP.Send）。
+/* 收信单独测：SMTP 和 IMAP 权限分别验证。
    结果不写库，只即时反馈——status 那一列表示的是发信可用性。 */
 async function testImap(id, btn) {
   const label = btn.textContent;

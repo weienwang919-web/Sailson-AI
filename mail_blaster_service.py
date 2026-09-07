@@ -515,7 +515,7 @@ PROVIDERS = [
      "imap_host": "outlook.office365.com", "imap_port": 993, "imap_ssl": True,
      "note": "微软正在收紧密码直连。报 535 5.7.139 说明该账号已被禁用密码登录，只能改走 OAuth2。"
              "注意 OAuth2 账号收信需要 IMAP.AccessAsUser.All 权限，"
-             "现有授权只申请了 SMTP.Send，收不了信。"},
+             "可分别点击测发信、测收信验证授权。"},
     {"key": "gmail", "label": "Gmail", "smtp_host": "smtp.gmail.com",
      "smtp_port": 587, "use_ssl": False, "use_tls": True,
      "domains": ["gmail.com", "googlemail.com"],
@@ -604,9 +604,12 @@ def serialize_account(row: dict) -> dict:
         "imap_host": row.get("imap_host") or "",
         "imap_port": row.get("imap_port"),
         "imap_ssl": bool(row.get("imap_ssl", True)),
-        # 能不能收信：要有 IMAP 地址，且不是只申请了 SMTP.Send 的 OAuth2 号
+        # 表示具备收信配置；服务端权限是否有效由「测收信」确认。
         "can_receive": bool(row.get("imap_host"))
-                       and (row.get("auth_mode") or "password") == "password",
+                       and (bool(row.get("encrypted_password"))
+                            if (row.get("auth_mode") or "password") == "password"
+                            else bool(row.get("encrypted_client_id")
+                                      and row.get("encrypted_refresh_token"))),
         "has_client_id": bool(row.get("encrypted_client_id")),
         "has_refresh_token": bool(row.get("encrypted_refresh_token")),
         "status": row.get("status") or "draft",
@@ -749,6 +752,8 @@ def update_account(account_id: int, payload: dict) -> dict:
     if current is None:
         raise ValueError(f"账号 {account_id} 不存在")
     merged = {**current, **{k: v for k, v in payload.items() if v is not None}}
+    if (payload.get("refresh_token") or "").strip() and not payload.get("auth_mode"):
+        merged["auth_mode"] = "xoauth2"
     for k in ("display_name", "signature_name", "smtp_username"):
         if k in payload:
             merged[k] = payload[k]
@@ -835,7 +840,7 @@ def parse_import_line(line: str) -> dict:
 
 
 def bulk_import(text: str) -> dict:
-    created, skipped, errors, notes = [], [], [], []
+    created, updated, skipped, errors, notes = [], [], [], [], []
     for lineno, raw in enumerate((text or "").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -849,6 +854,20 @@ def bulk_import(text: str) -> dict:
             if limit is not None:
                 payload["daily_limit"] = limit
         try:
+            # 补交 OAuth2 凭据时升级旧密码账号；完整 OAuth2 账号不覆盖，
+            # 避免重复粘贴旧文件把已经轮换的 refresh_token 写回去。
+            if payload.get("client_id") and payload.get("refresh_token"):
+                existing = db.query_one(
+                    "SELECT * FROM mb_sender_accounts WHERE email = %s",
+                    (payload["email"].strip().lower(),))
+                if existing and (existing.get("auth_mode") != "xoauth2"
+                                 or not existing.get("encrypted_client_id")
+                                 or not existing.get("encrypted_refresh_token")):
+                    updated.append(update_account(existing["id"], {
+                        "auth_mode": "xoauth2", "client_id": payload["client_id"],
+                        "refresh_token": payload["refresh_token"],
+                    }))
+                    continue
             created.append(create_account(payload))
             if note:
                 notes.append(f"{payload['email']}：{note}")
@@ -857,7 +876,8 @@ def bulk_import(text: str) -> dict:
                 payload["email"] if "已存在" in str(exc) else f"第 {lineno} 行：{exc}")
         except Exception as exc:
             errors.append(f"第 {lineno} 行：{exc}")
-    return {"created": created, "skipped": skipped, "errors": errors, "notes": notes}
+    return {"created": created, "updated": updated, "skipped": skipped,
+            "errors": errors, "notes": notes}
 
 
 def open_smtp(account: dict) -> smtplib.SMTP:
@@ -871,11 +891,13 @@ def open_smtp(account: dict) -> smtplib.SMTP:
             client.starttls()
             client.ehlo()
         _do_login(client, account)
-    except Exception:
+    except Exception as exc:
         try:
             client.close()
         except Exception:
             pass
+        if _can_use_graph_fallback(account, exc):
+            return _GraphMailClient(account)
         raise
     return client
 
@@ -889,7 +911,8 @@ def friendly_smtp_error(exc: Exception) -> str:
         hint = ("SMTP 服务商拒绝代发：当前认证账号没有权限以替换后的发件地址发送。"
                 "Outlook/Exchange 通常要求管理员授予 Send As 权限，或改用允许该域名发信的账号/企业邮。")
     elif "5.7.139" in raw or "basic authentication is disabled" in low:
-        hint = "微软已对该账号禁用密码直连 SMTP，需改用 OAuth2 或换企业邮箱。"
+        hint = ("微软禁用了该邮箱的 SMTP AUTH；OAuth2 也可能被此设置拒绝。"
+                "Outlook OAuth2 账号可使用已授权的 Microsoft Graph Mail.Send 发信。")
     elif "535" in raw and "5.7.8" in raw:
         hint = ("Gmail 已永久关闭「登录密码直连 SMTP」。需先开两步验证，"
                 "再到 myaccount.google.com/apppasswords 生成 16 位应用专用密码（去掉空格）。")
@@ -933,15 +956,14 @@ def test_account(account_id: int) -> dict:
 # --------------------------------------------------------------------------- #
 # 收信（IMAP）
 # --------------------------------------------------------------------------- #
-# 建联要靠这条链路收回信。素材提交那批 Outlook 号走的是 OAuth2，
-# 而当初申请的 scope 只有 SMTP.Send，收不了信——见 MICROSOFT_SCOPE。
-# 建联用的阿里云企业邮箱是密码认证，不受这个限制。
+# SMTP 和 IMAP 分别申请令牌，已有 SMTP 权限不代表也有 IMAP 权限。
 
 def friendly_imap_error(exc: Exception) -> str:
     text = str(exc)
     low = text.lower()
     if "authentication" in low or ("login" in low and "fail" in low) or "auth" in low:
         return (f"IMAP 认证被拒：{text}\n\n"
+                "Outlook OAuth2：确认已授权 IMAP.AccessAsUser.All，且邮箱已开启 IMAP；"
                 "阿里云企业邮箱：确认管理后台已开启 IMAP 服务；"
                 "开了安全设置的话密码要填客户端专用密码而不是登录密码。")
     if "timed out" in low or "timeout" in low:
@@ -960,14 +982,10 @@ def open_imap(account: dict):
     host = (account.get("imap_host") or "").strip()
     if not host:
         raise ValueError(f"{account['email']}：没有配 IMAP 服务器，这个号只能发不能收")
-    if (account.get("auth_mode") or "password") != "password":
-        raise ValueError(
-            f"{account['email']} 是 OAuth2 账号，收信需要 IMAP.AccessAsUser.All 权限，"
-            "而现有 refresh_token 只申请了 SMTP.Send（见 MICROSOFT_SCOPE）。"
-            "要用这个号收信得重新走一次授权。")
+    oauth = (account.get("auth_mode") or "password") == "xoauth2"
     port = int(account.get("imap_port") or 993)
     password = crypto_util.decrypt(account.get("encrypted_password")) or ""
-    if not password:
+    if not oauth and not password:
         raise ValueError(f"{account['email']}：没有密码，没法登录 IMAP")
     username = (account.get("smtp_username") or account["email"]).strip()
 
@@ -975,7 +993,34 @@ def open_imap(account: dict):
               if account.get("imap_ssl", True)
               else imaplib.IMAP4(host, port, timeout=IMAP_TIMEOUT))
     try:
-        client.login(username, password)
+        if not account.get("imap_ssl", True):
+            import ssl
+            client.starttls(ssl_context=ssl.create_default_context())
+        if oauth:
+            client_id = crypto_util.decrypt(account.get("encrypted_client_id"))
+            refresh_token = crypto_util.decrypt(account.get("encrypted_refresh_token"))
+            if not client_id or not refresh_token:
+                raise ValueError("该账号是 OAuth2 模式，但缺 client_id 或 refresh_token")
+            token = get_access_token(provider=account.get("provider"),
+                                     client_id=client_id, refresh_token=refresh_token,
+                                     protocol="imap")
+            auth_string = build_xoauth2(username, token).encode("utf-8")
+            sent = False
+
+            def respond(challenge):
+                nonlocal sent
+                if sent:
+                    return b""
+                sent = True
+                return auth_string
+
+            try:
+                client.authenticate("XOAUTH2", respond)
+            except imaplib.IMAP4.error:
+                invalidate_token(client_id, refresh_token)
+                raise
+        else:
+            client.login(username, password)
     except Exception:
         try:
             client.logout()
@@ -1639,11 +1684,13 @@ def _open_smtp_recording(account: dict):
             client.starttls()
             client.ehlo()
         _do_login(client, account)
-    except Exception:
+    except Exception as exc:
         try:
             client.close()
         except Exception:
             pass
+        if _can_use_graph_fallback(account, exc):
+            return _GraphMailClient(account)
         raise
     return client
 
@@ -3368,12 +3415,14 @@ def run_ocr_for_job(job_id: int, progress=None) -> dict:
 # --------------------------------------------------------------------------- #
 
 MICROSOFT_SCOPE = "https://outlook.office.com/SMTP.Send offline_access"
+MICROSOFT_IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+MICROSOFT_GRAPH_SCOPE = "https://graph.microsoft.com/Mail.Send offline_access"
 GOOGLE_SCOPE = "https://mail.google.com/"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 OAUTH_TIMEOUT = 20
 TOKEN_EXPIRY_MARGIN = 300      # 提前 5 分钟当过期，避免拿到手就正好失效
 
-_token_cache: dict[tuple[str, str], tuple[str, float]] = {}
+_token_cache: dict[tuple[str, str, str, str], tuple[str, float]] = {}
 _token_lock = __import__("threading").Lock()
 
 
@@ -3400,17 +3449,22 @@ def _explain_oauth(body: str) -> str:
     if "invalid_client" in low:
         return "client_id 不对，或该应用要求 client_secret"
     if "unauthorized_client" in low:
-        return "该 client_id 没有被授权使用这个 scope（SMTP.Send）"
+        return "该应用或账号没有被授权使用请求的邮件权限"
     if "invalid_scope" in low:
         return "scope 不被接受，检查应用的 API 权限配置"
     return ""
 
 
-def _request_access_token(flavor: str, client_id: str, refresh_token: str) -> tuple[str, float]:
+def _request_access_token(flavor: str, client_id: str, refresh_token: str,
+                          protocol: str = "smtp") -> tuple[str, float, str]:
     import time
+    if protocol not in ("smtp", "imap", "graph"):
+        raise ValueError("未知邮件协议")
     form = {"grant_type": "refresh_token", "client_id": client_id,
             "refresh_token": refresh_token,
-            "scope": GOOGLE_SCOPE if flavor == "google" else MICROSOFT_SCOPE}
+            "scope": GOOGLE_SCOPE if flavor == "google" else (
+                MICROSOFT_GRAPH_SCOPE if protocol == "graph" else
+                MICROSOFT_IMAP_SCOPE if protocol == "imap" else MICROSOFT_SCOPE)}
     secret = (os.environ.get("MAIL_BLASTER_GOOGLE_CLIENT_SECRET") or "").strip()
     if flavor == "google" and secret:
         form["client_secret"] = secret
@@ -3460,33 +3514,38 @@ def _rotate_refresh_token(old_token: str, new_token: str) -> None:
         logger.exception("mail-blaster: refresh_token 轮换写回失败")
 
 
-def get_access_token(*, provider: str | None, client_id: str, refresh_token: str) -> str:
+def get_access_token(*, provider: str | None, client_id: str, refresh_token: str,
+                     protocol: str = "smtp") -> str:
     """带缓存地换 access_token。群发时不会每封都换。
 
-    缓存键用 (client_id, refresh_token) 而不是邮箱——同一个 client_id 配不同
-    refresh_token 也能正确区分。网络请求刻意放在锁外，不阻塞其它账号。
+    缓存按服务商、协议及凭据隔离，避免把 SMTP 令牌用于 IMAP。
     """
     import time
-    key = (client_id, refresh_token)
+    flavor = _oauth_flavor(provider)
+    key = (flavor, protocol, client_id, refresh_token)
     now = time.time()
     with _token_lock:
         cached = _token_cache.get(key)
         if cached and cached[1] - TOKEN_EXPIRY_MARGIN > now:
             return cached[0]
     token, expires_at, rotated = _request_access_token(
-        _oauth_flavor(provider), client_id, refresh_token)
+        flavor, client_id, refresh_token, protocol)
     with _token_lock:
         _token_cache[key] = (token, expires_at)
         if rotated and rotated != refresh_token:
             # 新令牌也进缓存，这样下游拿新令牌来问时不用再跑一趟网络
-            _token_cache[(client_id, rotated)] = (token, expires_at)
+            _token_cache[(flavor, protocol, client_id, rotated)] = (token, expires_at)
     _rotate_refresh_token(refresh_token, rotated)
     return token
 
 
 def invalidate_token(client_id: str, refresh_token: str) -> None:
     with _token_lock:
-        _token_cache.pop((client_id, refresh_token), None)
+        rejected = {value[0] for key, value in _token_cache.items()
+                    if key[2:] == (client_id, refresh_token)}
+        for key, value in list(_token_cache.items()):
+            if key[2:] == (client_id, refresh_token) or value[0] in rejected:
+                _token_cache.pop(key, None)
 
 
 def build_xoauth2(username: str, access_token: str) -> str:
@@ -3524,3 +3583,61 @@ def _do_login(client, account: dict) -> None:
         _login_xoauth2(client, username, account)
     else:
         _login_password(client, username, account)
+
+
+def _can_use_graph_fallback(account: dict, exc: Exception) -> bool:
+    # 仅在登录阶段明确拒绝 SMTP AUTH 时切换；DATA 后的失败不能重发，避免重复邮件。
+    return (account.get("provider") == "outlook"
+            and account.get("auth_mode") == "xoauth2"
+            and isinstance(exc, smtplib.SMTPAuthenticationError)
+            and "5.7.139" in str(exc))
+
+
+class _GraphMailClient:
+    """Microsoft Graph MIME 发信适配器，保留附件、内联图和 Message-ID。"""
+
+    last_data_response = None
+
+    def __init__(self, account: dict):
+        self.email = account["email"]
+        # SMTP 换令牌可能已经轮换 refresh_token，优先取库里的最新版本。
+        current = get_account(account["id"]) if account.get("id") else account
+        current = current or account
+        self.token = get_access_token(
+            provider="outlook", client_id=crypto_util.decrypt(current.get("encrypted_client_id")),
+            refresh_token=crypto_util.decrypt(current.get("encrypted_refresh_token")),
+            protocol="graph")
+
+    def _request(self, path: str, data: bytes | None = None):
+        request = urllib.request.Request(
+            "https://graph.microsoft.com/v1.0" + path, data=data,
+            headers={"Authorization": "Bearer " + self.token,
+                     "Content-Type": "text/plain"}, method="POST" if data is not None else "GET")
+        try:
+            with urllib.request.urlopen(request, timeout=SMTP_TIMEOUT) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                code = json.loads(exc.read()).get("error", {}).get("code", "UnknownError")
+            except (ValueError, AttributeError):
+                code = "UnknownError"
+            raise OAuthError(f"Microsoft Graph 请求失败（HTTP {exc.code}，{code}）") from None
+
+    def sendmail(self, from_addr, to_addrs, msg):
+        if from_addr.lower() != self.email.lower():
+            raise ValueError("Graph 发信必须使用已授权邮箱的真实地址")
+        wire = msg.encode("ascii") if isinstance(msg, str) else msg
+        data = base64.b64encode(wire)
+        if len(data) >= 4 * 1024 * 1024:
+            raise ValueError("Graph 单次 MIME 请求不能超过 4 MB，请缩小图片或附件后发送")
+        status, _ = self._request("/me/sendMail", data)
+        if status != 202:
+            raise OAuthError(f"Microsoft Graph 未确认接收邮件（HTTP {status}）")
+        self.last_data_response = (202, b"Microsoft Graph Accepted; delivery not yet confirmed")
+        return {}
+
+    def quit(self):
+        pass
+
+    def close(self):
+        pass
