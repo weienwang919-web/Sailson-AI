@@ -1924,8 +1924,39 @@ def _tiktok_public_base_url():
     return public_base
 
 
+def _hok_matrix_relay(callback_kind: str):
+    """HOK 矩阵是独立部署，但 TikTok 冻结了本 App 的 Login Kit 重定向白名单：新加的
+    matrix.sailson.com 永远不生效，而本站的回调是历史条目、可用。所以 HOK 的授权链接指向
+    本回调，这里再把 code 转发给 matrix。
+
+    判据只是 invite 别名前缀，这里**不校验签名**（本服务没有 matrix 的 SECRET_KEY），
+    真正的校验和核销仍然在 matrix 侧做，因此这只是路由提示，不是信任决定。
+    """
+    state = request.args.get('state') or ''
+    if not state:
+        return None
+    try:
+        from itsdangerous import URLSafeTimedSerializer
+        _, payload = URLSafeTimedSerializer(
+            '', salt=tiktok_official_service.INVITE_SALT).loads_unsafe(state)
+    except Exception:
+        return None
+    alias = (payload or {}).get('account_alias') or ''
+    if not alias.upper().startswith('HOK'):
+        return None
+    base = (os.environ.get('HOK_MATRIX_BASE') or 'https://matrix.sailson.com').rstrip('/')
+    target = f'{base}/tiktok/{callback_kind}/callback?' + urlencode(
+        list(request.args.items(multi=True)))
+    logger.info(f"Relaying HOK matrix TikTok callback: kind={callback_kind}, alias={alias}")
+    return redirect(target, code=302)
+
+
 def _render_tiktok_oauth_callback(callback_type: str):
     """渲染 TikTok OAuth 回调结果，便于复制 code 换 token。"""
+    if callback_type == 'account':
+        relay = _hok_matrix_relay('account')
+        if relay is not None:
+            return relay
     code = request.args.get('code')
     state = request.args.get('state')
     error = request.args.get('error')
@@ -2057,6 +2088,9 @@ def tiktok_spark_callback():
 
 def _render_tiktok_spark_callback():
     """Spark 授权小流程的回调结果页：只写 tiktok_spark_tokens，不碰账号矩阵主表。"""
+    relay = _hok_matrix_relay('spark')
+    if relay is not None:
+        return relay
     code = request.args.get('code')
     state = request.args.get('state')
     error = request.args.get('error')
