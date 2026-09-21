@@ -22,11 +22,14 @@ import json
 import logging
 import mimetypes
 import os
+import posixpath
 import re
 import smtplib
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email import encoders
 from email.mime.base import MIMEBase
@@ -2122,6 +2125,72 @@ def _anchor_row(image) -> int | None:
     return int(frm.row) + 1 if frm is not None and hasattr(frm, "row") else None
 
 
+_DISPIMG_RE = re.compile(r"(?:_xlfn\.)?DISPIMG\(\s*[\"']([^\"']+)[\"']", re.I)
+
+
+def _cell_image_bytes_by_row(data: bytes, ws) -> dict[int, list[bytes]]:
+    """读取 WPS/新版 Excel 的单元格图片（``DISPIMG``）格式。
+
+    这类图片不是传统 drawing，openpyxl 不会放进 ``ws._images``：图片本体在
+    ``xl/media``，ID→文件的关系在 ``xl/cellimages.xml``，单元格只保存
+    ``=_xlfn.DISPIMG("ID_...",1)`` 公式。因此这里直接读取 OOXML 包，并按公式
+    所在行返回图片字节。格式损坏或没有该扩展时安静返回空映射，让普通 XLSX
+    仍走原来的浮动图片解析路径。
+    """
+    by_row: dict[int, list[bytes]] = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = set(archive.namelist())
+            if "xl/cellimages.xml" not in names or "xl/_rels/cellimages.xml.rels" not in names:
+                return by_row
+
+            rel_root = ET.fromstring(archive.read("xl/_rels/cellimages.xml.rels"))
+            rels = {}
+            for rel in rel_root:
+                rid = rel.attrib.get("Id")
+                target = rel.attrib.get("Target", "")
+                # External links (the sample contains a NULL link) are not
+                # embedded content and must never be treated as a file path.
+                if rid and rel.attrib.get("TargetMode", "").lower() != "external" and target:
+                    # The relationship file lives in xl/_rels, but targets are
+                    # resolved relative to its source part (xl/cellimages.xml).
+                    rels[rid] = posixpath.normpath(posixpath.join("xl", target))
+
+            image_paths = {}
+            cellimages_root = ET.fromstring(archive.read("xl/cellimages.xml"))
+            for cell_image in cellimages_root.iter():
+                if cell_image.tag.rsplit("}", 1)[-1] != "cellImage":
+                    continue
+                name = None
+                embed = None
+                for node in cell_image.iter():
+                    local = node.tag.rsplit("}", 1)[-1]
+                    if local == "cNvPr":
+                        name = node.attrib.get("name")
+                    elif local == "blip":
+                        embed = next((v for k, v in node.attrib.items()
+                                      if k.rsplit("}", 1)[-1] == "embed"), None)
+                path = rels.get(embed)
+                if name and path in names:
+                    image_paths[name] = path
+
+            for row in ws.iter_rows():
+                for cell in row:
+                    value = cell.value
+                    if not isinstance(value, str):
+                        continue
+                    for image_id in _DISPIMG_RE.findall(value):
+                        path = image_paths.get(image_id)
+                        if not path:
+                            continue
+                        blob = archive.read(path)
+                        if blob:
+                            by_row.setdefault(cell.row, []).append(blob)
+    except (OSError, KeyError, ET.ParseError, zipfile.BadZipFile):
+        return {}
+    return by_row
+
+
 def _find_header(ws):
     """判定条件是「认出至少两列」而不是写死某两个字段：用户不一定所有列都有，
     但只认出一列就当表头会把普通数据行误判成表头。"""
@@ -2165,6 +2234,11 @@ def parse_material_xlsx(data: bytes) -> dict:
             orphans += 1
             continue
         by_row.setdefault(row, []).append(blob)
+
+    # WPS/新版 Excel 的单元格图片不会出现在 ws._images，需从 OOXML 的
+    # cellimages.xml + DISPIMG 公式补回来。两种格式可以同时存在，因此合并。
+    for row, blobs in _cell_image_bytes_by_row(data, ws).items():
+        by_row.setdefault(row, []).extend(blobs)
 
     present = [f for f in DATA_FIELDS if f in columns]
     rows, errors, notices = [], [], []
