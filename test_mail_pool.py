@@ -72,8 +72,12 @@ class MaterialPoolTests(unittest.TestCase):
             with self.assertRaisesRegex(access.AccessDenied, 'Sailson'):
                 access.require_account(7, 'material', access.Actor(99))
 
-    def test_legacy_templates_remain_visible_to_users(self):
-        rows = [{'id': 1, 'user_id': None}, {'id': 2, 'user_id': 9}]
+    def test_material_templates_are_shared_but_only_owner_can_delete(self):
+        rows = [
+            {'id': 1, 'user_id': None},
+            {'id': 2, 'user_id': 9},
+            {'id': 3, 'user_id': 10},
+        ]
         token = access.current_actor.set(access.Actor(9))
         try:
             with patch.object(mb.db, 'query_all', return_value=rows) as query:
@@ -81,10 +85,21 @@ class MaterialPoolTests(unittest.TestCase):
         finally:
             access.current_actor.reset(token)
         sql, args = query.call_args.args
-        self.assertIn('(user_id = %s OR user_id IS NULL)', sql)
-        self.assertEqual(args, ['material', 9])
+        self.assertIn('AND TRUE', sql)
+        self.assertEqual(args, ['material'])
         self.assertEqual([(t['is_shared'], t['can_delete']) for t in templates],
-                         [(True, False), (False, True)])
+                         [(True, False), (False, True), (True, False)])
+
+    def test_outreach_templates_remain_owner_scoped(self):
+        token = access.current_actor.set(access.Actor(9))
+        try:
+            with patch.object(mb.db, 'query_all', return_value=[]) as query:
+                mb.list_templates('outreach')
+        finally:
+            access.current_actor.reset(token)
+        sql, args = query.call_args.args
+        self.assertIn('(user_id = %s OR user_id IS NULL)', sql)
+        self.assertEqual(args, ['outreach', 9])
 
     def test_admin_still_sees_and_can_delete_all_templates(self):
         rows = [{'id': 1, 'user_id': None}]

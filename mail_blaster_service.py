@@ -1821,7 +1821,7 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 
 def list_templates(mode: str = "material") -> list[dict]:
     actor = mail_access.current_actor.get()
-    if actor is None or actor.admin:
+    if mode == 'material' or actor is None or actor.admin:
         scope, args = 'TRUE', []
     else:
         # 隔离上线前的模板没有 owner。保留为只读共享模板，不能因迁移而从业务侧消失。
@@ -1830,8 +1830,11 @@ def list_templates(mode: str = "material") -> list[dict]:
         f"SELECT * FROM mb_templates WHERE mode = %s AND {scope} ORDER BY updated_at DESC",
         [mode] + args)]
     for row in rows:
-        row['is_shared'] = row.get('user_id') is None
-        row['can_delete'] = not row['is_shared'] or actor is None or actor.admin
+        owner_id = row.get('user_id')
+        row['is_shared'] = owner_id is None or (
+            mode == 'material' and actor is not None and not actor.admin
+            and owner_id != actor.user_id)
+        row['can_delete'] = actor is None or actor.admin or owner_id == actor.user_id
     return rows
 
 

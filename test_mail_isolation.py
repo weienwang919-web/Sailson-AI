@@ -140,8 +140,11 @@ class MailIsolationTests(unittest.TestCase):
         with as_user(2):
             mb.save_template('default','Bob','private body','')
         templates = self.client.get('/api/mail-blaster/templates').json['templates']
-        self.assertEqual([t['subject'] for t in templates], ['Alice', 'Legacy'])
-        self.assertFalse(templates[1]['can_delete'])
+        by_subject = {t['subject']: t for t in templates}
+        self.assertEqual(set(by_subject), {'Alice', 'Bob', 'Legacy'})
+        self.assertTrue(by_subject['Alice']['can_delete'])
+        self.assertFalse(by_subject['Bob']['can_delete'])
+        self.assertFalse(by_subject['Legacy']['can_delete'])
         self.login(3)
         self.assertEqual(self.client.put('/api/mail-blaster/accounts/2/members',json={'user_ids':[1]}).status_code,200)
         self.login(1)
