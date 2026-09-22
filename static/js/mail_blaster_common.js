@@ -5,7 +5,7 @@
    跟 mail-blaster 独立版的 {ok:true} 不同，api() 已按本站约定改写。 */
 
 const STATUS_TEXT = { pending: '待发送', queued: '已入队', sending: '发送中…',
-                      sent: '已发送', failed: '失败', skipped: '已跳过' };
+                      sent: '已发送', failed: '失败', skipped: '已跳过', unknown: '投递待核实' };
 
 function toast(msg, isError) {
   let el = document.getElementById('mb-toast');

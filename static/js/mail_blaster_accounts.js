@@ -35,6 +35,7 @@ async function renderAccounts() {
         ${a.last_test_at ? `<div class="hint">认证测试：${esc(a.last_test_at.replace('T', ' '))} UTC</div>` : ''}
         ${a.last_error ? `<div class="errbox">${esc(a.last_error)}</div>` : ''}</td>
       <td>
+        <button class="small" onclick="openAccountMembers(${a.id})">授权</button>
         <button class="small" onclick="editAccount(${a.id})">编辑</button>
         <button class="small" onclick="testAccount(${a.id}, this)">测发信</button>
         <button class="small" onclick="testImap(${a.id}, this)">测收信</button>
@@ -42,6 +43,33 @@ async function renderAccounts() {
         <button class="small danger" onclick="removeAccount(${a.id})">删除</button>
       </td>
     </tr>`).join('');
+}
+
+let MEMBERS_ACCOUNT = null;
+async function openAccountMembers(id) {
+  try {
+    const [people, grants] = await Promise.all([
+      api('/api/mail-blaster/members'), api(`/api/mail-blaster/accounts/${id}/members`),
+    ]);
+    MEMBERS_ACCOUNT = id;
+    document.getElementById('members-title').textContent =
+      `邮箱授权 · ${ACC_ALL.find(a => a.id === id)?.email || ''}`;
+    document.getElementById('members-list').innerHTML = people.members.map(u =>
+      `<label class="checkline"><input type="checkbox" value="${u.id}" ${
+        grants.user_ids.includes(u.id) ? 'checked' : ''}>${esc(u.real_name || u.username)}</label>`).join('');
+    openModal('account-members-modal');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveAccountMembers(btn) {
+  btn.disabled = true;
+  try {
+    const user_ids = Array.from(document.querySelectorAll('#members-list input:checked'), x => Number(x.value));
+    await api(`/api/mail-blaster/accounts/${MEMBERS_ACCOUNT}/members`, {method: 'PUT', body: {user_ids}});
+    closeModal('account-members-modal');
+    toast('邮箱授权已保存');
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
 }
 
 /* ---------- 快速新增（常见场景：服务商预设 + 授权码） ---------- */

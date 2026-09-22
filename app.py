@@ -908,6 +908,8 @@ def recover_interrupted_tasks():
             """)
         except Exception as e:
             logger.warning(f"⚠️ 回退 claimed 任务失败: {e}")
+        if MAIL_BLASTER_AVAILABLE:
+            mail_blaster_service.reset_stuck_items()
     except Exception as e:
         logger.error(f"❌ 恢复任务失败: {e}")
 
@@ -4603,13 +4605,15 @@ def sentiment_task_retry_api(task_id):
 def tasks_summary_api():
     """任务队列汇总：用于看当前到底是排队、运行还是失败。"""
     try:
-        rows = db.query_all("""
+        scope, scope_args = mail_access.mail_task_scope(session.get('user_id'))
+        rows = db.query_all(f"""
             SELECT status, function_type, COUNT(*) AS count
             FROM task_queue
             WHERE created_at >= NOW() - INTERVAL '7 days'
+              AND {scope}
             GROUP BY status, function_type
             ORDER BY status, function_type
-        """) or []
+        """, scope_args) or []
         totals = {}
         by_module = {}
         for row in rows:
@@ -4618,20 +4622,21 @@ def tasks_summary_api():
             count = int(row.get('count') or 0)
             totals[status] = totals.get(status, 0) + count
             by_module.setdefault(module, {})[status] = count
-        oldest_pending = db.query_one("""
+        oldest_pending = db.query_one(f"""
             SELECT task_id, function_type, created_at, progress
             FROM task_queue
-            WHERE status = 'pending'
+            WHERE status = 'pending' AND {scope}
             ORDER BY created_at ASC
             LIMIT 1
-        """)
-        running = db.query_all("""
+        """, scope_args)
+        running = db.query_all(f"""
             SELECT task_id, function_type, progress, worker_id, started_at, updated_at
             FROM task_queue
             WHERE status IN ('claimed', 'processing')
+              AND {scope}
             ORDER BY COALESCE(started_at, updated_at, created_at) ASC
             LIMIT 20
-        """) or []
+        """, scope_args) or []
         return jsonify({
             'totals': totals,
             'by_module': by_module,
@@ -10500,6 +10505,10 @@ def _json_safe(value):
 # 真正的 SMTP 循环在常驻的 worker 进程里，见 worker.py 的 mail_blaster_send。
 # ============================================
 
+import mail_access
+mail_access.install(app)
+
+
 def _mb_guard():
     """模块不可用时给个能看懂的响应，而不是 500。"""
     if not MAIL_BLASTER_AVAILABLE:
@@ -10783,7 +10792,9 @@ def api_mb_preview(job_id):
     if (blocked := _mb_guard()):
         return blocked
     try:
-        mail_blaster_service.sync_job(job_id, request.json or {})
+        state = mail_blaster_service.load_job(job_id)
+        if state['job']['status'] not in ('queued', 'sending'):
+            mail_blaster_service.sync_job(job_id, request.json or {})
         return jsonify({'status': 'success',
                         'previews': mail_blaster_service.build_previews(job_id)})
     except ValueError as e:
@@ -10801,6 +10812,8 @@ def api_mb_send(job_id):
         return blocked
     try:
         state = mail_blaster_service.load_job(job_id)
+        if state['job']['status'] in ('queued', 'sending'):
+            return jsonify({'status': 'success', 'task_id': state['job']['task_id']})
         is_outreach = state['job'].get('mode') == 'outreach'
         # 建联页只编辑模板，不回传 items —— sync_job 会把 items 里没带
         # sender_account_id 的行置空，整批账号会被抹掉
@@ -10836,12 +10849,7 @@ def api_mb_send(job_id):
                 return _mb_fail('没有任何一行可以发送：每行至少要有一张图片，'
                                 '或者在「逐封确认」表里点 📎 挂一个附件')
 
-        task_id = f"mb_{uuid.uuid4().hex[:16]}"
-        create_task(task_id, session.get('user_id'),
-                    f"mail_blaster_{job_id}", function_type='mail_blaster_send')
-        set_task_params(task_id, {'job_id': job_id})
-        db.execute("UPDATE mb_jobs SET task_id = %s, status = 'queued' WHERE id = %s",
-                   (task_id, job_id))
+        task_id = mail_blaster_service.enqueue_job(job_id, session.get('user_id'))
         return jsonify({'status': 'success', 'task_id': task_id})
     except ValueError as e:
         return _mb_fail(str(e), 404)
@@ -10878,10 +10886,10 @@ def api_mb_resend(item_id):
             mail_blaster_service.sync_job(row['job_id'], {'items': body['items']})
         except ValueError as e:
             return _mb_fail(str(e))
-    task_id = f"mb_{uuid.uuid4().hex[:16]}"
-    create_task(task_id, session.get('user_id'),
-                f"mail_blaster_resend_{item_id}", function_type='mail_blaster_send')
-    set_task_params(task_id, {'job_id': row['job_id'], 'item_id': item_id})
+    try:
+        task_id = mail_blaster_service.enqueue_job(row['job_id'], session.get('user_id'), item_id)
+    except ValueError as e:
+        return _mb_fail(str(e), 409)
     return jsonify({'status': 'success', 'task_id': task_id})
 
 
@@ -10952,6 +10960,56 @@ def api_mb_phones():
 
 # ---- KOL 建联 ----
 
+@app.route('/api/mail-blaster/members')
+@feature_required('mail_blaster')
+def api_mb_mail_members():
+    rows = db.query_all("SELECT id, username, real_name FROM users "
+                        "WHERE role = 'admin' OR 'mail_blaster' = ANY(string_to_array(permissions, ',')) "
+                        "ORDER BY id")
+    return jsonify(status='success', members=[dict(r) for r in rows])
+
+
+@app.route('/api/mail-blaster/accounts/<int:account_id>/members', methods=['GET', 'PUT'])
+@feature_required('mail_blaster')
+def api_mb_account_members(account_id):
+    if request.method == 'PUT':
+        try:
+            ids = sorted({int(v) for v in (request.get_json(silent=True) or {}).get('user_ids', [])})
+            for uid in ids:
+                mail_access.Actor.load(uid)
+            with db.get_db_cursor() as cur:
+                cur.execute('SELECT id FROM mb_sender_accounts WHERE id = %s FOR UPDATE', (account_id,))
+                if not cur.fetchone():
+                    return _mb_fail('邮箱不存在', 404)
+                cur.execute('DELETE FROM mb_account_members WHERE account_id = %s', (account_id,))
+                for uid in ids:
+                    cur.execute('INSERT INTO mb_account_members(account_id, user_id) VALUES (%s, %s)',
+                                (account_id, uid))
+        except (ValueError, TypeError) as exc:
+            return _mb_fail(str(exc))
+    rows = db.query_all('SELECT user_id FROM mb_account_members WHERE account_id = %s', (account_id,))
+    return jsonify(status='success', user_ids=[r['user_id'] for r in rows])
+
+
+@app.route('/api/mail-blaster/outreach/jobs', methods=['GET'])
+@feature_required('mail_blaster')
+def api_mb_list_jobs():
+    if (blocked := _mb_guard()):
+        return blocked
+    return jsonify(status='success', jobs=_json_safe_rows(mail_blaster_service.list_jobs()))
+
+
+@app.route('/api/mail-blaster/jobs/<int:job_id>', methods=['PUT'])
+@feature_required('mail_blaster')
+def api_mb_save_job(job_id):
+    if (blocked := _mb_guard()):
+        return blocked
+    try:
+        mail_blaster_service.sync_job(job_id, request.get_json(silent=True) or {})
+        return jsonify(status='success', **mail_blaster_service.load_job(job_id))
+    except ValueError as exc:
+        return _mb_fail(str(exc), 409)
+
 @app.route('/api/mail-blaster/outreach/list-template.xlsx')
 @feature_required('mail_blaster')
 def api_mb_kol_template():
@@ -11005,14 +11063,17 @@ def api_mb_create_outreach_job():
         return blocked
     d = request.json or {}
     try:
-        return jsonify({'status': 'success', **mail_blaster_service.create_outreach_job(
+        result = mail_blaster_service.create_outreach_job(
             sender_account_id=d.get('sender_account_id'),
             rows=d.get('rows') or [],
             subject_tpl=d.get('subject_tpl') or '',
             body_tpl=d.get('body_tpl') or '',
             signature_tpl=d.get('signature_tpl') or '',
             attachments=d.get('attachments') or [],
-            user_id=session.get('user_id'))})
+            user_id=session.get('user_id'))
+        mail_blaster_service.sync_job(result['job']['id'], {'name': d.get('name') or ''})
+        result['job']['name'] = (d.get('name') or '').strip()[:200]
+        return jsonify({'status': 'success', **result})
     except ValueError as e:
         return _mb_fail(str(e))
     except Exception as e:
@@ -11114,10 +11175,24 @@ def api_mb_claim_message(inbox_id):
         return blocked
     try:
         tid = mail_inbox_service.claim_message(
-            inbox_id, (request.json or {}).get('kol_email') or '')
+            inbox_id, (request.json or {}).get('kol_email') or '',
+            item_id=(request.json or {}).get('item_id'))
         return jsonify({'status': 'success', 'thread_id': tid})
     except ValueError as e:
         return _mb_fail(str(e))
+
+
+@app.route('/api/mail-blaster/inbox/messages/<int:inbox_id>/candidates')
+@feature_required('mail_blaster')
+def api_mb_claim_candidates(inbox_id):
+    rows = db.query_all("""
+        SELECT i.id, i.recipient, i.subject, i.sent_at, j.name, u.real_name AS owner_name
+        FROM mb_inbox_messages m JOIN mb_items i ON i.sender_account_id = m.account_id
+        JOIN mb_jobs j ON j.id = i.job_id LEFT JOIN users u ON u.id = j.user_id
+        WHERE m.id = %s AND m.thread_id IS NULL AND i.status = 'sent' AND j.mode = 'outreach'
+        ORDER BY (i.recipient = m.from_email) DESC, i.sent_at DESC NULLS LAST LIMIT 200
+    """, (inbox_id,))
+    return jsonify(status='success', items=_json_safe_rows(rows))
 
 
 @app.route('/api/mail-blaster/inbox/poll', methods=['POST'])

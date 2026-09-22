@@ -22,7 +22,9 @@
     <h1>✉️ 邮件素材提交</h1>
     <span class="hint" style="margin:0">一条素材 = 一封信，逐封发给对应收件人</span>
     <span class="spacer"></span>
-    <button class="small" onclick="openAccounts()">发件账号池</button>
+    {% if session.get('role') == 'admin' %}
+    <button class="small" onclick="openAccounts()">邮箱与授权</button>
+    {% endif %}
     <button class="small" onclick="openHistory()">发信记录</button>
     <a href="/" class="hint" style="margin:0">← 返回首页</a>
   </div>

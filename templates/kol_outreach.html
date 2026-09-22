@@ -5,7 +5,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/mail_blaster.css') }}">
 <style>
   /* 复用素材提交页那套浅色卡片风，只在本容器内生效 */
-  .mb-scope { background: #f5f5f7; margin: -24px -12px 0; padding: 24px 12px 60px; }
+  .mb-scope { background: #f5f5f7; margin: 0; padding: 24px 0 60px; }
   .mb-scope .wrap { max-width: 1180px; margin: 0 auto; }
   .mb-topline { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
   .mb-topline h1 { font-size: 22px; font-weight: 600; margin: 0; color: #1d1d1f; }
@@ -38,6 +38,23 @@
   .mb-tabs { display:flex; gap:6px; margin-bottom:16px; }
   .mb-tabs button { border-radius:999px; padding:7px 18px; }
   .mb-tabs button.on { background:#0071e3; border-color:#0071e3; color:#fff; }
+  .activity-table { overflow-x:auto; margin-bottom:24px; }
+  .activity-table table { min-width:680px; }
+  .activity-table button { white-space:nowrap; }
+  .activity-toolbar { display:flex; gap:12px; align-items:center; margin:16px 0; }
+  .activity-toolbar h2 { margin:0; font-size:18px; }
+  .activity-toolbar input { min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  .activity-toolbar button, .activity-toolbar .pill { flex-shrink:0; }
+  .mb-scope td { overflow-wrap:anywhere; }
+  @media(max-width:760px) {
+    .mb-topline { flex-wrap:wrap; }
+    .mb-scope .split { grid-template-columns:minmax(0,1fr); }
+    .mb-scope .src-row { flex-direction:column; }
+    .mb-scope .src-or { justify-content:center; }
+    .mb-scope .row { flex-wrap:wrap; }
+    .mb-scope .row > * { min-width:0; }
+    .mb-tabs { flex-wrap:wrap; }
+  }
 </style>
 {% endblock %}
 
@@ -47,20 +64,41 @@
 
   <div class="mb-topline">
     <h1>📨 KOL 建联</h1>
-    <span class="hint" style="margin:0">一个发件账号 → 一批达人，每人一组变量</span>
     <span class="spacer"></span>
-    <button class="small" onclick="openAccounts()">发件账号池</button>
+    {% if session.get('role') == 'admin' %}
+    <button class="small" onclick="openAccounts()">邮箱与授权</button>
     <button class="small" onclick="openSuppression()">抑制名单</button>
+    {% endif %}
     <a href="/mail-blaster" class="hint" style="margin:0">素材提交 →</a>
     <a href="/" class="hint" style="margin:0">← 返回首页</a>
   </div>
 
   <div class="mb-tabs">
-    <button id="tab-send" class="on" onclick="switchTab('send')">发建联</button>
-    <button id="tab-inbox" onclick="switchTab('inbox')">回信管理</button>
+    <button id="tab-activities" class="on" onclick="switchTab('activities')">我的活动</button>
+    <button id="tab-send" onclick="switchTab('send')">编辑活动</button>
+    <button id="tab-inbox" onclick="switchTab('inbox')">我的回信</button>
   </div>
 
-  <div id="pane-send">
+  <div id="pane-activities">
+    <div class="activity-toolbar">
+      <h2>{% if session.get('role') == 'admin' %}全部活动{% else %}我的活动{% endif %}</h2>
+      <span class="spacer" style="margin-left:auto"></span>
+      <button class="small" onclick="loadActivities()">刷新</button>
+      <button class="primary" onclick="newActivity()">新建活动</button>
+    </div>
+    <div class="activity-table">
+      <table><thead><tr><th>活动</th><th>发件邮箱</th><th>状态</th><th>进度</th><th>创建时间</th><th></th></tr></thead>
+        <tbody id="activity-rows"></tbody></table>
+      <div id="activity-empty" class="empty">正在加载活动...</div>
+    </div>
+  </div>
+
+  <div id="pane-send" style="display:none">
+  <div class="activity-toolbar">
+    <input id="activity-name" maxlength="200" placeholder="活动名称" aria-label="活动名称" style="flex:1">
+    <span id="activity-state" class="pill">未保存</span>
+    <button id="save-activity" onclick="saveActivity(this)">保存草稿</button>
+  </div>
 
   <div class="card">
     <h2><span class="step-no">1</span> 发件账号</h2>
@@ -105,10 +143,10 @@
   <div class="card" id="list-card" style="display:none">
     <h2><span class="step-no">3</span> 收件人</h2>
     <p class="hint" id="list-hint"></p>
-    <table>
+    <div style="overflow-x:auto"><table>
       <thead><tr id="list-head"></tr></thead>
       <tbody id="list-rows"></tbody>
-    </table>
+    </table></div>
   </div>
 
   <div class="card" id="tpl-card">
@@ -160,7 +198,7 @@
     </div>
     <div class="row">
       <button class="small" onclick="doPreview(this)">预览全部</button>
-      <button class="primary" onclick="doSend(this)">开始发送</button>
+      <button id="send-activity" class="primary" onclick="doSend(this)">发送 / 继续发送</button>
       <span class="hint" id="send-info" style="margin:0"></span>
     </div>
     <div class="progress" id="progress" style="display:none"><div></div></div>
@@ -170,6 +208,18 @@
   </div>
 
   <div id="pane-inbox" style="display:none">
+  <div class="activity-toolbar">
+    <h2>{% if session.get('role') == 'admin' %}全部回信{% else %}我的回信{% endif %}</h2>
+    <button class="small" onclick="loadThreads()">刷新</button>
+    {% if session.get('role') == 'admin' %}
+    <button class="small" onclick="pollNow(this)">立即收信</button>
+    {% endif %}
+  </div>
+  <div class="modal" id="claim-modal"><div class="modal-box">
+    <div class="modal-head"><h3>归属到活动</h3><button class="small" onclick="closeModal('claim-modal')">关闭</button></div>
+    <div class="modal-body"><label for="claim-item">原始发信</label><select id="claim-item" style="width:100%"></select></div>
+    <div class="modal-foot"><button class="primary" onclick="confirmClaim(this)">确认归属</button></div>
+  </div></div>
 
 
   <div class="stats" id="stats"></div>
@@ -191,7 +241,7 @@
       </div>
 
       <div class="card" id="unmatched-card" style="display:none">
-        <h2>认领不了主的来信</h2>
+        <h2>待归属来信</h2>
         <p class="hint">这些信匹配不到发出去的任何一封（对方换了地址、或服务商重写了 Message-ID）。
           确认是哪个达人后可以手动挂到会话线上。</p>
         <table><tbody id="unmatched-rows"></tbody></table>

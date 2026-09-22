@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import email
 import email.utils
+import hashlib
 import imaplib
 import json
 import logging
@@ -19,6 +20,7 @@ from email.header import decode_header, make_header
 
 import database as db
 import mail_blaster_service as mb
+import mail_access
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +165,7 @@ def guess_kind(parsed: dict) -> str:
 _MSGID_RE = re.compile(r"<[^<>@\s]+@[^<>@\s]+>")
 
 
-def match_to_item(parsed: dict) -> tuple[int | None, str, float]:
+def match_to_item(parsed: dict, account_id: int) -> tuple[int | None, str, float]:
     """返回 (mb_items.id, 匹配方式, 置信度)。
 
     优先级刻意这样排：
@@ -176,26 +178,32 @@ def match_to_item(parsed: dict) -> tuple[int | None, str, float]:
     if parsed["in_reply_to"]:
         ids += _MSGID_RE.findall(parsed["in_reply_to"]) or [parsed["in_reply_to"]]
     if parsed["refs"]:
-        ids += _MSGID_RE.findall(parsed["refs"])
+        ids += list(reversed(_MSGID_RE.findall(parsed["refs"])))
     seen = []
     for mid in ids:
         mid = mid.strip()
         if mid and mid not in seen:
             seen.append(mid)
-    if seen:
-        row = db.query_one(
-            "SELECT id FROM mb_items WHERE message_id = ANY(%s) "
-            "ORDER BY sent_at DESC NULLS LAST LIMIT 1", (seen,))
-        if row:
-            return row["id"], "in_reply_to", 1.0
+    for mid in seen:
+        rows = db.query_all(
+            "SELECT i.id FROM mb_items i JOIN mb_jobs j ON j.id = i.job_id "
+            "WHERE i.message_id = %s AND COALESCE(i.sender_account_id, j.sender_account_id) = %s "
+            "AND j.mode = 'outreach' AND i.status = 'sent' LIMIT 2", (mid, account_id))
+        if len(rows) == 1:
+            return rows[0]["id"], "in_reply_to", 1.0
+        if rows:
+            return None, 'ambiguous', 0.0
 
     if parsed["from_email"]:
-        row = db.query_one(
+        rows = db.query_all(
             "SELECT i.id FROM mb_items i JOIN mb_jobs j ON j.id = i.job_id "
             "WHERE i.recipient = %s AND j.mode = 'outreach' AND i.status = 'sent' "
-            "ORDER BY i.sent_at DESC NULLS LAST LIMIT 1", (parsed["from_email"],))
-        if row:
-            return row["id"], "address", 0.6
+            "AND COALESCE(i.sender_account_id, j.sender_account_id) = %s "
+            "ORDER BY i.sent_at DESC NULLS LAST LIMIT 2", (parsed["from_email"], account_id))
+        if len(rows) == 1:
+            return rows[0]["id"], "address", 0.6
+        if rows:
+            return None, 'ambiguous', 0.0
 
     return None, "", 0.0
 
@@ -205,13 +213,12 @@ def match_to_item(parsed: dict) -> tuple[int | None, str, float]:
 # --------------------------------------------------------------------------- #
 
 def _thread_for(kol_email: str, item_id: int | None) -> int:
-    """一个 KOL 一条会话线，跨批次复用。"""
+    """A conversation is tied to the original outgoing item, never a global address."""
+    if not item_id:
+        raise ValueError('请先选择原始发信明细')
     kol_email = (kol_email or "").strip().lower()
-    row = db.query_one("SELECT id FROM mb_threads WHERE kol_email = %s", (kol_email,))
+    row = db.query_one("SELECT id FROM mb_threads WHERE item_id = %s AND NOT legacy_locked", (item_id,))
     if row:
-        if item_id:
-            db.execute("UPDATE mb_threads SET item_id = COALESCE(item_id, %s) WHERE id = %s",
-                       (item_id, row["id"]))
         return row["id"]
 
     name, account_id, job_id, first_sent, variables = "", None, None, None, None
@@ -220,6 +227,7 @@ def _thread_for(kol_email: str, item_id: int | None) -> int:
             "SELECT i.*, j.sender_account_id AS job_account FROM mb_items i "
             "JOIN mb_jobs j ON j.id = i.job_id WHERE i.id = %s", (item_id,))
         if it:
+            kol_email = it['recipient'].strip().lower()
             account_id = it["sender_account_id"] or it["job_account"]
             job_id, first_sent = it["job_id"], it["sent_at"]
             variables = it["vars_json"]
@@ -229,10 +237,14 @@ def _thread_for(kol_email: str, item_id: int | None) -> int:
                              if v.get(k)), "")
             except Exception:
                 name = ""
+    if not job_id or not account_id:
+        raise ValueError('原始发信明细不存在或已失去邮箱归属')
     return db.execute_and_fetch_id("""
         INSERT INTO mb_threads (kol_email, kol_name, account_id, job_id, item_id,
                                 vars_json, first_sent_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (item_id) WHERE NOT legacy_locked
+        DO UPDATE SET item_id = EXCLUDED.item_id RETURNING id
     """, (kol_email, name, account_id, job_id, item_id, variables, first_sent))
 
 
@@ -302,10 +314,12 @@ def _cursor(account_id: int, folder: str = "INBOX") -> dict:
             "last_uid": 0, "last_sync_at": None, "last_error": None}
 
 
-def _store_message(account_id: int, folder: str, uid: int, parsed: dict) -> int | None:
+def _store_message(account_id: int, folder: str, uid: int, parsed: dict,
+                   uidvalidity: int = 0) -> int | None:
     """入库并返回新行 id；已经存过则返回 None。"""
-    dedupe = parsed["message_id"] or f"{account_id}:{folder}:{uid}"
-    item_id, method, confidence = match_to_item(parsed)
+    dedupe = (f'a:{account_id}:m:' + hashlib.md5(parsed['message_id'].encode()).hexdigest()
+              if parsed['message_id'] else f'a:{account_id}:u:{folder}:{uidvalidity or 0}:{uid}')
+    item_id, method, confidence = match_to_item(parsed, account_id)
     kind = guess_kind(parsed)
     # 只有匹配上「我们确实发过的那封」才建会话线。
     # 否则收件箱里每封垃圾邮件都会生成一条 KOL 会话线，列表很快就没法看了。
@@ -377,7 +391,7 @@ def fetch_account(account_id: int, folder: str = "INBOX", limit: int = FETCH_BAT
                 continue
             stats["fetched"] += 1
             parsed = parse_message(payload[0][1])
-            if _store_message(account_id, folder, uid, parsed) is not None:
+            if _store_message(account_id, folder, uid, parsed, uidvalidity=uidvalidity) is not None:
                 stats["new"] += 1
             last_uid = max(last_uid, uid)
 
@@ -789,14 +803,7 @@ def suggest_reply(thread_id: int, *, target: float, ceiling: float,
     }.get(plan["action"], plan["rationale"])
     db.execute("UPDATE mb_threads SET next_action = %s, updated_at = NOW() WHERE id = %s",
                (next_action, thread_id))
-    # 只有还价数字真的变了才追加版本。
-    # 不判重的话，反复点「算建议」会写进一串相同的 countered 行，
-    # 而 negotiation_round 数的正是这些行——点几下就把轮次刷满、提前触发 walk。
-    if plan["action"] == "counter" and plan["offer"] is not None:
-        same = ours and float(ours[-1]["amount"]) == float(plan["offer"])
-        if not same:
-            add_quote(thread_id, amount=plan["offer"], currency=currency,
-                      status="countered", note=plan["rationale"])
+    # A generated draft is not a sent offer and must not advance negotiation rounds.
     return {**plan, "draft": draft, "next_action": next_action,
             "ask": ask, "currency": currency}
 
@@ -841,7 +848,8 @@ def list_threads(status: str = "", keyword: str = "", limit: int = 200) -> list[
                  WHERE m.thread_id = t.id AND m.handled = FALSE) AS unhandled
         FROM mb_threads t WHERE 1=1
     """
-    args: list = []
+    scope, args = mail_access.thread_scope()
+    sql += f' AND {scope}'
     if status in THREAD_STATUS_TEXT:
         sql += " AND t.status = %s"
         args.append(status)
@@ -895,24 +903,30 @@ def mark_handled(inbox_id: int, handled: bool = True) -> None:
 
 
 def inbox_stats() -> dict:
-    row = db.query_one("""
+    scope, args = mail_access.thread_scope()
+    row = db.query_one(f"""
+        WITH visible AS (SELECT t.id, t.status FROM mb_threads t WHERE {scope})
         SELECT
-          (SELECT COUNT(*) FROM mb_threads WHERE status = 'pending')     AS pending,
-          (SELECT COUNT(*) FROM mb_threads WHERE status = 'replied')     AS replied,
-          (SELECT COUNT(*) FROM mb_threads WHERE status = 'negotiating') AS negotiating,
-          (SELECT COUNT(*) FROM mb_threads WHERE status = 'won')         AS won,
-          (SELECT COUNT(*) FROM mb_threads WHERE status = 'lost')        AS lost,
-          (SELECT COUNT(*) FROM mb_inbox_messages WHERE handled = FALSE
-             AND kind = 'reply')                                         AS unhandled,
-          (SELECT COUNT(*) FROM mb_inbox_extractions WHERE needs_human)  AS needs_human
-    """)
+          (SELECT COUNT(*) FROM visible WHERE status = 'pending') AS pending,
+          (SELECT COUNT(*) FROM visible WHERE status = 'replied') AS replied,
+          (SELECT COUNT(*) FROM visible WHERE status = 'negotiating') AS negotiating,
+          (SELECT COUNT(*) FROM visible WHERE status = 'won') AS won,
+          (SELECT COUNT(*) FROM visible WHERE status = 'lost') AS lost,
+          (SELECT COUNT(*) FROM mb_inbox_messages m JOIN visible v ON v.id = m.thread_id
+             WHERE NOT m.handled AND m.kind = 'reply') AS unhandled,
+          (SELECT COUNT(*) FROM mb_inbox_extractions e JOIN mb_inbox_messages m ON m.id = e.inbox_id
+             JOIN visible v ON v.id = m.thread_id WHERE e.needs_human) AS needs_human
+    """, args)
     return dict(row) if row else {}
 
 
 def unmatched_messages(limit: int = 50) -> list[dict]:
     """匹配不上任何一封发出去的信的来件，页面上可以人工认领。"""
+    actor = mail_access.current_actor.get()
+    if actor and not actor.admin:
+        return []
     rows = db.query_all("""
-        SELECT id, from_email, from_name, subject, received_at, kind
+        SELECT id, account_id, from_email, from_name, subject, received_at, kind
         FROM mb_inbox_messages
         WHERE thread_id IS NULL AND kind = 'reply'
         ORDER BY received_at DESC NULLS LAST LIMIT %s
@@ -926,15 +940,28 @@ def unmatched_messages(limit: int = 50) -> list[dict]:
     return out
 
 
-def claim_message(inbox_id: int, kol_email: str = "") -> int:
+def claim_message(inbox_id: int, kol_email: str = "", item_id=None) -> int:
     """人工把一封没匹配上的来件挂到某个 KOL 的会话线上。"""
     msg = db.query_one("SELECT * FROM mb_inbox_messages WHERE id = %s", (inbox_id,))
     if msg is None:
         raise ValueError(f"收件 {inbox_id} 不存在")
+    if msg['thread_id']:
+        raise ValueError('此邮件已归属会话，请刷新列表')
     email_addr = (kol_email or msg["from_email"] or "").strip().lower()
     if "@" not in email_addr:
         raise ValueError("没有可用的 KOL 邮箱")
-    tid = _thread_for(email_addr, msg["matched_item_id"])
-    db.execute("UPDATE mb_inbox_messages SET thread_id = %s, match_method = 'manual', "
-               "match_confidence = 1.0 WHERE id = %s", (tid, inbox_id))
+    item_id = item_id or msg['matched_item_id']
+    if not item_id:
+        raise ValueError('请填写原始发信明细 ID，不能只凭达人邮箱合并会话')
+    row = db.query_one("SELECT i.id FROM mb_items i JOIN mb_jobs j ON j.id = i.job_id "
+                       "WHERE i.id = %s AND COALESCE(i.sender_account_id, j.sender_account_id) = %s "
+                       "AND j.mode = 'outreach' AND i.status = 'sent'", (item_id, msg['account_id']))
+    if not row:
+        raise ValueError('发信明细必须属于收件邮箱，且已经发送')
+    tid = _thread_for(email_addr, row['id'])
+    updated = db.execute_and_fetch_id(
+        "UPDATE mb_inbox_messages SET thread_id = %s, matched_item_id = %s, match_method = 'manual', "
+        "match_confidence = 1.0 WHERE id = %s AND thread_id IS NULL RETURNING id", (tid, row['id'], inbox_id))
+    if not updated:
+        raise ValueError('此邮件已被其他人归属，请刷新列表')
     return tid

@@ -29,6 +29,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import uuid
+from contextlib import nullcontext
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email import encoders
@@ -46,6 +48,7 @@ from psycopg2.extras import execute_values
 
 import crypto_util
 import database as db
+import mail_access
 import name_utils
 
 logger = logging.getLogger(__name__)
@@ -146,6 +149,11 @@ def _schema_is_current() -> bool:
 
 
 def ensure_schema() -> None:
+    _ensure_base_schema()
+    mail_access.ensure_schema()
+
+
+def _ensure_base_schema() -> None:
     """幂等建表。app.py 模块级调用一次即可——worker.py 会 `from app import ...`，
     所以这段在 web 和 worker 两个进程里都会执行到。
 
@@ -458,7 +466,6 @@ def ensure_schema() -> None:
         # 模板唯一键 (name) → (mode, name)：两套模板库各自独立命名。
         # 不换的话建联存一个叫「默认」的模板会顶掉素材提交的同名模板。
         "ALTER TABLE mb_templates DROP CONSTRAINT IF EXISTS mb_templates_name_key",
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_mb_templates_mode_name ON mb_templates(mode, name)",
         # 账号用途：素材提交和 KOL 建联用的是两套完全不同的邮箱
         # （素材是 Outlook OAuth2，建联是阿里云企业邮箱），混在一个下拉里很容易选错，
         # 而且选错的后果是建联信从收不了回信的号发出去。默认 both 保持老账号行为不变。
@@ -637,8 +644,8 @@ def usable_account(acc: dict) -> bool:
 
 def list_accounts(only_sendable: bool = False, purpose: str = "",
                   include_hidden: bool = False) -> list[dict]:
-    sql = "SELECT * FROM mb_sender_accounts WHERE 1=1"
-    args: list = []
+    scope, args = mail_access.account_scope()
+    sql = f"SELECT * FROM mb_sender_accounts WHERE {scope}"
     if not include_hidden or only_sendable:
         sql += " AND hidden = FALSE"
     if only_sendable:
@@ -1153,6 +1160,10 @@ def store_attachment(blob: bytes, filename: str) -> dict:
             "VALUES (%s, %s, %s, %s) "
             "ON CONFLICT (sha256) DO UPDATE SET sha256 = EXCLUDED.sha256 RETURNING id",
             (digest, psycopg2.Binary(blob), mime, len(blob)))
+    actor = mail_access.current_actor.get()
+    if actor:
+        db.execute('INSERT INTO mb_attachment_members(attachment_id, user_id) VALUES (%s, %s) '
+                   'ON CONFLICT DO NOTHING', (attachment_id, actor.user_id))
     return {"id": attachment_id, "filename": filename, "mime": mime, "byte_size": len(blob)}
 
 
@@ -1164,11 +1175,8 @@ def load_attachment(attachment_id: int) -> tuple[bytes, str] | None:
     return bytes(row["content"]), row["mime"]
 
 
-def set_job_attachments(job_id: int, specs: list[dict]) -> list[dict]:
+def set_job_attachments(job_id: int, specs: list[dict], cursor=None) -> list[dict]:
     """把一批附件挂到批次上（整组覆盖）。specs 是 [{id, filename?}, ...]。"""
-    db.execute("DELETE FROM mb_job_attachments WHERE job_id = %s", (job_id,))
-    if not specs:
-        return []
     if len(specs) > MAX_ATTACHMENT_COUNT:
         raise ValueError(f"最多带 {MAX_ATTACHMENT_COUNT} 个附件，现在选了 {len(specs)} 个")
 
@@ -1189,10 +1197,12 @@ def set_job_attachments(job_id: int, specs: list[dict]) -> list[dict]:
         raise ValueError(f"附件合计 {total / 1048576:.1f}MB，超过单封上限 "
                          f"{MAX_ATTACHMENT_TOTAL_BYTES // 1048576}MB（编码后还会再大三成）")
 
-    with db.get_db_cursor(commit=True) as cur:
-        execute_values(cur, "INSERT INTO mb_job_attachments "
-                            "(job_id, attachment_id, filename, seq) VALUES %s", rows)
-    return list_job_attachments(job_id)
+    with (nullcontext(cursor) if cursor is not None else db.get_db_cursor()) as cur:
+        cur.execute("DELETE FROM mb_job_attachments WHERE job_id = %s", (job_id,))
+        if rows:
+            execute_values(cur, "INSERT INTO mb_job_attachments "
+                                "(job_id, attachment_id, filename, seq) VALUES %s", rows)
+    return [] if cursor is not None else list_job_attachments(job_id)
 
 
 def list_job_attachments(job_id: int) -> list[dict]:
@@ -1263,7 +1273,7 @@ def load_item_attachments(item_id: int) -> list[dict]:
             for r in rows]
 
 
-def sync_item_attachments(job_id: int, specs_by_item: dict[int, list[dict]]) -> None:
+def sync_item_attachments(job_id: int, specs_by_item: dict[int, list[dict]], cursor=None) -> None:
     """把「哪一行带哪些附件」整体写回，只动真正变了的行。
 
     刻意是整批签名而不是 set_item_attachments(item_id, specs)：逐行
@@ -1280,7 +1290,7 @@ def sync_item_attachments(job_id: int, specs_by_item: dict[int, list[dict]]) -> 
     # 1) 圈定归属。item_id 是前端传来的，必须限定在本批次内，
     #    且已发出的行不能再改附件（和 sync_job 的 status <> 'sent' 一致）。
     owned = {r["id"] for r in db.query_all(
-        "SELECT id FROM mb_items WHERE job_id = %s AND status <> 'sent'", (job_id,))}
+        "SELECT id FROM mb_items WHERE job_id = %s AND status IN ('pending','failed','skipped')", (job_id,))}
     item_ids = sorted(i for i in specs_by_item if i in owned)
     if not item_ids:
         return
@@ -1335,7 +1345,7 @@ def sync_item_attachments(job_id: int, specs_by_item: dict[int, list[dict]]) -> 
     rows = [(item_id, attachment_id, name, seq)
             for item_id in changed
             for seq, (attachment_id, name) in enumerate(wanted[item_id])]
-    with db.get_db_cursor(commit=True) as cur:
+    with (nullcontext(cursor) if cursor is not None else db.get_db_cursor()) as cur:
         cur.execute("DELETE FROM mb_item_attachments WHERE item_id = ANY(%s)", (changed,))
         if rows:
             execute_values(cur, "INSERT INTO mb_item_attachments "
@@ -1806,8 +1816,10 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 # --------------------------------------------------------------------------- #
 
 def list_templates(mode: str = "material") -> list[dict]:
+    scope, args = mail_access.owner_scope('user_id')
     return [dict(r) for r in db.query_all(
-        "SELECT * FROM mb_templates WHERE mode = %s ORDER BY updated_at DESC", (mode,))]
+        f"SELECT * FROM mb_templates WHERE mode = %s AND {scope} ORDER BY updated_at DESC",
+        [mode] + args)]
 
 
 def save_template(name: str, subject: str, body: str, signature: str,
@@ -1815,18 +1827,21 @@ def save_template(name: str, subject: str, body: str, signature: str,
     name = (name or "").strip()
     if not name:
         raise ValueError("给模板起个名字")
+    actor = mail_access.current_actor.get()
     db.execute("""
-        INSERT INTO mb_templates (mode, name, subject, body_html, signature_html, updated_at)
-        VALUES (%s, %s, %s, %s, %s, NOW())
-        ON CONFLICT (mode, name) DO UPDATE SET subject = EXCLUDED.subject,
+        INSERT INTO mb_templates (user_id, mode, name, subject, body_html, signature_html, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (user_id, mode, name) DO UPDATE SET subject = EXCLUDED.subject,
             body_html = EXCLUDED.body_html, signature_html = EXCLUDED.signature_html,
             updated_at = NOW()
-    """, (mode, name, subject or "", body or "", signature or ""))
+    """, (actor.user_id if actor else None, mode, name, subject or "", body or "", signature or ""))
     return list_templates(mode)
 
 
 def delete_template(template_id: int, mode: str = "material") -> list[dict]:
-    db.execute("DELETE FROM mb_templates WHERE id = %s", (template_id,))
+    scope, args = mail_access.owner_scope('user_id')
+    db.execute(f"DELETE FROM mb_templates WHERE id = %s AND mode = %s AND {scope}",
+               [template_id, mode] + args)
     return list_templates(mode)
 
 
@@ -1875,6 +1890,9 @@ def already_sent(pairs: list[tuple[str, str]]) -> set[tuple[str, str]]:
 def list_history(limit: int = 500, keyword: str = "", mode: str = "") -> list[dict]:
     sql = "SELECT * FROM mb_history WHERE 1=1"
     args: list = []
+    scope, owner_args = mail_access.owner_scope('j.user_id')
+    sql += f" AND EXISTS (SELECT 1 FROM mb_jobs j WHERE j.id = mb_history.job_id AND {scope})"
+    args += owner_args
     if mode:
         sql += " AND mode = %s"
         args.append(mode)
@@ -2855,6 +2873,7 @@ def load_job(job_id: int) -> dict:
         counts[it["status"]] = counts.get(it["status"], 0) + 1
     return {
         "job": {"id": job["id"], "recipient": job["recipient"], "status": job["status"],
+                "name": job.get("name") or "",
                 "mode": job.get("mode") or "material",
                 "sender_account_id": job.get("sender_account_id"),
                 "paused_reason": job["paused_reason"], "task_id": job["task_id"],
@@ -2871,13 +2890,100 @@ def load_job(job_id: int) -> dict:
     }
 
 
+def list_jobs(limit=100):
+    scope, args = mail_access.owner_scope('j.user_id')
+    return [dict(r) for r in db.query_all(f"""
+        SELECT j.id, j.name, j.subject_tpl, j.status, j.paused_reason, j.created_at,
+               a.email AS sender_email, COUNT(i.id) AS total,
+               COUNT(i.id) FILTER (WHERE i.status = 'sent') AS sent,
+               COUNT(i.id) FILTER (WHERE i.status = 'failed') AS failed,
+               COUNT(i.id) FILTER (WHERE i.status = 'unknown') AS unknown
+        FROM mb_jobs j LEFT JOIN mb_items i ON i.job_id = j.id
+        LEFT JOIN mb_sender_accounts a ON a.id = j.sender_account_id
+        WHERE j.mode = 'outreach' AND {scope}
+        GROUP BY j.id, a.email ORDER BY j.created_at DESC, j.id DESC LIMIT %s
+    """, args + [min(max(int(limit), 1), 200)])]
+
+
+def enqueue_job(job_id, user_id, item_id=None):
+    """Publish the task and job state in one transaction; duplicate clicks reuse it."""
+    actor = mail_access.Actor.load(user_id)
+    mail_access.require_job(job_id, actor)
+    with db.get_db_cursor() as cur:
+        cur.execute('SELECT * FROM mb_jobs WHERE id = %s FOR UPDATE', (job_id,))
+        job = cur.fetchone()
+        if job['status'] in ('queued', 'sending'):
+            return job['task_id']
+        cur.execute('SELECT * FROM mb_items WHERE job_id = %s ORDER BY id', (job_id,))
+        items = cur.fetchall()
+        if item_id:
+            items = [i for i in items if i['id'] == item_id]
+            if not items or items[0]['status'] not in ('failed', 'skipped', 'pending'):
+                raise ValueError('这封邮件已发送或投递结果待核实，不能重发')
+        retry_mark = PAUSE_SKIP_MARK if job['mode'] == 'outreach' else NO_CONTENT_SKIP_MARK
+        items = [i for i in items if i['status'] in ('pending', 'failed') or
+                 (i['status'] == 'skipped' and (i.get('error') or '').startswith(retry_mark))]
+        if not items:
+            raise ValueError('没有可发送的邮件；投递结果待核实的邮件不会自动重发')
+        accounts = sorted({i['sender_account_id'] or job['sender_account_id'] for i in items
+                           if i['sender_account_id'] or job['sender_account_id']})
+        for aid in accounts:
+            mail_access.require_account(aid, job['mode'], actor)
+        # Serialize reservations across jobs using the same mailbox, including material jobs.
+        cur.execute('SELECT id FROM mb_sender_accounts WHERE id = ANY(%s) ORDER BY id FOR UPDATE',
+                    (accounts,))
+        cur.execute("""SELECT j.id FROM mb_jobs j JOIN mb_items i ON i.job_id = j.id
+            WHERE j.id <> %s AND j.status IN ('queued','sending')
+              AND COALESCE(i.sender_account_id, j.sender_account_id) = ANY(%s) LIMIT 1""",
+                    (job_id, accounts))
+        if cur.fetchone():
+            raise ValueError('所选邮箱还有活动在排队或发送，请完成后再试')
+        task_id = f'mb_{uuid.uuid4().hex[:16]}'
+        params = {'job_id': job_id}
+        if item_id:
+            params['item_id'] = item_id
+        cur.execute("""INSERT INTO task_queue
+            (task_id, user_id, session_id, function_type, lane, status, progress, task_params)
+            VALUES (%s, %s, %s, 'mail_blaster_send', 'interactive', 'pending', %s, %s)""",
+                    (task_id, user_id, f'mail_blaster_{job_id}', '等待发送', json.dumps(params)))
+        cur.execute("UPDATE mb_jobs SET task_id = %s, status = 'queued', finished_at = NULL "
+                    'WHERE id = %s', (task_id, job_id))
+        return task_id
+
+
 def sync_job(job_id: int, data: dict) -> None:
+    with db.get_db_cursor() as cur:
+        cur.execute('SELECT * FROM mb_jobs WHERE id = %s FOR UPDATE', (job_id,))
+        job = cur.fetchone()
+        if not job:
+            raise ValueError('活动不存在')
+        if job['status'] in ('queued', 'sending'):
+            raise ValueError('活动正在排队或发送，暂时不能编辑')
+        if job['mode'] == 'outreach' and job['status'] != 'draft':
+            # Retrying keeps the exact original content and recipient list.
+            return
+        _sync_job(job_id, data, cur)
+        if job['mode'] == 'outreach':
+            if data.get('sender_account_id'):
+                account = get_account(data['sender_account_id'])
+                display, signature = derive_names(account)
+                cur.execute('UPDATE mb_jobs SET sender_account_id = %s WHERE id = %s',
+                            (data['sender_account_id'], job_id))
+                cur.execute('UPDATE mb_items SET sender_account_id = %s, from_display = %s, '
+                            'signature_name = %s WHERE job_id = %s',
+                            (data['sender_account_id'], display, signature, job_id))
+            if 'attachments' in data:
+                set_job_attachments(job_id, data['attachments'] or [], cursor=cur)
+
+
+def _sync_job(job_id: int, data: dict, cur) -> None:
     """把前端改过的收件人 / 模板 / 配对写回。
 
     只写 payload 里**出现过**的键：无条件覆盖的话，一个空 body 的请求
     就能把整批的模板和收件人清成空串。
     """
-    cleaners = {"recipient": lambda v: (v or "").strip(),
+    cleaners = {"name": lambda v: (v or '').strip()[:200],
+                "recipient": lambda v: (v or "").strip(),
                 "subject_tpl": lambda v: v or "", "body_tpl": lambda v: v or "",
                 "signature_tpl": lambda v: v or "",
                 "replace_domain_enabled": lambda v: bool(v),
@@ -2895,7 +3001,7 @@ def sync_job(job_id: int, data: dict) -> None:
         elif "replacement_domain" in args:
             args["replacement_domain"] = normalize_replacement_domain(args["replacement_domain"])
         args["jid"] = job_id
-        db.execute(f"UPDATE mb_jobs SET {', '.join(sets)} WHERE id = %(jid)s", args)
+        cur.execute(f"UPDATE mb_jobs SET {', '.join(sets)} WHERE id = %(jid)s", args)
 
     item_attachments: dict[int, list[dict]] = {}
     for item in data.get("items") or []:
@@ -2916,11 +3022,11 @@ def sync_job(job_id: int, data: dict) -> None:
         # 这里只收集，循环外一次写完 —— 逐行写会把 sync_job 的往返次数翻三倍。
         if "attachments" in item and item.get("id") is not None:
             item_attachments[int(item["id"])] = item.get("attachments") or []
-        db.execute(
+        cur.execute(
             f"UPDATE mb_items SET {', '.join(fields)} "
-            "WHERE id = %(iid)s AND job_id = %(jid)s AND status NOT IN ('sent', 'sending')", params)
+            "WHERE id = %(iid)s AND job_id = %(jid)s AND status IN ('pending','failed','skipped')", params)
 
-    sync_item_attachments(job_id, item_attachments)
+    sync_item_attachments(job_id, item_attachments, cursor=cur)
 
 
 def _mark_failed(item_id: int, message: str) -> None:
@@ -2959,13 +3065,20 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
     job = db.query_one("SELECT * FROM mb_jobs WHERE id = %s", (job_id,))
     if row is None or job is None:
         return "missing"
+    if row['status'] not in ('pending', 'failed', 'skipped'):
+        return row['status']
+    claimed = db.execute_and_fetch_id(
+        "UPDATE mb_items SET status = 'sending', error = NULL WHERE id = %s "
+        "AND status IN ('pending', 'failed', 'skipped') RETURNING id", (item_id,))
+    if not claimed:
+        return 'busy'
     total = (db.query_one("SELECT COUNT(*) AS c FROM mb_items WHERE job_id = %s",
                           (job_id,)) or {}).get("c", 0)
     item = dict(row)
     recipient = (item["recipient"] or job["recipient"] or "").strip()
     is_outreach = (job.get("mode") or "material") == "outreach"
 
-    # 抑制名单闸门。放在标 sending 之前：命中是「主动决定不发」，
+    # 抑制名单闸门。命中是「主动决定不发」，
     # 不是发送失败，所以走 _mark_skipped 而不是 _mark_failed。
     # ⚠️ 必须判 is not None —— 原因可能是空字符串（手动拉黑常常不写理由）。
     if is_outreach:
@@ -2986,18 +3099,28 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
                                    "在「逐封确认」表里点 📎 传一个文件，再点一次发送即可。")
             return "skipped"
 
-    db.execute("UPDATE mb_items SET status = 'sending', error = NULL WHERE id = %s", (item_id,))
-
     # 第一段：投递。这里失败才算这封信没发出去。
     try:
         if "@" not in recipient:
             raise ValueError("收件邮箱没填或格式不对")
         account_id = item["sender_account_id"] or job.get("sender_account_id")
+        # Re-check grants at delivery time: queued jobs must respect revocation.
+        actor = mail_access.Actor.load(job.get('user_id'))
+        mail_access.require_account(account_id, job.get('mode') or 'material', actor)
         account = get_account(account_id) if account_id else None
         if account is None:
             raise ValueError("还没选发件账号")
         if account.get("hidden") or not account.get("enabled"):
             raise ValueError("该发件账号已隐藏或停用，请重新选择")
+        if is_outreach:
+            paused = outside_send_window()
+            quota = quota_state(account['id'], serialize_account(account)['daily_limit'])
+            if not paused and quota['remaining'] is not None and quota['remaining'] <= 0:
+                paused = f"{account['email']} 今日配额已用满，请明天继续"
+            if paused:
+                _mark_skipped(item_id, f'{PAUSE_SKIP_MARK} {paused}')
+                db.execute('UPDATE mb_jobs SET paused_reason = %s WHERE id = %s', (paused, job_id))
+                return 'skipped'
         if not is_outreach and not material_account_matches(account, bool(job.get("replace_domain_enabled"))):
             raise ValueError("当前模式的账号不匹配：不替换域名使用 Hotmail，替换域名使用 163")
 
@@ -3028,6 +3151,10 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
                          else (load_job_attachments(job_id) if is_outreach
                                else load_item_attachments(item_id))))
     except Exception as exc:
+        if isinstance(exc, (smtplib.SMTPServerDisconnected, TimeoutError, ConnectionError)):
+            db.execute("UPDATE mb_items SET status = 'unknown', error = %s WHERE id = %s",
+                       ('连接中断，投递结果待核实，未自动重试', item_id))
+            return 'unknown'
         _mark_failed(item_id, friendly_smtp_error(exc))
         return "failed"
 
@@ -3043,6 +3170,9 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
                     mode="outreach" if is_outreach else "material")
     except Exception:
         logger.exception("mail-blaster: 第 %s 封已投递但记账失败", item_id)
+        db.execute("UPDATE mb_items SET status = 'unknown', error = %s "
+                   "WHERE id = %s AND status = 'sending'",
+                   ('已投递但保存发送结果失败，请核实发件箱', item_id))
     return "sent"
 
 
@@ -3079,7 +3209,7 @@ def run_job(job_id: int, progress=None) -> dict:
     db.execute("UPDATE mb_jobs SET status = 'sending', paused_reason = NULL WHERE id = %s",
                (job_id,))
     pending = [r["id"] for r in db.query_all(
-        "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
+        "SELECT id FROM mb_items WHERE job_id = %s AND status IN ('pending','failed') "
         "ORDER BY seq ASC", (job_id,))]
     # 上一轮「暂时性」跳过的行捡回来重跑。
     # 建联是因配额/窗口暂停的（⏸），素材是缺图缺附件的（📎，用户补完附件再点发送就该发）。
@@ -3092,7 +3222,7 @@ def run_job(job_id: int, progress=None) -> dict:
         db.execute("UPDATE mb_items SET status = 'pending', error = NULL "
                    "WHERE id = ANY(%s)", (resume,))
         pending = [r["id"] for r in db.query_all(
-            "SELECT id FROM mb_items WHERE job_id = %s AND status NOT IN ('sent','skipped') "
+            "SELECT id FROM mb_items WHERE job_id = %s AND status IN ('pending','failed') "
             "ORDER BY seq ASC", (job_id,))]
 
     # 建联的节奏刻意慢一个数量级：冷启动收件人互不相识，
@@ -3104,7 +3234,7 @@ def run_job(job_id: int, progress=None) -> dict:
     # None 表示这个账号不限量，quota_state 会据此跳过配额检查
     daily_limit = serialize_account(account)["daily_limit"] if account else None
 
-    sent = failed = skipped = 0
+    sent = failed = skipped = unknown = 0
     paused = ""
     # 建联整批共用同一组附件，取一次带着走：15MB × 500 个收件人逐封重取就是 7GB 库往返。
     # 素材是按行挂的，各是各的，只能让 send_item 逐行取（取完就丢，内存有界）。
@@ -3137,6 +3267,8 @@ def run_job(job_id: int, progress=None) -> dict:
             failed += 1
         elif outcome == "skipped":
             skipped += 1
+        elif outcome == "unknown":
+            unknown += 1
         if progress:
             progress(f"已处理 {i + 1}/{len(pending)}　成功 {sent}　失败 {failed}")
         if i < len(pending) - 1:
@@ -3146,21 +3278,26 @@ def run_job(job_id: int, progress=None) -> dict:
         db.execute("UPDATE mb_jobs SET status = 'done', finished_at = NOW() WHERE id = %s",
                    (job_id,))
     return {"total": len(pending), "sent": sent, "failed": failed,
-            "skipped": skipped + (len(pending) - sent - failed - skipped if paused else 0),
+            "unknown": unknown,
+            "skipped": skipped + (len(pending) - sent - failed - skipped - unknown if paused else 0),
             "paused_reason": paused}
 
 
 def reset_stuck_items() -> int:
     """复位上次进程被杀时卡在 sending 的行。
 
-    刻意标成 failed 而不是 pending：那封信可能**已经送达**，自动重发会让收件人收到两封。
+    仅处理任务已被恢复器回退或终止的活动，不动其他 worker 的正常发送。
     """
     n = db.execute("""
-        UPDATE mb_items SET status = 'failed',
+        UPDATE mb_items SET status = 'unknown',
             error = '进程在发送途中退出，这封信是否已投递未知。请先到发件箱确认再决定是否重发——直接重发可能让对方收到两封。'
-        WHERE status = 'sending'
+        WHERE status = 'sending' AND job_id IN (
+            SELECT j.id FROM mb_jobs j JOIN task_queue q ON q.task_id = j.task_id
+            WHERE q.status IN ('pending', 'failed', 'completed'))
     """)
-    db.execute("UPDATE mb_jobs SET status = 'done', finished_at = NOW() WHERE status = 'sending'")
+    db.execute("""UPDATE mb_jobs j SET status = CASE WHEN q.status = 'pending' THEN 'queued' ELSE 'done' END
+                  FROM task_queue q WHERE q.task_id = j.task_id AND j.status IN ('queued', 'sending')
+                  AND q.status IN ('pending', 'failed', 'completed')""")
     return n or 0
 
 
@@ -3363,6 +3500,7 @@ def create_outreach_job(*, sender_account_id: int, rows: list[dict],
     account = get_account(int(sender_account_id)) if sender_account_id else None
     if account is None:
         raise ValueError("请先选一个发件账号")
+    mail_access.require_account(account['id'], 'outreach')
     acc = serialize_account(account)
     if not usable_account(acc):
         raise ValueError(f"{acc['email']} 还不可用：需要「已启用 + 测试通过 + 有凭据」")
@@ -3372,23 +3510,27 @@ def create_outreach_job(*, sender_account_id: int, rows: list[dict],
 
     # 服务端再过一遍抑制名单。解析期那次挡不住直接 POST，
     # 而且从解析到建批次之间可能有人刚把某个地址拉黑。
-    dropped = filter_suppressed([r.get("email") for r in rows])
-    usable = [r for r in rows if (r.get("email") or "").strip().lower() not in dropped]
+    normalized, seen = [], set()
+    for row in rows:
+        address = (row.get('email') or '').strip().lower()
+        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', address):
+            raise ValueError(f'收件邮箱格式不正确：{address}')
+        if address not in seen:
+            normalized.append({**row, 'email': address})
+            seen.add(address)
+    dropped = filter_suppressed([r['email'] for r in normalized])
+    usable = [r for r in normalized if r['email'] not in dropped]
     if not usable:
         raise ValueError("名单里的地址全都在抑制名单里，没有可发送的行")
 
-    job_id = db.execute_and_fetch_id("""
-        INSERT INTO mb_jobs (user_id, mode, sender_account_id, recipient,
-            subject_tpl, body_tpl, signature_tpl)
-        VALUES (%s, 'outreach', %s, '', %s, %s, %s) RETURNING id
-    """, (user_id, account["id"],
-          subject_tpl or DEFAULT_OUTREACH_SUBJECT_TPL,
-          body_tpl or DEFAULT_OUTREACH_BODY_TPL,
-          signature_tpl or DEFAULT_OUTREACH_SIGNATURE_TPL))
-
-    # 用 execute_values 批量插。素材那边逐行 execute 是因为每行都要先 store_image，
-    # 这里没有这个约束，500 行名单逐行插就是 500 次 Render 往返。
     with db.get_db_cursor(commit=True) as cur:
+        cur.execute("""
+            INSERT INTO mb_jobs (user_id, mode, sender_account_id, recipient,
+                subject_tpl, body_tpl, signature_tpl)
+            VALUES (%s, 'outreach', %s, '', %s, %s, %s) RETURNING id
+        """, (user_id, account['id'], subject_tpl or DEFAULT_OUTREACH_SUBJECT_TPL,
+              body_tpl or DEFAULT_OUTREACH_BODY_TPL, signature_tpl or DEFAULT_OUTREACH_SIGNATURE_TPL))
+        job_id = cur.fetchone()['id']
         execute_values(cur, """
             INSERT INTO mb_items (job_id, seq, sender_account_id, recipient,
                 vars_json, from_display, signature_name)
@@ -3397,11 +3539,7 @@ def create_outreach_job(*, sender_account_id: int, rows: list[dict],
                json.dumps(r.get("vars") or {}, ensure_ascii=False),
                acc["effective_display_name"], acc["effective_signature_name"])
               for seq, r in enumerate(usable)])
-
-    # 附件要有 job_id 才挂得上，所以只能放在建批次之后。这里抛错会留下一个
-    # 没挂上附件的 draft 批次 —— 它不会被发送（发送要另外点一次），
-    # 而前端每次预览/发送都重建批次，所以下一次点会得到一个干净的新批次。
-    set_job_attachments(job_id, attachments or [])
+        set_job_attachments(job_id, attachments or [], cursor=cur)
 
     payload = load_job(job_id)
     payload["quota"] = quota_state(account["id"], acc["daily_limit"])

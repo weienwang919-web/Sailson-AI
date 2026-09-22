@@ -447,9 +447,21 @@ def _handle_mail_blaster_send(task_id, params):
         return
 
     try:
+        import mail_access
+        task = db.query_one('SELECT user_id FROM task_queue WHERE task_id = %s', (task_id,))
+        actor = mail_access.Actor.load((task or {}).get('user_id'))
+        mail_access.require_job(int(job_id), actor)
+        claimed = db.execute_and_fetch_id(
+            "UPDATE mb_jobs SET status = 'sending' WHERE id = %s AND task_id = %s "
+            "AND status = 'queued' RETURNING id", (int(job_id), task_id))
+        if not claimed:
+            update_task(task_id, status='completed', progress='活动已处理，忽略重复任务')
+            return
         if item_id:
             # 单封重发
             outcome = mb.send_item(int(job_id), int(item_id))
+            db.execute("UPDATE mb_jobs SET status = 'done', finished_at = NOW() WHERE id = %s",
+                       (int(job_id),))
             update_task(task_id, status='completed',
                         progress=f'重发完成：{outcome}',
                         result=json.dumps({'outcome': outcome}, ensure_ascii=False))
@@ -467,6 +479,8 @@ def _handle_mail_blaster_send(task_id, params):
         import traceback
         traceback.print_exc()
         update_task(task_id, status='failed', error=f'发送失败: {str(e)[:500]}')
+        db.execute("UPDATE mb_jobs SET status = 'done', paused_reason = %s WHERE id = %s AND task_id = %s",
+                   ('发送中断，请核对明细后重试', int(job_id), task_id))
 
 
 def _handle_mail_blaster_poll_replies(task_id, params):
@@ -1038,13 +1052,13 @@ def main():
         logger.warning(f"⚠️ 回退残留任务失败: {e}")
 
     # mail-blaster：复位上次被杀时卡在 sending 的信。
-    # 刻意标成 failed 而不是 pending —— 那封信可能已经送达，
+    # 投递结果未知的行不再自动重试。
     # 自动重发会让收件人收到两封，宁可让人来判断。
     try:
         import mail_blaster_service as _mb
         stuck = _mb.reset_stuck_items()
         if stuck:
-            logger.info(f"♻️ mail-blaster 复位了 {stuck} 封卡在发送中的信（投递结果未知，已标失败待人工确认）")
+            logger.info(f"mail-blaster: {stuck} 封投递结果未知，等待人工核实")
     except Exception as e:
         logger.warning(f"⚠️ mail-blaster 复位失败（不影响其他任务）: {e}")
 

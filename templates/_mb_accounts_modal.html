@@ -187,3 +187,14 @@
     </div>
   </div>
 </div>
+<div class="modal" id="account-members-modal">
+  <div class="modal-box" style="max-width:520px">
+    <div class="modal-head"><h2 id="members-title">邮箱授权</h2>
+      <button class="small" onclick="closeModal('account-members-modal')" aria-label="关闭">✕</button></div>
+    <div class="modal-body" id="members-list"></div>
+    <div class="modal-foot">
+      <button class="small" onclick="closeModal('account-members-modal')">取消</button>
+      <button class="primary" onclick="saveAccountMembers(this)">保存授权</button>
+    </div>
+  </div>
+</div>

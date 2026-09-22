@@ -7,12 +7,12 @@ let INBOX_LOADED = false;
 /* 页签切换。回信数据只在第一次点开时才拉——
    多数时候进这个页面是来发建联的，没必要先跑一遍会话线查询。 */
 function switchTab(which) {
-  const send = which === 'send';
-  document.getElementById('pane-send').style.display = send ? '' : 'none';
-  document.getElementById('pane-inbox').style.display = send ? 'none' : '';
-  document.getElementById('tab-send').classList.toggle('on', send);
-  document.getElementById('tab-inbox').classList.toggle('on', !send);
-  if (!send && !INBOX_LOADED) { INBOX_LOADED = true; loadThreads(); }
+  for (const name of ['activities', 'send', 'inbox']) {
+    document.getElementById(`pane-${name}`).style.display = which === name ? '' : 'none';
+    document.getElementById(`tab-${name}`).classList.toggle('on', which === name);
+  }
+  if (which === 'inbox') { INBOX_LOADED = true; loadThreads(); }
+  if (which === 'activities') loadActivities();
 }
 
 const STAT_DEFS = [
@@ -43,7 +43,8 @@ async function loadThreads() {
   document.getElementById('thread-rows').innerHTML = THREADS.map(t => `
     <tr class="thread-row ${CURRENT === t.id ? 'on' : ''}" onclick="openThread(${t.id})">
       <td>
-        <div>${esc(t.kol_name || '—')}${t.unhandled ? ' <span class="pill">新</span>' : ''}</div>
+        <div>${esc(t.kol_name || '—')}${t.unhandled ? ' <span class="pill">新</span>' : ''}${
+          t.legacy_locked ? ' <span class="pill">历史待核对</span>' : ''}</div>
         <div class="mono" style="font-size:12px;color:var(--muted)">${esc(t.kol_email)}</div>
       </td>
       <td><span class="pill">${esc(t.status_text)}</span></td>
@@ -58,21 +59,34 @@ async function loadThreads() {
       <td><div class="mono">${esc(m.from_email)}</div>
           <div style="font-size:12px;color:var(--muted)">${esc(m.subject || '')}</div></td>
       <td style="width:120px">${esc(m.received_at || '')}</td>
-      <td style="width:80px"><button class="small" onclick="claim(${m.id})">认领</button></td>
+      <td style="width:80px"><button class="small" onclick="claim(${m.id})">归属活动</button></td>
     </tr>`).join('');
 }
 
 function setFilter(k) { FILTER = k; loadThreads(); }
 
+let CLAIM_MESSAGE = null;
 async function claim(inboxId) {
-  const who = prompt('这封信是哪个达人回的？填他的邮箱（留空就用发件地址）');
-  if (who === null) return;
   try {
-    await api(`/api/mail-blaster/inbox/messages/${inboxId}/claim`,
-      { method: 'POST', body: { kol_email: who.trim() } });
+    const data = await api(`/api/mail-blaster/inbox/messages/${inboxId}/candidates`);
+    if (!data.items.length) return toast('此邮箱没有可关联的已发邮件', true);
+    CLAIM_MESSAGE = inboxId;
+    document.getElementById('claim-item').innerHTML = data.items.map(i => `<option value="${i.id}">${
+      esc([i.name || i.subject || '未命名活动', i.recipient, i.owner_name || '', (i.sent_at || '').slice(0,16)].join(' · '))}</option>`).join('');
+    openModal('claim-modal');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function confirmClaim(btn) {
+  btn.disabled = true;
+  try {
+    await api(`/api/mail-blaster/inbox/messages/${CLAIM_MESSAGE}/claim`,
+      { method: 'POST', body: { item_id: Number(document.getElementById('claim-item').value) } });
+    closeModal('claim-modal');
     toast('已挂到会话线');
     await loadThreads();
   } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
 }
 
 async function openThread(id) {
