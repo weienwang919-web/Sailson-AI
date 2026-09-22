@@ -377,7 +377,8 @@ function insertPh(token) {
 async function loadTemplates() {
   try { TEMPLATES = (await api('/api/mail-blaster/templates')).templates; } catch (e) { return; }
   document.getElementById('tpl-picker').innerHTML = ['<option value="">— 模板库 —</option>']
-    .concat(TEMPLATES.map(t => `<option value="${t.id}">${esc(t.name)}</option>`)).join('');
+    .concat(TEMPLATES.map(t => `<option value="${t.id}">${esc(t.name)}${
+      t.is_shared ? '（共享）' : ''}</option>`)).join('');
   document.getElementById('tpl-info').textContent =
     TEMPLATES.length ? `已存 ${TEMPLATES.length} 个模板` : '还没存过模板';
 }
@@ -410,6 +411,7 @@ async function deleteTemplate() {
   const id = document.getElementById('tpl-picker').value;
   const t = TEMPLATES.find(x => String(x.id) === String(id));
   if (!t) return toast('先在下拉里选一个模板', true);
+  if (!t.can_delete) return toast('共享历史模板不可删除', true);
   if (!confirm(`删除模板「${t.name}」？`)) return;
   try { await api(`/api/mail-blaster/templates/${id}`, { method: 'DELETE' }); await loadTemplates(); }
   catch (e) { toast(e.message, true); }

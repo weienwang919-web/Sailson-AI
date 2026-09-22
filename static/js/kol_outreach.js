@@ -264,7 +264,8 @@ async function loadTemplates() {
   catch (e) { return; }
   document.getElementById('tpl-list').innerHTML =
     '<option value="">— 载入已存模板 —</option>' +
-    TEMPLATES.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+    TEMPLATES.map(t => `<option value="${t.id}">${esc(t.name)}${
+      t.is_shared ? '（共享）' : ''}</option>`).join('');
 }
 
 async function saveTpl() {
@@ -295,6 +296,8 @@ function loadTpl() {
 async function delTpl() {
   const id = document.getElementById('tpl-list').value;
   if (!id) return toast('先选一个模板', true);
+  const picked = TEMPLATES.find(t => String(t.id) === id);
+  if (!picked?.can_delete) return toast('共享历史模板不可删除', true);
   try {
     await api(`/api/mail-blaster/templates/${id}?mode=outreach`, { method: 'DELETE' });
     await loadTemplates();

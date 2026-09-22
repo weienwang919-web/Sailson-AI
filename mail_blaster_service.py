@@ -1820,10 +1820,19 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 # --------------------------------------------------------------------------- #
 
 def list_templates(mode: str = "material") -> list[dict]:
-    scope, args = mail_access.owner_scope('user_id')
-    return [dict(r) for r in db.query_all(
+    actor = mail_access.current_actor.get()
+    if actor is None or actor.admin:
+        scope, args = 'TRUE', []
+    else:
+        # 隔离上线前的模板没有 owner。保留为只读共享模板，不能因迁移而从业务侧消失。
+        scope, args = '(user_id = %s OR user_id IS NULL)', [actor.user_id]
+    rows = [dict(r) for r in db.query_all(
         f"SELECT * FROM mb_templates WHERE mode = %s AND {scope} ORDER BY updated_at DESC",
         [mode] + args)]
+    for row in rows:
+        row['is_shared'] = row.get('user_id') is None
+        row['can_delete'] = not row['is_shared'] or actor is None or actor.admin
+    return rows
 
 
 def save_template(name: str, subject: str, body: str, signature: str,

@@ -72,6 +72,33 @@ class MaterialPoolTests(unittest.TestCase):
             with self.assertRaisesRegex(access.AccessDenied, 'Sailson'):
                 access.require_account(7, 'material', access.Actor(99))
 
+    def test_legacy_templates_remain_visible_to_users(self):
+        rows = [{'id': 1, 'user_id': None}, {'id': 2, 'user_id': 9}]
+        token = access.current_actor.set(access.Actor(9))
+        try:
+            with patch.object(mb.db, 'query_all', return_value=rows) as query:
+                templates = mb.list_templates('material')
+        finally:
+            access.current_actor.reset(token)
+        sql, args = query.call_args.args
+        self.assertIn('(user_id = %s OR user_id IS NULL)', sql)
+        self.assertEqual(args, ['material', 9])
+        self.assertEqual([(t['is_shared'], t['can_delete']) for t in templates],
+                         [(True, False), (False, True)])
+
+    def test_admin_still_sees_and_can_delete_all_templates(self):
+        rows = [{'id': 1, 'user_id': None}]
+        token = access.current_actor.set(access.Actor(1, admin=True))
+        try:
+            with patch.object(mb.db, 'query_all', return_value=rows) as query:
+                templates = mb.list_templates('material')
+        finally:
+            access.current_actor.reset(token)
+        sql, args = query.call_args.args
+        self.assertIn('AND TRUE', sql)
+        self.assertEqual(args, ['material'])
+        self.assertTrue(templates[0]['can_delete'])
+
     def test_hidden_migration_is_in_schema_check(self):
         self.assertIn(('mb_sender_accounts', 'hidden'), mb._LATEST_COLUMNS)
 

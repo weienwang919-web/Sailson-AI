@@ -131,13 +131,17 @@ class MailIsolationTests(unittest.TestCase):
         self.assertEqual(self.client.get(f'/api/mail-blaster/jobs/{jid}/status').status_code, 200)
 
     def test_account_members_and_templates(self):
+        db.execute("INSERT INTO mb_templates(mode,name,subject,body_html,signature_html) "
+                   "VALUES ('material','legacy','Legacy','shared body','')")
         self.assertEqual([a['id'] for a in self.client.get('/api/mail-blaster/accounts').json['accounts']], [1])
         self.assertEqual(self.client.put('/api/mail-blaster/accounts/1',json={}).status_code,403)
         with as_user(1):
             mb.save_template('default','Alice','private body','')
         with as_user(2):
             mb.save_template('default','Bob','private body','')
-        self.assertEqual(self.client.get('/api/mail-blaster/templates').json['templates'][0]['subject'],'Alice')
+        templates = self.client.get('/api/mail-blaster/templates').json['templates']
+        self.assertEqual([t['subject'] for t in templates], ['Alice', 'Legacy'])
+        self.assertFalse(templates[1]['can_delete'])
         self.login(3)
         self.assertEqual(self.client.put('/api/mail-blaster/accounts/2/members',json={'user_ids':[1]}).status_code,200)
         self.login(1)
