@@ -143,6 +143,22 @@ class MailIsolationTests(unittest.TestCase):
         self.login(1)
         self.assertEqual(len(self.client.get('/api/mail-blaster/accounts').json['accounts']),2)
 
+    def test_material_accounts_are_shared_except_sailson(self):
+        db.execute("UPDATE mb_sender_accounts SET email='shared@hotmail.com' WHERE id=1")
+        db.execute("UPDATE mb_sender_accounts SET email='private@hotmail.com' WHERE id=2")
+        db.execute("INSERT INTO mb_sender_accounts(email,smtp_host,smtp_port,encrypted_password,status,purpose) "
+                   "VALUES ('internal@sailson.com','localhost',1025,'test-only','ready','both')")
+        material = self.client.get('/api/mail-blaster/accounts?purpose=material').json['accounts']
+        self.assertEqual([a['id'] for a in material], [1, 2])
+        outreach = self.client.get('/api/mail-blaster/accounts?purpose=outreach').json['accounts']
+        self.assertEqual([a['id'] for a in outreach], [1])
+        with as_user(1):
+            access.require_account(2, 'material')
+            with self.assertRaisesRegex(access.AccessDenied, 'Sailson'):
+                access.require_account(3, 'material')
+            with self.assertRaises(access.AccessDenied):
+                access.require_account(2, 'outreach')
+
     def test_attachments_owner_and_hash_dedup(self):
         with as_user(2):
             att = mb.store_attachment(b'private', 'brief.txt')
@@ -266,6 +282,21 @@ class MailIsolationTests(unittest.TestCase):
         with patch.object(mb,'send_one_email') as smtp:
             self.assertEqual(mb.send_item(b['job']['id'],b['items'][0]['id']),'failed')
             smtp.assert_not_called()
+
+    def test_material_send_survives_membership_revocation(self):
+        a = self.job()
+        iid, jid = a['items'][0]['id'], a['job']['id']
+        db.execute("UPDATE mb_jobs SET mode='material' WHERE id=%s", (jid,))
+        db.execute("UPDATE mb_sender_accounts SET email='shared@hotmail.com' WHERE id=1")
+        db.execute('DELETE FROM mb_account_members WHERE user_id=1')
+        task_id = mb.enqueue_job(jid, 1)
+        self.assertTrue(task_id.startswith('mb_'))
+        accepted = dict(subject='material', body_html='body',
+                        message_id='<material@example.com>', smtp_response='250 OK')
+        with patch.object(mb, 'count_item_attachments', return_value=1), \
+                patch.object(mb, 'send_one_email', return_value=accepted) as smtp:
+            self.assertEqual(mb.send_item(jid, iid), 'sent')
+            smtp.assert_called_once()
 
     def test_invalid_attachment_change_rolls_back(self):
         a = self.job()

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import mail_access as access
 import mail_blaster_service as mb
 
 
@@ -38,6 +39,38 @@ class MaterialPoolTests(unittest.TestCase):
             self.assertNotIn('hidden = FALSE', query.call_args.args[0])
             mb.list_accounts(include_hidden=True, only_sendable=True)
             self.assertIn('hidden = FALSE', query.call_args.args[0])
+
+    def test_material_list_is_shared_and_excludes_sailson(self):
+        with patch.object(mb.mail_access, 'account_scope') as account_scope, \
+                patch.object(mb.db, 'query_all', return_value=[]) as query:
+            mb.list_accounts(purpose='material')
+        account_scope.assert_not_called()
+        sql, args = query.call_args.args
+        self.assertIn('email NOT ILIKE %s', sql)
+        self.assertNotIn('purpose IN', sql)
+        self.assertEqual(args, ('%@sailson.com',))
+
+    def test_outreach_list_remains_member_scoped(self):
+        with patch.object(mb.mail_access, 'account_scope', return_value=('member_scope', [9])), \
+                patch.object(mb.db, 'query_all', return_value=[]) as query:
+            mb.list_accounts(purpose='outreach')
+        sql, args = query.call_args.args
+        self.assertIn('WHERE member_scope', sql)
+        self.assertIn("purpose IN (%s, 'both')", sql)
+        self.assertEqual(args, (9, 'outreach'))
+
+    def test_material_account_validation_ignores_membership_and_purpose(self):
+        row = {'id': 7, 'email': 'shared@hotmail.com', 'purpose': 'outreach'}
+        with patch.object(access, 'account_scope') as account_scope, \
+                patch.object(access.db, 'query_one', return_value=row):
+            access.require_account(7, 'material', access.Actor(99))
+        account_scope.assert_not_called()
+
+    def test_material_account_validation_rejects_sailson(self):
+        row = {'id': 7, 'email': 'Internal@Sailson.com', 'purpose': 'both'}
+        with patch.object(access.db, 'query_one', return_value=row):
+            with self.assertRaisesRegex(access.AccessDenied, 'Sailson'):
+                access.require_account(7, 'material', access.Actor(99))
 
     def test_hidden_migration_is_in_schema_check(self):
         self.assertIn(('mb_sender_accounts', 'hidden'), mb._LATEST_COLUMNS)

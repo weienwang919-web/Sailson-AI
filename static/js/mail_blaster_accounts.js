@@ -4,7 +4,7 @@
    和宿主页面提供的全局 POOL + loadPool()。 */
 
 let EDITING_ID = null;
-/* 弹窗里列的是全部账号（含另一个用途的），所以不能复用宿主页按用途过滤过的 POOL */
+/* 素材页必须沿用共享账号规则并隐藏 Sailson；其他页面仍显示当前用户获授权的全部账号。 */
 let ACC_ALL = [];
 
 async function openAccounts() { openModal('accounts-modal'); await renderAccounts(); }
@@ -15,7 +15,11 @@ const PURPOSE_TEXT = { material: '素材提交', outreach: 'KOL 建联', both: '
 async function renderAccounts() {
   await loadPool();
   const showHidden = document.getElementById('acc-show-hidden')?.checked;
-  const all = (await api('/api/mail-blaster/accounts' + (showHidden ? '?include_hidden=1' : ''))).accounts;
+  const params = new URLSearchParams();
+  if (showHidden) params.set('include_hidden', '1');
+  if (typeof ACCOUNT_POOL_PURPOSE !== 'undefined') params.set('purpose', ACCOUNT_POOL_PURPOSE);
+  const query = params.toString();
+  const all = (await api('/api/mail-blaster/accounts' + (query ? `?${query}` : ''))).accounts;
   ACC_ALL = all;
   document.getElementById('acc-empty').style.display = all.length ? 'none' : '';
   document.getElementById('acc-rows').innerHTML = all.map(a => `

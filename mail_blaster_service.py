@@ -644,7 +644,11 @@ def usable_account(acc: dict) -> bool:
 
 def list_accounts(only_sendable: bool = False, purpose: str = "",
                   include_hidden: bool = False) -> list[dict]:
-    scope, args = mail_access.account_scope()
+    if purpose == "material":
+        # 素材提交共用全量外部邮箱，不按成员或账号用途隔离；公司邮箱不得出现在池中。
+        scope, args = "email NOT ILIKE %s", ["%@sailson.com"]
+    else:
+        scope, args = mail_access.account_scope()
     sql = f"SELECT * FROM mb_sender_accounts WHERE {scope}"
     if not include_hidden or only_sendable:
         sql += " AND hidden = FALSE"
@@ -652,7 +656,7 @@ def list_accounts(only_sendable: bool = False, purpose: str = "",
         # 密码模式要有密码，OAuth 模式要有 refresh_token
         sql += (" AND enabled = TRUE AND status = 'ready'"
                 " AND (encrypted_password IS NOT NULL OR encrypted_refresh_token IS NOT NULL)")
-    if purpose in ("material", "outreach"):
+    if purpose == "outreach":
         # both 是通用号，两边都列
         sql += " AND purpose IN (%s, 'both')"
         args.append(purpose)

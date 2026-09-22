@@ -68,8 +68,17 @@ def require_job(job_id, actor=None):
 
 
 def require_account(account_id, mode='', actor=None):
+    if mode == 'material':
+        row = db.query_one('SELECT id, email, purpose FROM mb_sender_accounts WHERE id = %s',
+                           (account_id,))
+        if not row:
+            raise AccessDenied('发件邮箱不存在')
+        if (row.get('email') or '').strip().lower().endswith('@sailson.com'):
+            raise AccessDenied('Sailson 邮箱不可用于素材提交')
+        return
+
     scope, args = account_scope(actor=actor)
-    row = db.query_one(f'SELECT id, purpose FROM mb_sender_accounts WHERE id = %s AND {scope}',
+    row = db.query_one(f'SELECT id, email, purpose FROM mb_sender_accounts WHERE id = %s AND {scope}',
                        [account_id] + args)
     if not row or (mode and row['purpose'] not in (mode, 'both')):
         raise AccessDenied('发件邮箱未授权或用途不匹配，请联系管理员')
