@@ -130,6 +130,7 @@ async function uploadXlsx(file) {
   const form = new FormData();
   const domainSettings = replacementDomainSettings();
   form.append('recipient', document.getElementById('recipient').value.trim());
+  form.append('cc', document.getElementById('cc').value.trim());
   form.append('subject_tpl', document.getElementById('subject-tpl').value);
   form.append('body_tpl', document.getElementById('body-tpl').value);
   form.append('signature_tpl', document.getElementById('signature-tpl').value);
@@ -358,6 +359,7 @@ function collect() {
   });
   return {
     recipient: document.getElementById('recipient').value.trim(),
+    cc: document.getElementById('cc').value.trim(),
     subject_tpl: document.getElementById('subject-tpl').value,
     body_tpl: document.getElementById('body-tpl').value,
     signature_tpl: document.getElementById('signature-tpl').value,
@@ -438,6 +440,7 @@ function showPreview() {
       <div class="mail-head">
         <div><span>发件人</span>${esc(p.from_line)}</div>
         <div><span>收件人</span>${esc(p.to_line || '（没有收件邮箱）')}</div>
+        ${p.cc_line ? `<div><span>抄送</span>${esc(p.cc_line)}</div>` : ''}
         <div><span>主题</span><strong>${esc(p.subject)}</strong></div>
         ${(p.attachments || []).length
           ? `<div><span>附件</span>${p.attachments.map(a =>

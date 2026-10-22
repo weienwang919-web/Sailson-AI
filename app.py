@@ -10757,6 +10757,7 @@ def api_mb_create_job_from_excel():
         result = mail_blaster_service.create_job_from_excel(
             file_bytes=upload.read(),
             fallback_recipient=(request.form.get('recipient') or '').strip(),
+            cc=(request.form.get('cc') or '').strip(),
             subject_tpl=request.form.get('subject_tpl') or '',
             body_tpl=request.form.get('body_tpl') or '',
             signature_tpl=request.form.get('signature_tpl') or '',

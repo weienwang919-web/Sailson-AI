@@ -114,7 +114,7 @@ _TABLES = {
 # 新增列务必登记到这里，否则线上库走快速路径直接 return，DDL 一条都不跑，
 # 故障现象是 worker 任务里的 UndefinedColumn 而不是启动报错，很难联想。
 _LATEST_COLUMNS = {
-    ("mb_jobs", "ocr_status"), ("mb_jobs", "replace_domain_enabled"),
+    ("mb_jobs", "cc"), ("mb_jobs", "ocr_status"), ("mb_jobs", "replace_domain_enabled"),
     ("mb_jobs", "replacement_domain"), ("mb_sender_accounts", "auth_mode"),
     ("mb_jobs", "mode"), ("mb_jobs", "sender_account_id"),
     ("mb_templates", "mode"), ("mb_history", "mode"),
@@ -213,6 +213,7 @@ def _ensure_base_schema() -> None:
             id SERIAL PRIMARY KEY,
             user_id INTEGER,
             recipient VARCHAR(255) NOT NULL DEFAULT '',
+            cc TEXT NOT NULL DEFAULT '',
             subject_tpl TEXT NOT NULL DEFAULT '',
             body_tpl TEXT NOT NULL DEFAULT '',
             signature_tpl TEXT NOT NULL DEFAULT '',
@@ -446,6 +447,7 @@ def _ensure_base_schema() -> None:
     # 老库补列：表建好之后新增的字段走这里。Postgres 支持 ADD COLUMN IF NOT EXISTS，
     # 反复执行是幂等的。
     for stmt in (
+        "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS cc TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS ocr_status VARCHAR(20) NOT NULL DEFAULT 'none'",
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS ocr_report TEXT",
         "ALTER TABLE mb_jobs ADD COLUMN IF NOT EXISTS ocr_task_id VARCHAR(100)",
@@ -1732,12 +1734,32 @@ def _open_smtp_recording(account: dict):
     return client
 
 
+def normalize_cc_addresses(value: str | list[str] | None) -> list[str]:
+    """Normalize the optional batch-wide CC list and reject malformed addresses."""
+    if value is None:
+        return []
+    raw = value if isinstance(value, list) else re.split(r"[,;，；\n\r]+", str(value))
+    addresses = []
+    seen = set()
+    for entry in raw:
+        address = str(entry or "").strip().lower()
+        if not address:
+            continue
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", address):
+            raise ValueError(f"抄送邮箱格式不正确：{address}")
+        if address not in seen:
+            addresses.append(address)
+            seen.add(address)
+    return addresses
+
+
 def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: str,
                    signature_tpl: str, from_display: str, signature_name: str,
                    image_bytes: bytes | None, image_name: str, index: int, total: int,
                    extra_vars: dict | None = None, replacement_domain: str = "",
                    unsubscribe_text: str = "",
-                   attachments: list[dict] | None = None) -> dict:
+                   attachments: list[dict] | None = None,
+                   cc: str | list[str] | None = None) -> dict:
     """真正发一封。异常往外抛，由调用方决定怎么记。"""
     replacement_domain = normalize_replacement_domain(replacement_domain)
     header_sender_email = replace_sender_domain(account["email"], replacement_domain)
@@ -1786,6 +1808,9 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
     root["Subject"] = subject
     root["From"] = formataddr((from_display, header_sender_email))
     root["To"] = to_email
+    cc_addresses = normalize_cc_addresses(cc)
+    if cc_addresses:
+        root["Cc"] = ", ".join(cc_addresses)
     root["Date"] = formatdate(localtime=True)
     # 自签 Message-ID：回信/对账时拿它比对。已实测阿里云企业邮会原样保留。
     root["Message-ID"] = make_msgid(domain=message_id_domain)
@@ -1799,7 +1824,7 @@ def send_one_email(*, account: dict, to_email: str, subject_tpl: str, body_tpl: 
 
     client = _open_smtp_recording(account)
     try:
-        client.sendmail(envelope_sender_email, [to_email], root.as_string())
+        client.sendmail(envelope_sender_email, [to_email, *cc_addresses], root.as_string())
         answer = getattr(client, "last_data_response", None)
         if answer:
             code, text = answer
@@ -2892,6 +2917,7 @@ def load_job(job_id: int) -> dict:
                 "name": job.get("name") or "",
                 "mode": job.get("mode") or "material",
                 "sender_account_id": job.get("sender_account_id"),
+                "cc": job.get("cc") or "",
                 "paused_reason": job["paused_reason"], "task_id": job["task_id"],
                 "ocr_status": job.get("ocr_status") or "none",
                 "ocr_report": _parse_ocr_report(job.get("ocr_report")),
@@ -3000,6 +3026,7 @@ def _sync_job(job_id: int, data: dict, cur) -> None:
     """
     cleaners = {"name": lambda v: (v or '').strip()[:200],
                 "recipient": lambda v: (v or "").strip(),
+                "cc": lambda v: ", ".join(normalize_cc_addresses(v)),
                 "subject_tpl": lambda v: v or "", "body_tpl": lambda v: v or "",
                 "signature_tpl": lambda v: v or "",
                 "replace_domain_enabled": lambda v: bool(v),
@@ -3162,6 +3189,7 @@ def send_item(job_id: int, item_id: int, attachments: list[dict] | None = None) 
             index=item["seq"] + 1, total=total, extra_vars=extra_vars,
             replacement_domain=replacement_domain,
             unsubscribe_text=DEFAULT_UNSUBSCRIBE_TEXT if is_outreach else "",
+            cc=job.get("cc") or "",
             # 建联整批共用一组，素材按行挂，各是各的
             attachments=(attachments if attachments is not None
                          else (load_job_attachments(job_id) if is_outreach
@@ -3345,8 +3373,9 @@ def build_previews(job_id: int) -> list[dict]:
             image_name=item["image_name"], image_src=item["image_url"] or "",
             extra_vars=item["vars"] or None, unsubscribe_text=unsubscribe_text)
         html = rewrite_body_domains(html, replacement_domain)
+        cc = ", ".join(normalize_cc_addresses(job.get("cc") or ""))
         previews.append({**item, "from_line": f"{display} <{sender_email}>",
-                         "to_line": recipient, "subject": subject, "html": html,
+                         "to_line": recipient, "cc_line": cc, "subject": subject, "html": html,
                          # 每封预览都带上附件清单：预览是「这封信长什么样」，
                          # 附件漏在预览外面，人就是要等发出去才发现忘了传。
                          # 建联整批共用一组，素材按行挂各是各的。
@@ -3403,7 +3432,7 @@ def _fill_from_license(row: dict) -> dict | None:
     return note
 
 
-def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
+def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "", cc: str = "",
                           subject_tpl: str = "", body_tpl: str = "", signature_tpl: str = "",
                           user_id=None, run_ocr: bool = True,
                           replace_domain_enabled: bool = False,
@@ -3415,6 +3444,7 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
     # 发件账号这一关先过。解析 Excel 要抽图、要走 OCR 判断，几十行就是几秒钟，
     # 跑完才告诉人「没有能用的号」是白等——何况这两个错都跟 Excel 内容无关。
     replacement_domain = normalize_replacement_domain(replacement_domain)
+    cc = ", ".join(normalize_cc_addresses(cc))
     if replace_domain_enabled and not replacement_domain:
         raise ValueError("已勾选替换域名，请填写目标域名")
     pool = material_sender_pool(replace_domain_enabled)
@@ -3462,10 +3492,10 @@ def create_job_from_excel(*, file_bytes: bytes, fallback_recipient: str = "",
             not (r["vars"].get(f) or "").strip() for f in ("name", "id", "number"))
         for r in usable)
     job_id = db.execute_and_fetch_id("""
-        INSERT INTO mb_jobs (user_id, recipient, subject_tpl, body_tpl, signature_tpl,
+        INSERT INTO mb_jobs (user_id, recipient, cc, subject_tpl, body_tpl, signature_tpl,
             ocr_status, replace_domain_enabled, replacement_domain)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (user_id, fallback_recipient, subject_tpl or DEFAULT_SUBJECT_TPL,
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (user_id, fallback_recipient, cc, subject_tpl or DEFAULT_SUBJECT_TPL,
           body_tpl or DEFAULT_BODY_TPL, signature_tpl or DEFAULT_SIGNATURE_TPL,
           'pending' if needs_ocr else 'none', bool(replace_domain_enabled), replacement_domain))
 
