@@ -171,8 +171,18 @@ if not secret_key:
     # 为了不影响现有功能，在缺少 SECRET_KEY 时自动生成一次性开发密钥
     # 生产环境必须通过环境变量显式配置 SECRET_KEY
     logger.warning("⚠️ SECRET_KEY 未配置，将使用临时开发密钥。请在生产环境中通过环境变量设置 SECRET_KEY！")
-    import secrets
-    secret_key = "dev-" + secrets.token_hex(32)
+    _db_url_for_key = os.environ.get('DATABASE_URL')
+    if _db_url_for_key:
+        # 多个 gunicorn worker 各自随机生成密钥会导致：登录写进 A 进程的 session，
+        # 下一个请求落到 B 进程就解不开、被踢回登录页。这里从同一个环境变量派生，
+        # 保证同一实例内所有 worker（以及重启前后）密钥一致。生产仍应显式配置 SECRET_KEY。
+        import hashlib
+        secret_key = "derived-" + hashlib.sha256(
+            ("sailson-session-key:" + _db_url_for_key).encode('utf-8')
+        ).hexdigest()
+    else:
+        import secrets
+        secret_key = "dev-" + secrets.token_hex(32)
 
 app.secret_key = secret_key
 bcrypt = Bcrypt(app)
@@ -188,6 +198,44 @@ KOL_PROXY_TOKEN = os.environ.get('KOL_PROXY_TOKEN', '')
 # Worker 进程不需要启动定时调度器
 # ============================================
 _IS_WORKER = os.environ.get('_IS_WORKER', 'false').lower() == 'true'
+
+# 进程级单例锁：gunicorn 开多个 worker 时，每个 worker 都会 import 一遍本模块。
+# 像 APScheduler、KOL FastAPI 子进程这种"整台实例只该有一份"的东西，
+# 用非阻塞文件锁选出唯一一个 worker 来做；锁随进程退出自动释放，
+# 新拉起的 worker 会重新抢锁接手。
+_SINGLETON_LOCK_FDS = []
+
+
+def _acquire_process_singleton(name):
+    try:
+        import fcntl
+    except ImportError:
+        # Windows 本地开发：没有 fcntl，本地也只会跑一个进程，直接放行
+        return True
+    lock_dir = os.environ.get('SAILSON_LOCK_DIR') or '/tmp'
+    path = os.path.join(lock_dir, f'sailson-{name}.lock')
+    fd = None
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return False
+    _SINGLETON_LOCK_FDS.append(fd)
+    return True
+
+
+def _local_port_in_use(port, host='127.0.0.1'):
+    import socket
+    try:
+        with socket.create_connection((host, int(port)), timeout=0.5):
+            return True
+    except OSError:
+        return False
 
 
 def start_kol_api_if_needed():
@@ -207,6 +255,13 @@ def start_kol_api_if_needed():
         return None
 
     kol_port = os.environ.get('KOL_PORT', '8001')
+    # 多 gunicorn worker 时只让一个 worker 拉起 KOL API，避免端口冲突/重复进程
+    if _local_port_in_use(kol_port):
+        logger.info(f"ℹ️ KOL FastAPI 已在 127.0.0.1:{kol_port} 运行，跳过自动启动")
+        return None
+    if not _acquire_process_singleton('kol-autostart'):
+        logger.info("ℹ️ 其他 gunicorn worker 负责启动 KOL FastAPI，本进程跳过")
+        return None
     logger.info(f"🚀 自动启动 KOL FastAPI: 127.0.0.1:{kol_port}")
     process = subprocess.Popen(
         [
@@ -412,7 +467,9 @@ def run_scheduled_matrix_video_export():
         logger.error(f"❌ 矩阵号视频监控每日报表生成失败: {e}")
 
 
-if not _IS_WORKER:
+# 多 gunicorn worker 时只在抢到锁的那个 worker 里启动调度器，避免同一定时任务被执行多次
+_SCHEDULER_LEADER = (not _IS_WORKER) and _acquire_process_singleton('apscheduler')
+if _SCHEDULER_LEADER:
     jobstores = {
         'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
     }
@@ -492,7 +549,10 @@ if not _IS_WORKER:
     logger.info("ℹ️ tiktok_official_daily_sync_job 已从 web 调度器移除，改由 worker 进程自检触发")
 else:
     scheduler = None
-    logger.info("⏭️ Worker 模式，跳过 APScheduler 初始化")
+    if _IS_WORKER:
+        logger.info("⏭️ Worker 模式，跳过 APScheduler 初始化")
+    else:
+        logger.info("⏭️ 其他 gunicorn worker 已持有 APScheduler，本进程跳过初始化")
 
 
 # 内存存储（保留用于向后兼容）
@@ -1223,6 +1283,63 @@ def get_task_queue_position(task_id, status=None):
         }
     except Exception as e:
         logger.warning(f"⚠️ 计算任务排队位置失败: {e}")
+        return {}
+
+def get_task_queue_positions_batch(rows):
+    """批量版 get_task_queue_position：一次算出多条任务的排队信息。
+
+    任务中心列表原来对每一行都调一次 get_task_queue_position，每行 2~4 条
+    task_queue 全表 COUNT（30 行就是 60+ 条查询），接口要十几秒，期间占住
+    gunicorn 线程。全局计数只需要算一次，pending 任务的"前面还有几个"用一条
+    查询批量算。返回 {task_id: info}，info 字段与 get_task_queue_position 一致。
+    """
+    task_rows = [row for row in (rows or []) if row.get('task_id')]
+    if not task_rows:
+        return {}
+    try:
+        counts = db.query_one("""
+            SELECT COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+                   COUNT(*) FILTER (WHERE status IN ('claimed', 'processing')) AS running_count
+            FROM task_queue
+            WHERE status IN ('pending', 'claimed', 'processing')
+        """) or {}
+        pending_count = int(counts.get('pending_count') or 0)
+        running_count = int(counts.get('running_count') or 0)
+
+        pending_ids = [row['task_id'] for row in task_rows if row.get('status') == 'pending']
+        ahead_by_task = {}
+        if pending_ids:
+            placeholders = ','.join(['%s'] * len(pending_ids))
+            ahead_rows = db.query_all(f"""
+                SELECT t.task_id,
+                       (SELECT COUNT(*) FROM task_queue p
+                        WHERE p.status = 'pending' AND p.created_at < t.created_at) AS ahead
+                FROM task_queue t
+                WHERE t.task_id IN ({placeholders})
+            """, tuple(pending_ids)) or []
+            ahead_by_task = {r.get('task_id'): int(r.get('ahead') or 0) for r in ahead_rows}
+
+        info = {}
+        for row in task_rows:
+            task_id = row['task_id']
+            if row.get('status') != 'pending':
+                info[task_id] = {
+                    'queue_position': None,
+                    'tasks_ahead': 0,
+                    'pending_count': pending_count,
+                    'running_count': running_count,
+                }
+            elif task_id in ahead_by_task:
+                ahead_count = ahead_by_task[task_id]
+                info[task_id] = {
+                    'queue_position': ahead_count + 1,
+                    'tasks_ahead': ahead_count,
+                    'pending_count': pending_count,
+                    'running_count': running_count,
+                }
+        return info
+    except Exception as e:
+        logger.warning(f"⚠️ 批量计算任务排队位置失败: {e}")
         return {}
 
 # ============================================
@@ -3134,9 +3251,13 @@ def debug_page():
     return jsonify(debug_info)
 
 
-@app.route('/health')
+@app.route('/health', methods=['GET', 'HEAD'])
 def health_check():
-    """健康检查端点 - 用于 Render 监控"""
+    """健康检查端点 - 用于 Render 监控。
+
+    刻意保持零依赖：不查数据库、不调外部 API、不需要登录。Render 的探针超时只有 5 秒，
+    这里任何慢操作都会让实例被判定为不健康。
+    """
     return jsonify({"status": "ok", "service": "Sailson AI"}), 200
 
 
@@ -4470,6 +4591,8 @@ def sentiment_tasks_api():
         ) or []
         download_by_task = {row.get('task_id'): row for row in output_rows}
 
+    queue_info_by_task = get_task_queue_positions_batch(rows)
+
     items = []
     for row in rows:
         result_payload = {}
@@ -4480,7 +4603,7 @@ def sentiment_tasks_api():
             except Exception:
                 result_payload = {}
         task_id = row.get('task_id')
-        queue_info = get_task_queue_position(task_id, row.get('status')) if task_id else {}
+        queue_info = queue_info_by_task.get(task_id) or {}
         download_row = download_by_task.get(task_id) or {}
         download_id = result_payload.get('download_id') or download_row.get('download_id')
         filename = result_payload.get('filename') or download_row.get('filename')
@@ -5563,28 +5686,48 @@ def generate_video():
 @app.route('/get_history')
 @login_required
 def get_history():
-    """获取历史记录（从数据库）"""
+    """获取历史记录列表（从数据库，只返回元数据）。
+
+    以前这里把最近 50 条记录的完整报告 HTML（含 base64 图片）一起返回，单次响应
+    可达 ~26MB，序列化+传输期间占住 gunicorn 线程，曾导致健康检查超时、服务被下线。
+    前端列表只用 id/title/type/created_at，正文点开时再走 /get_record/<id> 取，
+    所以列表接口不再返回 result 字段。
+
+    可选参数：
+      type   只返回某一类记录（sentiment / competitor / report / video ...）
+      limit  返回条数，默认 50，最大 200
+    """
     try:
         user_id = session.get('user_id')
+        try:
+            limit = max(1, min(int(request.args.get('limit') or 50), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        record_type = (request.args.get('type') or '').strip()
 
-        # 从数据库读取用户的历史记录
-        records = db.query_all("""
-            SELECT id, title, result, type, created_at
+        sql = """
+            SELECT id, title, type, created_at
             FROM analysis_results
             WHERE user_id = %s
-            ORDER BY created_at DESC
-            LIMIT 50
-        """, (user_id,))
+        """
+        params = [user_id]
+        if record_type:
+            sql += " AND type = %s"
+            params.append(record_type)
+        sql += " ORDER BY created_at DESC LIMIT %s"
+        params.append(limit)
+
+        records = db.query_all(sql, tuple(params)) or []
 
         # 转换为前端需要的格式（含 created_at 供时间筛选）
         result = []
         for record in records:
-            created_at = record['created_at']
+            created_at = record.get('created_at')
+            title = record.get('title') or ''
             result.append({
                 'id': record['id'],
-                'title': f"{record['title']} [{created_at.strftime('%H:%M')}]",
-                'result': record['result'],
-                'type': record['type'],
+                'title': f"{title} [{created_at.strftime('%H:%M')}]" if created_at else title,
+                'type': record.get('type'),
                 'created_at': created_at.isoformat() if created_at else None
             })
 
@@ -5592,8 +5735,12 @@ def get_history():
 
     except Exception as e:
         logger.error(f"❌ 获取历史记录失败: {e}")
-        # 失败时返回内存中的记录
-        return jsonify(HISTORY_DB[::-1])
+        # 失败时返回内存中的记录（同样不带正文）
+        fallback = [
+            {k: v for k, v in item.items() if k != 'result'}
+            for item in HISTORY_DB[::-1]
+        ]
+        return jsonify(fallback)
 
 
 @app.route('/get_record/<int:id>')
@@ -8353,7 +8500,7 @@ def toggle_fb_config(config_id):
 def fb_scheduler_status():
     """查询 FB 抓取调度器状态"""
     try:
-        job = scheduler.get_job('fb_scrape_job')
+        job = scheduler.get_job('fb_scrape_job') if scheduler else None
         if not job:
             return jsonify({'error': '任务未找到'}), 404
 
