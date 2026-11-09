@@ -1,36 +1,39 @@
-# Gunicorn 配置文件
-# 强制使用单个 worker，避免内存数据不共享的问题
+# Gunicorn 配置文件（render.yaml / start_render.sh 使用：gunicorn app:app -c gunicorn_config.py）
+#
+# 注意：线上 Render Dashboard 里配置的 Start Command 会覆盖 render.yaml，
+# 如果 Dashboard 用的是 `gunicorn wsgi:app --workers ... --threads ...`，以命令行参数为准。
+#
+# 以前强制 1 个 worker（担心内存 TASK_QUEUE 不共享）。任务队列早已迁到数据库
+# （USE_DB_WORKER=true，由独立的 worker 服务执行），APScheduler / KOL 子进程
+# 也已在 app.py 里用文件锁保证整台实例只启动一份，所以可以安全地开多 worker。
+# 之前 1 个 sync worker + 1 线程，一个慢请求（如 26MB 的 /get_history）就会让
+# Render 的 /health 探针（5 秒超时）失败，实例被判定不健康而下线。
 
 import os
 
-# 绑定地址
+# 绑定端口
 bind = f"0.0.0.0:{os.environ.get('PORT', 5001)}"
 
-# 只使用 1 个 worker（重要！避免 TASK_QUEUE 不共享）
-workers = 1
+# 进程数：可用 WEB_CONCURRENCY 环境变量覆盖
+workers = int(os.environ.get('WEB_CONCURRENCY', '2'))
 
-# gthread：进程内多线程并发处理请求，内存态数据仍然共享（同一个进程）；
-# 之前用 sync + threads=1 导致同一时刻只能处理一个请求，
-# 一旦有慢请求占住了唯一的处理槽位，Render 的健康检查探针就会排队超时，
-# 被误判为实例挂了从而重启。
+# gthread：每个 worker 多线程处理请求，慢请求不会堵住健康检查
 worker_class = "gthread"
+threads = int(os.environ.get('GUNICORN_THREADS', '8'))
 
-# 每个 worker 的线程数：从 1 调到 3，留出并发余量给健康检查探针
-threads = 3
-
-# 超时时间（秒）- 增加到 600 秒，因为爬虫需要时间
+# 超时（秒）：部分同步接口仍可能较慢
 timeout = 600
 
-# 优雅关闭超时 - 给正在执行的任务足够时间完成
+# 优雅关闭超时 - 给正在执行的请求足够时间完成
 graceful_timeout = 120
 
 # 保持连接时间
 keepalive = 5
 
-# 日志配置
+# 日志
 accesslog = "-"
 errorlog = "-"
 loglevel = "info"
 
-# 预加载应用已禁用 - 避免 Apify 客户端在 fork 后失效
+# 预加载已禁用 - 避免 Apify 客户端 / 数据库连接池在 fork 后失效
 # preload_app = True

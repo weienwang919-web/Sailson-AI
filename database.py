@@ -4,6 +4,7 @@
 import os
 import time
 import logging
+import threading
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
@@ -40,9 +41,17 @@ if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
 
 # 全局连接池
 connection_pool = None
+_connection_pool_lock = threading.Lock()
 
 def init_connection_pool():
     """初始化数据库连接池"""
+    global connection_pool
+    # gthread 多线程下可能有多个请求同时首次取连接，加锁避免重复建池/泄漏连接
+    with _connection_pool_lock:
+        _init_connection_pool_locked()
+
+
+def _init_connection_pool_locked():
     global connection_pool
     if not connection_pool:
         try:

@@ -355,7 +355,7 @@ async function pollCompetitorTask(taskId, attempt) {
 }
 
 async function loadHistory() {
-    const r = await fetch('/get_history');
+    const r = await fetch('/get_history?type=competitor');
     const list = await r.json();
     allHistory = list.filter(i => i.type === 'competitor');
     const timeFiltered = applyTimeFilter(allHistory);

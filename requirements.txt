@@ -26,3 +26,4 @@ wordcloud
 langdetect
 cryptography
 itsdangerous
+psycopg[binary]>=3.1

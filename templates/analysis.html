@@ -1466,7 +1466,7 @@ function updateLegacyExportVisibility(isV2) {
 
 async function loadHistory() {
     try {
-        const list = await fetchJsonOrThrow('/get_history');
+        const list = await fetchJsonOrThrow('/get_history?type=sentiment');
         const sentimentList = list.filter(i => i.type === 'sentiment');
         allHistory = sentimentList;
         const timeFiltered = applyTimeFilter(sentimentList);
